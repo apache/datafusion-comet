@@ -32,7 +32,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let cast_to_date = Cast::new(
         expr,
         DataType::Date32,
-        SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         None,
         None,
     );

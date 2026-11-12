@@ -23,6 +23,7 @@ import java.lang.reflect.InvocationTargetException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.annotation.nowarn
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext
 import scala.jdk.CollectionConverters._
@@ -33,6 +34,7 @@ import org.apache.spark.internal.config.{DYN_ALLOCATION_ENABLED, DYN_ALLOCATION_
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
+import org.apache.spark.sql.comet.PlanDataInjector
 import org.apache.spark.util.RpcUtils
 
 import org.apache.comet.CometConf
@@ -124,6 +126,7 @@ class CometCelebornShuffleManager private[shuffle] (
     }
   }
 
+  @nowarn("msg=references private")
   override def getWriter[K, V](
       handle: ShuffleHandle,
       mapId: Long,
@@ -167,10 +170,11 @@ class CometCelebornShuffleManager private[shuffle] (
           .computeIfAbsent(handle.shuffleId, _ => new ConcurrentHashMap[Int, AnyRef]())
           .put(resolved.celebornShuffleId, resolved.client)
 
+        val spec = dependency.nativeShuffleSpec.getOrElse {
+          throw new IllegalStateException("Native Comet shuffle has no execution plan")
+        }
         new CometNativeShuffleWriter[K, V](
-          dependency.nativeShuffleSpec.getOrElse {
-            throw new IllegalStateException("Native Comet shuffle has no execution plan")
-          },
+          spec,
           dependency.outputPartitioning.getOrElse {
             throw new IllegalStateException("Native Comet shuffle has no output partitioning")
           },
@@ -186,7 +190,7 @@ class CometCelebornShuffleManager private[shuffle] (
             CelebornNativeShuffleDestination(
               resolved.pusher,
               CometCelebornShuffleManager.maxNativeFrameBytes(
-                CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.get().toInt,
+                spec.sqlConf.withConf(CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.get().toInt),
                 resolved.pusher),
               dependency.partitioner.numPartitions,
               commitAuthorized = true,
@@ -212,6 +216,7 @@ class CometCelebornShuffleManager private[shuffle] (
   }
 
   // Spark's final all-mapper reader overload delegates to this mapper-range overload.
+  @nowarn("msg=references private")
   override def getReader[K, C](
       handle: ShuffleHandle,
       startMapIndex: Int,
@@ -256,9 +261,9 @@ class CometCelebornShuffleManager private[shuffle] (
             endPartition),
           context,
           metrics,
-          client => ownedNativeClients.put(client, java.lang.Boolean.TRUE),
+          client => { val _ = ownedNativeClients.put(client, java.lang.Boolean.TRUE) },
           (client, celebornShuffleId) => {
-            nativeShuffleClients
+            val _ = nativeShuffleClients
               .computeIfAbsent(handle.shuffleId, _ => new ConcurrentHashMap[Int, AnyRef]())
               .put(celebornShuffleId, client)
           },
@@ -298,6 +303,7 @@ class CometCelebornShuffleManager private[shuffle] (
             Option(nativeGenerationCoordinator).foreach(_.unregisterShuffle(shuffleId))
           }
         },
+        () => PlanDataInjector.releasePreparedShuffle(shuffleId),
         () => removed = backend.unregisterShuffle(shuffleId))
     cleanupAll(cleanup)
     removed
@@ -321,7 +327,10 @@ class CometCelebornShuffleManager private[shuffle] (
           }
         }) ++ ownedNativeClients.keySet().asScala.toSeq.map { client => () =>
         CelebornShufflePusherFactory.releaseClient(client)
-      } ++ Seq[() => Unit](() => ownedNativeClients.clear(), () => nativeShuffleClients.clear()))
+      } ++ Seq[() => Unit](
+        () => ownedNativeClients.clear(),
+        () => nativeShuffleClients.clear(),
+        () => PlanDataInjector.releaseAll()))
   }
 
   private def cleanupAll(actions: Seq[() => Unit]): Unit = {
@@ -392,7 +401,7 @@ class CometCelebornShuffleManager private[shuffle] (
       conf,
       handle,
       context,
-      client => ownedNativeClients.put(client, java.lang.Boolean.TRUE),
+      client => { val _ = ownedNativeClients.put(client, java.lang.Boolean.TRUE) },
       onGenerationResolved,
       onGenerationInvalidated,
       onInvalidationUnsafe)
@@ -411,7 +420,7 @@ class CometCelebornShuffleManager private[shuffle] (
   }
 
   private[shuffle] def removeSizeLimitFallback(shuffleId: Int): Unit = {
-    sizeLimitFallbacks.remove(shuffleId)
+    val _ = sizeLimitFallbacks.remove(shuffleId)
   }
 
   private def isLocalNativeHandle(handle: ShuffleHandle): Boolean = handle match {
@@ -1070,7 +1079,9 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
     invalidatedGenerations.remove(shuffleId)
     generationEpochs.remove(shuffleId)
     claimOwners.retain { case ((ownerShuffleId, _, _, _), _) => ownerShuffleId != shuffleId }
-    deniedAttempts.retain { case ((ownerShuffleId, _, _, _), _) => ownerShuffleId != shuffleId }
+    val _ = deniedAttempts.retain { case ((ownerShuffleId, _, _, _), _) =>
+      ownerShuffleId != shuffleId
+    }
   }
 }
 

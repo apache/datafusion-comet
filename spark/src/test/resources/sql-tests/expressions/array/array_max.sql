@@ -15,13 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.expression.ArrayMax.allowIncompatible=false
+
 statement
 CREATE TABLE test_array_max(arr array<int>) USING parquet
 
 statement
 INSERT INTO test_array_max VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()), (NULL), (array(NULL, 1, 2)), (array(-1, -2, -3))
 
-query spark_answer_only
+query
 SELECT array_max(arr) FROM test_array_max
 
 -- literal arguments

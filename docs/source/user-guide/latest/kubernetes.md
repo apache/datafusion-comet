@@ -21,12 +21,15 @@
 
 ## Comet Docker Images
 
-Run the following command from the root of this repository to build the Comet Docker image, or use a [published
-Docker image](https://hub.docker.com/r/apache/datafusion-comet).
+Run the following command from the root of this repository to build the Comet Docker image. The image is based on
+`apache/spark:4.1.3` and adds the Comet JAR for Spark 4.1 and Scala 2.13 to `$SPARK_HOME/jars`.
 
 ```shell
 docker build -t apache/datafusion-comet -f kube/Dockerfile .
 ```
+
+Push the image to a registry that your cluster can pull from, and use that image name in the `image` field of the
+examples below.
 
 ## Example Spark Submit
 
@@ -58,30 +61,39 @@ REVISION: 1
 TEST SUITE: None
 ```
 
-Create example Spark application file `spark-pi.yaml`
+Create an example Spark SQL application file named `comet-dataframe-pi.yaml`. This application uses
+Spark's DataFrame API, so it exercises Comet without requiring an external data source.
 
 ```bash
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
-  name: spark-pi
+  name: comet-dataframe-pi
   namespace: default
 spec:
   type: Scala
   mode: cluster
-  image: apache/datafusion-comet:$COMET_VERSION-spark3.5.5-scala2.12-java11
+  image: apache/datafusion-comet
   imagePullPolicy: IfNotPresent
-  mainClass: org.apache.spark.examples.SparkPi
+  mainClass: org.apache.spark.examples.sql.SparkDataFramePi
   mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.13-4.1.3.jar
+  arguments:
+    - "10"
   sparkConf:
-    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-$COMET_VERSION.jar"
-    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-$COMET_VERSION.jar"
+    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark4.1_2.13-$COMET_VERSION.jar"
+    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark4.1_2.13-$COMET_VERSION.jar"
     "spark.plugins": "org.apache.spark.CometPlugin"
+    "spark.memory.offHeap.enabled": "true"
+    "spark.memory.offHeap.size": "1g"
+    "spark.executor.memoryOverhead": "1g"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"
+    "spark.comet.exec.range.enabled": "true"
+    "spark.comet.explain.native.enabled": "true"
     "spark.comet.shuffle.enabled": "true"
     "spark.comet.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+    "spark.kubernetes.executor.deleteOnTermination": "false"
   sparkVersion: 4.1.3
   driver:
     labels:
@@ -104,41 +116,46 @@ Refer to [Comet builds](#comet-docker-images)
 Run Apache Spark application with Comet enabled
 
 ```bash
-kubectl apply -f spark-pi.yaml
-sparkapplication.sparkoperator.k8s.io/spark-pi created
+kubectl apply -f comet-dataframe-pi.yaml
+sparkapplication.sparkoperator.k8s.io/comet-dataframe-pi created
 ```
 
 Check application status
 
 ```bash
-kubectl get sparkapp spark-pi
+kubectl get sparkapp comet-dataframe-pi
 
-NAME       STATUS    ATTEMPTS   START                  FINISH       AGE
-spark-pi   RUNNING   1          2025-03-18T21:19:48Z   <no value>   65s
+NAME                 STATUS      ATTEMPTS   START   FINISH   AGE
+comet-dataframe-pi   COMPLETED   1          ...     ...      ...
 ```
 
 To check more runtime details
 
 ```bash
-kubectl describe sparkapplication spark-pi
+kubectl describe sparkapplication comet-dataframe-pi
 
 ....
 Events:
   Type    Reason                     Age    From                          Message
   ----    ------                     ----   ----                          -------
-  Normal  SparkApplicationSubmitted  8m15s  spark-application-controller  SparkApplication spark-pi was submitted successfully
-  Normal  SparkDriverRunning         7m18s  spark-application-controller  Driver spark-pi-driver is running
-  Normal  SparkExecutorPending       7m11s  spark-application-controller  Executor [spark-pi-68732195ab217303-exec-1] is pending
-  Normal  SparkExecutorRunning       7m10s  spark-application-controller  Executor [spark-pi-68732195ab217303-exec-1] is running
-  Normal  SparkExecutorCompleted     7m5s   spark-application-controller  Executor [spark-pi-68732195ab217303-exec-1] completed
-  Normal  SparkDriverCompleted       7m4s   spark-application-controller  Driver spark-pi-driver completed
+  Normal  SparkApplicationSubmitted  8m15s  spark-application-controller  SparkApplication comet-dataframe-pi was submitted successfully
+  Normal  SparkDriverRunning         7m18s  spark-application-controller  Driver comet-dataframe-pi-driver is running
+  Normal  SparkExecutorPending       7m11s  spark-application-controller  Executor [comet-dataframe-pi-68732195ab217303-exec-1] is pending
+  Normal  SparkExecutorRunning       7m10s  spark-application-controller  Executor [comet-dataframe-pi-68732195ab217303-exec-1] is running
+  Normal  SparkExecutorCompleted     7m5s   spark-application-controller  Executor [comet-dataframe-pi-68732195ab217303-exec-1] completed
+  Normal  SparkDriverCompleted       7m4s   spark-application-controller  Driver comet-dataframe-pi-driver completed
 
 ```
 
 Get Driver Logs
 
 ```bash
-kubectl logs spark-pi-driver
+kubectl logs comet-dataframe-pi-driver
 ```
+
+The driver log contains the computed approximation (`Pi is roughly ...`). The example retains the
+completed executor pod so that you can inspect its log for the native plan emitted by
+`spark.comet.explain.native.enabled` and confirm that Comet executed the DataFrame query. Delete the
+application with `kubectl delete sparkapplication comet-dataframe-pi` when you finish.
 
 More info on [Kube Spark operator](https://www.kubeflow.org/docs/components/spark-operator/getting-started/)

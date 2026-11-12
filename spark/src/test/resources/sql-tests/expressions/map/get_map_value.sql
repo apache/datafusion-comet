@@ -36,13 +36,13 @@ SELECT map('a', 1, 'b', 2)['a'], map('a', 1, 'b', 2)['missing'], map('a', 1, 'b'
 -- `element_at_map.sql` exercises the same guard on `CometElementAt`). A `map<double,int>` column
 -- is used rather than a `map(...)` literal because Spark's `SimplifyExtractValueOps` rewrites
 -- `map(...)[key]` over a literal map into a `CASE` before it can reach the native lookup. Spark
--- stores a `-0.0` key as `+0.0` and finds it with `nanSafeCompareDoubles`, so it returns `7` for a
--- `-0.0` lookup; native lookup compares the raw Arrow values.
+-- compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key and returns `7`;
+-- native lookup compares the raw Arrow values.
 statement
 CREATE TABLE test_map_double(m map<double, int>) USING parquet
 
 statement
 INSERT INTO test_map_double VALUES (map(CAST(0 AS DOUBLE), 7)), (map(CAST(1 AS DOUBLE), 8)), (NULL)
 
-query expect_fallback(Spark normalizes floating-point map keys)
+query expect_fallback(Spark looks a key up in its SQL ordering)
 SELECT m[CAST(-0.0 AS DOUBLE)] FROM test_map_double

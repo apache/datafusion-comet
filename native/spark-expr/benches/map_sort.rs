@@ -145,6 +145,7 @@ fn bench_unsupported_singleton(c: &mut Criterion) {
 fn bench_matched_maps(c: &mut Criterion) {
     matched_maps::bench_maps(c, matched_maps::Stage::NormalizeOnly);
     matched_maps::bench_regression_maps(c, matched_maps::Stage::NormalizeOnly);
+    matched_maps::bench_multi_entry_int_maps(c, matched_maps::Stage::NormalizeOnly);
 }
 
 criterion_group!(

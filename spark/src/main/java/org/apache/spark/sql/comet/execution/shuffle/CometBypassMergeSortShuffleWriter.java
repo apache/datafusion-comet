@@ -169,13 +169,16 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       final String checksumAlgorithm = getChecksumAlgorithm(conf);
 
-      allocator =
-          CometShuffleMemoryAllocator.getInstance(
-              conf,
-              memoryManager,
-              Math.min(
-                  CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,
-                  memoryManager.pageSizeBytes()));
+      // Every partition writer holds a page as soon as it buffers a row. Spark sizes its page so
+      // that a task fits only 16 to 32 of them, so pages of that size would make the writers spill
+      // each other about one row at a time once there are more partitions than that. Each writer
+      // starts small and grows towards Spark's page size instead.
+      final long maxPageSize =
+          Math.min(
+              CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes());
+      final long initialPageSize =
+          Math.min(CometDiskBlockWriter.INITIAL_PAGE_SIZE_BYTES, maxPageSize);
+      allocator = CometShuffleMemoryAllocator.getInstance(memoryManager, initialPageSize);
 
       // This task's disk writers. Under memory pressure a writer spills its sibling writers in
       // this list, never those of other tasks.
@@ -190,6 +193,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
             new CometDiskBlockWriter(
                 file,
                 allocator,
+                initialPageSize,
+                maxPageSize,
                 taskContext,
                 serializer,
                 schema,

@@ -165,7 +165,7 @@ fn string_to_time(s: &str) -> Option<i64> {
     Some(nanos)
 }
 
-/// Parse time components from a string like "HH:mm:ss.ffffff" or "T HH:mm:ss".
+/// Parse time components from a string like "HH:mm:ss.ffffff" or "T12".
 /// Returns (hour, minute, second, microseconds) or None if invalid.
 fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
     let bytes = s.as_bytes();
@@ -185,6 +185,11 @@ fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
     pos = new_pos;
     if hour < 0 {
         return None;
+    }
+
+    // Only a T prefix identifies an hour without a colon as a time in Spark.
+    if pos == bytes.len() && bytes[0] == b'T' {
+        return Some((hour, 0, 0, 0));
     }
 
     // Expect ':'
@@ -223,7 +228,7 @@ fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
     pos += 1;
 
     // Parse fractional seconds (up to 6 digits, pad with zeros)
-    let (micros, new_pos) = parse_fractional(bytes, pos)?;
+    let (micros, new_pos) = parse_fractional(bytes, pos);
     pos = new_pos;
 
     // Nothing should follow the fractional seconds (timezone not allowed for time)
@@ -260,8 +265,9 @@ fn parse_digits(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
 }
 
 /// Parse fractional seconds (microseconds). Up to 6 digits, padded with zeros.
+/// Spark allows an empty fraction after the decimal point.
 /// Returns (microseconds, new_pos).
-fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
+fn parse_fractional(bytes: &[u8], start: usize) -> (i32, usize) {
     let mut pos = start;
     let mut value: i32 = 0;
     let mut count = 0;
@@ -277,10 +283,6 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
         }
     }
 
-    if count == 0 {
-        return None;
-    }
-
     // Skip any remaining digits beyond 6 (truncation)
     while pos < bytes.len() && bytes[pos].is_ascii_digit() {
         pos += 1;
@@ -292,7 +294,7 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
         count += 1;
     }
 
-    Some((value, pos))
+    (value, pos)
 }
 
 #[cfg(test)]
@@ -388,6 +390,48 @@ mod tests {
             string_to_time("T12:30:45"),
             Some(12 * NANOS_PER_HOUR + 30 * NANOS_PER_MINUTE + 45 * NANOS_PER_SECOND)
         );
+    }
+
+    #[test]
+    fn test_hour_only_t_prefix() {
+        for (input, hour) in [
+            ("T0", 0),
+            ("T1", 1),
+            ("T12", 12),
+            ("T23", 23),
+            ("T12 AM", 0),
+            ("T12 PM", 12),
+            ("T1pm", 13),
+            ("T1\tAM", 1),
+        ] {
+            assert_eq!(
+                string_to_time(input),
+                Some(hour * NANOS_PER_HOUR),
+                "{input:?}"
+            );
+        }
+        for input in [
+            "12", "12 AM", "T", "T001", "T24", "T0 AM", "T13 PM", "T12:", "T12.", " T12",
+            "T12 AM\t",
+        ] {
+            assert_eq!(string_to_time(input), None, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_empty_fraction() {
+        for (input, expected) in [
+            ("12:30:45.", "12:30:45"),
+            ("T1:2:3.", "T1:2:3"),
+            ("12:30:45. AM", "12:30:45 AM"),
+            ("12:30:45.PM", "12:30:45 PM"),
+            ("12:30:45.\t", "12:30:45"),
+        ] {
+            assert_eq!(string_to_time(input), string_to_time(expected), "{input:?}");
+        }
+        for input in ["12:30.", "12:30:45..", "12:30:45.x", "12:30:45.Z"] {
+            assert_eq!(string_to_time(input), None, "{input:?}");
+        }
     }
 
     #[test]

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::error::unwrap_arrow_external_error;
 use crate::math_funcs::utils::get_precision_scale;
 use crate::{divide_by_zero_error, integral_divide_overflow_error, EvalMode};
 use arrow::array::{Array, Decimal128Array};
@@ -61,9 +62,9 @@ fn quotient_to_i128<T: ToPrimitive>(
 ) -> Result<i128, ArrowError> {
     let res = res.to_i128().unwrap_or(i128::MAX);
     if check_divide_overflow && i64::try_from(res).is_err() {
-        return Err(ArrowError::ComputeError(
-            integral_divide_overflow_error().to_string(),
-        ));
+        return Err(ArrowError::ExternalError(Box::new(
+            integral_divide_overflow_error(),
+        )));
     }
     Ok(res)
 }
@@ -98,9 +99,20 @@ fn spark_decimal_div_internal(
     let (p1, s1) = get_precision_scale(left.data_type());
     let (p2, s2) = get_precision_scale(right.data_type());
 
+    // The exponents below are computed in `u32`, so a negative scale wraps to roughly 4.29e9 and
+    // the BigInt branch would evaluate `10.pow(~4.29e9)`. That is an unbounded allocation rather
+    // than an overflow, so it hangs instead of failing. Comet's serde reports negative-scale
+    // decimal arithmetic as unsupported, which keeps this unreachable from a Spark plan, but
+    // reject it here too so any other caller gets a diagnosable error. See issue #5013.
+    if s1 < 0 || s2 < 0 || s3 < 0 {
+        return Err(DataFusionError::Execution(format!(
+            "spark_decimal_div: negative decimal scale left={s1} right={s2} result={s3}"
+        )));
+    }
+
     let l_exp = ((s2 + s3 + 1) as u32).saturating_sub(s1 as u32);
     let r_exp = (s1 as u32).saturating_sub((s2 + s3 + 1) as u32);
-    let result: Decimal128Array = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
+    let result = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
         || p2 as u32 + r_exp > DECIMAL128_MAX_PRECISION as u32
     {
         let ten = BigInt::from(10);
@@ -116,7 +128,7 @@ fn spark_decimal_div_internal(
             // Spark throws DIVIDE_BY_ZERO for both `/` and `div` when ANSI is enabled, so
             // the `is_integral_div` guard was wrong and has been removed.
             if eval_mode == EvalMode::Ansi && r.is_zero() {
-                return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                return Err(ArrowError::ExternalError(Box::new(divide_by_zero_error())));
             }
             // Non-ANSI: zero divisors have already been replaced with null by the
             // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
@@ -131,7 +143,7 @@ fn spark_decimal_div_internal(
                 div + &five
             } / &ten;
             quotient_to_i128(&res, check_divide_overflow)
-        })?
+        })
     } else {
         let l_mul = 10_i128.pow(l_exp);
         let r_mul = 10_i128.pow(r_exp);
@@ -143,7 +155,7 @@ fn spark_decimal_div_internal(
             // Spark throws DIVIDE_BY_ZERO for both `/` and `div` when ANSI is enabled, so
             // the `is_integral_div` guard was wrong and has been removed.
             if eval_mode == EvalMode::Ansi && r == 0 {
-                return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                return Err(ArrowError::ExternalError(Box::new(divide_by_zero_error())));
             }
             // Non-ANSI: zero divisors have already been replaced with null by the
             // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
@@ -158,8 +170,101 @@ fn spark_decimal_div_internal(
                 div + 5
             } / 10;
             quotient_to_i128(&res, check_divide_overflow)
-        })?
+        })
     };
+    let result: Decimal128Array = result.map_err(unwrap_arrow_external_error)?;
     let result = result.with_data_type(DataType::Decimal128(p3, s3));
     Ok(ColumnarValue::Array(Arc::new(result)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SparkError;
+
+    fn decimal(value: i128, precision: u8, scale: i8) -> ColumnarValue {
+        ColumnarValue::Array(Arc::new(
+            Decimal128Array::from(vec![Some(value)])
+                .with_data_type(DataType::Decimal128(precision, scale)),
+        ))
+    }
+
+    fn spark_error(result: Result<ColumnarValue, DataFusionError>) -> SparkError {
+        match result.unwrap_err() {
+            DataFusionError::External(error) => *error
+                .downcast::<SparkError>()
+                .expect("expected external SparkError"),
+            error => panic!("expected external SparkError, got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decimal_divide_by_zero_returns_spark_error() {
+        // Exercise both the i128 and BigInt kernels.
+        for (precision, scale) in [(10, 2), (38, 0)] {
+            let result = spark_decimal_div(
+                &[decimal(100, precision, scale), decimal(0, precision, scale)],
+                &DataType::Decimal128(precision, scale),
+                EvalMode::Ansi,
+            );
+            assert!(matches!(spark_error(result), SparkError::DivideByZero));
+        }
+    }
+
+    #[test]
+    fn test_decimal_div_rejects_negative_scale() {
+        // `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a negative
+        // scale wraps to roughly 4.29e9, clears the precision check and sends the BigInt branch
+        // into `10.pow(~4.29e9)`, an unbounded allocation that hangs rather than failing. The
+        // guard turns that into an error. Comet's serde keeps a Spark plan away from this, so
+        // the guard is for any other caller.
+        for (left, right, result) in [
+            (
+                DataType::Decimal128(10, -1),
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, -1),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, -1),
+            ),
+        ] {
+            let (lp, ls) = match left {
+                DataType::Decimal128(p, s) => (p, s),
+                _ => unreachable!(),
+            };
+            let (rp, rs) = match right {
+                DataType::Decimal128(p, s) => (p, s),
+                _ => unreachable!(),
+            };
+            let err = spark_decimal_div(
+                &[decimal(100, lp, ls), decimal(3, rp, rs)],
+                &result,
+                EvalMode::Legacy,
+            )
+            .expect_err("a negative scale must be rejected");
+            assert!(
+                err.to_string().contains("negative decimal scale"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_integral_divide_overflow_returns_spark_error() {
+        let result = quotient_to_i128(&(i64::MAX as i128 + 1), true);
+        match result.unwrap_err() {
+            ArrowError::ExternalError(error) => assert!(matches!(
+                error.downcast_ref::<SparkError>(),
+                Some(SparkError::IntegralDivideOverflow)
+            )),
+            error => panic!("expected external SparkError, got {error:?}"),
+        }
+    }
 }

@@ -51,6 +51,16 @@ pub mod spark_config {
     include!(concat!("generated", "/spark.spark_config.rs"));
 }
 
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_native_executors {
+    include!(concat!("generated", "/spark.spark_native_executors.rs"));
+}
+
+/// A hash of the .proto files this crate was built from. A Comet Native Executor cluster
+/// requires a driver's to match its own.
+pub const PROTO_FINGERPRINT: &str = env!("COMET_PROTO_FINGERPRINT");
+
 #[cfg(test)]
 mod tests {
     use super::spark_operator::{
@@ -68,15 +78,12 @@ mod tests {
 
     fn local_shuffle_writer() -> ShuffleWriter {
         let output_data_file = "/tmp/shuffle.data".to_string();
-        let output_index_file = "/tmp/shuffle.index".to_string();
 
         ShuffleWriter {
             output_data_file: output_data_file.clone(),
-            output_index_file: output_index_file.clone(),
             partition_writer: Some(PartitionWriter {
                 writer: Some(partition_writer::Writer::Local(LocalPartitionWriter {
                     output_data_file,
-                    output_index_file,
                 })),
             }),
             ..Default::default()
@@ -89,14 +96,12 @@ mod tests {
         let decoded = ShuffleWriter::decode(encoded.as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
-        assert_eq!(decoded.output_index_file, "/tmp/shuffle.index");
         let Some(partition_writer::Writer::Local(local)) =
             decoded.partition_writer.and_then(|writer| writer.writer)
         else {
             panic!("expected a local shuffle partition writer");
         };
         assert_eq!(local.output_data_file, "/tmp/shuffle.data");
-        assert_eq!(local.output_index_file, "/tmp/shuffle.index");
     }
 
     #[test]
@@ -121,9 +126,12 @@ mod tests {
         let decoded = LegacyShuffleWriter::decode(encoded.as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
-        assert_eq!(decoded.output_index_file, "/tmp/shuffle.index");
+        // a new plan carries no index path, so a reader expecting tag 4 sees it unset
+        assert!(decoded.output_index_file.is_empty());
     }
 
+    /// A plan still carrying the retired index path decodes cleanly: tag 4 is reserved, so it is
+    /// skipped as an unknown field.
     #[test]
     fn new_shuffle_writer_decodes_legacy_plan_without_destination() {
         let legacy = LegacyShuffleWriter {
@@ -133,7 +141,6 @@ mod tests {
         let decoded = ShuffleWriter::decode(legacy.encode_to_vec().as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/legacy.data");
-        assert_eq!(decoded.output_index_file, "/tmp/legacy.index");
         assert!(decoded.partition_writer.is_none());
     }
 }

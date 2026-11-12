@@ -23,15 +23,27 @@ import java.io.File
 import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+
+import scala.util.Random
 
 import org.apache.commons.io.FileUtils
+import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.SparkConf
+import org.apache.spark.SparkEnv
+import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.{CometTestBase, SaveMode}
-import org.apache.spark.sql.comet.CometScanExec
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometIcebergNativeScanExec, CometIcebergWriteExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.CometConf
-import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
+import org.apache.comet.{CometConf, CometExplainInfo, CometIcebergTestBase, ExtendedExplainInfo, NativeBase}
+import org.apache.comet.hadoop.fs.{FakeHdfsAuthorityFileSystem, FakeHDFSFileSystem, FakeHdfsSchemeFileSystem, FakeWasbSchemeFileSystem}
+import org.apache.comet.iceberg.IcebergStorageSchemes
+import org.apache.comet.objectstore.NativeConfig
 
 /**
  * Comet's native readers go through object_store, which understands a fixed set of URL schemes. A
@@ -43,7 +55,7 @@ import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
  * native probe is cached per probe URL so an authorityless URL can't poison the authority-bearing
  * form of the same scheme.
  */
-class CometScanSchemeFallbackSuite extends CometTestBase {
+class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBase {
 
   private var fakeRootDir: File = _
 
@@ -54,6 +66,9 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     // cluster. `hdfs` is natively readable by default, so this scan must be CLAIMED, not declined.
     conf.set("spark.hadoop.fs.hdfs.impl", "org.apache.comet.hadoop.fs.FakeHdfsSchemeFileSystem")
     conf.set("spark.hadoop.fs.defaultFS", FakeHDFSFileSystem.PREFIX)
+    // Back `wasb` with a local FS so an Iceberg table can live under a `wasb://` warehouse. The
+    // native Iceberg storage factory has no arm for it, so that scan must be DECLINED, not claimed.
+    conf.set("spark.hadoop.fs.wasb.impl", classOf[FakeWasbSchemeFileSystem].getName)
     // Intentionally NOT setting CometConf.COMET_LIBHDFS_SCHEMES -- `fake` is not natively readable,
     // and `hdfs` must still be claimed by default (mirrors the native `is_hdfs_scheme` default).
     conf
@@ -70,32 +85,17 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
   }
 
   test("native scan declines a filesystem scheme object_store can't read (fake://)") {
-    val path = s"${FakeHDFSFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/data"
-    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val transformed = applyScanRule(writeParquet(FakeHDFSFileSystem.PREFIX))
 
-    // Clean Spark plan (Comet disabled), then apply CometScanRule directly -- no execution, we
-    // only check whether the rule claims the scan. (var capture: withSQLConf returns Unit on 3.5.)
-    var sparkPlan: SparkPlan = null
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
-    }
-
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
-
-      val cometScans = transformed.collect { case s: CometScanExec => s }
-      val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
-      assert(
-        cometScans.isEmpty,
-        "`fake://` is not object_store-readable; the native scan must fall back to Spark, " +
-          s"but Comet claimed it:\n$transformed")
-      assert(
-        sparkScans.size == 1,
-        s"expected the scan to remain a Spark FileSourceScanExec:\n$transformed")
-    }
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
+    assert(
+      cometScans.isEmpty,
+      "`fake://` is not object_store-readable; the native scan must fall back to Spark, " +
+        s"but Comet claimed it:\n$transformed")
+    assert(
+      sparkScans.size == 1,
+      s"expected the scan to remain a Spark FileSourceScanExec:\n$transformed")
   }
 
   test("both gates: a configured s3-compliant scheme (minio) is admitted") {
@@ -120,21 +120,84 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       "gs://bucket/... must be admitted even after an authorityless gs:// URI was probed first")
   }
 
+  test("iceberg gate: the JNI scheme list parser trims, lowercases and rejects a blank list") {
+    assert(
+      IcebergStorageSchemes.parse("file, S3,,s3a,", forWrite = false) == Set("file", "s3", "s3a"))
+    // A loaded library publishes a fixed non-empty list, so a blank answer is a build bug and
+    // must fail loudly rather than quietly disable every native Iceberg scan and write.
+    Seq(("", false), (" , ", true), (null, false)).foreach { case (joined, forWrite) =>
+      val path = if (forWrite) "write" else "read"
+      val e = intercept[IllegalStateException](IcebergStorageSchemes.parse(joined, forWrite))
+      assert(
+        e.getMessage == s"Comet native library published no Iceberg $path scheme list",
+        s"unexpected message for ${Option(joined)}: ${e.getMessage}")
+    }
+  }
+
+  test("iceberg gate: an unloaded native library yields no schemes") {
+    // Every caller sits behind `isCometLoaded`, so this answer never reaches a plan; it only
+    // guarantees that nothing hand-maintained stands in for the native list.
+    assert(IcebergStorageSchemes.load(forWrite = false, isLoaded = false) == Set.empty)
+    assert(IcebergStorageSchemes.load(forWrite = true, isLoaded = false) == Set.empty)
+  }
+
+  test("iceberg gate: the scheme sets come from native and carry its mode-specific entries") {
+    // The lazy sets must be what the JNI probe answers, not an empty set from a load that ran
+    // before the library was ready. `oss` is read-only (no `oss.*` property forwarding for
+    // writes) and `memory` is write-only (a fresh in-process store per FileIO, so a read finds
+    // nothing); the Azure schemes and `gcs` have no storage factory arm at all.
+    assume(NativeBase.isLoaded, "Comet native library not loaded")
+    val read = IcebergStorageSchemes.read
+    val write = IcebergStorageSchemes.write
+    assert(read == IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(false), false))
+    assert(write == IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(true), true))
+    assert(read.nonEmpty, "native published no read schemes")
+    assert(write.nonEmpty, "native published no write schemes")
+    assert(read.contains("oss"), s"oss must be in the native read schemes ${read.toSeq.sorted}")
+    assert(
+      !write.contains("oss"),
+      s"oss must not be in the native write schemes ${write.toSeq.sorted}")
+    assert(read.contains("hdfs"), s"hdfs must be in the native read schemes ${read.toSeq.sorted}")
+    assert(
+      !write.contains("hdfs"),
+      s"hdfs must not be in the native write schemes ${write.toSeq.sorted}")
+    assert(
+      write.contains("memory"),
+      s"memory must be in the native write schemes ${write.toSeq.sorted}")
+    assert(
+      !read.contains("memory"),
+      s"memory must not be in the native read schemes ${read.toSeq.sorted}")
+    Seq("abfs", "abfss", "wasb", "wasbs", "gcs").foreach { scheme =>
+      assert(
+        !read.contains(scheme),
+        s"$scheme must not be in the native read schemes ${read.toSeq.sorted}")
+      assert(
+        !write.contains(scheme),
+        s"$scheme must not be in the native write schemes ${write.toSeq.sorted}")
+    }
+  }
+
   test("iceberg gate: builtin allowlist admitted, unbuildable schemes rejected") {
-    // The Iceberg gate is an explicit allowlist mirroring `storage_factory_for`'s arms (keep in
-    // lockstep). Narrower than the Parquet gate: object_store recognizes http/abfs/wasb but
-    // iceberg-rust can't build them, so reject up-front rather than fail during native setup.
+    // The Iceberg gate is the allowlist the native storage factory publishes over JNI. Narrower
+    // than the Parquet gate: object_store recognizes http and the Azure schemes, but the native
+    // Iceberg storage factory has no arm for them, so reject up-front rather than fail at
+    // execution. `memory` is write-only (a fresh in-process store per FileIO holds no table), and
+    // the built-in set matches verbatim because native opens a location by its raw scheme.
     Seq(
       "file:///tmp/key.parquet",
       "s3://bucket/key.parquet",
       "s3a://bucket/key.parquet",
       "gs://bucket/key.parquet",
-      "oss://bucket/key.parquet").foreach { u =>
+      "oss://bucket/key.parquet",
+      "hdfs://nn:8020/key.parquet").foreach { u =>
       assert(
         CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
         s"$u must be iceberg-readable; icebergReadableSchemes has regressed")
     }
     Seq(
+      "memory:///key.parquet",
+      "S3://bucket/key.parquet",
+      "File:///tmp/key.parquet",
       "http://bucket.example.com/key.parquet",
       "https://bucket.example.com/key.parquet",
       "abfs://container@acct/key.parquet",
@@ -143,32 +206,49 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       "wasbs://container@acct/key.parquet").foreach { u =>
       assert(
         !CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
-        s"$u must not be iceberg-readable; storage_factory_for has no matching arm")
+        s"$u must not be iceberg-readable; storage_factory_for rejects it for reads")
     }
   }
 
-  test("parquet gate: mixed-bucket alias scan is declined (single object store per partition)") {
-    // Native planning registers one object store per FilePartition and strips the authority from
-    // every file's object key, so files in a second bucket would be read from the first. A scan
-    // whose opt-in alias paths span multiple buckets must fall back.
+  test("iceberg gate: an opt-in alias is matched verbatim, like the built-in schemes") {
+    // Native opens an alias location as written and OpenDAL's S3 backend checks it against a
+    // lowercase `scheme://bucket/` prefix, so a `BLOB://` location admitted here would only fail
+    // at execution. The alias set is lowercase, so a scheme written any other way is declined.
     val schemes = Set("blob")
-    def buckets(locations: String*): Set[String] =
-      CometScanRule.aliasScanBuckets(
-        CometScanRule.classifyRootPaths(locations.map(new URI(_)), Set.empty, schemes))
+    assert(
+      CometScanRule.isIcebergReadableScheme(new URI("blob://bucket/key.parquet"), schemes),
+      "blob://bucket/... must be admitted once blob is opted in")
+    Seq("BLOB://bucket/key.parquet", "Blob://bucket/key.parquet", "BLOB:///bucket/key.parquet")
+      .foreach { u =>
+        assert(
+          !CometScanRule.isIcebergReadableScheme(new URI(u), schemes),
+          s"$u must be declined: native opens the location as written and the S3 backend " +
+            "rejects a scheme prefix that is not lowercase")
+      }
+    // The fallback reason names the lowercase alias, which is the form the scan would admit.
+    assert(
+      CometScanRule.icebergSupportedSchemesMessage(schemes).contains("blob"),
+      "the supported-schemes message must list the opted-in alias in its admitted form")
+  }
 
-    assert(
-      buckets("blob://bucket-a/k.parquet", "blob://bucket-b/k.parquet") ==
-        Set("bucket-a", "bucket-b"),
-      "two alias buckets must be reported so the Parquet gate falls back")
-    // An alias bucket mixed with a plain-s3 bucket is still two object stores -> declined.
-    assert(
-      buckets("blob://bucket-a/k.parquet", "s3://bucket-b/k.parquet") ==
-        Set("bucket-a", "bucket-b"))
-    // Safe scans report at most one bucket: one alias path, or the same bucket via two paths.
-    assert(buckets("blob://bucket-a/x.parquet") == Set("bucket-a"))
-    assert(buckets("blob://bucket-a/x.parquet", "blob://bucket-a/y.parquet") == Set("bucket-a"))
-    // No alias path present: plain multi-bucket s3:// is a pre-existing limitation, out of scope.
-    assert(buckets("s3://bucket-a/k.parquet", "s3://bucket-b/k.parquet").isEmpty)
+  test("parquet gate: an alias scan over two buckets is claimed") {
+    // Native translates the alias settings for each bucket, so alias paths may span buckets.
+    // Each bucket is an authority of a local-disk file system registered for `blob`.
+    val aliasFileSystem = Seq(
+      "fs.blob.impl" -> classOf[FakeHdfsAuthorityFileSystem].getName,
+      "fs.blob.impl.disable.cache" -> "true",
+      CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY -> "blob")
+    withSQLConf(aliasFileSystem: _*) {
+      val pathA = s"blob://bucket-a${fakeRootDir.getAbsolutePath}/alias-a"
+      val pathB = s"blob://bucket-b${fakeRootDir.getAbsolutePath}/alias-b"
+      spark.range(0, 5).toDF("id").write.mode(SaveMode.Overwrite).parquet(pathA)
+      spark.range(5, 10).toDF("id").write.mode(SaveMode.Overwrite).parquet(pathB)
+
+      assert(claimedScans(spark.read.parquet(pathA)).size == 1)
+      assert(
+        claimedScans(spark.read.parquet(pathA, pathB)).size == 1,
+        "an alias scan over two buckets must be claimed")
+    }
   }
 
   test("parquet gate: object_store rejects an actual path with an illegal character") {
@@ -212,37 +292,815 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     assert(
       !openable("s3:///bucket/k.parquet"),
       "authorityless s3:/// has no host and no alias promotion")
+    assert(
+      !openable("hdfs:///warehouse/k.parquet"),
+      "authorityless hdfs:/// needs a default NameNode, which Comet does not pass to native")
     // blob not opted in: no promotion, so the hostless form is not openable either.
     assert(
       !openable("blob:///bucket/k.parquet", Set.empty),
       "without opt-in, blob gets no bucket promotion, so a hostless blob location is unopenable")
   }
 
+  test("iceberg scan and write decline a wasb table instead of failing at execution") {
+    // Regression guard for both scheme gates: the native Iceberg storage factory has no arm for
+    // `wasb`, so the scan and the write must each be declined with a reason naming the scheme
+    // and run in Spark, rather than be claimed and fail at execution with "Unsupported storage
+    // scheme: wasb".
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { dir =>
+      val warehouse = s"${FakeWasbSchemeFileSystem.PREFIX}${dir.getAbsolutePath}/warehouse"
+      withSQLConf(
+        "spark.sql.catalog.wasb_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.wasb_catalog.type" -> "hadoop",
+        "spark.sql.catalog.wasb_catalog.warehouse" -> warehouse,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+        // The VALUES source must be native, or the write is declined for its input before the
+        // write serde (and its scheme gate) is ever consulted.
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        spark.sql("CREATE TABLE wasb_catalog.db.wasb_table (id INT, name STRING) USING iceberg")
+        try {
+          val insertPlans = capturePlans(spark) {
+            spark.sql(
+              "INSERT INTO wasb_catalog.db.wasb_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+          }
+          assert(insertPlans.nonEmpty, "no INSERT plan was captured")
+          val nativeWrites = insertPlans.flatMap(_.collectWithSubqueries {
+            case w: CometIcebergWriteExec => w
+          })
+          assert(
+            nativeWrites.isEmpty,
+            "`wasb://` has no native Iceberg storage factory arm; the write must fall back to " +
+              s"Spark, but Comet claimed it:\n${insertPlans.mkString("\n--\n")}")
+          val writeReasons = insertPlans.flatMap(new ExtendedExplainInfo().getFallbackReasons)
+          assert(
+            writeReasons.exists(_.contains("unsupported storage scheme: wasb")),
+            s"the write must be declined for its scheme, got reasons: $writeReasons")
+
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            "SELECT * FROM wasb_catalog.db.wasb_table ORDER BY id",
+            "wasb")
+          val nativeScans = cometPlan.collect { case s: CometIcebergNativeScanExec => s }
+          assert(
+            nativeScans.isEmpty,
+            "`wasb://` has no native Iceberg storage factory arm; the scan must fall back to " +
+              s"Spark, but Comet claimed it:\n$cometPlan")
+          // Nothing but the scheme may have caused the fallback: every reason names `wasb`,
+          // except the one the operator above records about its now-Spark BatchScanExec child.
+          val scanReasons = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+          val unrelated = scanReasons.filterNot(_.contains("wasb"))
+          assert(
+            unrelated.forall(_.contains("BatchScanExec")),
+            s"fallback reasons other than the scheme were recorded: $unrelated")
+        } finally {
+          spark.sql("DROP TABLE wasb_catalog.db.wasb_table")
+        }
+      }
+    }
+  }
+
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {
     // Native `is_hdfs_scheme` treats `hdfs` as readable when `fs.comet.libhdfs.schemes` is unset,
-    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `case None => Set("hdfs")` default
-    // against the silent-fallback regression from #4525.
-    val path = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/hdfs-data"
-    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `hdfs` default of
+    // NativeConfig.resolveLibhdfsSchemes against the silent-fallback regression from #4525.
+    val transformed = applyScanRule(writeParquet(FakeHdfsSchemeFileSystem.PREFIX))
 
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
+    assert(
+      cometScans.size == 1,
+      "`hdfs://` is natively readable by default; Comet must claim the scan, " +
+        s"but it fell back to Spark:\n$transformed")
+    assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
+  }
+
+  test("scheme gate claims a libhdfs scheme only when the session lists it") {
+    val fakePath = writeParquet(FakeHDFSFileSystem.PREFIX)
+    // The same files through the local filesystem.
+    val localPath = s"file:${fakePath.stripPrefix(FakeHDFSFileSystem.PREFIX)}"
+    val bareKey = CometConf.COMET_LIBHDFS_SCHEMES_KEY
+    val unsupported = "Unsupported filesystem schemes: fake"
+    def readerOnly(scheme: String): String =
+      s"does not support filesystem scheme(s) $scheme listed in $bareKey only through reader " +
+        "options"
+    // (case, path, SQLConf, reader options, expected fallback reason or None when claimed).
+    // newHadoopConf copies the bare key from SQLConf, and a runtime SET of the `spark.hadoop.`
+    // key with its prefix, so native never routes `fake` through libhdfs for the latter. libhdfs
+    // never sees reader options, so a scheme only they list is declined, even a local one.
+    val cases = Seq(
+      (
+        "bare key in SQLConf",
+        fakePath,
+        Seq(bareKey -> "fake,hdfs"),
+        Map.empty[String, String],
+        None),
+      ("reader option", fakePath, Nil, Map(bareKey -> "fake,hdfs"), Some(readerOnly("fake"))),
+      (
+        "runtime SET of the spark.hadoop. key",
+        fakePath,
+        Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"),
+        Map.empty[String, String],
+        Some(unsupported)),
+      (
+        "reader option removes a session-listed scheme",
+        fakePath,
+        Seq(bareKey -> "fake,hdfs"),
+        Map(bareKey -> "hdfs"),
+        Some(unsupported)),
+      (
+        "reader-only natively readable scheme",
+        localPath,
+        Nil,
+        Map(bareKey -> "file"),
+        Some(readerOnly("file"))))
+    // Every case runs, and the failure lists each one that broke.
+    val errors = cases.flatMap { case (name, path, conf, readOptions, expectedReason) =>
+      val transformed = applyScanRule(path, conf, readOptions)
+      val claimed = transformed.collect { case s: CometScanExec => s }.nonEmpty
+      lazy val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
+      expectedReason match {
+        case None if !claimed => Some(s"$name: Comet must claim the scan:\n$transformed")
+        case Some(_) if claimed => Some(s"$name: the scan must fall back:\n$transformed")
+        case Some(reason) if !reasons.exists(_.contains(reason)) =>
+          Some(s"$name: expected a reason containing '$reason', got reasons: $reasons")
+        case _ => None
+      }
+    }
+    assert(errors.isEmpty, errors.mkString("\n"))
+  }
+
+  /** Writes a 10-row Parquet table at `prefix` plus the suite's temp dir and returns its path. */
+  private def writeParquet(prefix: String): String = {
+    val path = s"$prefix${fakeRootDir.getAbsolutePath}/data"
+    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    path
+  }
+
+  /**
+   * Plans a read of `path` with `readOptions` and Comet off, then applies `CometScanRule` to that
+   * plan with the native scan enabled and `conf` set. Nothing is executed. (var capture:
+   * withSQLConf returns Unit on 3.5.)
+   */
+  private def applyScanRule(
+      path: String,
+      conf: Seq[(String, String)] = Nil,
+      readOptions: Map[String, String] = Map.empty): SparkPlan = {
     var sparkPlan: SparkPlan = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
+      sparkPlan = spark.read.options(readOptions).parquet(path).queryExecution.executedPlan
     }
+    var transformed: SparkPlan = null
+    val scanConf = Seq(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
+    withSQLConf(scanConf ++ conf: _*) {
+      transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+    }
+    transformed
+  }
 
+  /** Applies CometScanRule to the Spark plan of `read` and returns the scans it claimed. */
+  private def claimedScans(read: => org.apache.spark.sql.DataFrame): Seq[CometScanExec] = {
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkPlan = read.queryExecution.executedPlan
+    }
+    var claimed: Seq[CometScanExec] = Nil
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+      claimed = CometScanRule(spark)
+        .apply(stripAQEPlan(sparkPlan))
+        .collect { case s: CometScanExec => s }
+    }
+    claimed
+  }
 
-      val cometScans = transformed.collect { case s: CometScanExec => s }
-      val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
+  test("parquet gate: a scan over two object stores of different schemes is claimed") {
+    // The native scan forwards the object store options of every scheme it reads.
+    val localPath = s"file://${fakeRootDir.getAbsolutePath}/mixed-local"
+    val hdfsPath = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/mixed-hdfs"
+    spark.range(0, 5).toDF("id").write.mode(SaveMode.Overwrite).parquet(localPath)
+    spark.range(5, 10).toDF("id").write.mode(SaveMode.Overwrite).parquet(hdfsPath)
+
+    assert(claimedScans(spark.read.parquet(localPath)).size == 1)
+    assert(claimedScans(spark.read.parquet(hdfsPath)).size == 1)
+    assert(
+      claimedScans(spark.read.parquet(localPath, hdfsPath)).size == 1,
+      "a scan over file:// and hdfs:// stores must be claimed")
+  }
+
+  test("multiStoreFallbackReason: a store read through an alias, and a bucketed scan") {
+    def reason(
+        bucketed: Boolean,
+        locations: Seq[String],
+        aliases: Set[String] = Set.empty,
+        libhdfs: Set[String] = Set("hdfs")): Option[String] =
+      CometScanUtils.multiStoreFallbackReason(
+        "Native Parquet scan",
+        locations.map(new URI(_)),
+        aliases,
+        libhdfs,
+        bucketed)
+
+    assert(reason(bucketed = true, Nil).isEmpty)
+    // One store, however it is spelled, never falls back.
+    assert(reason(bucketed = true, Seq("s3a://bucket-a/t/p=1", "s3://bucket-a/t/p=2")).isEmpty)
+    assert(reason(bucketed = true, Seq("/tmp/t/p=1", "file:///tmp/t/p=2")).isEmpty)
+    // Several stores: packed per store, unless the scan is bucketed.
+    assert(reason(bucketed = false, Seq("s3a://bucket-a/t", "s3a://bucket-b/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("gs://bucket-a/t", "gs://bucket-b/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("hdfs://nn1/t", "hdfs://nn2/t")).isEmpty)
+    val bucketedS3 = reason(bucketed = true, Seq("s3a://bucket-a/t/p=1", "s3a://bucket-b/t/p=2"))
+    assert(
+      bucketedS3.contains(
+        "Native Parquet scan of a bucketed table reads paths in object stores s3://bucket-a, " +
+          "s3://bucket-b, but reads each table bucket through one store"))
+    val bucketedHdfs = reason(bucketed = true, Seq("hdfs://nn1/t/p=1", "hdfs://nn2/t/p=2"))
+    assert(bucketedHdfs.exists(_.contains("hdfs://nn1 (libhdfs), hdfs://nn2 (libhdfs)")))
+    // Stores of different schemes each get their own scheme's settings.
+    assert(reason(bucketed = false, Seq("s3a://bucket-a/t", "gs://bucket-b/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("s3a://bucket-a/t", "hdfs://nn1/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("file:///tmp/t", "hdfs://nn1/t")).isEmpty)
+    // s3 read through libhdfs and s3a read natively are two stores of one bucket.
+    assert(
+      reason(
+        bucketed = false,
+        Seq("s3://bucket-a/t", "s3a://bucket-a/u"),
+        libhdfs = Set("s3")).isEmpty)
+    // Alias paths in different buckets get each bucket's alias settings.
+    val blob = Set("blob")
+    assert(reason(bucketed = false, Seq("blob://bucket-a/t", "s3a://bucket-b/u"), blob).isEmpty)
+    assert(reason(bucketed = false, Seq("blob://bucket-a/t", "blob://bucket-b/u"), blob).isEmpty)
+    // A store read through an alias and another scheme would get the alias settings for both.
+    def sharedStore(schemes: String): String =
+      s"Native Parquet scan reads the object store s3://bucket-a through schemes $schemes, " +
+        "but forwards one set of settings per store"
+    assert(
+      reason(bucketed = false, Seq("blob://bucket-a/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    // Alias settings are scoped by bucket, so a port does not separate the stores.
+    assert(
+      reason(bucketed = false, Seq("blob://bucket-a:9000/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    assert(
+      reason(bucketed = false, Seq("s3a://bucket-a:9000/u", "blob://bucket-a/t"), blob)
+        .contains(sharedStore("blob, s3a")))
+    assert(
+      reason(bucketed = false, Seq("blob://user@bucket-a/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    assert(
+      reason(bucketed = false, Seq("s3://bucket-a/t", "blob:///bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3")))
+    assert(
+      reason(
+        bucketed = false,
+        Seq("blob://bucket-a/t", "wasabi://bucket-a/u"),
+        Set("blob", "wasabi")).contains(sharedStore("blob, wasabi")))
+    assert(
+      reason(bucketed = true, Seq("blob://bucket-a/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    // An alias path with no bucket gets its alias settings as every bucket's settings.
+    val noBucket =
+      "Native Parquet scan reads an S3-compliant alias path with no bucket next to other S3 " +
+        "paths, but would apply its alias settings to every bucket"
+    assert(reason(bucketed = false, Seq("blob:///"), blob).isEmpty)
+    assert(reason(bucketed = false, Seq("blob:///", "s3a://bucket-b/u"), blob).contains(noBucket))
+    assert(
+      reason(bucketed = false, Seq("blob:///", "blob://bucket-b/u"), blob).contains(noBucket))
+    assert(reason(bucketed = false, Seq("blob:///", "gs://bucket-b/u"), blob).isEmpty)
+    // Two aliases with no bucket share the bucketless store.
+    assert(
+      reason(bucketed = false, Seq("blob:///", "wasabi:///"), Set("blob", "wasabi")).contains(
+        "Native Parquet scan reads the object store s3:// through schemes blob, wasabi, but " +
+          "forwards one set of settings per store"))
+    // s3 read through libhdfs ignores the alias settings of its bucket.
+    assert(
+      reason(
+        bucketed = false,
+        Seq("s3://bucket-a/t", "blob://bucket-a/u"),
+        blob,
+        libhdfs = Set("s3")).isEmpty)
+    // A bucketed scan over stores of different schemes.
+    assert(
+      reason(bucketed = true, Seq("s3a://bucket-a/t", "gs://bucket-b/t")).contains(
+        "Native Parquet scan of a bucketed table reads paths in object stores gs://bucket-b, " +
+          "s3://bucket-a, but reads each table bucket through one store"))
+  }
+
+  test("packFilesPerStore: no partition mixes stores, and one store packs as Spark does") {
+    val maxSplitBytes = 100L
+    val random = new Random(6746)
+    def file(store: String, name: String, length: Long): PartitionedFile =
+      PartitionedFile(
+        InternalRow.empty,
+        SparkPath.fromUrlString(s"s3a://$store/t/$name.parquet"),
+        0,
+        length,
+        Array.empty[String],
+        0,
+        length)
+    def storeOf(file: PartitionedFile): String = file.pathUri.getAuthority
+    def pack(files: Seq[PartitionedFile]): Seq[FilePartition] =
+      FilePartition.getFilePartitions(spark, files, maxSplitBytes)
+    def layout(partitions: Seq[FilePartition]): Seq[(Int, Seq[String])] =
+      partitions.map(p => (p.index, p.files.map(_.filePath.toString).toSeq))
+
+    // A small open cost lets several files share a partition.
+    withSQLConf(SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1") {
+      var sparkMixedRounds = 0
+      (1 to 200).foreach { round =>
+        val numStores = 1 + random.nextInt(3)
+        def randomFile(i: Int): PartitionedFile =
+          file(s"bucket-${random.nextInt(numStores)}", s"f$i", 1L + random.nextInt(150))
+        val files = (0 until random.nextInt(30)).map(randomFile).sortBy(-_.length)
+        if (pack(files).exists(_.files.map(storeOf).distinct.length > 1)) {
+          sparkMixedRounds += 1
+        }
+        val partitions = CometScanUtils.packFilesPerStore(files, storeOf)(pack)
+
+        withClue(s"round $round, layout ${layout(partitions)}: ") {
+          assert(partitions.map(_.index) == partitions.indices)
+          assert(partitions.forall(_.files.map(storeOf).distinct.length == 1))
+          assert(
+            partitions.flatMap(_.files.map(_.filePath.toString)).sorted ==
+              files.map(_.filePath.toString).sorted)
+          if (files.map(storeOf).distinct.size <= 1) {
+            assert(layout(partitions) == layout(pack(files)))
+          }
+          // Each store's files are packed as Spark packs them on their own.
+          files.map(storeOf).distinct.foreach { store =>
+            assert(layout(partitions.filter(p => storeOf(p.files.head) == store)).map(_._2) ==
+              layout(pack(files.filter(f => storeOf(f) == store))).map(_._2))
+          }
+          // Stores come in the order the files first name them.
+          assert(
+            partitions.map(p => storeOf(p.files.head)).distinct == files.map(storeOf).distinct)
+
+          // Splitting Spark's partitions keeps first-seen store order and file order.
+          val sparkPartitions = pack(files)
+          val split = CometScanUtils.splitPartitionsByStore(sparkPartitions, storeOf)
+          val expectedSplit = sparkPartitions.flatMap { partition =>
+            val inPartition = partition.files.toSeq
+            inPartition.map(storeOf).distinct.map { store =>
+              inPartition.filter(f => storeOf(f) == store).map(_.filePath.toString)
+            }
+          }
+          assert(split.map(_.index) == split.indices)
+          assert(split.map(_.files.map(_.filePath.toString).toSeq) == expectedSplit)
+        }
+      }
+      assert(sparkMixedRounds > 0, "Spark's packing never mixed stores, so nothing was tested")
+    }
+  }
+
+  test("packFilesPerStore and splitPartitionsByStore compare each file's store once") {
+    // Comparing every file with every store is slow for a scan over many stores.
+    val numFiles = 2000
+    val numStores = 200
+    val equalsCalls = new AtomicLong()
+    val files = (0 until numFiles).map { i =>
+      PartitionedFile(
+        InternalRow.empty,
+        SparkPath.fromUrlString(s"s3a://bucket-${i % numStores}/f$i.parquet"),
+        0,
+        1,
+        Array.empty[String],
+        0,
+        1)
+    }
+    def storeOf(file: PartitionedFile): CountingKey =
+      new CountingKey(file.pathUri.getAuthority.stripPrefix("bucket-").toInt, equalsCalls)
+    val maxEqualsCalls = 8L * numFiles
+
+    val packed = CometScanUtils.packFilesPerStore(files, storeOf) { files =>
+      Seq(FilePartition(0, files.toArray))
+    }
+    assert(packed.size == numStores)
+    assert(equalsCalls.get <= maxEqualsCalls, s"packing made ${equalsCalls.get} comparisons")
+
+    equalsCalls.set(0)
+    val split =
+      CometScanUtils.splitPartitionsByStore(Seq(FilePartition(0, files.toArray)), storeOf)
+    assert(split.size == numStores)
+    assert(equalsCalls.get <= maxEqualsCalls, s"splitting made ${equalsCalls.get} comparisons")
+  }
+
+  test("libhdfs s3 and native s3a files of one bucket land in separate partitions") {
+    def file(path: String): PartitionedFile =
+      PartitionedFile(
+        InternalRow.empty,
+        SparkPath.fromUrlString(path),
+        0,
+        1,
+        Array.empty[String],
+        0,
+        1)
+    def storeOf(file: PartitionedFile): NativeConfig.ObjectStoreKey =
+      NativeConfig.objectStoreKey(file.pathUri, Set.empty, Set("s3"))
+    val files = Seq(file("s3://bucket/1.parquet"), file("s3a://bucket/2.parquet"))
+    def paths(partitions: Seq[FilePartition]): Seq[Seq[String]] =
+      partitions.map(_.files.map(_.filePath.toString).toSeq)
+
+    withSQLConf(SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1") {
+      val packed = CometScanUtils.packFilesPerStore(files, storeOf) { files =>
+        FilePartition.getFilePartitions(spark, files, 100L)
+      }
+      assert(paths(packed) == Seq(Seq("s3://bucket/1.parquet"), Seq("s3a://bucket/2.parquet")))
+    }
+    val split =
+      CometScanUtils.splitPartitionsByStore(Seq(FilePartition(0, files.toArray)), storeOf)
+    assert(paths(split) == Seq(Seq("s3://bucket/1.parquet"), Seq("s3a://bucket/2.parquet")))
+  }
+
+  test("splitPartitionsByStore: each partition is split per store, keeping file order") {
+    // The partition value is the number in the file name.
+    def file(path: String): PartitionedFile =
+      PartitionedFile(
+        InternalRow(path.split('/').last.takeWhile(_.isDigit).toInt),
+        SparkPath.fromUrlString(path),
+        0,
+        1,
+        Array.empty[String],
+        0,
+        1)
+    def storeOf(file: PartitionedFile): String = file.pathUri.getAuthority
+    def layout(partitions: Seq[FilePartition]): Seq[(Int, Seq[String])] =
+      partitions.map(p => (p.index, p.files.map(_.filePath.toString).toSeq))
+
+    val single = Seq(
+      FilePartition(0, Array(file("s3a://a/1.csv"), file("s3a://a/2.csv"))),
+      FilePartition(1, Array(file("s3a://b/3.csv"))))
+    assert(CometScanUtils.splitPartitionsByStore(single, storeOf) == single)
+
+    val mixed = Seq(
+      FilePartition(
+        0,
+        Array(file("s3a://a/1.csv"), file("s3a://b/2.csv"), file("s3a://a/3.csv"))),
+      FilePartition(1, Array(file("s3a://b/4.csv"))))
+    val split = CometScanUtils.splitPartitionsByStore(mixed, storeOf)
+    assert(
+      layout(split) == Seq(
+        0 -> Seq("s3a://a/1.csv", "s3a://a/3.csv"),
+        1 -> Seq("s3a://b/2.csv"),
+        2 -> Seq("s3a://b/4.csv")))
+    assert(split.flatMap(_.files.map(_.partitionValues.getInt(0))) == Seq(1, 3, 2, 4))
+  }
+
+  // --- Iceberg scans over HDFS data files ---------------------------------------------------
+  //
+  // Planner-level: a real CometScanRule over a real Iceberg table whose data files are registered
+  // in the manifests with the `hdfs://` paths the test names. Planning reads manifests, never the
+  // data files, so nothing here needs a NameNode and nothing is executed.
+
+  /**
+   * Plans `SELECT id` over an Iceberg table whose data files sit at `dataFiles`, applies
+   * `CometScanRule` with native Iceberg scans enabled and `hadoopConf` set on the session, and
+   * returns the scans the rule claimed plus the fallback reasons it left on the ones it declined.
+   * `catalogProps` are set on the catalog before its first use, so its FileIO is built with them.
+   * The warehouse, and so the table metadata, sits on the fake `hdfs://` filesystem
+   * (`metadataPrefix`): the native reader opens every file through one storage chosen from the
+   * metadata location, so `hdfs://` data files are claimed only under `hdfs://` metadata. An
+   * empty prefix leaves the metadata on the local filesystem.
+   */
+  private def planIcebergScanOverHdfs(
+      dataFiles: Seq[String],
+      hadoopConf: Seq[(String, String)] = Seq.empty,
+      catalogProps: Seq[(String, String)] = Seq.empty,
+      metadataPrefix: String = FakeHdfsSchemeFileSystem.PREFIX,
+      sparkConf: Seq[(String, String)] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
+    // A catalog of its own, so no test reads another's cached catalog or warehouse.
+    val catalog = s"hdfs_gate_${UUID.randomUUID().toString.take(8)}"
+    var claimed = Seq.empty[CometBatchScanExec]
+    var reasons = Set.empty[String]
+    val catalogConfs = catalogProps.map { case (k, v) => s"spark.sql.catalog.$catalog.$k" -> v }
+    withTempIcebergDir { dir =>
+      val confs = Seq(
+        s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$catalog.type" -> "hadoop",
+        s"spark.sql.catalog.$catalog.warehouse" ->
+          s"$metadataPrefix${dir.getAbsolutePath}/warehouse",
+        // Iceberg fetches block locations of `hdfs://` data files when the table is on HDFS;
+        // the files here exist only in the manifests.
+        "spark.sql.iceberg.locality.enabled" -> "false") ++ catalogConfs
+      withSQLConf(confs: _*) {
+        spark.sql(s"CREATE TABLE $catalog.db.t (id INT) USING iceberg")
+        val table = loadIcebergTable(spark, catalog, "db", "t").asInstanceOf[Table]
+        val append = table.newAppend()
+        dataFiles.foreach { path =>
+          append.appendFile(
+            DataFiles
+              .builder(table.spec())
+              .withPath(path)
+              .withFormat(FileFormat.PARQUET)
+              .withFileSizeInBytes(1024)
+              .withRecordCount(1)
+              .build())
+        }
+        append.commit()
+
+        // The Spark plan first, with Comet off, then the rule alone: no execution.
+        var sparkPlan: SparkPlan = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkPlan = spark.sql(s"SELECT id FROM $catalog.db.t").queryExecution.executedPlan
+        }
+        val confs = Seq(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") ++ hadoopConf
+        withSQLConf(confs: _*) {
+          val transformed = withLiveSparkConf(sparkConf) {
+            CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+          }
+          claimed = transformed.collect { case s: CometBatchScanExec => s }
+          reasons = transformed
+            .collect { case s: BatchScanExec =>
+              s.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+            }
+            .flatten
+            .toSet
+        }
+      }
+    }
+    (claimed, reasons)
+  }
+
+  /**
+   * Sets `entries` on the live SparkConf for `f`: the configuration the SparkContext launched its
+   * executors with, which `CometScanRule` reads for `spark.executorEnv.*`, as opposed to the
+   * session's SQLConf that `withSQLConf` sets.
+   */
+  private def withLiveSparkConf[T](entries: Seq[(String, String)])(f: => T): T = {
+    val conf = SparkEnv.get.conf
+    val previous = entries.map { case (key, _) => key -> conf.getOption(key) }
+    entries.foreach { case (key, value) =>
+      conf.set(key, value)
+      assert(spark.sparkContext.getConf.get(key) == value, s"$key did not reach the context")
+    }
+    try f
+    finally
+      previous.foreach {
+        case (key, Some(value)) => conf.set(key, value)
+        case (key, None) => conf.remove(key)
+      }
+  }
+
+  private def nameNodeProperties(scan: CometBatchScanExec): Map[String, String] =
+    scan.nativeIcebergScanMetadata.get.catalogProperties.filter { case (k, _) =>
+      k.startsWith("hdfs.name-node")
+    }
+
+  private val declaredNs1 = Seq(
+    "dfs.nameservices" -> "ns1",
+    "dfs.ha.namenodes.ns1" -> "nn1,nn2",
+    "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.example.com:9000",
+    "dfs.namenode.rpc-address.ns1.nn2" -> "nn2.example.com:8020")
+
+  private val undeclaredReason = "which has no port and which the Hadoop configuration does not"
+
+  private val mixedStorageReason = "through one storage backend"
+
+  test("iceberg scan: an HDFS nameservice the Hadoop configuration declares is claimed") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("hdfs://ns1/warehouse/db/t/a.parquet"), declaredNs1)
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    // The fixture must really put the metadata on hdfs://, or these tests would exercise the
+    // mixed-storage gate instead of the nameservice declaration.
+    assert(
+      claimed.head.nativeIcebergScanMetadata.get.metadataLocation
+        .startsWith(FakeHdfsSchemeFileSystem.PREFIX),
+      s"metadata location: ${claimed.head.nativeIcebergScanMetadata.get.metadataLocation}")
+    // The per-nameservice key, with the NameNodes in `dfs.ha.namenodes` order; iceberg-rust
+    // reads the global `hdfs.name-node` only for authority-less paths.
+    assert(
+      nameNodeProperties(claimed.head) ==
+        Map("hdfs.name-node.ns1" -> "nn1.example.com:9000,nn2.example.com:8020"),
+      s"unexpected properties: ${claimed.head.nativeIcebergScanMetadata.get.catalogProperties}")
+  }
+
+  test("iceberg scan: a nameservice with a NameNode missing its rpc-address is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // nn2 has no rpc-address, so the declaration is all-or-nothing empty and the executor would
+    // be left to resolve `ns1` as if it were a host.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      declaredNs1.filterNot(_._1 == "dfs.namenode.rpc-address.ns1.nn2"))
+    assert(claimed.isEmpty, "an undeclared nameservice must not be claimed natively")
+    assert(
+      reasons.exists(r => r.contains("HDFS authority 'ns1'") && r.contains(undeclaredReason)),
+      s"expected the nameservice fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a nameservice listed only in dfs.nameservices is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      Seq("dfs.nameservices" -> "ns1,ns2"))
+    assert(claimed.isEmpty, "a nameservice without NameNodes must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("HDFS authority 'ns1'") && r.contains(undeclaredReason)),
+      s"expected the nameservice fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a portless plain HDFS host is claimed on Hadoop's default port") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // iceberg-rust has no default NameNode port, so `hdfs://nn.example.com/...` would be a
+    // nameservice name to it; Comet declares it on 8020, as the JVM client dials it.
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("hdfs://nn.example.com/warehouse/db/t/a.parquet"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(
+      nameNodeProperties(claimed.head) ==
+        Map("hdfs.name-node.nn.example.com" -> "nn.example.com:8020"))
+  }
+
+  test(
+    "iceberg scan: HDFS client settings of the session reach the FileIO, behind the catalog's") {
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/t/data/f.parquet"),
+      hadoopConf =
+        Seq("dfs.client.use.datanode.hostname" -> "true", "dfs.client.socket-timeout" -> "30000"),
+      catalogProps = Seq("hadoop.dfs.client.socket-timeout" -> "5000"))
+    assert(reasons.isEmpty, reasons)
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    assert(properties.get("hadoop.dfs.client.use.datanode.hostname").contains("true"), properties)
+    assert(properties.get("hadoop.dfs.client.socket-timeout").contains("5000"), properties)
+  }
+
+  test("iceberg scan: HDFS files are declined when executors would read as another user") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The native client connects as HADOOP_USER_NAME or the executor's OS user, never as the
+    // Spark user the JVM reader uses; the scan is claimed only when those are known to agree.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      sparkConf = Seq("spark.executorEnv.HADOOP_USER_NAME" -> "someone-else"))
+    assert(claimed.isEmpty, "a scan read as another user must not be claimed")
+    assert(
+      reasons.exists(r =>
+        r.contains("'someone-else'") && r.contains("spark.executorEnv.HADOOP_USER_NAME")),
+      s"expected the identity fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: HDFS files are claimed when HADOOP_USER_NAME is the Spark user") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      sparkConf = Seq("spark.executorEnv.HADOOP_USER_NAME" -> spark.sparkContext.sparkUser))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+  }
+
+  test("iceberg scan: HDFS files are declined when icebergNative.hdfs.enabled is false") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val key = CometConf.COMET_ICEBERG_NATIVE_HDFS_ENABLED.key
+    val (declined, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      hadoopConf = Seq(key -> "false"))
+    assert(declined.isEmpty, "the switch must decline the scan")
+    assert(reasons.exists(_.contains(s"$key is false")), reasons)
+    // The switch is the one HDFS reason given: the other HDFS checks are not run.
+    assert(!reasons.exists(_.contains("HADOOP_USER_NAME")), reasons)
+  }
+
+  test(
+    "iceberg scan: HADOOP_USER_NAME in the session's SQLConf does not stand for the executors'") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val key = "spark.executorEnv.HADOOP_USER_NAME"
+    val dataFile = "hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"
+    // A session can hold the key without the executors having seen it, so the SQLConf value
+    // must not stand in for the context's: the Spark user there and another user on the
+    // context is declined.
+    val (declined, reasons) = planIcebergScanOverHdfs(
+      Seq(dataFile),
+      hadoopConf = Seq(key -> spark.sparkContext.sparkUser),
+      sparkConf = Seq(key -> "someone-else"))
+    assert(declined.isEmpty, "the SQLConf value must not be read")
+    assert(reasons.exists(_.contains("'someone-else'")), reasons)
+    // The other way round the SQLConf is ignored too; in local mode the JVM's user then counts.
+    val (claimed, _) =
+      planIcebergScanOverHdfs(Seq(dataFile), hadoopConf = Seq(key -> "someone-else"))
+    assert(claimed.size == 1, "the SQLConf value must not be read")
+  }
+
+  test("iceberg scan: a host:port HDFS location is claimed with no NameNode declaration") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(nameNodeProperties(claimed.head).isEmpty)
+  }
+
+  test("iceberg scan: data files on two declared nameservices are claimed, each declared") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // iceberg-rust resolves each path's authority on its own and keeps one client per NameNode,
+    // so a scan may span clusters as long as every nameservice is declared.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet", "hdfs://ns2/warehouse/db/t/b.parquet"),
+      declaredNs1 ++ Seq(
+        "dfs.ha.namenodes.ns2" -> "nn1",
+        "dfs.namenode.rpc-address.ns2.nn1" -> "nn3.example.com:8020"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(
+      nameNodeProperties(claimed.head) == Map(
+        "hdfs.name-node.ns1" -> "nn1.example.com:9000,nn2.example.com:8020",
+        "hdfs.name-node.ns2" -> "nn3.example.com:8020"))
+  }
+
+  test("iceberg scan: a catalog hdfs.name-node.<ns> wins over the Hadoop-derived declaration") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://ns1/warehouse/db/t/a.parquet"),
+      declaredNs1,
+      Seq("hdfs.name-node.ns1" -> "nn9.example.com:8020"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(
+      nameNodeProperties(claimed.head) == Map("hdfs.name-node.ns1" -> "nn9.example.com:8020"),
+      "the catalog value must reach native")
+  }
+
+  test("iceberg scan: a nameservice declared only by the catalog's hadoop.* keys is claimed") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Comet derives declarations from the session configuration alone, but iceberg-rust reads
+    // Hadoop's own keys from the properties too, which a catalog forwards as `hadoop.*`.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nsb/warehouse/db/t/a.parquet"),
+      catalogProps = Seq(
+        "hadoop.dfs.nameservices" -> "nsb",
+        "hadoop.dfs.ha.namenodes.nsb" -> "nn1,nn2",
+        "hadoop.dfs.namenode.rpc-address.nsb.nn1" -> "a.example.com:8020",
+        "hadoop.dfs.namenode.rpc-address.nsb.nn2" -> "b.example.com:8020"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    assert(properties.get("hadoop.dfs.ha.namenodes.nsb") == Some("nn1,nn2"), s"$properties")
+    assert(!properties.contains("hdfs.name-node.nsb"), s"$properties")
+  }
+
+  test("iceberg scan: HDFS data files of a table whose metadata is local are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The native scan builds its one storage from the metadata location, a local path here, and
+    // would open the `hdfs://` file through it; declined at planning rather than failing at open.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      metadataPrefix = "")
+    assert(claimed.isEmpty, "a local-metadata table with HDFS data files must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("'hdfs'") && r.contains(mixedStorageReason)),
+      s"expected the mixed-storage fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a local data file of a table whose metadata is on HDFS is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq(s"file://${fakeRootDir.getAbsolutePath}/t/a.parquet"))
+    assert(claimed.isEmpty, "an HDFS-metadata table with a local data file must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("'file'") && r.contains(mixedStorageReason)),
+      s"expected the mixed-storage fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: S3 data files of a table whose metadata is local are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Not an HDFS matter: the single storage fails the same way for an object store.
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("s3://bucket/warehouse/db/t/a.parquet"), metadataPrefix = "")
+    assert(claimed.isEmpty, "a local-metadata table with S3 data files must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("'s3'") && r.contains(mixedStorageReason)),
+      s"expected the mixed-storage fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: HDFS data files on a Kerberos cluster are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The native client cannot use an executor's delegation tokens, so any HDFS location falls
+    // back once the cluster is secured, declared nameservice or not.
+    for (location <- Seq(
+        "hdfs://ns1/warehouse/db/t/a.parquet",
+        "hdfs://nn.example.com:8020/warehouse/db/t/a.parquet")) {
+      val (claimed, reasons) = planIcebergScanOverHdfs(
+        Seq(location),
+        declaredNs1 :+ ("hadoop.security.authentication" -> "kerberos"))
+      assert(claimed.isEmpty, s"$location must not be claimed on a Kerberos cluster")
       assert(
-        cometScans.size == 1,
-        "`hdfs://` is natively readable by default; Comet must claim the scan, " +
-          s"but it fell back to Spark:\n$transformed")
-      assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
+        reasons.exists(_.contains("cannot authenticate to HDFS with delegation tokens")),
+        s"expected the Kerberos fall-back reason for $location, got: $reasons")
+    }
+  }
+}
+
+/** A store key that counts the calls to its `equals`. */
+private class CountingKey(val id: Int, equalsCalls: AtomicLong) {
+  override def hashCode(): Int = id
+
+  override def equals(other: Any): Boolean = {
+    equalsCalls.incrementAndGet()
+    other match {
+      case key: CountingKey => key.id == id
+      case _ => false
     }
   }
 }

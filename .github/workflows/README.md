@@ -12,52 +12,76 @@ then fans out to the long-running test/build workflows. Each long workflow
 is a `workflow_call` reusable invoked from the umbrella.
 
 Merging goes through GitHub's merge queue, configured by the `Merge Queue`
-ruleset in `.asf.yaml`. That splits CI into two tiers:
+ruleset in `.asf.yaml`. That splits CI into three tiers:
 
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
-  The Linux build, Spark 4.1 (catalyst and `sql_core` only) and Iceberg 1.11.
-- **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
-  runs, plus the macOS build, the benchmark compile check, the Spark 4.1
-  `sql_hive` shards, Spark 3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
-  against the merge result rather than against the PR head.
+  The Linux build, with the Comet test suites run against the default Spark
+  profile (4.1) only, plus one Spark version and one Iceberg version: Spark
+  SQL on Spark 4.1 (catalyst and sql_core) and Iceberg 1.11, the default
+  profile's. For a pull request from a fork this
+  tier runs on the contributor's fork instead of here; see
+  [Fork runs](#fork-runs).
+- **Queue tier** (`queue`): the authoritative gate. The PR tier plus the
+  macOS build, the benchmark compile check, the Delta contrib build gate, the
+  PyArrow UDF suite and the Spark 4.1 `sql_hive` shards, evaluated against
+  the merge result rather than against the PR head. It runs the same Spark and
+  Iceberg versions as the PR tier and no others.
+- **Nightly tier** (`nightly`): the regression sweep of everything else, once
+  a day against `main` as it stands. The Comet test suites against the other
+  three Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, Iceberg
+  1.9/1.10, and the Delta contrib suites on Spark 3.5, 4.0 and 4.1. See
+  [Nightly tier](#nightly-tier) below for how a failure surfaces.
 
-Every queue-only job has a `run-*` label that opts a pull request into it
-early, listed in the diagram below.
-
-`spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
-suite no longer gates a merge; it runs only when a pull request carries
-`run-spark-3.4-tests`, or from a `workflow_dispatch`. Anyone who wants to
-check a change against 3.4 can still do so, but note when that result starts
-to block a merge. Adding the label fires a `labeled` event, and those runs
-publish the advisory `Required Checks (label run)` name rather than the
-required one, so a red 3.4 there changes nothing. It is the next push with
-the label still applied that runs 3.4 under `Required Checks`, and with the
-queue run gone that push is the only thing that makes a 3.4 failure blocking.
+Every queue-only and nightly job has a `run-*` label that opts a pull request
+into it early, listed in the diagram below. The Lint Java matrix compiles
+every Spark profile on every pull request, so a shim that fails to build is
+caught there; only the runtime suites wait for the queue or the nightly.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
-and has to run after the commit is on main, and `pr_build_linux`, because of
-`actions/cache` scoping. A pull request can only restore caches saved on its
+merge. Three jobs are still on `push`: `docs`, because it deploys to
+`asf-site` and has to run after the commit is on main, and `pr_build_linux` and
+`pr_build_macos`, because of `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
-run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, cargo-debug,
-Maven and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, Maven and
+TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
 Warming those caches is the only thing the push run is for, so on `push` the
-Linux build runs in **cache-refresh-only** mode: `build-native`,
-`linux-test-rust` and the two TPC-H/TPC-DS jobs, each stopping once its cache
-entry is written, and nothing else. The lints, the 5x4 `linux-test` matrix and
-the TPC query runs are skipped, which takes the push tier from 587
-runner-minutes to about 73. Two POLICY outputs express this: `build_linux`
+Linux build runs in **cache-refresh-only** mode: `build-native` and the two
+TPC-H/TPC-DS jobs, each stopping once its cache entry is written, and nothing
+else. The lints, the Rust tests, the `linux-test` matrix and the TPC query runs
+are skipped, which takes the push tier from 587 runner-minutes to about 40.
+`linux-test-rust` writes no cache: a debug `native/target` is 4-5 GB, more than
+the rest of main's entries could leave room for (issue #6387). Three POLICY outputs express this: `build_linux`
 says whether the workflow runs at all, `build_linux_full` whether it runs the
-lints and tests too, and `ci.yml` folds the second into the workflow's
-`cache-refresh-only` input. `dev/ci/check-ci-config.py` fails if a job is added
-to `pr_build_linux.yml` without either the guard or an entry in
+lints and tests too, and `build_linux_all_profiles` whether the `linux-test`
+matrix covers every Spark profile or only the default one. `ci.yml` folds the
+second into the workflow's `cache-refresh-only` input and the third into its
+`profiles` input. `dev/ci/check-ci-config.py` fails if a job is added to
+`pr_build_linux.yml` without either the guard or an entry in
 `CACHE_REFRESH_JOBS` naming the cache it writes. See issue #5929.
 
+`pr_build_macos` has the same split, through `build_macos` and
+`build_macos_full`, for the one entry it owns: main's macOS cargo cache. On
+push only its `build-native` job runs, and it looks the entry up first and
+stops there when the dependency set already has one, so most pushes cost it
+about a minute of a macOS runner. Before that push run existed nothing ever
+wrote the entry, since the macOS build ran only in the queue and on labelled
+pull requests, and every queue run compiled the macOS native library from
+scratch (issue #6390). `check-ci-config.py` holds `pr_build_macos.yml` to the
+same guard rule as `pr_build_linux.yml`.
+
+The profile rows of the `linux-test` matrix live in
+`dev/ci/linux-test-profiles.py` rather than in the workflow, because a
+job-level `if:` cannot see `matrix`: the `lint` job runs the script with the
+`profiles` input and publishes the rows as a job output that the matrix reads
+with `fromJSON`. Each row carries a tier, `pr` for the default build profile
+and `nightly` for the other four, and `check-ci-config.py` asserts that the two
+tiers partition the list and that the `pr` tier is exactly the default profile.
+
 ```
-                pull_request | merge_group | push to main | workflow_dispatch
+          pull_request | merge_group | push to main | schedule | workflow_dispatch
                                             |
                                             v
                                 +-----------------------+
@@ -81,13 +105,23 @@ to `pr_build_linux.yml` without either the guard or an entry in
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
-  spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
-  iceberg_1_11                                                  spark_4_1 sql_hive  run-spark-4.1-hive-tests
-                                                                spark_3_5           run-spark-3.5-tests
-                                                                spark_4_0           run-spark-4.0-tests
-  label or dispatch only                                        iceberg_1_8         run-iceberg-tests
-  ----------------------                                        iceberg_1_9         run-iceberg-tests
-  spark_3_4  run-spark-3.4-tests                                iceberg_1_10        run-iceberg-tests
+    (Spark 4.1 profile only)                                      (+ push, cache only)
+  spark_4_1 (catalyst, sql_core)                                pr_benchmark_check  run-benchmark-check
+  iceberg_1_11                                                  delta_build_gate    run-delta-build-gate
+                                                                pyarrow_udf_test    run-pyarrow-udf-tests
+                                                                spark_4_1 sql_hive  run-spark-4.1-hive-tests
+                                      nightly tier, or PR with label
+                                      ------------------------------
+                                      pr_build_linux      run-all-spark-profiles
+                                        (other profiles)
+                                      spark_3_5           run-spark-3.5-tests
+                                      spark_4_0           run-spark-4.0-tests
+                                      spark_4_2           run-spark-4.2-tests
+                                      iceberg_1_9         run-iceberg-tests
+                                      iceberg_1_10        run-iceberg-tests
+                                      delta_3_5           run-delta-tests
+                                      delta_4_0           run-delta-tests
+                                      delta_4_1           run-delta-tests
 
         |                                   |                                   |
         +-----------------------------------+-----------------------------------+
@@ -96,49 +130,170 @@ to `pr_build_linux.yml` without either the guard or an entry in
                                 |    required_checks    |  ubuntu-slim
                                 |  one flat name that   |
                                 |  is safe to require   |
+                                +-----------+-----------+
+                                            |  schedule only, when red
+                                            v
+                                +-----------------------+
+                                |    nightly_report     |  ubuntu-slim
+                                |  opens or comments on |
+                                |  a ci-nightly-failure |
+                                |  issue                |
                                 +-----------------------+
 
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
     pr_build_macos.yml         iceberg_spark_test_reusable.yml
-    pr_benchmark_check.yml
-    docs.yaml
+    pr_benchmark_check.yml     delta_build_gate.yml
+    docs.yaml                  pyarrow_udf_test.yml
 ```
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                                                                                           | Routing rule                        |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
-| `changes`            | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`            | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
-| `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
-| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
-| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
-| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`                                                                            | none (always runs)                  |
+| Job in `ci.yml`      | Triggered by                                                                                                                                                                                                                                           | Routing rule                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `preflight`          | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | none (always runs)                  |
+| `changes`            | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`; the test matrix's non-default Spark profiles only in the nightly run **or** with `run-all-spark-profiles`, via `build_linux_all_profiles` | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`; on push to main only `build-native`, to keep main's macOS cargo cache warm, via `build_macos_full`                                                                                                      | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
+| `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
+| `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
+| `delta_3_5`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
+| `delta_4_0`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
+| `delta_4_1`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
+| `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
+| `spark_4_1`          | PR or merge group for catalyst and `sql_core`; the `sql_hive` shards in the merge group, **or** PR with `run-spark-4.1-hive-tests`                                                                                                                     | Spark 4.1 sources                   |
+| `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
+| `spark_4_2`          | nightly, **or** PR with `run-spark-4.2-tests`                                                                                                                                                                                                          | Spark 4.2 sources                   |
+| `iceberg_1_11`       | PR or merge group, paths matched                                                                                                                                                                                                                       | Iceberg sources                     |
+| `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
+| `iceberg_1_10`       | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`                                                                                                                                                                                                            | none (always runs)                  |
+| `nightly_report`     | schedule only, after `required_checks`, when it is not green                                                                                                                                                                                           | none                                |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
 passing for branch protection, so a name that can report `skipped` is not
 safe to make a required check.
 
+A pull request whose base is a release branch (`branch-N.M`) is the one
+exception to the table: it runs every job the table puts in the PR, merge
+group or nightly tier, because a release branch has no merge queue and no
+nightly to run the last two later. `docs` stays push-only, and a `labeled`
+run there adds nothing.
+`changes` hands the base branch to `compute-changes.py` as `PR_BASE_REF`.
+`check-ci-config.py` pins that wiring, because a dropped variable reads as an
+empty string and would route the pull request as if it targeted `main`.
+
+## Fork runs
+
+Nearly every pull request comes from a fork, and the PR tier is the
+largest share of the runner-hours CI spends (about 60% in the week to
+2026-10-28, label runs included). A fork pull request therefore does not run
+the PR tier on ASF's runners. The contributor's fork runs it, and the merge
+queue, which stays on ASF, runs the queue tier on the merge result before
+anything lands. That is the PR tier plus the Spark 4.1 `sql_hive` shards, macOS and
+the other queue-tier jobs, with path filters still applied; the nightly-only and
+label-only suites are not part of it. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
+(#11788). Three files carry it:
+
+| File                 | Role                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci_fork.yml`        | Fires on a push to any branch of a fork except `asf-site` and calls `ci.yml`, after cancelling the branch's older runs. Its jobs are skipped upstream.     |
+| `compute-changes.py` | `is_fork_push` gives a fork the `pr` tier. `is_fork_pull_request` takes the `pr` tier away upstream, and leaves every `run-*` label and the `labeled` run. |
+| `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run` and every 15 minutes.                                             |
+
+Things that follow from that, and are easy to break:
+
+- **The fork result is advisory.** `Required Checks` does not depend on
+  `CI (fork)`, because a contributor controls the workflow that produced it. A
+  green fork run that never ran the tests costs one queue slot, not a bad merge.
+- **Every branch of a fork runs through `ci_fork.yml`, `main` included.**
+  `ci.yml` also triggers on push to `main`, in a fork as upstream, so its
+  `Preflight` skips any fork push that did not come through `ci_fork.yml`, which
+  it tells apart by the caller's `github.workflow`, and `required_checks` skips
+  itself when `Preflight` does. That starts no runner for a fork's schedule or
+  for a second copy of a push, and leaves the bridge one workflow to look up. A
+  push that adds nothing to upstream `main`, such as a sync of the fork, selects
+  no build or test suite and writes to no build cache. A fork's caches are therefore cold unless a run on its `main` builds,
+  and each branch run rebuilds the native library: 59 minutes of wall time and
+  240 runner-minutes cold against 50 and 213 warm, measured 2026-10-28 on one
+  fork.
+- **Branch names compare without regard to case in Actions,** in `==`, `!=` and
+  concurrency group names alike, and a fork can hold both `feature` and
+  `Feature`. So a fork push has no concurrency group shared with another push: it
+  is keyed on its run, which also stops a backup branch created at the commit a
+  pull request is building from cancelling that build. `ci_fork.yml`'s `supersede`
+  job cancels the older runs of exactly the same branch instead, which it can
+  compare with case. `check-ci-config.py` evaluates
+  conditions with the same case-insensitive comparison, and checks that the push
+  trigger admits `main`.
+- **A pull request opened inside a fork skips the PR tier,** because the branch
+  push already ran it, and `is_fork_pull_request` covers both that and a fork
+  pull request into `main` here. A `run-*` label still runs its suite.
+- **A fork push is diffed against upstream main, as its pull request will be.**
+  There is no pull request to diff against on a push, and the fork's own default
+  branch is the wrong base: a fork that has not synced is behind upstream, so a
+  branch cut from newer upstream code that reverts one of its files matches the
+  fork's old copy and a diff against it omits the file.
+  `dev/ci/fork-push-changed-files.sh` fetches upstream `main` and diffs against
+  that. It lists every file when it has nothing to go on (the fetch fails or
+  there is no merge base), because selecting no suites then would report a green
+  run for a change nobody could see. An empty diff with a merge base is a branch
+  that adds nothing to upstream, which selects nothing.
+  `dev/ci/test-fork-push-changed-files.py` runs it against real repositories,
+  including the stale-baseline revert and a branch whose commits only the fork's
+  `main` has.
+- **Scheduled workflows stay upstream.** A fork that enables scheduled
+  workflows would run them on its owner's minutes, and with no earlier scheduled
+  run to diff against, a fork's nightly runs the whole nightly tier. `ci.yml`'s
+  `Preflight`, `miri.yml`, `stale.yml`, `codeql.yml` and the bridge skip a
+  scheduled run outside this repository. Skipping `Preflight` skips the whole
+  nightly, since every other job needs `changes`, which needs it, and
+  `nightly_report` treats a skipped aggregator as nothing to report.
+  `check-ci-config.py` does not match text for this. It evaluates each root job's
+  `if:` for a scheduled run in a fork, and for the pushes and events above, and
+  fails when a job would run that should not or the other way round.
+- **`ci.yml` must not trigger on every push.** A skipped job still publishes a
+  check run under its own name, so a push to a branch of this repository that
+  lands on a pull request's commit would put a skipped `Required Checks` next to
+  the real one. `ci_fork.yml` is a separate workflow so the only name that can
+  be skipped is its own, and `check-ci-config.py` pins its trigger and the
+  `github.repository != 'apache/datafusion-comet'` guard.
+- **Exceptions stay upstream:** a pull request from a branch of this
+  repository (a committer's, dependabot's), one that targets a release branch,
+  and the opt-in `run-*` suites. A fork cannot see the labels on its pull
+  request, and a release branch has no queue to catch what a fork run misses.
+- **The bridge never checks out or runs anything from the pull request.** It
+  runs with `checks: write` from the default branch and reads the fork's public
+  run list. Its logic is tested by `dev/ci/test-fork-ci-status.cjs`, which
+  Preflight runs, against mocked GitHub APIs. `workflow_run` and `schedule`
+  events use the copy on the default branch, so a change to the bridge cannot be
+  exercised by the pull request that makes it.
+
 ### Label events
 
-`ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
-`pull_request` trigger by label name, so **every** label added to a PR starts a
-run, including labels that gate nothing.
+`ci_label.yml` fires on `pull_request.types: [labeled]` and calls `ci.yml`
+through `workflow_call`, so applying `run-spark-3.5-tests`,
+`run-spark-4.0-tests` or `run-iceberg-tests` starts the job that label gates
+without needing a new push. GitHub cannot filter a `pull_request` trigger by
+label name, so **every** label added to a PR starts a run, including labels
+that gate nothing. A called workflow sees its caller's event context, so
+`POLICY` still reads the `labeled` action and the label name.
 
-Two rules keep those runs from corrupting the PR's status:
+These rules keep those runs from corrupting the PR's status:
+
+- Label runs come from their own workflow, not from a `labeled` type on
+  `ci.yml`'s trigger. When one workflow runs twice at the same commit, GitHub
+  evaluates the PR's required checks against only one of the two runs. A PR
+  opened with a label already applied fires `opened` and `labeled` together,
+  and when GitHub picked the label run, `Required Checks` showed as "Expected"
+  forever and the merge queue never accepted the PR, see
+  [#6159](https://github.com/apache/datafusion-comet/issues/6159). A run of
+  `ci_label.yml` has its own check suite, and every check it publishes is
+  nested under its `Label run` job, so it cannot hide or replace a commit
+  run's check.
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion
@@ -159,37 +314,81 @@ Two rules keep those runs from corrupting the PR's status:
   still going. Skipping the job would not help either, since a skipped check
   run still carries the name and still counts as passing.
 
-`run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
+Two POLICY outputs feed the single `spark_4_1` call. `spark_4_1` is in the PR
+tier and covers catalyst and the `sql_core` shards; `spark_4_1_hive` is in the
+queue tier and covers the `sql_hive` shards. `run-spark-4.1-hive-tests` sets
+the second on a pull request; on a `labeled` run that is the only output set,
+so the call runs only the hive rows.
 
 The opt-in labels have to exist in repository settings before they can be
 applied; `contains()` on a label nobody can add is simply always false, which
 makes the escape hatch look like it silently does nothing.
+
+### Nightly tier
+
+`ci.yml` also fires on a `schedule` (06:00 UTC daily). On that event `changes`
+diffs `main` against the commit the last successful scheduled run tested
+(`dev/ci/nightly-base.py` looks it up through the Actions API), so the nightly
+is routed by the same `FILTERS` as every other event and `POLICY` selects the
+`nightly` tier alone: the queue already ran every `queue` job against the tree
+that is now `main`. Every commit is covered exactly once, and a red nightly
+keeps its commits in scope until a green one supersedes it. A quiet day diffs
+to nothing and runs nothing; a docs-only day runs nothing either.
+
+When there is no such run, the API is unreachable, or the base is no longer on
+`main`, there is no base to diff against and the run treats every tracked file
+as changed, so the whole nightly tier runs. Guessing a narrower base — a fixed
+time window, say — would be worse than useless: a window that starts after a
+commit no nightly has covered yet skips the suites that commit needs, lets the
+run go green, and then hands that green head to `nightly-base.py` as tomorrow's
+base, so the coverage is dropped for good.
+
+With `profiles: nightly`, `pr_build_linux.yml` runs only `lint`, `build-native`
+and the `linux-test` matrix; the lints, Rust tests, Spark build and TPC runs
+carry `if: ${{ inputs.profiles != 'nightly' }}` because the queue and the push
+run already produced those verdicts at the same commit. `check-ci-config.py`
+pins that the same way it pins the cache-refresh guard.
+
+A red nightly has no pull request to appear on, and GitHub only emails a
+scheduled run's failure to whoever last touched the workflow file, so
+`nightly_report` runs after `required_checks` on the scheduled event and, when
+the aggregate is not green, opens an issue labelled `ci-nightly-failure` listing
+the jobs that failed. If one is already open it comments there instead, so
+consecutive red nights accumulate in one issue. Closing the issue is how the
+failure is acknowledged; the next red night opens a new one. The label has to
+exist in repository settings, like the `run-*` labels above.
 
 ## Standalone workflows (not under the umbrella)
 
 These workflows have their own triggers because they fire on events the
 umbrella doesn't watch, or operate independently of the rest of CI:
 
-| File                   | Why standalone                                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `pr_title_check.yml`   | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push. |
-| `codeql.yml`           | Security scanner; weekly schedule + on every push/PR.                                                |
-| `miri.yml`             | Nightly Miri safety checks.                                                                          |
-| `stale.yml`            | Daily stale-PR closer.                                                                               |
-| `take.yml`             | Issue-comment trigger for `take` / `untake`.                                                         |
-| `label_new_issues.yml` | Issue trigger to apply `requires-triage`.                                                            |
-| `label_prs.yml`        | Runs on `pull_request_target` so it can label pull requests opened from forks.                       |
+| File                    | Why standalone                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `pr_title_check.yml`    | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push.    |
+| `codeql.yml`            | Security scanner; weekly schedule + on every push/PR.                                                   |
+| `miri.yml`              | Nightly Miri safety checks.                                                                             |
+| `publish_snapshot.yml`  | Nightly SNAPSHOT jars to repository.apache.org; skips when main has not changed. `dry_run` dispatch.    |
+| `stale.yml`             | Daily stale-PR closer.                                                                                  |
+| `take.yml`              | Issue-comment trigger for `take` / `untake`.                                                            |
+| `label_new_issues.yml`  | Issue trigger to apply `requires-triage`.                                                               |
+| `label_prs_trigger.yml` | Fires on `pull_request` with a read-only token and does nothing; its completion starts `label_prs.yml`. |
+| `label_prs.yml`         | Runs on `workflow_run` from the default branch so it can label pull requests opened from forks.         |
+| `ci_fork.yml`           | Runs `ci.yml` on a push to a fork's branch; skipped upstream. See [Fork runs](#fork-runs).              |
+| `fork_ci_status.yml`    | Mirrors a fork's run onto its pull request as `CI (fork)`. See [Fork runs](#fork-runs).                 |
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                                  |
-| --------------------------------- | ------------------------------------------------------------ |
-| `pr_build_linux.yml`              | `pr_build_linux`                                             |
-| `pr_build_macos.yml`              | `pr_build_macos`                                             |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
-| `docs.yaml`                       | `docs`                                                       |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
+| File                          | Called from `ci.yml` job(s)           |
+| ----------------------------- | ------------------------------------- |
+| `pr_build_linux.yml`          | `pr_build_linux`                      |
+| `pr_build_macos.yml`          | `pr_build_macos`                      |
+| `pr_benchmark_check.yml`      | `pr_benchmark_check`                  |
+| `delta_build_gate.yml`        | `delta_build_gate`                    |
+| `delta_contrib_test.yml`      | `delta_3_5`, `delta_4_0`, `delta_4_1` |
+| `pyarrow_udf_test.yml`        | `pyarrow_udf_test`                    |
+| `docs.yaml`                   | `docs`                                |
+| `spark_sql_test_reusable.yml` | `iceberg_spark_test_reusable.yml`     |
 
 ## Changing what runs when
 
@@ -206,18 +405,24 @@ in `dev/ci/compute-changes.py`:
   dorny/picomatch (`**` spans path segments, `*` stays within one, a leading
   `!` excludes).
 - **`POLICY`** — which events may run it. `"pr"` for every pull request,
-  `"queue"` for the merge queue, `"push"` for push to main, `"label:<name>"`
-  for opt-in on a labelled pull request. `"pr"` and `"label:"` are mutually
-  exclusive. `workflow_dispatch` always runs everything.
+  `"queue"` for the merge queue, `"nightly"` for the scheduled run, `"push"`
+  for push to main, `"label:<name>"` for opt-in on a labelled pull request.
+  `"pr"` and `"label:"` are mutually exclusive. `workflow_dispatch` always
+  runs everything.
 
-Moving a suite between the PR and queue tiers is a one-word edit to `POLICY`.
+Moving a suite between the PR, queue and nightly tiers is a one-word edit to
+`POLICY`, plus the matching entry in `PR_TIER`, `QUEUE_TIER` or `NIGHTLY_TIER`
+in `dev/ci/check-ci-config.py`, which is written out longhand on purpose so
+that a tier change has to be stated twice.
 
 An output does not have to map one-to-one onto a job. Two outputs can feed a
 single call when part of a workflow belongs in a different tier from the rest:
 `spark_4_1` / `spark_4_1_hive` select which module shards the one Spark 4.1
-build runs, and `build_linux` / `build_linux_full` select whether the Linux
-build runs everything or only the jobs that populate `main`'s caches. Both
-share their `FILTERS` list by assignment so the two entries cannot drift.
+build runs, and `build_linux` / `build_linux_full` / `build_linux_all_profiles`
+select whether the Linux build runs everything, only the jobs that populate
+`main`'s caches, or the test matrix against every Spark profile rather than
+the default one. Each group shares its `FILTERS` list by assignment so the
+entries cannot drift.
 
 So adding a suite, moving sources, or changing when something runs is an edit
 to one of those two tables, not to ten `${{ }}` expressions. Keeping the policy
@@ -250,6 +455,73 @@ than once carries its version inputs, e.g.
 and also that every `download-artifact` name is produced by an upload in the
 same workflow.
 
+## Large caches are written on main only
+
+An `actions/cache` entry is scoped to the ref that wrote it. A run can restore
+entries from its own ref and from the default branch, and nothing else. So a
+cache written from `refs/pull/*/merge` is visible only to another run of that
+same pull request, and one written from the merge queue's
+`gh-readonly-queue/*` branch is visible to nobody at all, because the queue
+deletes that branch when it is done with it.
+
+Both still count against the repository's shared cache budget, which is
+evicted least-recently-used. Writing them therefore has no upside and one
+large downside: it pushes main's entries out, and main's entries are the only
+ones a future pull request can use.
+
+That is what happened. On 2026-09-15 the repository held 12.27 GiB across 14
+entries: 9.22 GiB on a single `gh-readonly-queue/*` branch, 3.01 GiB on
+`refs/pull/*/merge` refs, and nothing whatsoever on main. Every one of the
+seven near-identical `Linux-java-maven-*` Maven repositories was a
+write-only copy. With main's `cargo-ci` entry evicted, all eight native
+builds in a merge-queue run missed their cache and paid a cold ~26 minute
+compile; the same build with a hit takes 2m21s.
+
+The rule, then: any cache holding a Maven repository (`~/.m2/repository`) or a
+cargo tree (`~/.cargo/registry`, `~/.cargo/git`, `native/target`) is
+**restored everywhere and saved only on push to main**:
+
+```yaml
+- name: Restore Maven dependencies
+  id: maven-cache
+  uses: actions/cache/restore@v6
+  with:
+    path: |
+      ~/.m2/repository
+      /root/.m2/repository
+    key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+    restore-keys: |
+      ${{ runner.os }}-java-maven-
+
+# ... the steps that populate it ...
+
+- name: Save Maven dependencies
+  if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+  uses: actions/cache/save@v6
+  with:
+    path: |
+      ~/.m2/repository
+      /root/.m2/repository
+    key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+```
+
+The bare `actions/cache@vN` form cannot express this: it saves in an implicit
+post step that no `if:` can reach. `dev/ci/check-ci-config.py` rejects it for
+any of the paths above, and rejects a `save` that is missing the `github.ref`
+guard. `publish_snapshot.yml` is exempt in `CACHE_SAVE_SCOPE_EXEMPT`, because
+it runs from main on a schedule already.
+
+The TPC-H and TPC-DS dataset caches keep the read-write form and are out of
+scope entirely: `./tpch` and `./tpcds-sf-1` are a few hundred MB, they are not
+dependency trees, and they are keyed on this workflow file, so a pull request
+that edits it would regenerate the data on every run rather than once.
+
+A job that only ever runs on a pull request or in the queue keeps the guard
+anyway, and so never writes. That is deliberate — it restores from main's
+entry through `restore-keys` and downloads whatever else it needs, which is
+what a cold pull request already did. See the push-tier discussion above for
+which jobs do run on main and therefore do write.
+
 ## Retrying flaky network operations
 
 **Maven.** `.mvn/maven.config` tunes the Maven Resolver HTTP transport: six
@@ -277,11 +549,11 @@ built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
 any artifact a later job consumes: same inputs and outputs, three attempts,
 15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
 must belong to exactly one producer in the run (see above). The uploads inside
-`./.github/actions/java-test` stay on the plain action, since a local action
-calling another local action is untested here. Its two failure-only uploads run
-on jobs that are already red. Its test-report upload also runs on green jobs
-and is `continue-on-error: true`: nothing downstream consumes the reports, and
-a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
+`./.github/actions/java-test` stay on the plain action. Its two failure-only
+uploads run on jobs that are already red. Its test-report upload also runs on
+green jobs and is `continue-on-error: true`: nothing downstream consumes the
+reports, and a `FinalizeArtifact` 403 must not turn a passing test run into a
+red check.
 
 **Artifact download.** `actions/download-artifact` has the same narrow retry
 list, so a `ListArtifacts` answered `(403) Forbidden: Error from intermediary`
@@ -309,18 +581,27 @@ before any test has started. Once `Required Checks` is a required context
 which is why plain network flakes are worth retrying rather than re-running
 the whole pipeline by hand.
 
+**Source license check.** `preflight` creates an unsigned source tarball from
+the checked-out commit and runs the same RAT script and exclusion list used to
+create a release candidate. `dev/release/create-source-tarball.sh` is shared by
+CI and `create-tarball.sh`, so CI checks the files that will actually ship
+rather than maintaining a separate Maven RAT configuration. `make rat` runs
+the same check locally against `HEAD`.
+
 **Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
 a cold runner, and a blip from `repo.maven.apache.org` fails the job before
 anything is compiled. `./.github/actions/maven-bootstrap` caches that
-distribution under `~/.m2/wrapper/dists` (keyed on
+distribution under the wrapper's `.m2/wrapper/dists` (keyed on
 `.mvn/wrapper/maven-wrapper.properties`, not `pom.xml`) and retries
 `./mvnw --version` four times with exponential backoff. It retries only the
 bootstrap, never compilation or test execution.
 
-Any job whose first Maven use is a bare `./mvnw` needs this step before it.
-`./.github/actions/java-test` carries its own inline copy rather than calling
-the composite, because a local action invoking another local action is
-deliberately avoided here (see the artifact-upload note above).
+`./.github/actions/setup-builder` and `./.github/actions/setup-macos-builder`
+run it as their last step, once the JDK is on PATH, so every job that goes
+through either of them is covered without a step of its own; that includes
+the `java-test`, `rust-test` and `setup-spark-builder` callers. A new job that
+runs `./mvnw` without going through a setup action needs the step before its
+first Maven use.
 
 ## Merge queue
 
@@ -338,11 +619,15 @@ head, so a semantic conflict between two PRs that each pass in isolation is
 caught before either lands.
 
 The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials, and
-`max_entries_to_build: 2` is the one that matters. Every entry gets its own
+`max_entries_to_build: 4` is the one that matters. Every entry gets its own
 `merge_group` build — [merge limits do not combine
 builds](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) —
 so this caps how many pipelines are in flight, and with them how fast the queue
-drains: roughly 19 merges a day at the ~2.5h pipeline we see today.
+drains. With the ~90 minute pipeline of September 2026, a queue that never runs
+dry merges roughly 58 PRs a day at 4, against roughly 30 at 2. Each entry's
+build is based on the queue commit of the entry ahead (`merge_group.base_sha`),
+so it runs only the suites its own changes select; `ALLGREEN` is what makes
+that sufficient.
 `max_entries_to_merge: 5` only says how many already-green entries land in one
 merge operation, and saves no CI at all. The saving in this design comes from
 the PR tier being small, not from batching inside the queue.

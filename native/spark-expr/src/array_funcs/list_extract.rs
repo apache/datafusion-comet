@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::array::{
+    Array, GenericListArray, Int32Array, MutableArrayData, OffsetSizeTrait, UInt64Builder,
+};
+use arrow::compute::take;
 use arrow::datatypes::{DataType, FieldRef, Schema};
-use arrow::{array::MutableArrayData, datatypes::ArrowNativeType, record_batch::RecordBatch};
+use arrow::{datatypes::ArrowNativeType, record_batch::RecordBatch};
 use datafusion::common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
@@ -30,6 +33,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::nested_compaction::compact_nested_take_result;
 use crate::SparkError;
 
 #[derive(Debug, Clone)]
@@ -143,7 +147,7 @@ impl PhysicalExpr for ListExtract {
             .default_value
             .as_ref()
             .map(|d| {
-                d.evaluate(batch).map(|value| match value {
+                d.evaluate(batch).and_then(|value| match value {
                     ColumnarValue::Scalar(scalar)
                         if !scalar.data_type().equals_datatype(&element_type) =>
                     {
@@ -155,8 +159,7 @@ impl PhysicalExpr for ListExtract {
                     ))),
                 })
             })
-            .transpose()?
-            .unwrap_or(element_type.try_into())?;
+            .transpose()?;
 
         // Create error wrapper closure that has access to self
         let error_wrapper = |error: SparkError| self.wrap_error_with_context(error);
@@ -176,7 +179,7 @@ impl PhysicalExpr for ListExtract {
                 list_extract(
                     list_array,
                     index_array,
-                    &default_value,
+                    default_value.as_ref(),
                     self.fail_on_error,
                     self.one_based,
                     adjust_index,
@@ -190,7 +193,7 @@ impl PhysicalExpr for ListExtract {
                 list_extract(
                     list_array,
                     index_array,
-                    &default_value,
+                    default_value.as_ref(),
                     self.fail_on_error,
                     self.one_based,
                     adjust_index,
@@ -264,10 +267,102 @@ fn zero_based_index(
     }
 }
 
+fn out_of_bounds_error(one_based: bool, index: i32, len: usize) -> SparkError {
+    if one_based {
+        SparkError::InvalidElementAtIndex {
+            index_value: index,
+            array_size: len as i32,
+        }
+    } else {
+        SparkError::InvalidArrayIndex {
+            index_value: index,
+            array_size: len as i32,
+        }
+    }
+}
+
+enum RowAction {
+    Gather(usize),
+    Null,
+    Default,
+}
+
+fn resolve_row<O: OffsetSizeTrait>(
+    list_is_null: bool,
+    offset_window: &[O],
+    index: Option<i32>,
+    fail_on_error: bool,
+    one_based: bool,
+    adjust_index: &impl Fn(i32, usize) -> DataFusionResult<Option<usize>>,
+    error_wrapper: &impl Fn(SparkError) -> DataFusionError,
+) -> DataFusionResult<RowAction> {
+    if list_is_null {
+        return Ok(RowAction::Null);
+    }
+
+    let Some(index) = index else {
+        return Ok(RowAction::Null);
+    };
+
+    let start = offset_window[0].as_usize();
+    let len = offset_window[1].as_usize() - start;
+    match adjust_index(index, len)? {
+        Some(index) => Ok(RowAction::Gather(start + index)),
+        None if fail_on_error => Err(error_wrapper(out_of_bounds_error(one_based, index, len))),
+        None => Ok(RowAction::Default),
+    }
+}
+
 fn list_extract<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     index_array: &Int32Array,
-    default_value: &ScalarValue,
+    default_value: Option<&ScalarValue>,
+    fail_on_error: bool,
+    one_based: bool,
+    adjust_index: impl Fn(i32, usize) -> DataFusionResult<Option<usize>>,
+    error_wrapper: &impl Fn(SparkError) -> DataFusionError,
+) -> DataFusionResult<ColumnarValue> {
+    let Some(default_value) = default_value.filter(|default| !default.is_null()) else {
+        return list_extract_without_default(
+            list_array,
+            index_array,
+            fail_on_error,
+            one_based,
+            adjust_index,
+            error_wrapper,
+        );
+    };
+
+    let values = list_array.values();
+    let offsets = list_array.offsets();
+    let data = values.to_data();
+    let default_data = default_value.to_array()?.to_data();
+    let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
+
+    for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.iter()).enumerate() {
+        match resolve_row(
+            list_array.is_null(row),
+            offset_window,
+            index,
+            fail_on_error,
+            one_based,
+            &adjust_index,
+            error_wrapper,
+        )? {
+            RowAction::Gather(index) => mutable.try_extend(0, index, index + 1)?,
+            RowAction::Null => mutable.try_extend_nulls(1)?,
+            RowAction::Default => mutable.try_extend(1, 0, 1)?,
+        }
+    }
+
+    Ok(ColumnarValue::Array(arrow::array::make_array(
+        mutable.freeze(),
+    )))
+}
+
+fn list_extract_without_default<O: OffsetSizeTrait>(
+    list_array: &GenericListArray<O>,
+    index_array: &Int32Array,
     fail_on_error: bool,
     one_based: bool,
     adjust_index: impl Fn(i32, usize) -> DataFusionResult<Option<usize>>,
@@ -275,50 +370,28 @@ fn list_extract<O: OffsetSizeTrait>(
 ) -> DataFusionResult<ColumnarValue> {
     let values = list_array.values();
     let offsets = list_array.offsets();
-
-    let data = values.to_data();
-
-    let default_data = default_value.to_array()?.to_data();
-
-    let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
+    let mut indices = UInt64Builder::with_capacity(index_array.len());
 
     for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.iter()).enumerate() {
-        let start = offset_window[0].as_usize();
-        let len = offset_window[1].as_usize() - start;
-
-        if list_array.is_null(row) {
-            mutable.try_extend_nulls(1)?;
-        } else if let Some(index) = index {
-            if let Some(i) = adjust_index(index, len)? {
-                mutable.try_extend(0, start + i, start + i + 1)?;
-            } else if fail_on_error {
-                // Throw appropriate error based on whether this is element_at (one_based=true)
-                // or GetArrayItem (one_based=false)
-                let error = if one_based {
-                    // element_at function
-                    SparkError::InvalidElementAtIndex {
-                        index_value: index,
-                        array_size: len as i32,
-                    }
-                } else {
-                    // GetArrayItem (arr[index])
-                    SparkError::InvalidArrayIndex {
-                        index_value: index,
-                        array_size: len as i32,
-                    }
-                };
-                return Err(error_wrapper(error));
-            } else {
-                mutable.try_extend(1, 0, 1)?;
-            }
-        } else {
-            // index is NULL → result is NULL
-            mutable.try_extend_nulls(1)?;
+        match resolve_row(
+            list_array.is_null(row),
+            offset_window,
+            index,
+            fail_on_error,
+            one_based,
+            &adjust_index,
+            error_wrapper,
+        )? {
+            RowAction::Gather(index) => indices.append_value(index as u64),
+            RowAction::Null | RowAction::Default => indices.append_null(),
         }
     }
 
-    let data = mutable.freeze();
-    Ok(ColumnarValue::Array(arrow::array::make_array(data)))
+    let indices = indices.finish();
+    // Every gathered index was validated by `resolve_row` against its row's list bounds,
+    // and `take` masks null index slots, so the default unchecked `TakeOptions` is safe.
+    let result = take(values.as_ref(), &indices, None)?;
+    Ok(ColumnarValue::Array(compact_nested_take_result(result)))
 }
 
 impl Display for ListExtract {
@@ -334,11 +407,209 @@ impl Display for ListExtract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Array, Int32Array, ListArray};
+    use arrow::array::{Array, AsArray, Int32Array, ListArray};
     use arrow::datatypes::{Field, Int32Type};
     use datafusion::common::{Result, ScalarValue};
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ColumnarValue;
+
+    use crate::nested_compaction::test_util::{
+        assert_compact, reference_gather, skewed_nested_values, ROWS,
+    };
+
+    #[test]
+    fn test_list_extract_nested_retained_capacity() -> Result<()> {
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+        for selected_len in [0, 1] {
+            for values in skewed_nested_values(selected_len) {
+                for nullable in [false, true] {
+                    let outer = ListArray::new(
+                        Arc::new(Field::new("item", values.data_type().clone(), true)),
+                        OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                        Arc::clone(&values),
+                        nullable.then(|| (0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
+                    );
+                    let source_rows = (0..ROWS)
+                        .map(|row| outer.is_valid(row).then_some(2 * row))
+                        .collect::<Vec<_>>();
+                    let expected = reference_gather(values.as_ref(), &source_rows)?;
+                    let null_default = ScalarValue::try_from(values.data_type())?;
+                    for default in [None, Some(&null_default)] {
+                        let ColumnarValue::Array(result) = list_extract(
+                            &outer,
+                            &Int32Array::from(vec![0; ROWS]),
+                            default,
+                            false,
+                            false,
+                            |idx, len| zero_based_index(idx, len, &error_wrapper),
+                            &error_wrapper,
+                        )?
+                        else {
+                            unreachable!()
+                        };
+                        assert_compact(
+                            result.as_ref(),
+                            expected.as_ref(),
+                            &format!(
+                                "{:?}, selected_len={selected_len}, nullable={nullable}, default={}",
+                                values.data_type(),
+                                default.is_some(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_deep_nested_retained_capacity() -> Result<()> {
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        const ROWS: usize = 256;
+        const WIDTH: usize = 32;
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+        for selected_len in [0, 1] {
+            let offsets = OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| {
+                std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(16, WIDTH))
+            }));
+            let count = *offsets.last().unwrap();
+            let inner: arrow::array::ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", DataType::Int32, true)),
+                offsets,
+                Arc::new(Int32Array::from_iter_values(0..count)),
+                None,
+            ));
+            let values: arrow::array::ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", inner.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(std::iter::repeat_n(WIDTH, 2 * ROWS)),
+                inner,
+                None,
+            ));
+            for null_percent in [0, 25, 75] {
+                let outer = ListArray::new(
+                    Arc::new(Field::new("item", values.data_type().clone(), true)),
+                    OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                    Arc::clone(&values),
+                    (null_percent > 0).then(|| {
+                        (0..ROWS)
+                            .map(|row| row % 4 >= null_percent / 25)
+                            .collect::<NullBuffer>()
+                    }),
+                );
+                let source_rows = (0..ROWS)
+                    .map(|row| outer.is_valid(row).then_some(2 * row))
+                    .collect::<Vec<_>>();
+                let expected = reference_gather(values.as_ref(), &source_rows)?;
+                let ColumnarValue::Array(result) = list_extract(
+                    &outer,
+                    &Int32Array::from(vec![0; ROWS]),
+                    None,
+                    false,
+                    false,
+                    |idx, len| zero_based_index(idx, len, &error_wrapper),
+                    &error_wrapper,
+                )?
+                else {
+                    unreachable!()
+                };
+                assert_eq!(result.to_data(), expected.to_data());
+                if selected_len == 1 && null_percent == 75 {
+                    let indices = arrow::array::UInt64Array::from_iter(
+                        (0..ROWS).map(|row| outer.is_valid(row).then_some((2 * row) as u64)),
+                    );
+                    let gathered = take(values.as_ref(), &indices, None)?;
+                    // Preserve normal 4x headroom, including alignment padding. Compacting
+                    // this result used to copy offsets even though the leaf is not oversized.
+                    assert_eq!(
+                        result.get_buffer_memory_size(),
+                        gathered.get_buffer_memory_size()
+                    );
+                }
+                let ints = result.as_list::<i32>().values().as_list::<i32>().values();
+                // An accurate immediate child reservation must not leave an oversized
+                // primitive buffer when propagated into empty or short inner lists.
+                assert!(
+                    ints.get_buffer_memory_size() <= ints.len() * 16 + 64,
+                    "selected_len={selected_len}, null_percent={null_percent}: {} integers retain {} bytes",
+                    ints.len(),
+                    ints.get_buffer_memory_size(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_nested_sliced_nulls_and_indices() -> Result<()> {
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+        for values in skewed_nested_values(1) {
+            let outer = ListArray::new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                Arc::clone(&values),
+                Some((0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
+            )
+            .slice(1, 8);
+            // The sliced rows are: first child, last child, null index, null list,
+            // out-of-bounds, first child, last child, null list.
+            let expected = reference_gather(
+                values.as_ref(),
+                &[Some(2), Some(5), None, None, None, Some(12), Some(15), None],
+            )?;
+            for (one_based, indices) in [
+                (
+                    false,
+                    vec![
+                        Some(0),
+                        Some(1),
+                        None,
+                        Some(0),
+                        Some(2),
+                        Some(0),
+                        Some(1),
+                        Some(-1),
+                    ],
+                ),
+                (
+                    true,
+                    vec![
+                        Some(1),
+                        Some(-1),
+                        None,
+                        Some(1),
+                        Some(3),
+                        Some(1),
+                        Some(-1),
+                        Some(0),
+                    ],
+                ),
+            ] {
+                let ColumnarValue::Array(result) = list_extract(
+                    &outer,
+                    &Int32Array::from(indices),
+                    None,
+                    false,
+                    one_based,
+                    |idx, len| {
+                        if one_based {
+                            one_based_index(idx, len, &error_wrapper)
+                        } else {
+                            zero_based_index(idx, len, &error_wrapper)
+                        }
+                    },
+                    &error_wrapper,
+                )?
+                else {
+                    unreachable!()
+                };
+                assert_eq!(result.to_data(), expected.to_data());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_nullable_when_array_is_nullable() -> Result<()> {
@@ -378,35 +649,35 @@ mod test {
         ]);
         let indices = Int32Array::from(vec![0, 0, 0]);
 
-        let null_default = ScalarValue::Int32(None);
-
         // Simple error wrapper for tests - just converts SparkError to DataFusionError
         let error_wrapper = |error: SparkError| DataFusionError::from(error);
 
-        let ColumnarValue::Array(result) = list_extract(
-            &list,
-            &indices,
-            &null_default,
-            false,
-            false,
-            |idx, len| zero_based_index(idx, len, &error_wrapper),
-            &error_wrapper,
-        )?
-        else {
-            unreachable!()
-        };
+        for default_value in [None, Some(ScalarValue::Int32(None))] {
+            let ColumnarValue::Array(result) = list_extract(
+                &list,
+                &indices,
+                default_value.as_ref(),
+                false,
+                false,
+                |idx, len| zero_based_index(idx, len, &error_wrapper),
+                &error_wrapper,
+            )?
+            else {
+                unreachable!()
+            };
 
-        assert_eq!(
-            &result.to_data(),
-            &Int32Array::from(vec![Some(1), None, None]).to_data()
-        );
+            assert_eq!(
+                &result.to_data(),
+                &Int32Array::from(vec![Some(1), None, None]).to_data()
+            );
+        }
 
         let zero_default = ScalarValue::Int32(Some(0));
 
         let ColumnarValue::Array(result) = list_extract(
             &list,
             &indices,
-            &zero_default,
+            Some(&zero_default),
             false,
             false,
             |idx, len| zero_based_index(idx, len, &error_wrapper),
@@ -436,26 +707,80 @@ mod test {
         ]);
         let indices = Int32Array::from(vec![Some(0), Some(1), Some(2), Some(0), Some(0), None]);
 
-        let null_default = ScalarValue::Int32(None);
         let error_wrapper = |error: SparkError| DataFusionError::from(error);
 
-        let ColumnarValue::Array(result) = list_extract(
-            &list,
-            &indices,
-            &null_default,
-            false,
-            false,
-            |idx, len| zero_based_index(idx, len, &error_wrapper),
-            &error_wrapper,
-        )?
-        else {
-            unreachable!()
-        };
+        for default_value in [
+            None,
+            Some(ScalarValue::Int32(None)),
+            Some(ScalarValue::Int32(Some(0))),
+        ] {
+            let ColumnarValue::Array(result) = list_extract(
+                &list,
+                &indices,
+                default_value.as_ref(),
+                false,
+                false,
+                |idx, len| zero_based_index(idx, len, &error_wrapper),
+                &error_wrapper,
+            )?
+            else {
+                unreachable!()
+            };
 
-        assert_eq!(
-            &result.to_data(),
-            &Int32Array::from(vec![Some(10), Some(20), Some(30), Some(1), None, None]).to_data()
-        );
+            assert_eq!(
+                &result.to_data(),
+                &Int32Array::from(vec![Some(10), Some(20), Some(30), Some(1), None, None])
+                    .to_data()
+            );
+        }
         Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_without_default_ansi_errors() {
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1)])]);
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+
+        for (one_based, index) in [(true, 2), (false, 1)] {
+            let indices = Int32Array::from(vec![index]);
+            let error = list_extract(
+                &list,
+                &indices,
+                None,
+                true,
+                one_based,
+                |idx, len| {
+                    if one_based {
+                        one_based_index(idx, len, &error_wrapper)
+                    } else {
+                        zero_based_index(idx, len, &error_wrapper)
+                    }
+                },
+                &error_wrapper,
+            )
+            .unwrap_err();
+            let DataFusionError::External(error) = error else {
+                panic!("expected external Spark error")
+            };
+            let error = error.downcast_ref::<SparkError>().unwrap();
+
+            if one_based {
+                assert!(matches!(
+                    error,
+                    SparkError::InvalidElementAtIndex {
+                        index_value: 2,
+                        array_size: 1
+                    }
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    SparkError::InvalidArrayIndex {
+                        index_value: 1,
+                        array_size: 1
+                    }
+                ));
+            }
+        }
     }
 }

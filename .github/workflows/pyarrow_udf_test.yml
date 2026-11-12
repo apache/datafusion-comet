@@ -17,46 +17,11 @@
 
 name: PyArrow UDF Tests
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
+# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
+# live in the umbrella workflow. The list of files this suite covers is the
+# `pyarrow_udf` entry in FILTERS in dev/ci/compute-changes.py.
 on:
-  push:
-    branches:
-      - main
-    paths: &feature-paths
-      - "pom.xml"
-      - "common/pom.xml"
-      - "native/shuffle/src/spark_unsafe/row.rs"
-      - "spark/pom.xml"
-      - "spark/src/main/java/org/apache/comet/vector/**"
-      - "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java"
-      - "spark/src/main/scala/org/apache/comet/CometConf.scala"
-      - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
-      - "spark/src/main/scala/org/apache/comet/vector/**"
-      - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
-      - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
-      - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
-      - "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala"
-      - "spark/src/test/resources/pyspark/conftest.py"
-      - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
-      - "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py"
-      - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
-      - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
-      - "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala"
-      - ".github/workflows/pyarrow_udf_test.yml"
-  pull_request:
-    paths: *feature-paths
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -79,12 +44,15 @@ jobs:
           - name: Spark 4.0
             maven_profiles: "-Pspark-4.0 -Pscala-2.13"
             pyspark: "4.0.4"
+            native_python_udf: false
           - name: Spark 4.1
             maven_profiles: "-Pspark-4.1"
             pyspark: "4.1.3"
+            native_python_udf: true
           - name: Spark 4.2
             maven_profiles: "-Pspark-4.2"
             pyspark: "4.2.0"
+            native_python_udf: true
     container:
       # Pinned to the Debian 12 (bookworm) base so the system `python3` is 3.11. The default
       # `amd64/rust` image is Debian 13 (trixie) which ships Python 3.13 and no python3.11 apt
@@ -101,8 +69,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -111,18 +80,33 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Build Comet (debug, ${{ matrix.name }} / Scala 2.13)
-        run: |
-          cd native && cargo build
-          cd .. && ./mvnw -B install -DskipTests ${{ matrix.maven_profiles }}
-
       - name: Install Python 3.11 and pip
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 python3-venv python3-pip
+          apt-get install -y --no-install-recommends python3 python3-dev python3-venv python3-pip
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --upgrade pip
           /tmp/venv/bin/pip install "pyspark==${{ matrix.pyspark }}" "pyarrow>=14" pandas pytest
+
+      - name: Build Comet (debug, ${{ matrix.name }} / Scala 2.13)
+        env:
+          PYO3_PYTHON: /tmp/venv/bin/python
+        run: |
+          if [ "${{ matrix.native_python_udf }}" = "true" ]; then
+            (cd native && cargo build --features python-udf)
+          else
+            (cd native && cargo build)
+          fi
+          ./mvnw -B install -DskipTests ${{ matrix.maven_profiles }}
+
+      - name: Run native Arrow UDF Scala suite
+        if: matrix.native_python_udf
+        env:
+          PYSPARK_PYTHON: /tmp/venv/bin/python
+          PYTHONPATH: /tmp/venv/lib/python3.11/site-packages
+        run: |
+          ./mvnw -B test ${{ matrix.maven_profiles }} \
+            -Dsuites=org.apache.spark.sql.comet.CometArrowPythonUdfSuite
 
       - name: Run PyArrow UDF pytest
         env:
@@ -132,8 +116,29 @@ jobs:
           # ModuleNotFoundError.
           PYSPARK_PYTHON: /tmp/venv/bin/python
           PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
+          # The embedded interpreter does not inherit PySpark worker sys.path setup.
+          PYTHONPATH: /tmp/venv/lib/python3.11/site-packages
         run: |
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
+          if [ "${{ matrix.native_python_udf }}" = "true" ]; then
+            /tmp/venv/bin/python -m pytest -v \
+              spark/src/test/resources/pyspark/test_native_arrow_udf_files.py
+          fi
+          /tmp/venv/bin/python -m pytest -v \
+            spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-pyarrow-udf-${{ matrix.pyspark }}

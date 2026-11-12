@@ -21,20 +21,23 @@ statement
 CREATE TABLE test_lpad_fallback(s string, len int, pad string) USING parquet
 
 statement
-INSERT INTO test_lpad_fallback VALUES ('hi', 5, 'xy'), ('hello', 3, 'x'), (NULL, NULL, NULL)
+INSERT INTO test_lpad_fallback VALUES ('hi', 5, 'xy'), ('hello', 3, 'x'), ('', 3, 'a'), ('', 0, 'x'), ('hi', 5, ''), (NULL, 5, 'x'), ('hi', NULL, 'x'), ('hi', 5, NULL), (NULL, NULL, NULL)
 
-query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled)
+query expect_fallback(lpad: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT lpad(s, len, pad) FROM test_lpad_fallback
 
-query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled)
+query expect_fallback(lpad: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT lpad('hi', len, 'xy') FROM test_lpad_fallback
 
-query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled)
+query expect_fallback(lpad: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT lpad('hi', 5, 'xy')
 
+query expect_fallback(lpad: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT lpad('hi', 5, 'xy') FROM test_lpad_fallback
+
 -- The native argument shapes do not require the dispatcher.
-query
+query expect_native(lpad)
 SELECT lpad(s, len, 'xy') FROM test_lpad_fallback
 
-query
+query expect_native(lpad)
 SELECT lpad(s, len) FROM test_lpad_fallback

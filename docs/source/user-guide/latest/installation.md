@@ -47,31 +47,18 @@ Other versions may work well enough for development and evaluation purposes.
 
 Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 release.
 
-```{warning}
-Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
-Apache Spark's own SQL test suite is no longer run against Spark 3.4 on every change; it runs only
-on demand. We recommend moving to Spark 3.5 or later.
-```
-
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 3.4.3         | 17           | 2.12/2.13     | Yes               | On demand             |
-| 3.5.9         | 17           | 2.12/2.13     | Yes               | Yes                   |
-| 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
-| 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
+| 3.5.9         | 17           | 2.12/2.13     | Nightly           | Nightly               |
+| 4.0.4         | 17/21        | 2.13          | Nightly           | Nightly               |
+| 4.1.3         | 17/21        | 2.13          | Before merge      | Before merge          |
+| 4.2.0         | 17           | 2.13          | Nightly           | Nightly               |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
-"On demand" in the table above means the suite is not run automatically before a change is merged.
-A contributor can still run it against an individual pull request, but Spark 3.4 is no longer
-covered by default.
-
-Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
-use only and should not be used in production yet.
-
-| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.2.0         | 17           | 2.13          | Yes               | No                    |
+"Before merge" in the table above means the suite must pass before a change is merged. "Nightly" means
+the suite runs once a day against the `main` branch, so a regression it finds is caught after the change
+has been merged rather than before.
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
@@ -80,8 +67,46 @@ Cloud Service Providers.
 
 <!-- IF_SNAPSHOT -->
 
-This documentation is for the current development version of Comet. Published jar files are only available for released versions.
-To use this version of Comet, see [Building from source](source.md).
+This documentation is for the current development version of Comet, which has not been released. Nightly snapshot
+jar files for this version are published to the
+[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/) for the
+amd64 and arm64 architectures for Linux. For Apple macOS, it is currently necessary to
+[build from source](source.md).
+
+Snapshots are unreleased development builds provided for testing and evaluation only. They are not Apache releases,
+have not been voted on, and should not be used in production. Older snapshots are removed from the repository
+periodically.
+
+A new snapshot is published each night that new commits land on the `main` branch. Every snapshot carries the same
+version, `$COMET_VERSION`, so Maven-based tooling resolves the most recent one automatically. The
+[Publish Snapshot](https://github.com/apache/datafusion-comet/actions/workflows/publish_snapshot.yml) workflow log
+records the commit each snapshot was built from.
+
+The following artifacts are published:
+
+- `comet-spark-spark3.5_2.12`
+- `comet-spark-spark4.0_2.13`
+- `comet-spark-spark4.1_2.13`
+- `comet-spark-spark4.2_2.13`
+
+To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
+[comet-spark-spark4.1_2.13/$COMET_VERSION](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/),
+and pick the jar with the newest timestamp. Then use it as described in
+[Run Spark Shell with Comet enabled](#run-spark-shell-with-comet-enabled).
+
+Alternatively, let Spark resolve the newest snapshot directly:
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+    --repositories https://repository.apache.org/content/repositories/snapshots/ \
+    --packages org.apache.datafusion:comet-spark-spark4.1_2.13:$COMET_VERSION \
+    --conf spark.plugins=org.apache.spark.CometPlugin \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.explain.fallback.enabled=true \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=4g \
+    --conf spark.executor.memoryOverhead=2g
+```
 
 <!-- ENDIF -->
 
@@ -98,12 +123,11 @@ repository describing your environment, and [build from source] for your target 
 
 Here are the direct links for downloading the Comet $COMET_VERSION jar file.
 
-- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/$COMET_VERSION/comet-spark-spark3.4_2.12-$COMET_VERSION.jar)
-- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/$COMET_VERSION/comet-spark-spark3.4_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/$COMET_VERSION/comet-spark-spark3.5_2.12-$COMET_VERSION.jar)
 - [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/$COMET_VERSION/comet-spark-spark3.5_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.0 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/$COMET_VERSION/comet-spark-spark4.0_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.1 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/comet-spark-spark4.1_2.13-$COMET_VERSION.jar)
+- [Comet plugin for Spark 4.2 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.2_2.13/$COMET_VERSION/comet-spark-spark4.2_2.13-$COMET_VERSION.jar)
 
 <!-- ENDIF -->
 
@@ -113,6 +137,32 @@ Refer to the [Building from source] guide for instructions from building Comet f
 source releases, or from the latest code in the GitHub repository.
 
 [Building from source]: source.md
+
+## Native library extraction directory
+
+Comet extracts its bundled native library into a private `0700` directory under the JVM's
+`java.io.tmpdir`, creates the library exclusively, and makes the completed file owner-readable
+only before loading it. This keeps extraction within Spark's configured temporary storage,
+including YARN container directories and Kubernetes `emptyDir` volumes.
+
+If that storage is mounted `noexec`, set the JVM system property `comet.native.workdir` to an
+existing writable directory on an executable filesystem. Configure it for both driver and executor
+JVMs, for example:
+
+```shell
+--conf 'spark.driver.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp' \
+--conf 'spark.executor.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp'
+```
+
+The chosen directory and its parents must be controlled by the application or trusted administrators.
+The loader relies on this deployment boundary rather than rejecting managed directories based on
+ancestor ownership or sticky-bit permissions. It does not silently switch to other temporary roots
+if the configured location cannot be used.
+
+Failed extractions are removed immediately, and successful extractions are removed when the JVM
+exits normally. Forced termination such as `SIGKILL` cannot run JVM cleanup. The container manager
+or deployment temporary-file cleanup policy must then remove leftover directories, including any
+custom work directory, after the owning JVMs have stopped.
 
 ## Deploying to Kubernetes
 
@@ -133,7 +183,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=4g
+    --conf spark.memory.offHeap.size=4g \
+    --conf spark.executor.memoryOverhead=2g
 ```
 
 ### Verify Comet enabled for Spark SQL query
@@ -144,15 +195,19 @@ Create a test Parquet source
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 ```
 
-Comet will log output similar to:
+Comet will log output similar to this on Spark 4.0 and later:
 
 ```shell
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
-  Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
-+- WriteFiles
+  Execute InsertIntoHadoopFsRelationCommand
++- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.write.parquet.enabled=true to enable it.]
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
 ```
+
+On Spark 3.5 the native writer replaces the whole write command rather than just the
+per-task write, so the same message appears on `Execute InsertIntoHadoopFsRelationCommand` and
+names `DataWritingCommandExec`.
 
 Query the data from the test source and check:
 
@@ -215,4 +270,22 @@ Some cluster managers may require additional configuration, see <https://spark.a
 ### Memory tuning
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
-allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
+allocation for native execution. See [Comet Memory Tuning](./tuning/memory.md) for details.
+
+### Kryo serialization
+
+If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.KryoSerializer`) with
+`spark.kryo.registrationRequired=true`, also register Comet's classes with Kryo:
+
+```shell
+--conf spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
+```
+
+Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
+fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
+Comet's [in-memory cache](in-memory-cache.md#kryo) format needs the same registrations, and while
+Kryo has not registered Comet's cached batch, Comet's plugin keeps caches in Spark's format. Set it
+before the `SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so
+Comet cannot add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an
+application with its own registrator can list both. Comet logs a warning at startup when Kryo
+requires registration and has not registered the classes this registrator covers.
