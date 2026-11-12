@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.nio.charset.StandardCharsets
 
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.jdk.CollectionConverters._
 import scala.util.Using
 
@@ -38,6 +38,7 @@ import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field,
 import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
+import org.apache.spark.sql.comet.CometSparkToColumnarExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector}
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
@@ -53,6 +54,25 @@ import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
  * suite covers the boundary contract independently of any specific function.
  */
 class CometArrowStreamSuite extends AnyFunSuite with Matchers {
+
+  test("row conversion schema gate supports nested collections") {
+    val array = ArrayType(IntegerType)
+    val map = MapType(IntegerType, ArrayType(LongType))
+    Seq(array, map, new StructType().add("a", array).add("m", map)).foreach { dataType =>
+      val schema = new StructType().add("value", dataType)
+      CometSparkToColumnarExec.isRowSchemaSupported(schema, ListBuffer.empty) shouldBe true
+      CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty) shouldBe false
+    }
+
+    val duplicateFields = new StructType().add("x", IntegerType).add("x", LongType)
+    Seq(
+      ArrayType(duplicateFields),
+      MapType(StringType, new StructType()),
+      ArrayType(YearMonthIntervalType())).foreach { dataType =>
+      val schema = new StructType().add("value", dataType)
+      CometSparkToColumnarExec.isRowSchemaSupported(schema, ListBuffer.empty) shouldBe false
+    }
+  }
 
   private def expectedSchema(types: (String, ArrowType)*): Schema = {
     val fields = types.map { case (name, t) =>
