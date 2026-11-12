@@ -45,7 +45,6 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
   test("compression maps each Iceberg codec string to the matching enum") {
     val mapping = Seq(
       "uncompressed" -> CompressionCodec.None,
-      "none" -> CompressionCodec.None,
       "snappy" -> CompressionCodec.Snappy,
       "gzip" -> CompressionCodec.Gzip,
       "lz4" -> CompressionCodec.Lz4,
@@ -64,11 +63,32 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     assert(settings.getCompression == CompressionCodec.Zstd)
   }
 
-  test("unknown compression codec throws") {
-    val ex = intercept[IllegalArgumentException] {
-      buildParquetSettings(Map(Keys.ParquetCompression -> "lzo"), TestCreatedBy)
+  test("compression codec rejection follows iceberg-java's name resolution") {
+    // iceberg-java upper-cases the name and calls `CompressionCodecName.valueOf`: no trimming,
+    // and `none` is ORC's spelling, not a Parquet codec.
+    Seq("uncompressed", "UNCOMPRESSED", "Snappy", "gzip", "LZ4", "zstd", "brotli").foreach {
+      codec =>
+        assert(
+          compressionCodecRejection(Map(Keys.ParquetCompression -> codec)).isEmpty,
+          s"codec=$codec")
     }
-    assert(ex.getMessage.contains("lzo"))
+    assert(compressionCodecRejection(Map.empty).isEmpty)
+    Seq("none", " gzip", "gzip ", "", "lzo", "lz4_raw", "bogus").foreach { codec =>
+      assert(
+        compressionCodecRejection(Map(Keys.ParquetCompression -> codec)).isDefined,
+        s"codec='$codec'")
+    }
+  }
+
+  test("unknown compression codec throws") {
+    // The gate declines these first; the throw is the defensive path behind it. It resolves the
+    // name as iceberg-java does, so a padded name and ORC's `none` are as unknown as `lzo`.
+    Seq("lzo", " gzip", "none").foreach { codec =>
+      val ex = intercept[IllegalArgumentException] {
+        buildParquetSettings(Map(Keys.ParquetCompression -> codec), TestCreatedBy)
+      }
+      assert(ex.getMessage.contains(codec), s"codec='$codec'")
+    }
   }
 
   test("compression level is emitted when present and parseable") {
@@ -113,7 +133,7 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       // Codecs with no native level concept ignore the property on both sides.
       "snappy" -> "999",
       "lz4" -> "-42",
-      "none" -> "7")
+      "uncompressed" -> "7")
     accepted.foreach { case (codec, level) =>
       val reason = compressionLevelRejection(
         Map(Keys.ParquetCompression -> codec, Keys.ParquetCompressionLevel -> level))
@@ -145,7 +165,7 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
   }
 
   test("non-zstd codecs without explicit level emit no level") {
-    Seq("snappy", "gzip", "lz4", "brotli", "none").foreach { codec =>
+    Seq("snappy", "gzip", "lz4", "brotli", "uncompressed").foreach { codec =>
       val settings =
         buildParquetSettings(Map(Keys.ParquetCompression -> codec), TestCreatedBy)
       assert(!settings.hasCompressionLevel, s"codec=$codec should leave compression level unset")
