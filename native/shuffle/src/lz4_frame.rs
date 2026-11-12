@@ -17,11 +17,12 @@
 
 //! LZ4 frames written with buffers and a hash table kept from one frame to the next.
 //!
-//! Every compressed shuffle block is one LZ4 frame. `lz4_flex::frame::FrameEncoder` owns the
-//! writer it compresses into, and blocks go to different outputs, so `ShuffleBlockWriter` built
-//! one per block, and with it a zeroed 16 KiB hash table, a 64 KiB input buffer and a 70 KiB
-//! output buffer. [`Lz4FrameEncoder`] keeps those and writes the frame format itself around
-//! lz4_flex's block compressor, compressing whole blocks straight from the caller's buffer.
+//! Every compressed shuffle block is one LZ4 frame. [`Lz4FrameEncoder`] writes the frame format
+//! itself around lz4_flex's block compressor, compressing whole blocks straight from the
+//! caller's buffer and writing each block out as soon as it is compressed. One
+//! `lz4_flex::frame::FrameEncoder<Vec<u8>>` kept from frame to frame would reuse its state too,
+//! but it measured no faster than a new encoder per frame on 8192-row blocks
+//! (`benches/shuffle_writer.rs`), and it holds each whole compressed frame until it is copied out.
 //!
 //! The frames have independent blocks of at most 64 KiB, no checksums, no content size and an
 //! end mark. A block that does not get smaller is stored uncompressed, as `FrameEncoder` does.
