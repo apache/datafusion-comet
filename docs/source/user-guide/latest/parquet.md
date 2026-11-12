@@ -211,11 +211,11 @@ page-index, and bloom-filter pruning happen regardless of this flag whenever Spa
 `spark.sql.parquet.filterPushdown` is on, except for filters that compare `FLOAT` or `DOUBLE` values,
 which do not prune while this flag is on (see [Floating-point Number Comparison](compatibility/floating-point.md)).
 
-With `spark.sql.parquet.binaryAsString=true`, the native scan reads every top-level string column
-as binary and decodes it after reading. Filters on those columns prune only for `=`, `IN` and
-`IS [NOT] NULL` against a literal without `U+FFFD`, which the scan compares as raw bytes. Other
-filters on them, such as ranges and `LIKE`, don't prune while the setting is on, even for columns
-the file annotates as strings.
+With `spark.sql.parquet.binaryAsString=true`, filters on a top-level string column prune as usual
+in a file that annotates the column as a string, which includes every file Spark writes. In a file
+that stores the column as unannotated `BINARY`, the native scan decodes it after reading, and only
+`=`, `IN` and `IS [NOT] NULL` against a literal without `U+FFFD` prune, compared as raw bytes.
+Other filters on it, such as ranges and `LIKE`, don't prune in that file.
 
 ### Row Group Assignment to Splits
 

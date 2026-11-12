@@ -1219,6 +1219,8 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
                 // - Spark Cast (for simple scalar types)
                 rewritten
+                    .transform(|e| self.unwrap_binary_round_trip(e))
+                    .data()?
                     .transform(|e| self.unwrap_cast_to_binary_comparison(e))
                     .data()?
                     .transform(|e| self.replace_with_spark_cast(e))
@@ -1443,6 +1445,26 @@ impl SparkPhysicalExprAdapter {
             Ok(Transformed::no(e))
         })
         .data()
+    }
+
+    /// A `binaryAsString` scan reads string columns as Binary and decodes them to strings with a
+    /// Spark cast, in its output projection and in the filters it pushes. For a file that
+    /// annotates such a column as a string, the default adapter makes that
+    /// `CAST(CAST(s AS BINARY) AS STRING)`. arrow-rs has already validated an annotated column's
+    /// bytes, and decoding valid UTF-8 returns it unchanged, so use the column itself. The file
+    /// then skips both casts, and a filter on the decoded value prunes on the column.
+    fn unwrap_binary_round_trip(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        if let Some(cast) = expr.downcast_ref::<Cast>() {
+            if cast.data_type == DataType::Utf8 {
+                if let Some((column, DataType::Utf8)) = self.column_cast_to_binary(&cast.child) {
+                    return Ok(Transformed::yes(column));
+                }
+            }
+        }
+        Ok(Transformed::no(expr))
     }
 
     /// A `binaryAsString` scan reads string columns as Binary, so for a file that annotates one
