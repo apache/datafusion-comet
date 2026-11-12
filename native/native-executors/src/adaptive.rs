@@ -25,7 +25,7 @@
 //! carries the join's output rather than all of its input.
 //!
 //! That only pays off if the probe side's stage hasn't run yet when the build side's size is
-//! known. [`HoldProbeStages`] holds it back before anything runs, where Spark's estimates say the
+//! known. [`HoldProbeStages`] holds it back before it launches, where Spark's estimates say the
 //! measurement could change the plan, and [`BroadcastIntoProbe`] decides once the build side's
 //! stage finishes: it moves the join where the build side measured small, and otherwise releases
 //! the probe side's stage as it was. Holding serialises the two stages, so like Ballista's own
@@ -60,12 +60,15 @@ use prost::Message;
 pub struct CometAdaptiveRules;
 
 impl AdaptiveRules for CometAdaptiveRules {
-    fn preparation_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
-        vec![Arc::new(HoldProbeStages)]
-    }
-
+    /// Both are replan rules: Ballista runs an embedder's preparation rules before it places the
+    /// stage boundaries, and these rules read the exchanges on a stage's inputs. The first replan
+    /// runs when the job is planned, before any stage launches, so [`HoldProbeStages`] sees every
+    /// probe side's stage in time.
     fn replan_rules(&self, plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
-        vec![Arc::new(BroadcastIntoProbe { plan_ids })]
+        vec![
+            Arc::new(HoldProbeStages),
+            Arc::new(BroadcastIntoProbe { plan_ids }),
+        ]
     }
 }
 
@@ -183,6 +186,10 @@ fn ballista_config(config: &ConfigOptions) -> BallistaConfig {
 ///
 /// Spark's estimate of a filtered relation ignores the filter, so a build side under a selective
 /// filter is often far smaller than its estimate.
+///
+/// It runs on every replan, so it holds only a probe side's stage that hasn't launched, and only
+/// while the build side's stage hasn't finished. Once it has, [`BroadcastIntoProbe`] decides the
+/// join, and a probe side's stage it releases is not held again.
 #[derive(Debug)]
 pub struct HoldProbeStages;
 
@@ -235,6 +242,7 @@ impl PhysicalOptimizerRule for HoldProbeStages {
                     };
                     if probe.shuffle_created()
                         || build.shuffle_created()
+                        || probe.stage_id().is_some()
                         || probe.is_inactive_stage()
                         || build_bytes > max_build
                         || probe_bytes < build_bytes.saturating_mul(min_probe_ratio)
