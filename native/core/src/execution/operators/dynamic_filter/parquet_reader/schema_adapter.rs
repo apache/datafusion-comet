@@ -53,7 +53,7 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
     ) -> Result<Arc<dyn PhysicalExprAdapter>> {
         let inner = self
             .inner
-            .create(logical_schema, Arc::clone(&physical_schema))?;
+            .create(Arc::clone(&logical_schema), Arc::clone(&physical_schema))?;
         // DataFusion adapts predicates before projections and row-group pruning.
         // Direct remapping and missing/default literals are safe. Other adaptations
         // can reject nonempty batches or overflow, so let normal decoding run first.
@@ -69,7 +69,19 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
                     Ok(expr) if expr.is::<Literal>() => true,
                     Ok(expr) => expr
                         .downcast_ref::<Column>()
-                        .is_some_and(|column| physical_schema.index_of(column.name()).is_ok()),
+                        .is_some_and(|physical_column| {
+                            let Ok(logical_field) = logical_schema.field_with_name(column.name())
+                            else {
+                                return false;
+                            };
+                            physical_schema
+                                .field_with_name(physical_column.name())
+                                .is_ok_and(|physical_field| {
+                                    // The adapter can erase a same-type nullability cast.
+                                    // Pruning must not skip the decoder's required-field check.
+                                    logical_field.is_nullable() || !physical_field.is_nullable()
+                                })
+                        }),
                     Err(_) => false,
                 });
         Ok(Arc::new(RuntimeFilterSchemaAdapter {
