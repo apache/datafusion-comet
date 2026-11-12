@@ -782,9 +782,7 @@ mod tests {
         assert_eq!(read_ipc_compressed(&local_out[16..]).unwrap(), batch);
     }
 
-    /// LZ4 frames keep 64 KiB blocks for every batch. Before, a local block took its block size
-    /// from its first write, the schema message, so a schema message over 64 KiB gave 256 KiB
-    /// or 4 MiB blocks.
+    /// LZ4 frames use 64 KiB blocks for every batch, whatever the size of its schema message.
     #[test]
     fn lz4_frames_use_64_kib_blocks() {
         let wide = RecordBatch::try_from_iter(

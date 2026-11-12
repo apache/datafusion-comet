@@ -24,9 +24,7 @@
 //! lz4_flex's block compressor, compressing whole blocks straight from the caller's buffer.
 //!
 //! The frames have independent blocks of at most 64 KiB, no checksums, no content size and an
-//! end mark, as remote shuffle's frames had. Local frames used to take their block size from
-//! their first write, the schema message, which gave the same 64 KiB unless that message was
-//! larger. A block that does not get smaller is stored uncompressed, as `FrameEncoder` does.
+//! end mark. A block that does not get smaller is stored uncompressed, as `FrameEncoder` does.
 
 use lz4_flex::block::{compress_into_with_table, get_maximum_output_size, CompressTable};
 use std::io::{self, Write};
