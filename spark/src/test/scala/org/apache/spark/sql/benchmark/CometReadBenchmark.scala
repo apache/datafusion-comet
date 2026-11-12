@@ -425,9 +425,9 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   /**
    * Spark-written strings carry the UTF8 annotation. With `spark.sql.parquet.binaryAsString`, the
-   * native scan still reads them as binary and decodes them, and only `=`, `IN` and `IS [NOT]
-   * NULL` on them reach the reader. This compares a full scan and a selective filter with the
-   * setting off and on.
+   * native scan plans them as binary, and for a file that annotates them reads the string column
+   * directly. This compares a full scan, an equality filter and a range filter with the setting
+   * off and on.
    */
   def binaryAsStringScanBenchmark(values: Int): Unit = {
     withTempPath { dir =>
@@ -441,7 +441,9 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
         Seq(
           "Annotated String Scan" -> "SELECT sum(length(c1)) FROM parquetV1Table",
           "Annotated String Filter" ->
-            "SELECT sum(length(c1)) FROM parquetV1Table WHERE c1 = '500'").foreach {
+            "SELECT sum(length(c1)) FROM parquetV1Table WHERE c1 = '500'",
+          "Annotated String Range Filter" ->
+            "SELECT sum(length(c1)) FROM parquetV1Table WHERE c1 < '11'").foreach {
           case (name, query) =>
             val benchmark = new Benchmark(name, values.toLong, output = output)
             Seq("false", "true").foreach { binaryAsString =>
