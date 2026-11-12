@@ -136,7 +136,7 @@ Comet puts the files of each store into separate partitions, so such a scan can 
 number of partitions than Spark would use. A native Parquet scan packs each store's files on their
 own, so `spark.sql.files.maxPartitionNum` applies to each store's files separately. A native CSV
 scan that would split a partition falls back to Spark when Spark planned the operators above it for
-the scan's own partitioning, as Spark 3.4 does for a scan of one partition.
+the scan's own partitioning.
 
 Such a scan forwards the object store settings of every scheme it reads, so its files can mix
 schemes such as `s3a://`, `gs://` and `hdfs://`. It falls back to Spark when it reads one bucket
@@ -166,8 +166,8 @@ attaches its own worker threads, so a worker that has read from HDFS can crash t
 the HDFS read itself, typically while an unrelated query is running.
 ```
 
-Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-[Iceberg](iceberg.md) page.
+Native Iceberg scans read HDFS through a different client, iceberg-rust's `hdfs-native` backend. See
+the [Iceberg](iceberg.md#hdfs) page.
 
 ### Building Comet with HDFS support
 
@@ -473,7 +473,7 @@ Azure scans discover Root CA Certificates the same way S3 scans do. See [Root CA
 
 ### Authentication is resolved by Hadoop
 
-For each `abfs` or `abfss` path, the Spark driver asks the hadoop-azure library on its classpath which authentication mechanism applies to that container and account, and which values it needs. The question goes to the same `AbfsConfiguration` the ABFS `FileSystem` uses, so every Hadoop rule holds: account-scoped keys (`<key>.<account host>`), container-scoped keys (`<key>.<container>.<account host>`, hadoop-azure 3.4.2 and later), credential providers behind `hadoop.security.credential.provider.path` (a JCEKS keystore, for example) and `${...}` substitution behave exactly as they do for Spark's own reads. This holds for the hadoop-azure matching each Spark line's Hadoop: 3.3.4 with Spark 3.4 and 3.5, 3.4.1 with 4.0, 3.4.2 with 4.1, 3.5.0 with 4.2.
+For each `abfs` or `abfss` path, the Spark driver asks the hadoop-azure library on its classpath which authentication mechanism applies to that container and account, and which values it needs. The question goes to the same `AbfsConfiguration` the ABFS `FileSystem` uses, so every Hadoop rule holds: account-scoped keys (`<key>.<account host>`), container-scoped keys (`<key>.<container>.<account host>`, hadoop-azure 3.4.2 and later), credential providers behind `hadoop.security.credential.provider.path` (a JCEKS keystore, for example) and `${...}` substitution behave exactly as they do for Spark's own reads. This holds for the hadoop-azure matching each Spark line's Hadoop: 3.3.4 with Spark 3.5, 3.4.1 with 4.0, 3.4.2 with 4.1, 3.5.0 with 4.2.
 
 The native scan receives the resolved values and builds the `object_store` client from them. It reads no `fs.azure.*` key of its own. A scan whose files span more than one ABFS container or account, or that mixes `abfs`/`abfss` paths with other schemes, falls back to Spark's own scan.
 

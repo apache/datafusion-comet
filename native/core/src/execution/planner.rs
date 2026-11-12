@@ -810,6 +810,8 @@ impl PhysicalPlanner {
                     expr.is_spark4_plus,
                 );
                 cast_options.decimal_zero_any_exponent = expr.decimal_zero_any_exponent;
+                cast_options.decimal_skip_integral_digit_limit =
+                    expr.decimal_skip_integral_digit_limit;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,

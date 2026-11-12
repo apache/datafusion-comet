@@ -67,6 +67,14 @@ since Comet `1.0.0`. If you run Spark 3.4, stay on the last Comet release that p
 `comet-spark-spark3.4_*`. See [Installing Comet](installation.md) for the supported Java, Scala,
 and Spark versions.
 
+### Deprecated and Removed Settings
+
+`spark.comet.exec.columnarToRow.native.enabled` is deprecated and will be removed in a future major
+release. Comet `1.3.0` removes the Rust columnar-to-row converter that it enabled, so the setting no
+longer has any effect. Comet always converts Arrow batches to Spark rows on the JVM, which was
+already the default. The driver logs a warning when the setting is present in the Spark
+configuration.
+
 ### S3 Request Addressing
 
 Comet's native Parquet and CSV scans now address S3 requests the way Hadoop S3A does (native
