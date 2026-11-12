@@ -23,7 +23,7 @@ use datafusion_comet_common::{SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
-use std::{any::Any, convert, panic::UnwindSafe, result, str, str::Utf8Error};
+use std::{any::Any, convert, panic::UnwindSafe, result, str, str::Utf8Error, sync::Arc};
 
 // This is just a pointer. We'll be returning it from our function. We
 // can't return one of the objects with lifetime information because the
@@ -59,7 +59,7 @@ pub enum ExecutionError {
     JavaException {
         class: String,
         msg: String,
-        throwable: Global<JThrowable<'static>>,
+        throwable: Arc<Global<JThrowable<'static>>>,
     },
 }
 
@@ -175,11 +175,15 @@ pub enum CometError {
     #[error(transparent)]
     Spark(SparkError),
 
+    /// A Java exception raised during an upcall, which the JNI boundary rethrows as it is. The
+    /// throwable is behind an `Arc` because `Global` is not `Clone`: once Spark has thrown during
+    /// a request for memory, the memory pools fail every later request with the same exception,
+    /// without a JNI call each time.
     #[error("{class}: {msg}")]
     JavaException {
         class: String,
         msg: String,
-        throwable: Global<JThrowable<'static>>,
+        throwable: Arc<Global<JThrowable<'static>>>,
     },
 }
 
@@ -1781,7 +1785,8 @@ mod tests {
         );
     }
 
-    /// A throwable captured during an upcall is rethrown as the same object.
+    /// A throwable captured during an upcall is rethrown as the same object, by every error that
+    /// shares it.
     #[test]
     #[cfg_attr(miri, ignore)] // miri cannot create a JVM.
     fn java_exception_is_rethrown() {
@@ -1794,23 +1799,25 @@ mod tests {
                     &[jni::objects::JValue::Object(&message)],
                 )?;
                 let throwable = unsafe { JThrowable::from_raw(env, throwable.into_raw()) };
-                let error = CometError::JavaException {
-                    class: "java.lang.IllegalArgumentException".to_string(),
-                    msg: "from jvm".to_string(),
-                    throwable: env.new_global_ref(throwable)?,
-                };
-                let native_error = NativeError::from_comet_error(&error);
-                assert_eq!(native_error.status, NativeStatus::JavaThrowable);
-                let payload: serde_json::Value =
-                    serde_json::from_str(&native_error.to_payload()).unwrap();
-                assert_eq!(payload["kind"], "rethrow");
+                let throwable = Arc::new(env.new_global_ref(throwable)?);
+                for _ in 0..2 {
+                    let error = CometError::JavaException {
+                        class: "java.lang.IllegalArgumentException".to_string(),
+                        msg: "from jvm".to_string(),
+                        throwable: Arc::clone(&throwable),
+                    };
+                    let native_error = NativeError::from_comet_error(&error);
+                    assert_eq!(native_error.status, NativeStatus::JavaThrowable);
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&native_error.to_payload()).unwrap();
+                    assert_eq!(payload["kind"], "rethrow");
 
-                unwrap_or_throw_default::<()>(env, Err(error));
-                assert_pending_java_exception_detailed(
-                    env,
-                    Some("java/lang/IllegalArgumentException"),
-                    Some("from jvm"),
-                );
+                    unwrap_or_throw_default::<()>(env, Err(error));
+                    assert!(env.exception_check());
+                    let thrown = env.exception_occurred().expect("Unable to get exception");
+                    env.exception_clear();
+                    assert!(env.is_same_object(&thrown, &*throwable)?);
+                }
                 Ok(())
             })
             .unwrap();

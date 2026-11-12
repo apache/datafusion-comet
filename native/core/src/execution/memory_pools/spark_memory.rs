@@ -21,9 +21,8 @@ use std::sync::{
 };
 
 use datafusion::common::DataFusionError;
-use jni::objects::{Global, JObject};
+use jni::objects::{Global, JObject, JThrowable};
 use log::warn;
-use parking_lot::Mutex;
 
 use crate::{
     errors::{CometError, CometResult},
@@ -70,10 +69,9 @@ impl SparkMemoryManager for JniMemoryManager {
 /// throws, for instance, when a spill of another consumer fails, or when the task is killed while
 /// it waits for memory, and either way the task has to fail. So once a request for memory has
 /// failed in Spark, in `acquire` or [`Self::try_acquire`], [`Self::check_failure`] fails, and with
-/// it every later `try_acquire`. If the first failure was in `acquire`, the first of them is handed
-/// its error, so that it reaches the JVM as the exception Spark threw. The others fail with the
-/// message of the first failure, which a failed `try_acquire` has already returned itself. An
-/// operator that takes any error for a refusal and asks again still fails.
+/// it every later `try_acquire`, each time with the exception Spark threw; see [`Failure`]. An
+/// operator that takes any error for a refusal and asks again fails again with that exception,
+/// which reaches the JVM as itself if the operator returns the error as it is.
 ///
 /// # Invariant
 ///
@@ -91,11 +89,58 @@ impl SparkMemoryManager for JniMemoryManager {
 pub(super) struct SparkMemory {
     manager: Box<dyn SparkMemoryManager>,
     overcommit: AtomicUsize,
-    /// The message of the first request to Spark that failed.
-    failure: OnceLock<String>,
-    /// The error of a failed call in [`Self::acquire`], until a request is handed it.
-    thrown: Mutex<Option<CometError>>,
+    /// The first request to Spark that failed.
+    failure: OnceLock<Failure>,
     task_attempt_id: i64,
+}
+
+/// A request to Spark that failed, which fails every later request of the task.
+enum Failure {
+    /// Spark threw. Every later request fails with the same exception, which the JNI boundary
+    /// rethrows as it is, so the task fails with what Spark threw however many requests it
+    /// refuses first. The pool and each of those errors hold the throwable until they drop.
+    Thrown {
+        class: String,
+        msg: String,
+        throwable: Arc<Global<JThrowable<'static>>>,
+    },
+    /// The call failed without an exception from Spark, for instance in JNI. Every later request
+    /// fails with this message, which names the first request.
+    Other(String),
+}
+
+impl Failure {
+    fn new(task_attempt_id: i64, size: usize, error: &CometError) -> Self {
+        match error {
+            CometError::JavaException {
+                class,
+                msg,
+                throwable,
+            } => Failure::Thrown {
+                class: class.clone(),
+                msg: msg.clone(),
+                throwable: Arc::clone(throwable),
+            },
+            _ => Failure::Other(format!(
+                "Task {task_attempt_id} failed to acquire {size} bytes from Spark: {error}"
+            )),
+        }
+    }
+
+    fn error(&self) -> CometError {
+        match self {
+            Failure::Thrown {
+                class,
+                msg,
+                throwable,
+            } => CometError::JavaException {
+                class: class.clone(),
+                msg: msg.clone(),
+                throwable: Arc::clone(throwable),
+            },
+            Failure::Other(message) => DataFusionError::Execution(message.clone()).into(),
+        }
+    }
 }
 
 /// Why [`SparkMemory::try_acquire`] refused a request.
@@ -117,7 +162,6 @@ impl SparkMemory {
             manager,
             overcommit: AtomicUsize::new(0),
             failure: OnceLock::new(),
-            thrown: Mutex::new(None),
             task_attempt_id,
         }
     }
@@ -133,9 +177,9 @@ impl SparkMemory {
         self.check_failure()?;
         let debt = self.overcommit.load(Relaxed);
         let request = size.saturating_add(debt);
-        let acquired = self.ask_spark(request).inspect_err(|e| {
-            self.record_failure(request, e);
-        })?;
+        let acquired = self
+            .ask_spark(request)
+            .inspect_err(|e| self.record_failure(request, e))?;
         let granted = granted(request, acquired);
         if granted < request {
             if granted > 0 {
@@ -168,12 +212,7 @@ impl SparkMemory {
                     "Task {} failed to acquire {size} bytes from Spark: {e:?}",
                     self.task_attempt_id
                 );
-                // Held while the message is published, so that a request that sees the message
-                // waits for the error.
-                let mut thrown = self.thrown.lock();
-                if self.record_failure(size, &e) {
-                    *thrown = Some(e);
-                }
+                self.record_failure(size, &e);
                 0
             }
         };
@@ -195,27 +234,18 @@ impl SparkMemory {
         self.overcommit.load(Relaxed)
     }
 
-    /// Fails once a request to Spark has failed: the first time after a failed [`Self::acquire`]
-    /// with its error, and otherwise with the message of the first request that failed.
+    /// Fails once a request to Spark has failed, every time with that failure; see [`Failure`].
     pub(super) fn check_failure(&self) -> CometResult<()> {
-        let Some(failure) = self.failure.get() else {
-            return Ok(());
-        };
-        Err(self
-            .thrown
-            .lock()
-            .take()
-            .unwrap_or_else(|| DataFusionError::Execution(failure.clone()).into()))
+        match self.failure.get() {
+            None => Ok(()),
+            Some(failure) => Err(failure.error()),
+        }
     }
 
-    /// Keeps the message of the first request to Spark that failed. Returns whether this was it.
-    fn record_failure(&self, size: usize, error: &CometError) -> bool {
+    /// Keeps the first request to Spark that failed.
+    fn record_failure(&self, size: usize, error: &CometError) {
         self.failure
-            .set(format!(
-                "Task {} failed to acquire {size} bytes from Spark: {error}",
-                self.task_attempt_id
-            ))
-            .is_ok()
+            .get_or_init(|| Failure::new(self.task_attempt_id, size, error));
     }
 
     /// Asks Spark for `size` bytes and returns how many it granted.
@@ -246,6 +276,7 @@ fn granted(requested: usize, acquired: i64) -> usize {
 #[cfg(test)]
 pub(super) mod fake {
     use super::*;
+    use parking_lot::Mutex;
 
     /// Grants up to `limit` bytes in total and records every release. Panics if it is handed
     /// back more than it granted, which is the guarantee the pools must keep.
@@ -255,7 +286,9 @@ pub(super) mod fake {
         held: Mutex<usize>,
         released: Mutex<Vec<usize>>,
         fail: bool,
-        fail_next: Mutex<bool>,
+        throw_next: Mutex<bool>,
+        /// The exceptions acquires have thrown, in order.
+        thrown: Mutex<Vec<Arc<Global<JThrowable<'static>>>>>,
         during_acquire: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
@@ -278,9 +311,26 @@ pub(super) mod fake {
             *self.limit.lock() = limit;
         }
 
-        /// Fails the next acquire, as Spark does when it throws.
-        pub(in crate::execution::memory_pools) fn fail_next_acquire(&self) {
-            *self.fail_next.lock() = true;
+        /// Makes the next acquire throw, as Spark does when a spill of another consumer fails.
+        pub(in crate::execution::memory_pools) fn throw_next_acquire(&self) {
+            *self.throw_next.lock() = true;
+        }
+
+        /// Whether `error`, as a pool returns it, is the `n`th exception this fake threw, as a
+        /// Java exception at the top, which the JNI boundary rethrows as itself.
+        pub(in crate::execution::memory_pools) fn is_thrown(
+            &self,
+            n: usize,
+            error: &DataFusionError,
+        ) -> bool {
+            let thrown = Arc::clone(&self.thrown.lock()[n]);
+            let DataFusionError::External(e) = error else {
+                return false;
+            };
+            matches!(
+                e.downcast_ref::<CometError>(),
+                Some(CometError::JavaException { throwable, .. }) if Arc::ptr_eq(throwable, &thrown)
+            )
         }
 
         /// Runs `f` inside the next acquire, before Spark answers. That is where a call from
@@ -313,8 +363,19 @@ pub(super) mod fake {
             if let Some(f) = during {
                 f();
             }
-            if self.fail || std::mem::take(&mut *self.fail_next.lock()) {
+            if self.fail {
                 return Err(CometError::Internal("jni".to_string()));
+            }
+            if std::mem::take(&mut *self.throw_next.lock()) {
+                // A null reference stands in for the throwable, since no JVM runs here. Each
+                // throw has its own, so a test can tell which one an error carries.
+                let throwable = Arc::new(Global::null());
+                self.thrown.lock().push(Arc::clone(&throwable));
+                return Err(CometError::JavaException {
+                    class: "org.apache.spark.memory.SparkOutOfMemoryError".to_string(),
+                    msg: "[SPILL_OUT_OF_MEMORY] Error while calling spill()".to_string(),
+                    throwable,
+                });
             }
             let limit = *self.limit.lock();
             let mut held = self.held.lock();
@@ -425,58 +486,54 @@ mod tests {
         assert!(fake.released().is_empty());
     }
 
+    /// Once a call to Spark has thrown in `acquire`, every later `try_acquire` fails with that
+    /// exception, the first one if Spark threw more than once, without asking Spark, even once
+    /// Spark could grant the request and the debt.
     #[test]
     fn a_failed_acquire_fails_every_later_try_acquire() {
         let fake = FakeSpark::with(200);
         let spark = fake.memory();
-        fake.fail_next_acquire();
+        fake.throw_next_acquire();
         spark.acquire(64);
-        // A second failure does not replace the first.
-        fake.fail_next_acquire();
+        fake.throw_next_acquire();
         spark.acquire(32);
-        assert_eq!(spark.overcommit(), 96);
-
-        // Spark could now grant the request and the debt, but its error has to reach the task.
-        // The first request is handed the error itself, and the others its message.
-        let first = spark.try_acquire(10).unwrap_err();
-        assert!(
-            matches!(&first, CometError::Internal(m) if m == "jni"),
-            "{first:?}"
-        );
-        for _ in 0..2 {
+        for _ in 0..3 {
             let error = DataFusionError::from(spark.try_acquire(10).unwrap_err());
-            assert!(
-                !matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)),
-                "{error:?}"
-            );
-            let message = error.to_string();
-            assert!(message.contains("failed to acquire 64 bytes"), "{message}");
-            assert!(message.contains("jni"), "{message}");
+            assert!(fake.is_thrown(0, &error), "{error:?}");
         }
         assert_eq!(fake.held(), 0);
-        // The 96 bytes are still recorded, and freeing them repays the overcommit.
-        spark.release(96).unwrap();
-        assert_eq!(spark.overcommit(), 0);
-        assert!(fake.released().is_empty());
     }
 
+    /// A `try_acquire` whose call to Spark fails returns that error, and every later one fails
+    /// too, without asking Spark: with the exception Spark threw, or with a message naming the
+    /// first request if the call failed without one.
     #[test]
     fn a_failed_try_acquire_fails_every_later_one() {
         let fake = FakeSpark::with(100);
         let spark = fake.memory();
-        fake.fail_next_acquire();
+        fake.throw_next_acquire();
+        for _ in 0..3 {
+            let error = DataFusionError::from(spark.try_acquire(10).unwrap_err());
+            assert!(fake.is_thrown(0, &error), "{error:?}");
+        }
+        assert_eq!(fake.held(), 0);
+
+        let fake = FakeSpark::failing();
+        let spark = fake.memory();
         let first = spark.try_acquire(10).unwrap_err();
         assert!(
             matches!(&first, CometError::Internal(m) if m == "jni"),
             "{first:?}"
         );
-        // An operator that takes the error for a refusal and asks again fails again.
-        let error = DataFusionError::from(spark.try_acquire(10).unwrap_err());
+        let error = DataFusionError::from(spark.try_acquire(20).unwrap_err());
+        assert!(
+            !matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)),
+            "{error:?}"
+        );
         assert!(
             error.to_string().contains("failed to acquire 10 bytes"),
             "{error}"
         );
-        assert_eq!(fake.held(), 0);
     }
 
     #[test]

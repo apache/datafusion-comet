@@ -181,10 +181,11 @@ mod tests {
         }
     }
 
-    /// Spark refusing memory is a refusal, which makes an operator spill. Spark failing a `grow`
-    /// is not: every later `try_grow` of the task fails with that error, through the wrappers of
-    /// each pool type, also where the pool's own limits or the spill replay would have refused it
-    /// or recorded it past a refusal.
+    /// Spark refusing memory is a refusal, which makes an operator spill. Spark throwing in a
+    /// `grow` is not: every later `try_grow` of the task fails with the exception Spark threw, at
+    /// the top of the error, through the wrappers of each pool type. That holds also where the
+    /// pool's own limits would have refused the request, and for a final aggregate's replay,
+    /// which records a refused request with `grow` but must not record a failed one.
     #[test]
     fn a_failed_grow_fails_every_later_try_grow_of_the_task() {
         for (name, task_attempt_id, pool_type) in [
@@ -207,16 +208,13 @@ mod tests {
             // Spark failed to grant.
             let merge = spillable("FinalHashAggregateStream[0]", &pool);
             let replay = merge.new_empty();
-            fake.fail_next_acquire();
+            fake.throw_next_acquire();
             merge.grow(1000);
             assert_eq!(pool.reserved(), 1000, "{name}");
+            // The sort asks again, as DataFusion's does after spilling on any error.
             for reservation in [&sort, &replay, &sort] {
                 let error = reservation.try_grow(1).unwrap_err();
-                assert!(
-                    !matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)),
-                    "{name}: {error:?}"
-                );
-                assert!(error.to_string().contains("jni"), "{name}: {error}");
+                assert!(fake.is_thrown(0, &error), "{name}: {error:?}");
             }
             assert_eq!(pool.reserved(), 1000, "{name}");
 
