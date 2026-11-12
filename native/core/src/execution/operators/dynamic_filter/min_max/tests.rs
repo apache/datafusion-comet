@@ -37,6 +37,7 @@ mod correctness;
 mod eligibility;
 mod lifecycle;
 mod reader;
+mod schema;
 
 fn aggregate(input: Arc<dyn ExecutionPlan>, is_max: bool) -> AggregateExec {
     let expr = AggregateExprBuilder::new(
