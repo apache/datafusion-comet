@@ -918,6 +918,48 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /** Largest integer `truncate` width whose `(v % W) + W` cannot overflow a Java `int`. */
+  private val MaxSafeIntegerTruncateWidth: Long = 1L << 30
+
+  private val TruncateTransform = """^truncate\[(\d+)\]$""".r
+
+  /**
+   * The names of the `truncate[W]` partition fields of `spec` whose source type is an integer (or
+   * a date) and whose width is above 2^30.
+   *
+   * At those widths Iceberg Java's `TruncateUtil` overflows in `(v % W) + W`, while the format
+   * spec and iceberg-rust compute `v - (v % W)`. A native write would therefore produce a
+   * different partition value than the Iceberg jar the user runs. Throws on reflection failure,
+   * so the caller can fail closed.
+   */
+  def truncateFieldsWithLargeIntegerWidth(spec: Any): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .toSeq
+      .filter { field =>
+        getMethod(field.getClass, "transform").invoke(field).toString match {
+          case TruncateTransform(width) if width.toLong > MaxSafeIntegerTruncateWidth =>
+            val sourceId = getMethod(field.getClass, "sourceId").invoke(field).asInstanceOf[Int]
+            val sourceField = findField.invoke(schema, sourceId.asInstanceOf[Object])
+            if (sourceField == null) {
+              false
+            } else {
+              // Long, string, binary and decimal truncation does not overflow at these widths.
+              val sourceType = getMethod(sourceField.getClass, "type").invoke(sourceField)
+              val typeId = getMethod(sourceType.getClass, "typeId").invoke(sourceType).toString
+              typeId == "INTEGER" || typeId == "DATE"
+            }
+          case _ => false
+        }
+      }
+      .map(field => getMethod(field.getClass, "name").invoke(field).asInstanceOf[String])
+  }
+
   /**
    * Gets the partition spec from an Iceberg table.
    */

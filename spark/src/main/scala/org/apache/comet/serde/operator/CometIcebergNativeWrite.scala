@@ -416,6 +416,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNoMetadataColumns,
     requireSupportedColumnTypes,
     requireNoVoidFieldWithDroppedSource,
+    requireNoLargeWidthIntegerTruncate,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -546,6 +547,27 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
             s"partition field $name is a void transform whose source column was dropped, " +
               "beside a live partition field"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
+    }
+
+  // An integer `truncate[W]` with `W > 2^30` overflows in Iceberg Java's `(v % W) + W`, while
+  // iceberg-rust computes the spec's `v - (v % W)`. Native writes would therefore write a
+  // different partition value than the user's Iceberg jar, which decides the Spark result.
+  // https://github.com/apache/datafusion-comet/issues/7442
+  private val requireNoLargeWidthIntegerTruncate: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for truncate width checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.truncateFieldsWithLargeIntegerWidth(spec).headOption.map { name =>
+            s"partition field $name uses an integer truncate width above 2^30, where " +
+              "iceberg-java and iceberg-rust disagree"
           }
         } catch {
           case e: Exception =>
