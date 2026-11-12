@@ -18,6 +18,53 @@
 use super::*;
 
 #[tokio::test]
+async fn oversized_files_skip_runtime_pruning_when_every_row_group_improves_min() {
+    use super::super::row_group_limit::MAX_ROW_GROUPS_PER_FILE;
+    use std::time::Instant;
+
+    for groups in [MAX_ROW_GROUPS_PER_FILE, MAX_ROW_GROUPS_PER_FILE + 1, 1024] {
+        let session = session(1);
+        let values: Vec<_> = (1..=groups as i32).rev().map(Some).collect();
+        let (_file, scan) = parquet_input(values.clone(), &DataType::Int32, &session, 1);
+        let filtered = Arc::new(wrapper(&aggregate(Arc::clone(&scan) as _, false)));
+        let start = Instant::now();
+        let actual = collect(Arc::clone(&filtered) as _, session.task_ctx())
+            .await
+            .unwrap();
+        let filtered_time = start.elapsed();
+
+        let (_baseline_file, baseline_scan) = parquet_input(values, &DataType::Int32, &session, 1);
+        let start = Instant::now();
+        let baseline = collect(
+            Arc::new(aggregate(Arc::clone(&baseline_scan) as _, false)),
+            session.task_ctx(),
+        )
+        .await
+        .unwrap();
+        eprintln!(
+            "row groups={groups}: wrapper={filtered_time:?}, ordinary={:?}",
+            start.elapsed()
+        );
+
+        assert_eq!(result(&actual), Some(1));
+        assert_eq!(result(&baseline), Some(1));
+        for scan in [scan, baseline_scan] {
+            assert_eq!(metric(scan.as_ref(), "output_rows"), groups);
+            assert_eq!(metric(scan.as_ref(), "row_groups_pruned_dynamic_filter"), 0);
+        }
+        let attached = usize::from(groups <= MAX_ROW_GROUPS_PER_FILE);
+        assert_eq!(
+            metric(filtered.as_ref(), "dynamic_filter_minmax_filters_attached"),
+            attached
+        );
+        assert_eq!(
+            metric(filtered.as_ref(), "dynamic_filter_minmax_filters_skipped"),
+            1 - attached
+        );
+    }
+}
+
+#[tokio::test]
 async fn live_bounds_prune_remapped_row_groups_and_keep_scan_metrics_on_the_scan() {
     let session = session(100);
     for is_max in [false, true] {

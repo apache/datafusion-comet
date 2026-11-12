@@ -34,12 +34,16 @@ use datafusion::physical_plan::distribution_requirements::InputDistributionRequi
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
+use futures::TryStreamExt;
 
 use super::parquet_reader::{parquet_file_source, try_attach_parquet_reader_filter};
+
+mod row_group_limit;
 
 /// Own an unexecuted aggregate template and metric handles. Each execution owns
 /// a fresh aggregate, accumulator bounds, and reader predicate; none of that live
@@ -177,15 +181,6 @@ impl MinMaxReaderFilterExec {
             reader_filter_attached,
         })
     }
-
-    fn execute_runtime_aggregate(
-        &self,
-        aggregate: Arc<dyn ExecutionPlan>,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        super::execute_runtime_plan(aggregate, partition, context, &self.metrics)
-    }
 }
 
 impl DisplayAs for MinMaxReaderFilterExec {
@@ -265,16 +260,34 @@ impl ExecutionPlan for MinMaxReaderFilterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let runtime = self.build_runtime_aggregate()?;
-        let attachment_metric = if runtime.reader_filter_attached {
-            "dynamic_filter_minmax_filters_attached"
-        } else {
-            "dynamic_filter_minmax_filters_skipped"
-        };
-        MetricBuilder::new(&self.metrics)
-            .counter(attachment_metric, partition)
-            .add(1);
-        self.execute_runtime_aggregate(runtime.aggregate, partition, context)
+        let mut runtime = self.build_runtime_aggregate()?;
+        let input = Arc::clone(self.template.input());
+        let metrics = self.metrics.clone();
+        let stream = futures::stream::once(async move {
+            if runtime.reader_filter_attached
+                && !row_group_limit::within_row_group_limit(&input, partition).await
+            {
+                runtime.aggregate = runtime.aggregate.replace_children(
+                    vec![input],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                runtime.reader_filter_attached = false;
+            }
+            let attachment_metric = if runtime.reader_filter_attached {
+                "dynamic_filter_minmax_filters_attached"
+            } else {
+                "dynamic_filter_minmax_filters_skipped"
+            };
+            MetricBuilder::new(&metrics)
+                .counter(attachment_metric, partition)
+                .add(1);
+            super::execute_runtime_plan(runtime.aggregate, partition, context, &metrics)
+        })
+        .try_flatten();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            stream,
+        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
