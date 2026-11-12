@@ -94,7 +94,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    */
   private def isEnabled(guard: If): Boolean = {
     def disabled(e: Expression): Boolean =
-      QueryPlanSerde.exprSerdeMap.get(e.getClass).exists { serde =>
+      QueryPlanSerde.serdeFor(e.getClass).exists { serde =>
         !CometConf.isExprEnabled(
           serde.asInstanceOf[CometExpressionSerde[Expression]].getExprConfigName(e))
       }
