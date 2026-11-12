@@ -156,8 +156,8 @@ impl LocalPartitionWriter {
     }
 
     #[cfg(test)]
-    pub(crate) fn holds_zstd_cctx(&self) -> bool {
-        self.codec_context.holds_zstd_cctx()
+    pub(crate) fn holds_workspaces(&self) -> bool {
+        self.codec_context.holds_workspaces()
     }
 
     #[cfg(test)]

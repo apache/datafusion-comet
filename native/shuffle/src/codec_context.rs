@@ -125,16 +125,11 @@ impl ShuffleCodecContext {
         }
     }
 
-    /// Test hook for the release-vs-retain contract of the two encode paths.
+    /// Test hook for the release-vs-retain contract of the two encode paths: whether a zstd
+    /// context or an LZ4 frame encoder is cached.
     #[cfg(test)]
-    pub(crate) fn holds_zstd_cctx(&self) -> bool {
-        self.zstd.is_some()
-    }
-
-    /// Test hook for the release-vs-retain contract of the LZ4 frame encoder.
-    #[cfg(test)]
-    pub(crate) fn holds_lz4_encoder(&self) -> bool {
-        self.lz4.is_some()
+    pub(crate) fn holds_workspaces(&self) -> bool {
+        self.zstd.is_some() || self.lz4.is_some()
     }
 
     /// Test hook: zstd contexts created so far, for pinning reuse across blocks.
