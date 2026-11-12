@@ -20,7 +20,10 @@ use crate::{
     execution::{
         operators::ExecutionError,
         planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::{decode_remote_shuffle_batch, read_ipc_compressed},
+        shuffle::{
+            dictionary_expansion_ranges, normalize_remote_batch, read_ipc_compressed,
+            read_validated_remote_batch, MAX_EXPANDED_BYTES,
+        },
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -41,6 +44,7 @@ use datafusion_comet_common::cast_and_stamp_schema;
 use futures::{task::AtomicWaker, Stream};
 use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
+    ops::Range,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -63,6 +67,11 @@ pub struct ShuffleScanExec {
     pub schema: SchemaRef,
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// The decoded block whose remaining row ranges are still to be expanded and emitted, when
+    /// its dictionary columns are too large to expand in one batch.
+    pending: Option<PendingBlock>,
+    /// The most value bytes one expanded dictionary column may hold. `i32::MAX` outside tests.
+    max_expanded_bytes: usize,
     /// Woken when `batch` is refilled, so a poll that found it empty is repeated.
     waker: Arc<AtomicWaker>,
     /// Cache of plan properties.
@@ -111,6 +120,8 @@ impl ShuffleScanExec {
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            pending: None,
+            max_expanded_bytes: MAX_EXPANDED_BYTES,
             waker: Arc::new(AtomicWaker::new()),
             cache,
             metrics: metrics_set,
@@ -127,28 +138,55 @@ impl ShuffleScanExec {
         self.waker.wake();
     }
 
-    /// Pulls the next input batch from the JVM unless one is already buffered, then wakes the
-    /// stream waiting for it. Called externally before poll_next() because JNI calls cannot
-    /// happen from within poll_next on tokio threads.
-    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
-        if self.input_source.is_none() {
-            // Unit test mode - no JNI calls needed.
-            return Ok(());
-        }
+    /// Feeds a decoded block into this scan as if `get_next` had returned it. Only used in tests.
+    #[cfg(test)]
+    fn set_input_block(
+        &mut self,
+        block: RecordBatch,
+        max_expanded_bytes: usize,
+        requires_validation: bool,
+    ) {
+        self.max_expanded_bytes = max_expanded_bytes;
+        self.requires_validation = requires_validation;
+        self.queue_block(block);
+    }
 
-        let mut current_batch = self.batch.try_lock().unwrap();
+    /// Fills the buffered batch from the current block's next row range or, once the block is
+    /// used up, from the next block the JVM returns, then wakes the stream waiting for it.
+    /// Called externally before poll_next() because JNI calls cannot happen from within poll_next
+    /// on tokio threads. The next block is pulled only after the current one is fully emitted, so a
+    /// consumer that stops early, such as a LIMIT, never reads further, and a slice that fails to
+    /// normalize is still reported against the stream that supplied it.
+    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+        // Handles cloned out of `self`, so the guard and timer can outlive the `&mut self` calls.
+        let slot = Arc::clone(&self.batch);
+        let mut current_batch = slot.try_lock().unwrap();
         if current_batch.is_some() {
             return Ok(());
         }
 
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
-        let next_batch = Self::get_next(
-            self.exec_context_id,
-            self.input_source.as_ref().unwrap().as_obj(),
-            &self.data_types,
-            &self.decode_time,
-            self.requires_validation,
-        )?;
+        let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
+        let mut timer = elapsed_compute.timer();
+        let next_batch = match self.next_pending_slice()? {
+            Some(slice) => slice,
+            // Unit test mode feeds batches directly, with no JNI calls.
+            None if self.input_source.is_none() => return Ok(()),
+            None => match Self::get_next(
+                self.exec_context_id,
+                self.input_source.as_ref().unwrap().as_obj(),
+                &self.data_types,
+                &self.decode_time,
+                self.requires_validation,
+            )? {
+                None => InputBatch::EOF,
+                Some(block) => {
+                    self.queue_block(block);
+                    self.next_pending_slice()?.ok_or_else(|| {
+                        CometError::Internal("a decoded block yielded no row range".to_string())
+                    })?
+                }
+            },
+        };
         *current_batch = Some(next_batch);
         timer.stop();
         drop(current_batch);
@@ -157,16 +195,80 @@ impl ShuffleScanExec {
         Ok(())
     }
 
-    /// Invokes JNI calls to get the next compressed shuffle block and decode it.
+    /// Queues a decoded block's row ranges, split so that no dictionary column expands past
+    /// `max_expanded_bytes`. A block that fits is one range covering every row.
+    fn queue_block(&mut self, block: RecordBatch) {
+        let ranges = dictionary_expansion_ranges(&block, self.max_expanded_bytes).into_iter();
+        self.pending = Some(PendingBlock { block, ranges });
+    }
+
+    /// Expands the current block's next row range, or returns `None` once the block is used up.
+    /// A failed expansion drops the rest of the block, so no later call can skip its rows.
+    fn next_pending_slice(&mut self) -> Result<Option<InputBatch>, CometError> {
+        let Some(current) = self.pending.as_mut() else {
+            return Ok(None);
+        };
+        let Some(range) = current.ranges.next() else {
+            self.pending = None;
+            return Ok(None);
+        };
+        // A block that fits is passed on whole, skipping the null recount a slice costs.
+        let slice = if range.len() == current.block.num_rows() {
+            current.block.clone()
+        } else {
+            current.block.slice(range.start, range.len())
+        };
+        if current.ranges.as_slice().is_empty() {
+            self.pending = None;
+        }
+        let expanded = self.expand_slice(slice);
+        if expanded.is_err() {
+            self.pending = None;
+        }
+        expanded.map(Some)
+    }
+
+    /// Decodes the dictionaries of one row range of a block into the declared value types.
+    fn expand_slice(&self, slice: RecordBatch) -> Result<InputBatch, CometError> {
+        let num_rows = slice.num_rows();
+        if !self.requires_validation {
+            let columns = slice
+                .columns()
+                .iter()
+                .map(unpack_dictionary)
+                .collect::<DataFusionResult<Vec<_>>>()?;
+            return Ok(InputBatch::new(columns, Some(num_rows)));
+        }
+
+        // Remote blocks are normalized here rather than when decoded, so that each slice is
+        // expanded on its own. A failure still reaches the recovery callback, like a decode one.
+        let mut timer = self.decode_time.timer();
+        let normalized = normalize_remote_batch(slice, &self.data_types);
+        timer.stop();
+        match normalized {
+            Ok(batch) => Ok(InputBatch::new(batch.columns().to_vec(), Some(num_rows))),
+            Err(failure) => {
+                if let Some(input) = &self.input_source {
+                    JVMClasses::with_env(|env| {
+                        report_decode_failure(env, input.as_obj(), &failure)
+                    })?;
+                }
+                Err(failure.into())
+            }
+        }
+    }
+
+    /// Invokes JNI calls to get the next compressed shuffle block and decode it, keeping its
+    /// dictionaries. Returns `None` at the end of the input.
     fn get_next(
         exec_context_id: i64,
         iter: &JObject,
         data_types: &[DataType],
         decode_time: &Time,
         requires_validation: bool,
-    ) -> Result<InputBatch, CometError> {
+    ) -> Result<Option<RecordBatch>, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
-            return Ok(InputBatch::EOF);
+            return Ok(None);
         }
 
         if iter.is_null() {
@@ -183,7 +285,7 @@ impl ShuffleScanExec {
             };
 
             if block_length == -1 {
-                return Ok(InputBatch::EOF);
+                return Ok(None);
             }
 
             // Get the DirectByteBuffer containing the compressed shuffle block
@@ -202,39 +304,42 @@ impl ShuffleScanExec {
             let batch = match decode_shuffle_batch(slice, data_types, requires_validation) {
                 Ok(batch) => batch,
                 Err(failure) => {
-                    // Remote inputs must invalidate the failed shuffle generation even when
-                    // fetching bytes succeeded and only IPC/codec decoding or logical schema
-                    // validation detects the corruption. JNI preserves FetchFailedException.
-                    // Local inputs leave this callback as a no-op and keep the native error.
-                    let message = env.new_string(failure.to_string())?;
-                    unsafe {
-                        jni_call!(env,
-                            comet_shuffle_block_iterator(iter).on_decode_failure(&message) -> ())?;
-                    }
+                    report_decode_failure(env, iter, &failure)?;
                     return Err(failure.into());
                 }
             };
             timer.stop();
 
-            let num_rows = batch.num_rows();
-
-            // Extract column arrays, unpacking any dictionary-encoded columns.
-            // Native shuffle may dictionary-encode string/binary columns for efficiency,
-            // but downstream DataFusion operators expect the value types declared in the
-            // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
-            let columns: Vec<ArrayRef> = batch
-                .columns()
-                .iter()
-                .map(|col| unpack_dictionary(col))
-                .collect();
-
             unsafe {
                 jni_call!(env,
-                    comet_shuffle_block_iterator(iter).inc_records_read(num_rows as i64) -> ())?
+                    comet_shuffle_block_iterator(iter).inc_records_read(batch.num_rows() as i64) -> ())?
             };
-            Ok(InputBatch::new(columns, Some(num_rows)))
+            Ok(Some(batch))
         })
     }
+}
+
+/// A decoded block, still dictionary-encoded, and the row ranges of it not yet emitted.
+#[derive(Debug, Clone)]
+struct PendingBlock {
+    block: RecordBatch,
+    ranges: std::vec::IntoIter<Range<usize>>,
+}
+
+/// Remote inputs must invalidate the failed shuffle generation even when fetching bytes succeeded
+/// and only IPC/codec decoding or logical schema validation detects the corruption. JNI preserves
+/// FetchFailedException. Local inputs leave this callback as a no-op and keep the native error.
+fn report_decode_failure(
+    env: &mut jni::Env,
+    iter: &JObject,
+    failure: &datafusion::common::DataFusionError,
+) -> Result<(), CometError> {
+    let message = env.new_string(failure.to_string())?;
+    unsafe {
+        jni_call!(env,
+            comet_shuffle_block_iterator(iter).on_decode_failure(&message) -> ())?;
+    }
+    Ok(())
 }
 
 fn decode_shuffle_batch(
@@ -244,8 +349,8 @@ fn decode_shuffle_batch(
 ) -> DataFusionResult<RecordBatch> {
     if requires_validation {
         // Validate logical types before decoding dictionaries or normalizing nested fields.
-        // Keep both validation and normalization failures inside get_next's recovery callback.
-        decode_remote_shuffle_batch(bytes, expected_types)
+        // Normalization waits for `expand_slice`, so a large block can be split first.
+        read_validated_remote_batch(bytes, expected_types)
     } else {
         check_column_count(read_ipc_compressed(bytes)?, expected_types.len())
     }
@@ -262,11 +367,13 @@ fn check_column_count(batch: RecordBatch, expected: usize) -> DataFusionResult<R
 }
 
 /// If `array` is dictionary-encoded, cast it to the value type. Otherwise return as-is.
-fn unpack_dictionary(array: &ArrayRef) -> ArrayRef {
+/// Native shuffle may dictionary-encode string/binary columns for efficiency, but downstream
+/// DataFusion operators expect the value types declared in the schema.
+fn unpack_dictionary(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
     if let DataType::Dictionary(_, value_type) = array.data_type() {
-        arrow::compute::cast(array, value_type.as_ref()).expect("failed to unpack dictionary array")
+        Ok(arrow::compute::cast(array, value_type.as_ref())?)
     } else {
-        Arc::clone(array)
+        Ok(Arc::clone(array))
     }
 }
 
@@ -630,60 +737,145 @@ mod tests {
         let bytes = buf.into_inner();
         let body = &bytes[16..];
 
-        // Local decoding preserves the wire encoding for get_next to unpack. Remote decoding
-        // validates and unpacks first, so the same result can also be safely imported by the JVM.
-        let local =
-            super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], false).unwrap();
-        assert!(matches!(
-            local.column(1).data_type(),
-            DataType::Dictionary(_, _)
-        ));
-        let decoded =
-            super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], true).unwrap();
-        assert_eq!(decoded.column(1).data_type(), &DataType::Utf8);
+        // Both decodings keep the wire encoding, so the scan can split a block before expanding
+        // it. Remote decoding validates first, so a corrupt frame is rejected before any cast.
+        // Each is then expanded by the scan, which normalizes the remote one.
+        for requires_validation in [false, true] {
+            let decoded = super::decode_shuffle_batch(
+                body,
+                &[DataType::Int32, DataType::Utf8],
+                requires_validation,
+            )
+            .unwrap();
+            assert!(matches!(
+                decoded.column(1).data_type(),
+                DataType::Dictionary(_, _)
+            ));
 
-        // Create ShuffleScanExec with value types (Utf8, not Dictionary) — this is
-        // what the protobuf schema provides.
-        let mut scan = ShuffleScanExec::new(
-            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
-            None,
-            vec![DataType::Int32, DataType::Utf8],
+            // Create ShuffleScanExec with value types (Utf8, not Dictionary), which is what the
+            // protobuf schema provides.
+            let mut scan = ShuffleScanExec::new(
+                super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+                None,
+                vec![DataType::Int32, DataType::Utf8],
+            )
+            .unwrap();
+            scan.set_input_block(decoded, super::MAX_EXPANDED_BYTES, requires_validation);
+            scan.get_next_batch().unwrap();
+
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let ctx = Arc::new(TaskContext::default());
+                let mut stream = scan.execute(0, ctx).unwrap();
+                let result_batch = stream.next().await.unwrap().unwrap();
+                assert_eq!(
+                    *result_batch.schema().field(1).data_type(),
+                    DataType::Utf8,
+                    "Expected Utf8 after dictionary unpacking"
+                );
+                let col1 = result_batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("Column should be StringArray after unpacking");
+                assert_eq!(col1.value(0), "hello");
+                assert_eq!(col1.value(1), "world");
+                assert_eq!(col1.value(2), "hello");
+            });
+        }
+    }
+
+    /// Expanding a dictionary column past 2 GiB is an error, not a panic. One 300 KiB value behind
+    /// 8192 keys is the shape from issue 7496, and `take` rejects it before allocating.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_oversized_dictionary_unpack_is_an_error() {
+        use arrow::array::{ArrayRef, DictionaryArray};
+        use arrow::datatypes::Int32Type;
+
+        let value = "x".repeat(300 * 1024);
+        let column: ArrayRef = Arc::new(
+            DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(vec![0; 8192]),
+                Arc::new(StringArray::from(vec![value])),
+            )
+            .unwrap(),
+        );
+        assert!(super::unpack_dictionary(&column).is_err());
+    }
+
+    /// A block whose dictionary column would expand past the budget is emitted one row range at a
+    /// time, and the scan records output rows per emitted batch. With a ten-byte budget, the
+    /// four-byte value fits twice per batch.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_large_dictionary_block_is_emitted_in_slices() {
+        use super::*;
+        use arrow::array::{Array, AsArray, DictionaryArray};
+        use arrow::datatypes::Int32Type;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        let names = DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![
+                Some(0),
+                Some(1),
+                None,
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(0),
+            ]),
+            Arc::new(StringArray::from(vec!["abcd", "xyz"])),
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", names.data_type().clone(), true),
+        ]));
+        let block = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from((0..7).collect::<Vec<_>>())),
+                Arc::new(names),
+            ],
         )
         .unwrap();
 
-        // Feed the decoded batch through unpack_dictionary (simulating get_next)
-        let columns: Vec<ArrayRef> = decoded
-            .columns()
-            .iter()
-            .map(|col| super::unpack_dictionary(col))
-            .collect();
-        let input = InputBatch::new(columns, Some(decoded.num_rows()));
-        scan.set_input_batch(input);
-
-        // Execute and verify the output RecordBatch has the expected schema
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let ctx = Arc::new(TaskContext::default());
-            let mut stream = scan.execute(0, ctx).unwrap();
-            let result_batch = stream.next().await.unwrap().unwrap();
-
-            // Schema should have Utf8, not Dictionary
-            assert_eq!(
-                *result_batch.schema().field(1).data_type(),
-                DataType::Utf8,
-                "Expected Utf8 after dictionary unpacking"
-            );
-
-            // Verify data integrity
-            let col1 = result_batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("Column should be StringArray after unpacking");
-            assert_eq!(col1.value(0), "hello");
-            assert_eq!(col1.value(1), "world");
-            assert_eq!(col1.value(2), "hello");
-        });
+        for requires_validation in [false, true] {
+            let mut scan = ShuffleScanExec::new(
+                super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+                None,
+                vec![DataType::Int32, DataType::Utf8],
+            )
+            .unwrap();
+            scan.set_input_block(block.clone(), 10, requires_validation);
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let ctx = Arc::new(TaskContext::default());
+                let mut stream = scan.execute(0, ctx).unwrap();
+                let mut ids = Vec::new();
+                let mut sizes = Vec::new();
+                for slice in 0..3 {
+                    scan.get_next_batch().unwrap();
+                    let batch = stream.next().await.unwrap().unwrap();
+                    if slice == 0 {
+                        // Output rows are counted per emitted batch, not per block.
+                        let output_rows = scan.metrics().unwrap().output_rows().unwrap();
+                        assert_eq!(output_rows, batch.num_rows());
+                    }
+                    assert!(batch.column(1).as_string::<i32>().values().len() <= 10);
+                    sizes.push(batch.num_rows());
+                    let column = batch.column(0).as_primitive::<Int32Type>();
+                    ids.extend(column.values().iter().copied());
+                }
+                assert_eq!(sizes, vec![3, 2, 2]);
+                assert_eq!(ids, (0..7).collect::<Vec<_>>());
+                // The block is used up, so the next pull leaves nothing buffered.
+                scan.get_next_batch().unwrap();
+                assert!(scan.batch.try_lock().unwrap().is_none());
+            });
+        }
     }
 
     /// A decoded shuffle block whose nested field nullability is narrower than the catalyst-declared
