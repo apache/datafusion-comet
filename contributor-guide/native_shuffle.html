@@ -856,6 +856,10 @@ through to the base <code class="docutils literal notranslate"><span class="pre"
 of a two-phase aggregate, comes back from re-planning as the node already planned, whose input was
 serialized as a <code class="docutils literal notranslate"><span class="pre">Scan</span></code> before the stage existed. <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> refreshes such a node: once its input
 is a sink that emits a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code>, that <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> replaces the stale <code class="docutils literal notranslate"><span class="pre">Scan</span></code> leaf.</p>
+<p>The native Iceberg writer builds its own native plan rather than joining its child’s block, and it
+follows the same decision: when its child is a sink that emits a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite</span></code> takes that <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> as the leaf of the write’s plan. See
+<a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p>
 <p>The two are not alternatives on failure. If any output type fails <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde.supportedDataType</span></code>,
 <code class="docutils literal notranslate"><span class="pre">convertToShuffleScan</span></code> records the fallback reason <code class="docutils literal notranslate"><span class="pre">Unsupported</span> <span class="pre">data</span> <span class="pre">type</span> <span class="pre">for</span> <span class="pre">shuffle</span> <span class="pre">direct</span> <span class="pre">read</span></code>
 and returns <code class="docutils literal notranslate"><span class="pre">None</span></code>. It does not retry as a regular <code class="docutils literal notranslate"><span class="pre">Scan</span></code>, and retrying would not help, because

@@ -1379,7 +1379,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code>, <code class="docutils literal notranslate"><span class="pre">2</span></code> or <code class="docutils literal notranslate"><span class="pre">3</span></code> (on <code class="docutils literal notranslate"><span class="pre">3</span></code>, writes that carry row lineage fall back; see below)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.compression-codec</span></code> / <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> / <code class="docutils literal notranslate"><span class="pre">row-group-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-row-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">dict-size-bytes</span></code></p></td>
-<td><p>the sizes/limit must be positive Java ints (<code class="docutils literal notranslate"><span class="pre">Integer.parseInt</span></code> semantics — no trimming, no values past <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code> — matching iceberg-java, whose writer fails on anything else); <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> must be a Java int within the native writer’s per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored by both writers for snappy/lz4/none) — iceberg-java never validates the level, so an out-of-range value falls back rather than becoming a native task failure</p></td>
+<td><p>the sizes/limit must be positive Java ints (<code class="docutils literal notranslate"><span class="pre">Integer.parseInt</span></code> semantics — no trimming, no values past <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code> — matching iceberg-java, whose writer fails on anything else); <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> must be a Java int within the native writer’s per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored for snappy/lz4/none), which iceberg-java never validates, so other levels fall back; <code class="docutils literal notranslate"><span class="pre">brotli</span></code> needs Hadoop’s <code class="docutils literal notranslate"><span class="pre">BrotliCodec</span></code> class on the classpath (see below)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-check-min-record-count</span></code></p></td>
 <td><p>unset or <code class="docutils literal notranslate"><span class="pre">100</span></code> (the default)</p></td>
@@ -1490,6 +1490,14 @@ can be dropped afterwards. A spec that mixes such a field with a live one falls 
 cannot write through it either, so the write fails with iceberg-java’s own error rather than in
 the native writer (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6141">#6141</a>). A spec whose
 fields are all <code class="docutils literal notranslate"><span class="pre">void</span></code> writes unpartitioned and stays eligible.</p>
+<p>A write that compresses with <code class="docutils literal notranslate"><span class="pre">brotli</span></code> falls back unless Hadoop’s
+<code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.io.compress.BrotliCodec</span></code> class can be loaded. parquet-mr compresses and
+decompresses brotli pages with that class, and neither Spark nor Iceberg ships it. Without a brotli
+codec jar on the classpath, iceberg-java fails the write, and no JVM Parquet reader, Spark’s or
+Iceberg’s, can read a brotli file. parquet-rs compresses brotli without the class, so a native write
+would commit files that only a native reader could read. The gate looks the class up on the
+driver, through the class loader that Spark adds application jars to
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6960">#6960</a>).</p>
 <p>Other <code class="docutils literal notranslate"><span class="pre">write.*</span></code> properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
@@ -1656,8 +1664,16 @@ their pages and row groups end at different rows, so byte-identical output is no
 for a default <code class="docutils literal notranslate"><span class="pre">zstd</span></code> table. The decompressed data is identical. For the same reason,
 codec-level side channels (<code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code>, <code class="docutils literal notranslate"><span class="pre">compression.brotli.quality</span></code>,
 <code class="docutils literal notranslate"><span class="pre">io.compression.codec.zstd.level</span></code> — the last is present in every Hadoop configuration by
-default) are not gated: they can only shift compressed bytes, which are already accepted as
-divergent.</p></li>
+default) are not gated: the native writer does not read them, and they can only shift
+compressed bytes, which are already accepted as divergent. A numeric gzip level is the one
+exception, because it changes whether iceberg-java can write at all. Hadoop reads
+<code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code> as the name of a <code class="docutils literal notranslate"><span class="pre">ZlibCompressor.CompressionLevel</span></code> constant, such as
+<code class="docutils literal notranslate"><span class="pre">BEST_SPEED</span></code>, so iceberg-java fails a gzip write whose level is a number, set either as
+<code class="docutils literal notranslate"><span class="pre">write.parquet.compression-level</span></code> or as <code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code> in the Hadoop configuration. It
+fails on Hadoop 3.4, and on Hadoop 3.3 when Hadoop’s native zlib library is loaded. The native
+writer writes such a table at its <code class="docutils literal notranslate"><span class="pre">write.parquet.compression-level</span></code>, or at gzip’s default level,
+and any reader can decompress the pages, whatever the level
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6960">#6960</a>).</p></li>
 </ul>
 </section>
 <section id="manifest-metadata-visible-to-later-readers">
@@ -1748,9 +1764,6 @@ back, which can resolve a column to a different field id
 <h3>Writes that differ from Spark<a class="headerlink" href="#writes-that-differ-from-spark" title="Link to this heading">#</a></h3>
 <p>The native Iceberg writer is disabled by default. With <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>:</p>
 <ul class="simple">
-<li><p><strong>Brotli tables.</strong> The native writer commits brotli-compressed files. JVM Parquet readers can
-read them only if Hadoop’s <code class="docutils literal notranslate"><span class="pre">BrotliCodec</span></code> is on the classpath. iceberg-java fails the write
-instead (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6960">#6960</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">write.parquet.compression-codec=none</span></code>.</strong> The native writer writes the table uncompressed, and
 iceberg-java rejects the value. The native writer also trims or lowercases a few other settings
 that iceberg-java reads as written
