@@ -83,9 +83,13 @@ async fn completed_or_cancelled_streams_release_the_runtime_predicate() {
     for complete in [false, true] {
         let runtime = plan.build_runtime_aggregate().unwrap();
         let weak = Arc::downgrade(&produced_filter(runtime.aggregate.as_ref()));
-        let mut stream = plan
-            .execute_runtime_aggregate(runtime.aggregate, 0, session.task_ctx())
-            .unwrap();
+        let mut stream = super::super::super::execute_runtime_plan(
+            runtime.aggregate,
+            0,
+            session.task_ctx(),
+            &plan.metrics,
+        )
+        .unwrap();
         if complete {
             while let Some(batch) = stream.next().await {
                 batch.unwrap();
