@@ -27,7 +27,7 @@ use datafusion::common::{internal_err, Result, Statistics};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::functions_aggregate::min_max::{Max, Min};
-use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
+use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::{OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
 use datafusion::physical_plan::distribution_requirements::InputDistributionRequirements;
@@ -54,11 +54,13 @@ pub(crate) struct MinMaxReaderFilterExec {
 }
 
 struct RuntimeAggregate {
-    aggregate: AggregateExec,
+    aggregate: Arc<dyn ExecutionPlan>,
     reader_filter_attached: bool,
 }
 
 impl MinMaxReaderFilterExec {
+    // Spark planner integration is a separate step of apache/datafusion-comet#5774.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn try_new(
         aggregate: &AggregateExec,
         config: &ConfigOptions,
@@ -105,7 +107,13 @@ impl MinMaxReaderFilterExec {
         let Some((_, source)) = parquet_file_source(scan) else {
             return Ok(None);
         };
-        if source.filter().is_some() {
+        if source.filter().is_some()
+            || source
+                .projection()
+                .is_some_and(|projection| projection.iter().any(|expr| !expr.expr.is::<Column>()))
+        {
+            // Pruning before a computed scan projection could change its stateful
+            // evaluation or suppress errors, even for an unselected output column.
             return Ok(None);
         }
         Ok(Some(Self::new(aggregate, config.clone())?))
@@ -136,19 +144,36 @@ impl MinMaxReaderFilterExec {
     }
 
     fn build_runtime_aggregate(&self) -> Result<RuntimeAggregate> {
-        let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
-            self.template.aggr_expr()[0].expressions(),
-            lit(true),
-        ));
-        let reader = try_attach_parquet_reader_filter(
-            self.template.input(),
-            Arc::clone(&predicate),
-            &self.config,
-        )?;
+        let aggregate: Arc<dyn ExecutionPlan> = Arc::new(Self::fresh_aggregate(
+            &self.template,
+            Arc::clone(self.template.input()),
+        )?);
+        let predicate = aggregate
+            .dynamic_expressions_produced()
+            .into_iter()
+            .find_map(|expr| {
+                (expr as Arc<dyn std::any::Any + Send + Sync>)
+                    .downcast::<DynamicFilterPhysicalExpr>()
+                    .ok()
+            });
+        let Some(predicate) = predicate else {
+            return Ok(RuntimeAggregate {
+                aggregate,
+                reader_filter_attached: false,
+            });
+        };
+        let reader =
+            try_attach_parquet_reader_filter(self.template.input(), predicate, &self.config)?;
         let reader_filter_attached = reader.is_some();
-        let input = reader.unwrap_or_else(|| Arc::clone(self.template.input()));
-        let aggregate =
-            Self::fresh_aggregate(&self.template, input)?.with_dynamic_filter_expr(predicate)?;
+        // Replacement preserves the fresh aggregate's predicate and accumulator
+        // bounds, so the reader observes exactly the state the aggregate updates.
+        let aggregate = match reader {
+            Some(reader) => aggregate.replace_children(
+                vec![reader],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?,
+            None => aggregate,
+        };
         Ok(RuntimeAggregate {
             aggregate,
             reader_filter_attached,
@@ -157,7 +182,7 @@ impl MinMaxReaderFilterExec {
 
     fn execute_runtime_aggregate(
         &self,
-        aggregate: AggregateExec,
+        aggregate: Arc<dyn ExecutionPlan>,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
@@ -309,7 +334,8 @@ mod tests {
     use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
     use datafusion::functions_aggregate::sum::sum_udaf;
     use datafusion::physical_expr::aggregate::AggregateExprBuilder;
-    use datafusion::physical_expr::expressions::{CastExpr, IsNotNullExpr};
+    use datafusion::physical_expr::expressions::{lit, CastExpr, IsNotNullExpr};
+    use datafusion::physical_expr::projection::{ProjectionExpr, ProjectionExprs};
     use datafusion::physical_plan::aggregates::PhysicalGroupBy;
     use datafusion::physical_plan::collect;
     use datafusion::physical_plan::filter::FilterExec;
@@ -369,11 +395,14 @@ mod tests {
 
     fn metric(plan: &dyn ExecutionPlan, name: &str) -> usize {
         plan.metrics()
-            .and_then(|metrics| metrics.sum_by_name(name))
-            .map_or(0, |value| value.as_usize())
+            .and_then(|metrics| match name {
+                "output_rows" => metrics.output_rows(),
+                _ => metrics.sum_by_name(name).map(|value| value.as_usize()),
+            })
+            .unwrap_or(0)
     }
 
-    fn produced_filter(aggregate: &AggregateExec) -> Arc<DynamicFilterPhysicalExpr> {
+    fn produced_filter(aggregate: &dyn ExecutionPlan) -> Arc<DynamicFilterPhysicalExpr> {
         let mut expressions = aggregate.dynamic_expressions_produced();
         assert_eq!(expressions.len(), 1);
         (expressions.pop().unwrap() as Arc<dyn std::any::Any + Send + Sync>)
@@ -493,12 +522,12 @@ mod tests {
         let plan = Arc::new(wrapper(&aggregate(scan, false)));
         let first = plan.build_runtime_aggregate().unwrap();
         let second = plan.build_runtime_aggregate().unwrap();
-        let first_filter = produced_filter(&first.aggregate);
-        let second_filter = produced_filter(&second.aggregate);
+        let first_filter = produced_filter(first.aggregate.as_ref());
+        let second_filter = produced_filter(second.aggregate.as_ref());
         assert_ne!(first_filter.expression_id(), second_filter.expression_id());
         for (runtime, predicate) in [(first, first_filter), (second, second_filter)] {
             assert_eq!(predicate.snapshot_generation(), 1);
-            let rows = collect(Arc::new(runtime.aggregate), session.task_ctx())
+            let rows = collect(runtime.aggregate, session.task_ctx())
                 .await
                 .unwrap();
             assert_eq!(result(&rows), Some(1));
@@ -521,7 +550,12 @@ mod tests {
             &session,
             2,
         );
-        let replaced = plan.with_new_children(vec![replacement]).unwrap();
+        let replaced = plan
+            .replace_children(
+                vec![replacement],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap();
         assert_eq!(
             result(&collect(replaced, session.task_ctx()).await.unwrap()),
             Some(101)
@@ -540,7 +574,7 @@ mod tests {
         let plan = wrapper(&aggregate(scan, false));
         for complete in [false, true] {
             let runtime = plan.build_runtime_aggregate().unwrap();
-            let weak = Arc::downgrade(&produced_filter(&runtime.aggregate));
+            let weak = Arc::downgrade(&produced_filter(runtime.aggregate.as_ref()));
             let mut stream = plan
                 .execute_runtime_aggregate(runtime.aggregate, 0, session.task_ctx())
                 .unwrap();
@@ -555,6 +589,38 @@ mod tests {
             }
             drop(stream);
             assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn computed_scan_projections_are_rejected() {
+        let session = session();
+        let (_file, scan) = parquet_input(vec![Some(1), Some(2)], &DataType::Int32, &session, 1);
+        let (file_config, source) = parquet_file_source(&scan).unwrap();
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("key", 0));
+        let computed: Arc<dyn PhysicalExpr> =
+            Arc::new(CastExpr::new(Arc::clone(&column), DataType::Int64, None));
+        for projection in [
+            // The aggregate still sees a direct Column, but the scan computes it.
+            vec![ProjectionExpr::new(Arc::clone(&computed), "key")],
+            // Even an unused computed output must not be skipped by pruning.
+            vec![
+                ProjectionExpr::new(Arc::clone(&column), "key"),
+                ProjectionExpr::new(computed, "computed"),
+            ],
+        ] {
+            let mut config = file_config.clone();
+            config.file_source = source
+                .try_pushdown_projection(&ProjectionExprs::new(projection))
+                .unwrap()
+                .unwrap();
+            let scan = Arc::new(scan.as_ref().clone().with_data_source(Arc::new(config)));
+            assert!(MinMaxReaderFilterExec::try_new(
+                &aggregate(scan, false),
+                &ConfigOptions::default(),
+            )
+            .unwrap()
+            .is_none());
         }
     }
 
@@ -607,11 +673,18 @@ mod tests {
             )
             .unwrap(),
         );
-        let sum = AggregateExprBuilder::new(sum_udaf(), vec![Arc::new(Column::new("key", 0))])
-            .schema(scan.schema())
-            .alias("sum")
-            .build()
-            .unwrap();
+        let sum = AggregateExprBuilder::new(
+            sum_udaf(),
+            vec![Arc::new(CastExpr::new(
+                Arc::new(Column::new("key", 0)),
+                DataType::Int64,
+                None,
+            ))],
+        )
+        .schema(scan.schema())
+        .alias("sum")
+        .build()
+        .unwrap();
         rejected(
             AggregateExec::try_new(
                 AggregateMode::Partial,
