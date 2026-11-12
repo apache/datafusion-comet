@@ -16,54 +16,6 @@
 // under the License.
 
 use super::*;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::file::metadata::ParquetMetaDataWriter;
-use parquet::file::statistics::Statistics as ParquetStatistics;
-use parquet::file::writer::TrackedWrite;
-use std::io::Write;
-
-pub(super) fn omit_last_null_count(file: &tempfile::NamedTempFile, column: usize) {
-    let original = std::fs::read(file.path()).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file.reopen().unwrap()).unwrap();
-    let mut builder = reader.metadata().as_ref().clone().into_builder();
-    let mut groups = builder.take_row_groups();
-    let group = groups.pop().unwrap();
-    let mut columns = group.columns().to_vec();
-    let Some(ParquetStatistics::Int32(stats)) = columns[column].statistics() else {
-        panic!("expected INT32 statistics");
-    };
-    let (min, max) = (stats.min_opt().copied(), stats.max_opt().copied());
-    columns[column] = columns[column]
-        .clone()
-        .into_builder()
-        .set_statistics(ParquetStatistics::int32(min, max, None, None, false))
-        .build()
-        .unwrap();
-    groups.push(
-        group
-            .into_builder()
-            .set_column_metadata(columns)
-            .build()
-            .unwrap(),
-    );
-    let metadata = builder.set_row_groups(groups).build();
-    let mut output = TrackedWrite::new(file.reopen().unwrap());
-    output.write_all(&original).unwrap();
-    ParquetMetaDataWriter::new_with_tracked(output, &metadata)
-        .finish()
-        .unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file.reopen().unwrap()).unwrap();
-    assert!(reader
-        .metadata()
-        .row_groups()
-        .last()
-        .unwrap()
-        .column(column)
-        .statistics()
-        .unwrap()
-        .null_count_opt()
-        .is_none());
-}
 
 /// Exercise both initial pruning of a later file and live pruning within one file.
 #[tokio::test]
@@ -94,7 +46,7 @@ async fn topk_preserves_unknown_null_counts_and_prunes_known_zero_counts() {
                         .map(|values| parquet_input(values, &DataType::Int32, &session, 3).0)
                         .collect::<Vec<_>>();
                     if missing_count {
-                        omit_last_null_count(files.last().unwrap(), 1);
+                        omit_null_counts(files.last().unwrap(), 1, &[usize::from(!separate_files)]);
                     }
                     let schema = Arc::new(Schema::new(vec![
                         Field::new("payload", DataType::Int32, false),
@@ -149,7 +101,7 @@ async fn direct_null_check_retains_attachment_with_unknown_null_counts() {
             3,
         );
         if missing_count {
-            omit_last_null_count(&file, 1);
+            omit_null_counts(&file, 1, &[1]);
         }
         let schema = Arc::new(Schema::new(vec![
             Field::new("payload", DataType::Int32, false),
