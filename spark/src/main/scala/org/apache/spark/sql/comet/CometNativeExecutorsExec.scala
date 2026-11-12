@@ -244,7 +244,6 @@ object CometNativeExecutors {
     val root = plan match {
       case ColumnarToRowExec(child) => child
       case CometColumnarToRowExec(child) => child
-      case CometNativeColumnarToRowExec(child) => child
       case other => other
     }
     builder.stageOf(root)
