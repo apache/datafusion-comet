@@ -72,3 +72,23 @@ no Docker daemon is reachable; setting `COMET_DELTA_S3_REQUIRED=1`, as the
 
 `dev/` contains a benchmark script (`bench_delta_comet.py`) and a harness for
 running Delta's own test suites against Comet (`run-delta-regression.sh`).
+
+### InterleaveBits benchmark
+
+Run from the repository root with JDK 17 and the Rust toolchain available:
+
+```shell
+(cd native && cargo build --release)
+./mvnw -Pspark-4.1,delta -Prelease install -DskipTests
+COMET_BENCHMARK_JVM_ARGS=$(./mvnw -q -Pspark-4.1 help:evaluate -DforceStdout -Dexpression=extraJavaTestArgs)
+COMET_CONF_DIR="$PWD/conf" \
+  ./mvnw -f contrib/delta-spark/pom.xml -Pspark-4.1,delta -Prelease \
+  exec:exec -Dexec.executable=java -Dexec.classpathScope=test \
+  "-Dexec.args=-Xmx6g $COMET_BENCHMARK_JVM_ARGS -Djava.library.path=$PWD/native/target/release -classpath %classpath org.apache.spark.sql.benchmark.CometDeltaInterleaveBitsBenchmark"
+```
+
+This compares one and two integer inputs over one million Parquet rows, including
+nulls in the second input, with Delta's fast implementation enabled and disabled.
+Both engines consume the projected keys. Check the output for fallback warnings
+before interpreting timings. Results include scanning and projection; they do
+not measure `OPTIMIZE` or the kernel in isolation.

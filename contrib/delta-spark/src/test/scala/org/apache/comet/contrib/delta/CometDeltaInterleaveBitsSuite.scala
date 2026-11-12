@@ -245,7 +245,7 @@ class CometDeltaInterleaveBitsSuite extends CometDeltaTestBase {
       val zOrderBy = lastOperation
         .getAs[scala.collection.Map[String, String]]("operationParameters")
         .get("zOrderBy")
-      assert(zOrderBy.exists(v => v.contains("a") && v.contains("b")), s"zOrderBy: $zOrderBy")
+      assert(zOrderBy.contains("""["a","b"]"""), s"zOrderBy: $zOrderBy")
       checkAnswer(spark.read.format("delta").load(path), before)
     }
   }

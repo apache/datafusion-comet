@@ -66,9 +66,9 @@ Calls with more inputs fall back to Spark. This does not depend on
 `spark.comet.scan.delta.enabled`. To turn it off, set
 `spark.comet.expression.InterleaveBits.enabled=false`.
 
-`OPTIMIZE ... ZORDER BY` does not benefit yet. There the inputs of
-`InterleaveBits` are Delta's range-partition expressions, which Comet does not
-support, so that projection still falls back to Spark.
+`OPTIMIZE ... ZORDER BY` uses Delta's range-partition expressions as inputs to
+`InterleaveBits`. Comet does not support those inputs, so the key projection
+falls back to Spark.
 
 ## Configuration
 
