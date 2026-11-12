@@ -70,6 +70,11 @@ object CometCast
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
       .toBoolean
 
+  private def allowNegativeScaleOfDecimal: Boolean =
+    SQLConf.get
+      .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
+      .toBoolean
+
   // Spark rounds the shortest decimal string form of the value (`Double.toString`) rather
   // than its binary expansion, and Comet's native cast reproduces that. `Double.toString`
   // only emits the shortest round-trip form on JDK 19 and later (JDK-4511638); older JDKs
@@ -186,6 +191,9 @@ object CometCast
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         castBuilder.setDecimalZeroAnyExponent(
           SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
+        // Spark does not apply the 38 integral-digit limit to a string cast to decimal with
+        // spark.sql.legacy.allowNegativeScaleOfDecimal.
+        castBuilder.setDecimalSkipIntegralDigitLimit(allowNegativeScaleOfDecimal)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
@@ -367,9 +375,7 @@ object CometCast
         // which produces scientific notation (e.g. "1.23E+4"). Comet matches this behavior.
         // When the config is disabled, negative-scale decimals cannot be created in Spark,
         // so we mark this as incompatible to avoid native execution on unexpected inputs.
-        val allowNegativeScale = SQLConf.get
-          .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
-          .toBoolean
+        val allowNegativeScale = allowNegativeScaleOfDecimal
         if (allowNegativeScale) Compatible()
         else Incompatible(Some(negativeScaleDecimalToStringReason))
       case _: DecimalType =>
