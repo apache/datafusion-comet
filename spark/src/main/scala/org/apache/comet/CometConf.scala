@@ -121,6 +121,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_NATIVE_HDFS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.hdfs.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan reads tables on HDFS, through iceberg-rust's " +
+          "experimental `hdfs-native` backend. When false, a scan that reads HDFS files falls " +
+          "back to Spark's Iceberg reader, and scans of other storage are unaffected.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
@@ -521,11 +531,8 @@ object CometConf extends ShimCometConf {
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
-          "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
-          "of the JVM implementation. The native conversion carries a fixed JNI cost per batch " +
-          "and is slower than the JVM implementation for small batches.")
+      .doc("Deprecated: this config will be removed in a future major release. It has no " +
+        "effect: Comet always converts Arrow batches to Spark rows on the JVM.")
       .booleanConf
       .createWithDefault(false)
 
@@ -533,13 +540,12 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental: Whether to use the direct columnar to row converter in the JVM " +
+        "Experimental: Whether to use the direct columnar to row converter in Comet's " +
           "columnar to row operator's non-codegen paths (including broadcast relation " +
           "builds). The direct converter writes values straight from Arrow buffers into " +
           "UnsafeRow format without per-value object allocation, which is significantly " +
           "faster for decimal-heavy schemas. Schemas with unsupported data types fall back " +
-          "to the default conversion. Only applies when the JVM columnar to row operator is " +
-          "used (spark.comet.exec.columnarToRow.native.enabled=false).")
+          "to the default conversion.")
       .booleanConf
       .createWithDefault(false)
 
