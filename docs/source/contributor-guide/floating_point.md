@@ -143,8 +143,8 @@ normalized and the output keeps the original values.
 
 Rules that depend on the Spark version are decided in Scala. The serde either chooses the native
 path or passes a flag to native code, as `Mode`'s `normalize_neg_zero` does. Where a patch release
-changed the rule, check the runtime version down to the patch with
-`Utils.majorMinorPatchVersion(SPARK_VERSION)`, as `ArraySetSupport` in `arrays.scala` does.
+changed the rule, add a predicate to `SparkFixes` that checks the version down to the patch with
+`Utils.majorMinorPatchVersion`, as `SparkFixes.arraySetFunctionsNormalizeFloats` does.
 
 Until an expression has a native implementation that follows its rule, report it `Incompatible`
 for floating-point input so that Spark evaluates it.
