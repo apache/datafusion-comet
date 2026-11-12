@@ -684,25 +684,28 @@ mod tests {
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn codec_context_usable_after_write_error() {
         let batch = test_batch(1, 100);
-        let writer =
-            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut ctx = ShuffleCodecContext::default();
+        for codec in [CompressionCodec::Zstd(1), CompressionCodec::Lz4Frame] {
+            let writer = ShuffleBlockWriter::try_new(&test_schema(), codec.clone()).unwrap();
+            let mut ctx = ShuffleCodecContext::default();
 
-        // Fits the 20-byte header but not the body: the encoder dies mid-frame.
-        let mut failing = FailingSink {
-            inner: Cursor::new(vec![]),
-            remaining: 64,
-        };
-        assert!(writer
-            .write_batch(&batch, &mut failing, &mut ctx, &Time::default())
-            .is_err());
+            // Fits the 20-byte header but not the body: the encoder dies mid-frame.
+            let mut failing = FailingSink {
+                inner: Cursor::new(vec![]),
+                remaining: 64,
+            };
+            assert!(writer
+                .write_batch(&batch, &mut failing, &mut ctx, &Time::default())
+                .is_err());
+            // a local write keeps its workspace, so the next block reuses the failed one's
+            assert!(ctx.holds_workspaces(), "{codec:?}");
 
-        let mut out = vec![];
-        let mut cursor = Cursor::new(&mut out);
-        writer
-            .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
-            .unwrap();
-        assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+            let mut out = vec![];
+            let mut cursor = Cursor::new(&mut out);
+            writer
+                .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch, "{codec:?}");
+        }
     }
 
     /// RSS encodes free the codec workspaces each time (their memory is only reserved per
