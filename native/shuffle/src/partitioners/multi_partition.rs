@@ -28,6 +28,7 @@ use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::{DataFusionError, HashSet};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion_comet_common::is_refusal;
 use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use itertools::Itertools;
@@ -174,15 +175,6 @@ fn count_new_buffers(batch: &RecordBatch, seen: &mut HashSet<usize>) -> usize {
         visit(&column.to_data(), seen, &mut total);
     }
     total
-}
-
-/// Whether `e`, from growing the spill reservation, is the pool refusing the memory, which every
-/// pool reports as `ResourcesExhausted` and the repartitioner answers by spilling. A pool backed
-/// by Spark can also fail with an exception Spark threw, such as a failed spill of another
-/// consumer or the interrupt of a killed task. That comes back as another kind of error and has
-/// to fail the task. Spilling would hide it, and the task would carry on as if Spark had refused.
-fn is_refusal(e: &DataFusionError) -> bool {
-    matches!(e.find_root(), DataFusionError::ResourcesExhausted(_))
 }
 
 impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
