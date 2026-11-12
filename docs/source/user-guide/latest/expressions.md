@@ -769,4 +769,4 @@ still falls back when needed.
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.
-- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.
+- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.5 / 4.0 / 4.1) audit notes for audited expressions.

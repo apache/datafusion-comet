@@ -44,8 +44,7 @@ import org.apache.comet.vector.CometVector;
  * <p>When every column is fixed-width (no strings, no decimals above precision 18), the whole batch
  * is converted column-at-a-time in {@link #setBatch(ColumnarBatch)} into a single buffer with a
  * constant row stride: one monomorphic loop per column with the null check hoisted out for
- * null-free columns, mirroring the native converter's fixed-width fast path. In that mode {@link
- * #convertRow(int)} only repoints the reused row.
+ * null-free columns. In that mode {@link #convertRow(int)} only repoints the reused row.
  *
  * <p>The produced rows are byte-identical to {@code UnsafeProjection} output, which matters because
  * {@link UnsafeRow} equality and hashing are byte-wise. The returned row and its backing buffer are
