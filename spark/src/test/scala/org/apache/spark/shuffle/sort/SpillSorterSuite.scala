@@ -44,7 +44,7 @@ import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 
 import org.apache.comet.Native
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -53,7 +53,7 @@ import org.apache.comet.vector.NativeUtil
  * These tests verify SpillSorter behavior using Spark's test memory management infrastructure,
  * without needing a full SparkContext.
  */
-@ShuffleGroup
+@ShuffleTestGroup
 class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
 
   private val INITIAL_SIZE = 1024

@@ -35,9 +35,9 @@ import org.apache.spark.sql.types.{ByteType, IntegerType, LongType, ShortType}
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometTopKSuite extends CometTestBase {
 
   private def localTopK(plan: SparkPlan): CometLocalTopKExec = {

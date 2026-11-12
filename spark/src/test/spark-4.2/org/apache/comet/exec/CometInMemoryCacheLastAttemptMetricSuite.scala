@@ -27,10 +27,10 @@ import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.metric.SQLLastAttemptMetrics
 
 import org.apache.comet.CometConf
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /** Spark 4.2's last-attempt metrics over a relation cached in Comet's format. */
-@ExecGroup
+@ExecTestGroup
 class CometInMemoryCacheLastAttemptMetricSuite extends CometTestBase {
 
   import testImplicits._

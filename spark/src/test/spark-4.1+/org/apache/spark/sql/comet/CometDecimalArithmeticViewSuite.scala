@@ -25,9 +25,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.serde.{CometScalarFunction, ExprOuterClass, QueryPlanSerde}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometDecimalArithmeticViewSuite extends CometTestBase {
 
   // Spark 4.1+ (SPARK-53968) stores `spark.sql.decimalOperations.allowPrecisionLoss` per

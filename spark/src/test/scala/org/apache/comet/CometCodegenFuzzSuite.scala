@@ -37,7 +37,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.codegen.CometBatchKernelCodegen
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.vector.CometVector
 
@@ -48,7 +48,7 @@ import org.apache.comet.vector.CometVector
  * (not [[CometFuzzTestBase]]) because the base's per-shuffle-mode runs are irrelevant for
  * projection-only queries.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometCodegenFuzzSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper

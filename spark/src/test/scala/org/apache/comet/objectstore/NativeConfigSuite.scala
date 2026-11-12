@@ -28,9 +28,9 @@ import org.apache.hadoop.conf.Configuration
 
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 import org.apache.comet.objectstore.AbfsAuthResolver.{Keys, Markers, Providers}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
   /**

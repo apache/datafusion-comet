@@ -22,9 +22,9 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.comet.serde.{CometMakeTimestamp, CometRLike, CometToUnixTimestamp, NativeOptInAvailable}
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class GenerateDocsSuite extends AnyFunSuite {
 
   private val configKey = "spark.comet.expression.RLike.allowIncompatible"

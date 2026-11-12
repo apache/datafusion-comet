@@ -43,9 +43,9 @@ import org.apache.spark.sql.types.{BinaryType, IntegerType, MetadataBuilder, Str
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
 
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
-@ShuffleGroup
+@ShuffleTestGroup
 class CometDiskBlockWriterSuite extends AnyFunSuite {
 
   private val schema = StructType(Seq(StructField("a", BinaryType)))

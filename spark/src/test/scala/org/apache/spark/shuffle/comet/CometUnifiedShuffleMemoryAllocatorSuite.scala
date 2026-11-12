@@ -24,9 +24,9 @@ import org.apache.logging.log4j.core.LogEvent
 import org.apache.spark.{CometTaskMemoryManager, TaskContext, TaskContextImpl, TaskMemoryTestUtils}
 import org.apache.spark.memory.SparkOutOfMemoryError
 
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
-@ShuffleGroup
+@ShuffleTestGroup
 class CometUnifiedShuffleMemoryAllocatorSuite extends TaskMemoryTestUtils {
 
   private val PageSize = 20L

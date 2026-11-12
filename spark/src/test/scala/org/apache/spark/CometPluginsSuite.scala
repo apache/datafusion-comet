@@ -34,9 +34,9 @@ import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
 import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -177,7 +177,7 @@ class CometPluginsSuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsDefaultSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -196,7 +196,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
 
   private val warning =
@@ -280,7 +280,7 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsDeprecatedConfigWarningSuite extends CometTestBase {
 
   private def warningsFor(conf: SparkConf): Seq[String] = {
@@ -307,7 +307,7 @@ class CometPluginsDeprecatedConfigWarningSuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsUnifiedModeSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -336,7 +336,7 @@ class CometPluginsUnifiedModeSuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsExtensionOnlySuite extends CometTestBase {
   // No plugin and no off-heap memory. CometTestBase registers CometSparkSessionExtensions
   // directly, as an application can with spark.sql.extensions.
@@ -398,7 +398,7 @@ class CometPluginsExtensionOnlySuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
   // The application runs Spark's own shuffle manager.
   override protected def sparkConf: SparkConf = {
@@ -440,7 +440,7 @@ class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
   }
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometPluginsEventLogSuite extends SparkFunSuite {
 
   import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}

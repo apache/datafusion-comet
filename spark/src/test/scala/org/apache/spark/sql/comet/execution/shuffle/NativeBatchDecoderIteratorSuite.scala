@@ -28,10 +28,10 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.metric.SQLMetrics
 
 import org.apache.comet.Native
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 import org.apache.comet.vector.NativeUtil
 
-@ShuffleGroup
+@ShuffleTestGroup
 class NativeBatchDecoderIteratorSuite extends CometTestBase {
 
   import NativeShuffleTestFrames.{intFrame, TrackingInputStream}

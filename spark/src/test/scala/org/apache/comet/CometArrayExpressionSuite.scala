@@ -37,7 +37,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, I
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, CometSequence, Compatible, ExprOuterClass, Incompatible, SparkFixes}
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 /** Counts calls to a test UDF. Comet tests run in local mode, so tasks see this object. */
@@ -45,7 +45,7 @@ object SizeChildCounter {
   val calls = new AtomicLong(0)
 }
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("array set signed-zero support levels") {

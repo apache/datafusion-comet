@@ -24,10 +24,10 @@ import scala.util.Random
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructField, StructType}
 
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
-@ScansGroup
+@ScansTestGroup
 class DataGeneratorSuite extends CometTestBase {
 
   test("allowNull produces nulls in every type that honours it") {

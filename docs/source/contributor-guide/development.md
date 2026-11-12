@@ -713,19 +713,19 @@ is listed under the group in the `suite` matrix of **both** workflow files:
 - `.github/workflows/pr_build_linux.yml`
 - `.github/workflows/pr_build_macos.yml`
 
-| Tag                 | Group         | Covers                                                         |
-| ------------------- | ------------- | -------------------------------------------------------------- |
-| `@ScansGroup`       | `scans`       | Parquet, CSV and Iceberg reads and writes, and the fuzz suites |
-| `@ShuffleGroup`     | `shuffle`     | Native and columnar shuffle, and the Celeborn integration      |
-| `@ExecGroup`        | `exec`        | Operators, plan rules, plugins, memory, and TPC queries        |
-| `@ExpressionsGroup` | `expressions` | Expression evaluation, casts, codegen, and the SQL file tests  |
+| Tag                     | Group         | Covers                                                         |
+| ----------------------- | ------------- | -------------------------------------------------------------- |
+| `@ScansTestGroup`       | `scans`       | Parquet, CSV and Iceberg reads and writes, and the fuzz suites |
+| `@ShuffleTestGroup`     | `shuffle`     | Native and columnar shuffle, and the Celeborn integration      |
+| `@ExecTestGroup`        | `exec`        | Operators, plan rules, plugins, memory, and TPC queries        |
+| `@ExpressionsTestGroup` | `expressions` | Expression evaluation, casts, codegen, and the SQL file tests  |
 
 For example, a new expression suite goes in the `expressions` group:
 
 ```scala
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class YourNewExpressionSuite extends CometTestBase {
 ```
 

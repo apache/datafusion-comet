@@ -26,14 +26,14 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.SparkConf
 
 import org.apache.comet.hadoop.fs.RecordingFileSystem
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * Native Parquet writes whose tasks Spark retries. A suite of its own because a task gets more
  * than one attempt only under a `local[N,M]` master, and the failure tests elsewhere expect a
  * failed task to fail its job.
  */
-@ScansGroup
+@ScansTestGroup
 class CometParquetWriterRetrySuite extends CometParquetWriterTestBase {
 
   override protected def sparkConf: SparkConf =

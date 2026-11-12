@@ -32,10 +32,10 @@ import org.apache.xbean.asm9.tree.{ClassNode, FieldInsnNode, MethodInsnNode}
 import com.google.common.reflect.ClassPath
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.util.ClassLoaders
 
-@ExecGroup
+@ExecTestGroup
 class CometPlanEqualitySuite extends AnyFunSuite {
 
   // Native serialization state and the source plan are deliberately not the identity of a

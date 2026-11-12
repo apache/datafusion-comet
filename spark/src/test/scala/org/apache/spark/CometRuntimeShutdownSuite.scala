@@ -33,7 +33,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions.{expr, sum}
 import org.apache.spark.util.Utils
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Entry point run in a child JVM by [[CometRuntimeShutdownSuite]]. Executes a native Comet query
@@ -80,7 +80,7 @@ object CometRuntimeShutdownMain {
  * Runs Comet in a child JVM because the failure mode under test, the JVM being unable to exit,
  * cannot be observed from inside the affected JVM.
  */
-@ExecGroup
+@ExecTestGroup
 class CometRuntimeShutdownSuite extends AnyFunSuite {
 
   test("JVM exits when main returns without SparkContext.stop()") {

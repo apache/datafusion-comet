@@ -26,8 +26,8 @@ import java.lang.annotation.Target;
 
 import org.scalatest.TagAnnotation;
 
-/** Puts a suite in the `scans` CI test group. See "Test Groups" in the development guide. */
+/** Puts a suite in the `exec` CI test group. See "Test Groups" in the development guide. */
 @TagAnnotation
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.TYPE})
-public @interface ScansGroup {}
+public @interface ExecTestGroup {}

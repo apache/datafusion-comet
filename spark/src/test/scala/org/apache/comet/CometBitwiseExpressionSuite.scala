@@ -25,10 +25,10 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("bitwise expressions") {

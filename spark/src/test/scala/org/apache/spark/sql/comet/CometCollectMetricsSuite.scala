@@ -37,9 +37,9 @@ import org.apache.spark.sql.util.QueryExecutionListener
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometCollectMetricsSuite extends CometTestBase {
 
   import testImplicits._

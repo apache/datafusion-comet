@@ -32,9 +32,9 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.SparkConf
 
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
-@ShuffleGroup
+@ShuffleTestGroup
 class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
 
   private val encodedAttemptId = (4 << 16) | 7

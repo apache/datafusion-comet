@@ -25,9 +25,9 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.CometNativeExec
 
 import org.apache.comet.serde.{ExprOuterClass, OperatorOuterClass}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class QueryContextInternerSuite extends CometTestBase {
 
   private val sqlText =

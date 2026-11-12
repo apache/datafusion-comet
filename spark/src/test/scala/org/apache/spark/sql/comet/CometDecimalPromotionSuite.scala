@@ -27,9 +27,9 @@ import org.apache.spark.sql.types.{DecimalType, IntegerType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.serde.{CometDivide, ExprOuterClass, QueryPlanSerde, Unsupported}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometDecimalPromotionSuite extends CometTestBase {
 
   private case class Operation(

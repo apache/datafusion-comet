@@ -32,14 +32,14 @@ import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.iceberg.CometTestKMS
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * Encryption-specific Iceberg tests. Lives in the spark-4.1 source set because Iceberg table
  * encryption is a V3 feature and the encryption APIs (KeyManagementClient, StandardEncryption
  * manager) are only public from Iceberg 1.11, which Comet pairs with Spark 4.1.
  */
-@ScansGroup
+@ScansTestGroup
 class CometIcebergEncryptionSuite
     extends CometTestBase
     with CometIcebergTestBase

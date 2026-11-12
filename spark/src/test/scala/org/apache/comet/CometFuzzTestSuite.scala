@@ -28,11 +28,11 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
-@ScansGroup
+@ScansTestGroup
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
   test("select *") {

@@ -43,7 +43,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.{CometApplyFunctionExpression, CometExpressionSerde, CometIcebergBucket, CometIcebergSystemFunctions, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * Native support for Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -56,7 +56,7 @@ import org.apache.comet.tags.ScansGroup
  * out-of-order partitions); in a filter or projection it would be a silently wrong answer, which
  * is why the coverage is per type rather than a few hand-picked rows.
  */
-@ScansGroup
+@ScansTestGroup
 class CometIcebergSystemFunctionSuite
     extends CometTestBase
     with CometIcebergTestBase

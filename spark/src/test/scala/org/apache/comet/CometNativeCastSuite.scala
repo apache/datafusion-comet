@@ -40,7 +40,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, SparkFixes, Unsupported}
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -63,7 +63,7 @@ import org.apache.comet.tags.ExpressionsGroup
  * through the dispatcher instead. Adding a native cast implementation therefore means moving a
  * pair out of the `Unsupported` assertions and into the parity matrix below.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometNativeCastSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper

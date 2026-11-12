@@ -24,7 +24,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, IntegerType, 
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{Compatible, Unsupported}
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * https://github.com/apache/datafusion-comet/issues/4489
@@ -63,7 +63,7 @@ import org.apache.comet.tags.ExpressionsGroup
  * This lives under `spark-4.x`, shared by every 4.x profile, rather than `spark-4.1+`, because
  * collation is a Spark 4.0 feature and `StringType(collationName)` already resolves there.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometCastCollatedStringSuite extends CometTestBase {
 
   private val lcase = StringType("UTF8_LCASE")

@@ -30,9 +30,9 @@ import org.apache.spark.shuffle.{FetchFailedException, ShuffleHandle, ShuffleRea
 import org.apache.spark.sql.CometTestBase
 
 import org.apache.comet.CometConf
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
-@ShuffleGroup
+@ShuffleTestGroup
 class CometCelebornLocalFetchFailureSuite extends CometTestBase {
 
   import testImplicits._

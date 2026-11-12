@@ -27,7 +27,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{DataType, DateType, LongType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Unit coverage for the generic `SpecializedGetters.get(ordinal, dataType)` dispatch the kernel
@@ -36,7 +36,7 @@ import org.apache.comet.tags.ExpressionsGroup
  * has to match what `CometBatchKernelCodegen.isSupportedDataType` admits at plan time. A type
  * accepted there but missing here throws at execute time, when there is no longer a fallback.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometSpecializedGettersDispatchSuite extends AnyFunSuite {
 
   /** Minimal `CometInternalRow` over one fixed long, to drive the dispatch through `get`. */

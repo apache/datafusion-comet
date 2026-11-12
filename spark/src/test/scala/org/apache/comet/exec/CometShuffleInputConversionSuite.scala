@@ -33,13 +33,13 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
 // Top-level, so the encoder needs no outer pointer.
 case class ShuffleInputRec(a: Int, b: String)
 
 /** Tests for [[CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED]]. */
-@ShuffleGroup
+@ShuffleTestGroup
 class CometShuffleInputConversionSuite extends CometTestBase {
 
   import testImplicits._

@@ -24,9 +24,9 @@ import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnionExec}
 
 import org.apache.comet.CometConf
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class EliminateRedundantTransitionsSuite extends CometTestBase {
 
   private def sparkPlanFor(sql: String): SparkPlan = {

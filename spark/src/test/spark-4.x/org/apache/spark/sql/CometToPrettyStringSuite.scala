@@ -33,9 +33,9 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometFuzzTestBase
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.Compatible
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometToPrettyStringSuite extends CometFuzzTestBase {
 
   test("ToPrettyString") {

@@ -29,7 +29,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, Encoders}
 import org.apache.spark.sql.catalyst.expressions.Expression
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Regression coverage for UDF closures whose capturing class lives in a user jar, which used to
@@ -52,7 +52,7 @@ import org.apache.comet.tags.ExpressionsGroup
  * `MutableURLClassLoader`, which becomes the task thread's context ClassLoader while staying
  * invisible to the ClassLoader that loaded Comet.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometScalaUDFClassLoaderSuite extends CometTestBase {
 
   import CometScalaUDFClassLoaderSuite._

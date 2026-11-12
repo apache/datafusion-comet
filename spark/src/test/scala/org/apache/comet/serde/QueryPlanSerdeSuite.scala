@@ -33,9 +33,9 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
   test("make_date IN evaluates the probe but can skip list expressions") {

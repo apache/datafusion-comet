@@ -56,10 +56,10 @@ import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, Ext
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.rules.CometCoalesceShufflePartitions
 import org.apache.comet.serde.Config.ConfigMap
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
-@ExecGroup
+@ExecTestGroup
 class CometExecSuite extends CometTestBase {
 
   import testImplicits._

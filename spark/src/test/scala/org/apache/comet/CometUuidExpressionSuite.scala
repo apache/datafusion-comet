@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.Uuid
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Bit-for-bit comparisons of seeded `uuid` against Spark.
@@ -40,7 +40,7 @@ import org.apache.comet.tags.ExpressionsGroup
  * form is not, so building the expression directly gives all profiles a real cross-engine
  * assertion and removes that dependence.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometUuidExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("seeded uuid matches Spark bit for bit") {

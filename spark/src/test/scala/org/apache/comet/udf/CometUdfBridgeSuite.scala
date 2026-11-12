@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -82,7 +82,7 @@ class IdentityUdf extends CometUDF {
   override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = inputs.head
 }
 
-@ExecGroup
+@ExecTestGroup
 class CometUdfBridgeSuite extends AnyFunSuite {
 
   /** Exports a single-column batch and invokes the bridge against it. */

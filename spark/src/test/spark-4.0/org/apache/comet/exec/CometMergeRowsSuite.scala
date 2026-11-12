@@ -19,8 +19,8 @@
 
 package org.apache.comet.exec
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /** Spark 4.0 entry point for the shared native MergeRows contract suite. */
-@ExecGroup
+@ExecTestGroup
 class CometMergeRowsSuite extends CometMergeRowsNativeSuiteBase

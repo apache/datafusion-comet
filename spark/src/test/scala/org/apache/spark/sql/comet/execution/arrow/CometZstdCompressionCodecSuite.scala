@@ -35,7 +35,7 @@ import org.apache.spark.SparkException
 
 import com.github.luben.zstd.Zstd
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Checks that the zstd codec never writes past the buffer it allocates for its output.
@@ -46,7 +46,7 @@ import org.apache.comet.tags.ExecGroup
  * The defect is explained on [[CometZstdCompressionCodec]]. The inputs are the ones that provoke
  * it: bytes that look structured enough for zstd to try entropy coding but do not compress.
  */
-@ExecGroup
+@ExecTestGroup
 class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
 
   // zstd-jni unpacks its native library into java.io.tmpdir, which the test JVM points at

@@ -23,9 +23,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometJsonJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // No per-expression `allowIncompatible` is set, so all JSON expressions run through the

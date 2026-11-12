@@ -32,10 +32,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.vector.CometPlainVector
 
-@ExecGroup
+@ExecTestGroup
 class CachedBatchRowIteratorSuite extends AnyFunSuite {
   Seq("CODEGEN_ONLY", "NO_CODEGEN").foreach { mode =>
     def withMode(settings: (String, String)*)(f: => Unit): Unit = {

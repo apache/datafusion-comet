@@ -34,9 +34,9 @@ import org.apache.iceberg.TableMetadata
 import org.apache.iceberg.io.FileIO
 import org.apache.iceberg.types.Types
 
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
-@ScansGroup
+@ScansTestGroup
 class IcebergReflectionSuite extends AnyFunSuite {
 
   /** Mimics HiveTableOperations/GlueTableOperations which inherit current(). */

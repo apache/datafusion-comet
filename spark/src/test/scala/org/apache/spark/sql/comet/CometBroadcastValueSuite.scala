@@ -42,10 +42,10 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometKryoRegistrator}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.vector.CometVector
 
-@ExecGroup
+@ExecTestGroup
 class CometBroadcastValueSuite extends CometTestBase {
 
   private val Timeout = 30.seconds

@@ -34,9 +34,9 @@ import org.apache.spark.sql.comet.shims.ShimCometShuffleMaterialization
 import org.apache.spark.util.ThreadUtils
 
 import org.apache.comet.CometConf
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
-@ShuffleGroup
+@ShuffleTestGroup
 class CometCelebornConcurrentMaterializationSuite extends CometTestBase {
 
   import testImplicits._

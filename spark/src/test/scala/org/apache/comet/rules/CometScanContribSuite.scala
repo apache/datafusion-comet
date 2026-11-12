@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 import org.apache.comet.ContribServices
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -63,7 +63,7 @@ import org.apache.comet.util.ClassLoaders
  * Sibling to `CometScanWithPlanDataSuite`, which covers the other half of the contrib SPI (plan
  * data). Everything here runs on the default build.
  */
-@ExecGroup
+@ExecTestGroup
 class CometScanContribSuite extends AnyFunSuite {
 
   /**

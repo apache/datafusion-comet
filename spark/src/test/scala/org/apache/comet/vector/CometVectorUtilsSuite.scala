@@ -33,10 +33,10 @@ import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, FieldType}
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /** Check failure cleanup without transferring ownership of the helper's source vectors. */
-@ExecGroup
+@ExecTestGroup
 class CometVectorUtilsSuite extends AnyFunSuite with Matchers {
 
   for (missingDictionary <- Seq(true, false)) {

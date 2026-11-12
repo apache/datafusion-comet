@@ -54,7 +54,7 @@ import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometS
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, OperatorOuterClass, QueryPlanSerde, Unsupported}
 import org.apache.comet.shims.ShimCometWindowGroupLimit
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -62,7 +62,7 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
  * transform Spark operators to Comet operators, fallback mechanisms, configuration handling, and
  * edge cases.
  */
-@ExecGroup
+@ExecTestGroup
 class CometExecRuleSuite extends CometTestBase {
 
   // The observers are active only during the DPP lifecycle regression below. AQE can prepare

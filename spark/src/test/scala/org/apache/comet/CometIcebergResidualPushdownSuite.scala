@@ -24,7 +24,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * Residual pushdown for predicates that only reach the Iceberg scan filter when Iceberg's SQL
@@ -35,7 +35,7 @@ import org.apache.comet.tags.ScansGroup
  * so Iceberg can push the comparison, which puts an `UnboundTransform` term into each file's
  * residual. CometIcebergNativeSuite runs without the extensions, so it never sees one.
  */
-@ScansGroup
+@ScansTestGroup
 class CometIcebergResidualPushdownSuite
     extends CometTestBase
     with CometIcebergTestBase

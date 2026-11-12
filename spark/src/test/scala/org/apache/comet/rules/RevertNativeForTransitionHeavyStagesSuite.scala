@@ -43,7 +43,7 @@ import org.apache.spark.sql.util.QueryExecutionListener
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 private case class AliasingFallbackCometExec(
     override val originalPlan: SparkPlan,
@@ -68,7 +68,7 @@ private case class BothFormatsExec(child: SparkPlan) extends UnaryExecNode {
     copy(child = newChild)
 }
 
-@ExecGroup
+@ExecTestGroup
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
   // Spark 4.0+ builds a cache through columnar output only when the cache serializer accepts

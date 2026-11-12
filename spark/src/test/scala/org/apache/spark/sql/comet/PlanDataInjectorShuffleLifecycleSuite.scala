@@ -26,7 +26,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.util.Utils
 
 import org.apache.comet.CometConf
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * End-to-end lifecycle of the executor-side plan data held by [[PlanDataInjector]]. A map-only
@@ -38,7 +38,7 @@ import org.apache.comet.tags.ExecGroup
  * The recreated-context test stops the suite's SparkContext, so it runs last and nothing else may
  * follow it.
  */
-@ExecGroup
+@ExecTestGroup
 class PlanDataInjectorShuffleLifecycleSuite extends CometTestBase {
 
   private def withNativeShuffle[T](session: SparkSession)(f: => T): T = {

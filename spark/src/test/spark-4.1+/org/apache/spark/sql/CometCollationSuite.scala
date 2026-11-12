@@ -20,9 +20,9 @@
 package org.apache.spark.sql
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometCollationSuite extends CometTestBase {
 
   // Queries that group, sort, or shuffle on a non-default collated string must fall back to

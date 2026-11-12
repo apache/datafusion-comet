@@ -44,7 +44,7 @@ import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarInt
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnarMap, ColumnVector}
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
 
 /**
@@ -53,7 +53,7 @@ import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
  * `CometMathExpressionSuite`, but that test only catches *one* function-level type drift. This
  * suite covers the boundary contract independently of any specific function.
  */
-@ExecGroup
+@ExecTestGroup
 class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
   private def expectedSchema(types: (String, ArrowType)*): Schema = {

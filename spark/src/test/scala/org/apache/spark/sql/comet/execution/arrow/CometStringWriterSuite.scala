@@ -39,9 +39,9 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{ArrayType, StringType, StructField, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometStringWriterSuite extends AnyFunSuite with Matchers {
   private val sourceOffset = 7
   private val schema = StructType(Seq(StructField("text", StringType)))

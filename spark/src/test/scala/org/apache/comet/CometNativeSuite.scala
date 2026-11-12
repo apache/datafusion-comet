@@ -30,9 +30,9 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometNativeSuite extends CometTestBase {
   test("test handling NPE thrown by JVM") {
     val rdd = spark.range(0, 1).rdd.map { value =>

@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution.{BinaryExecNode, SparkPlan}
 
 import org.apache.comet.CometRuntimeException
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Unit coverage for the core SPI that lets out-of-tree contrib leaf scans (e.g. the Delta
@@ -51,7 +51,7 @@ import org.apache.comet.tags.ExecGroup
  * Deliberately does not exercise the per-op injector registry mechanics; that surface is owned by
  * `PlanDataInjectorSuite`.
  */
-@ExecGroup
+@ExecTestGroup
 class CometScanWithPlanDataSuite extends AnyFunSuite {
 
   /**

@@ -24,9 +24,9 @@ import java.io.InputStream
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
-@ShuffleGroup
+@ShuffleTestGroup
 class CometBlockStoreShuffleReaderSuite extends AnyFunSuite {
   test("closing a partially consumed raw stream does not fetch remaining blocks") {
     class TrackingStream extends ByteArrayInputStream(Array[Byte](1, 2, 3)) {

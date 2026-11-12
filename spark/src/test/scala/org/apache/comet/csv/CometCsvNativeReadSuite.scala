@@ -29,9 +29,9 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructType, Timestam
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
-@ScansGroup
+@ScansTestGroup
 class CometCsvNativeReadSuite extends CometTestBase {
   private val TEST_CSV_PATH_NO_HEADER = "src/test/resources/test-data/csv-test-1.csv"
   private val TEST_CSV_PATH_HAS_HEADER = "src/test/resources/test-data/csv-test-2.csv"

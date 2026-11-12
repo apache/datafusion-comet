@@ -31,9 +31,9 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   /** Check if the current Spark version meets a minimum version requirement. */

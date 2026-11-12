@@ -30,13 +30,13 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, DataTypeSupport}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
  * Test suite specifically for CometScanRule transformation logic.
  */
-@ExecGroup
+@ExecTestGroup
 class CometScanRuleSuite extends CometTestBase {
 
   /** Helper method to apply CometExecRule and return the transformed plan */

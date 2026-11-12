@@ -18,7 +18,7 @@
 
 CI runs the Comet test suites in groups, one job per group. Each concrete suite
 carries the ScalaTest tag of its group (see
-spark/src/test/java/org/apache/comet/tags/*Group.java), and the CI workflows
+spark/src/test/java/org/apache/comet/tags/*TestGroup.java), and the CI workflows
 list it in the group of the same name. This fails on a suite with no group tag,
 which would run in no job, on one with two, and on a suite whose workflow
 listing does not match its tag. Suites deliberately left out of CI are listed
@@ -31,9 +31,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# One ScalaTest tag annotation per group, such as ExecGroup for the `exec` group.
+# One ScalaTest tag annotation per group, such as ExecTestGroup for the `exec` group.
 TAGS_DIR = REPO_ROOT / "spark/src/test/java/org/apache/comet/tags"
-GROUP_TAGS = sorted(path.stem for path in TAGS_DIR.glob("*Group.java"))
+GROUP_TAGS = sorted(path.stem for path in TAGS_DIR.glob("*TestGroup.java"))
 
 # Suites that CI does not run, each with the reason.
 IGNORE_LIST = {
@@ -101,8 +101,8 @@ def workflow_groups(workflow):
 
 
 def group_name(tag):
-    """ExecGroup -> exec"""
-    return tag[: -len("Group")].lower()
+    """ExecTestGroup -> exec"""
+    return tag[: -len("TestGroup")].lower()
 
 
 def main():

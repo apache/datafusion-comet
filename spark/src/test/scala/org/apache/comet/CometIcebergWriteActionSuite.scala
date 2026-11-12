@@ -60,7 +60,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plu
 import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener, PositionDeltaWrite}
 import org.apache.comet.serde.Unsupported
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
-import org.apache.comet.tags.ScansGroup
+import org.apache.comet.tags.ScansTestGroup
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -70,7 +70,7 @@ private case class ReportedWrite(
     reasons: Seq[String],
     failed: Boolean)
 
-@ScansGroup
+@ScansTestGroup
 class CometIcebergWriteActionSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper

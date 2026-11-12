@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Pins the version table of every fix in `SparkFixes`, so that the boundaries are checked on all
  * Spark versions in one run and not only on the one a test suite runs against.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class SparkFixesSuite extends AnyFunSuite {
 
   private def checkVersions(name: String, fixed: String => Boolean)(

@@ -23,9 +23,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
 
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometFuzzMathSuite extends CometFuzzTestBase {
 
   // The integer-math fuzz tests intentionally cover overflowing inputs; under Spark 4's

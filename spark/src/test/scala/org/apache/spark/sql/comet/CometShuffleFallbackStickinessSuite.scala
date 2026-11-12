@@ -31,7 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, withFallbackReason}
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Pins the sticky-fallback invariant for Comet shuffle decisions: `shuffleSupported` must return
@@ -47,7 +47,7 @@ import org.apache.comet.tags.ExecGroup
  * The coordinator tags the node with `withFallbackReasons` only on total fallback and
  * short-circuits via `hasFallbackReason` on subsequent passes.
  */
-@ExecGroup
+@ExecTestGroup
 class CometShuffleFallbackStickinessSuite extends CometTestBase {
 
   test("shuffleSupported returns None when the shuffle already carries explain info") {

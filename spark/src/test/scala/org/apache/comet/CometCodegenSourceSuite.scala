@@ -31,7 +31,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
@@ -54,7 +54,7 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * These are the smallest durable tests that the claimed optimizations actually reach the
  * generated Java, and they document the shapes future contributors should preserve.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometCodegenSourceSuite extends AnyFunSuite {
 
   private val varCharVectorClass =

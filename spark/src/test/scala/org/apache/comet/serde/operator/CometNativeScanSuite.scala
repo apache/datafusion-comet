@@ -30,9 +30,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, StringType, StructField, StructType}
 
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class CometNativeScanSuite extends AnyFunSuite {
 
   import CometNativeScan.{constantMetadataFieldPrefix, uniqueConstantMetadataFields}

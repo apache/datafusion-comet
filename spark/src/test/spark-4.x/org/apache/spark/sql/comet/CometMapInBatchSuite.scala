@@ -32,7 +32,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.rules.EliminateRedundantTransitions
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
 /** Minimal CometPlan leaf used to anchor the rule's transform without triggering execution. */
 private case class StubCometLeaf(override val output: Seq[Attribute])
@@ -54,7 +54,7 @@ private case class StubCometLeaf(override val output: Seq[Attribute])
  * `PythonFunction` / `PythonAccumulatorV2` / `PythonBroadcast` classes when fabricating a stub
  * `PythonUDF` for `MapInArrowExec` to wrap.
  */
-@ExecGroup
+@ExecTestGroup
 class CometMapInBatchSuite extends CometTestBase {
 
   private def stubPythonUDF: PythonUDF = {

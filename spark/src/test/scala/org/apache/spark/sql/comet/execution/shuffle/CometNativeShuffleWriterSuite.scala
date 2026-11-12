@@ -24,13 +24,13 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
-import org.apache.comet.tags.ShuffleGroup
+import org.apache.comet.tags.ShuffleTestGroup
 
 /**
  * Checks the plan [[CometNativeShuffleWriter]] hands to native code. Lives in the
  * `execution.shuffle` package so it can call the `private[shuffle]` `buildUnifiedPlan`.
  */
-@ShuffleGroup
+@ShuffleTestGroup
 class CometNativeShuffleWriterSuite extends CometTestBase {
 
   import testImplicits._

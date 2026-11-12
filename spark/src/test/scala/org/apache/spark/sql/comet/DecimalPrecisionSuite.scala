@@ -23,9 +23,9 @@ import org.apache.spark.SparkFunSuite
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, CaseWhen, Cast, CheckOverflow, Coalesce, Divide, Expression, GreaterThan, IsNotNull, Literal, Multiply, Remainder, Subtract}
 import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
 
-import org.apache.comet.tags.ExecGroup
+import org.apache.comet.tags.ExecTestGroup
 
-@ExecGroup
+@ExecTestGroup
 class DecimalPrecisionSuite extends SparkFunSuite {
 
   private val decA = AttributeReference("a", DecimalType(10, 2))()

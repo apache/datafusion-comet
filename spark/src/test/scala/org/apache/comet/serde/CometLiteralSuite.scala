@@ -32,7 +32,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.CometTypeShim
-import org.apache.comet.tags.ExpressionsGroup
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Pins `CometLiteral.listLiteralElementSupported` against the arms of
@@ -41,7 +41,7 @@ import org.apache.comet.tags.ExpressionsGroup
  * raises a `MatchError` in the middle of planning, which Spark surfaces as `[INTERNAL_ERROR] The
  * Spark SQL phase planning failed with an internal error`.
  */
-@ExpressionsGroup
+@ExpressionsTestGroup
 class CometLiteralSuite extends CometTestBase with CometTypeShim {
 
   test("a null literal with duplicate struct field names is unsupported") {

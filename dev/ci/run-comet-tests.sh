@@ -18,7 +18,7 @@
 # under the License.
 #
 # Run one group of the Comet JVM test suites. Each concrete suite carries one
-# group tag, such as org.apache.comet.tags.ExecGroup, and CI runs each group as
+# group tag, such as org.apache.comet.tags.ExecTestGroup, and CI runs each group as
 # its own job.
 # Arguments after the group go to Maven:
 #
@@ -35,13 +35,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# Each group is a tag annotation here, such as ExecGroup.java for `exec`.
+# Each group is a tag annotation here, such as ExecTestGroup.java for `exec`.
 TAGS_DIR="$REPO/spark/src/test/java/org/apache/comet/tags"
 
 usage() {
   groups=""
-  for tag in "$TAGS_DIR"/*Group.java; do
-    tag="$(basename "$tag" Group.java)"
+  for tag in "$TAGS_DIR"/*TestGroup.java; do
+    tag="$(basename "$tag" TestGroup.java)"
     groups="$groups $(printf '%s' "$tag" | tr '[:upper:]' '[:lower:]')"
   done
   cat >&2 <<USAGE
@@ -69,8 +69,8 @@ while [ $# -gt 0 ]; do
 done
 [ $# -ge 1 ] || usage
 
-# exec -> ExecGroup
-TAG="$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')${1:1}Group"
+# exec -> ExecTestGroup
+TAG="$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')${1:1}TestGroup"
 if [ ! -f "$TAGS_DIR/$TAG.java" ]; then
   echo "Unknown test group: $1" >&2
   usage

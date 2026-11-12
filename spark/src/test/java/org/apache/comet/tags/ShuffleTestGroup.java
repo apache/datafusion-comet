@@ -30,4 +30,4 @@ import org.scalatest.TagAnnotation;
 @TagAnnotation
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.TYPE})
-public @interface ShuffleGroup {}
+public @interface ShuffleTestGroup {}
