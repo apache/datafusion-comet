@@ -19,8 +19,6 @@
 
 mod early;
 mod join;
-// Spark planner integration is a separate step of apache/datafusion-comet#5774.
-#[cfg_attr(not(test), allow(dead_code))]
 mod min_max;
 mod parquet_reader;
 mod topk;
