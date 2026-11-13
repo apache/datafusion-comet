@@ -406,10 +406,11 @@ FILTERS = {
         ".github/actions/setup-builder/**",
     ],
     # Same inputs as delta_3_5: the Delta contrib workflow is called once per
-    # Spark profile, and the three calls share one path filter. Populated
+    # Spark profile, and the four calls share one path filter. Populated
     # below, after the dict, so the lists cannot drift.
     "delta_4_0": [],
     "delta_4_1": [],
+    "delta_4_2": [],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
@@ -417,6 +418,7 @@ FILTERS["build_macos_full"] = FILTERS["build_macos"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 FILTERS["delta_4_0"] = FILTERS["delta_3_5"]
 FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
+FILTERS["delta_4_2"] = FILTERS["delta_3_5"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -555,10 +557,11 @@ POLICY = {
     # The Delta contrib suites all run nightly. The PR tier's strict warnings
     # job compiles the contrib against Spark 3.5, so a change that breaks its
     # build on Spark 3.5 fails on its own pull request. One label opts a pull
-    # request into all three.
+    # request into all four.
     "delta_3_5": ["nightly", "label:run-delta-tests"],
     "delta_4_0": ["nightly", "label:run-delta-tests"],
     "delta_4_1": ["nightly", "label:run-delta-tests"],
+    "delta_4_2": ["nightly", "label:run-delta-tests"],
 }
 
 

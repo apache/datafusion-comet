@@ -30,7 +30,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
 
-import org.apache.comet.CometS3TestBase
+import org.apache.comet.{CometConf, CometS3TestBase, ExtendedExplainInfo}
 
 /**
  * MinIO-backed integration coverage for multi-bucket Delta shapes: a real two-bucket shallow
@@ -141,6 +141,68 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
   }
 
   private def tablePath(bucket: String, relPath: String): String = s"s3a://$bucket/$relPath"
+
+  if (supportsS3EncryptionContext) {
+    test("encryption context on external S3 data files falls back before native reads") {
+      assume(dockerAvailable, "Docker is not available; skipping MinIO-backed Delta test")
+      withTempPath { dir =>
+        val sourcePath = tablePath(testBucketName, "context-source")
+        val clonePath = dir.getAbsolutePath
+        spark.range(0, 4).coalesce(1).write.format("delta").save(sourcePath)
+        spark.sql(s"CREATE TABLE delta.`$clonePath` SHALLOW CLONE delta.`$sourcePath`")
+        val files = DeltaLog.forTable(spark, clonePath).update().allFiles.collect()
+        assert(files.nonEmpty && files.forall(_.path.startsWith(s"s3a://$testBucketName/")))
+        checkDeltaNativeScanAnswer(spark.read.format("delta").load(clonePath))
+        val conf = spark.sparkContext.hadoopConfiguration
+        val contextKeys = Seq(
+          "fs.s3a.encryption.context",
+          s"fs.s3a.bucket.$testBucketName.encryption.context",
+          s"fs.s3a.bucket.$testBucketName.fs.s3a.encryption.context")
+        val keys = contextKeys :+ "fs.s3a.impl.disable.cache"
+        val original = keys.map(key => key -> Option(conf.getRaw(key))).toMap
+        try {
+          // A filesystem cached by the clone would hide Hadoop's malformed-context failure.
+          conf.set("fs.s3a.impl.disable.cache", "true")
+          for (key <- contextKeys;
+            value <- Seq("synthetic-malformed-pair", "purpose=synthetic")) {
+            contextKeys.foreach(conf.unset)
+            conf.set(key, value)
+            Seq(false, true).foreach { enabled =>
+              withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+                val frame = spark.read.format("delta").load(clonePath)
+                assert(
+                  deltaNativeScans(frame).isEmpty,
+                  frame.queryExecution.executedPlan.toString)
+                if (enabled) {
+                  val explain =
+                    new ExtendedExplainInfo().generateExtendedInfo(
+                      frame.queryExecution.executedPlan)
+                  assert(explain.contains("fs.s3a.encryption.context"), explain)
+                  assert(!explain.contains(value), explain)
+                }
+                if (value == "purpose=synthetic") {
+                  assert(frame.collect().map(_.getLong(0)).sorted.toSeq == Seq(0L, 1L, 2L, 3L))
+                } else {
+                  val error = intercept[Exception] { frame.collect() }
+                  var root: Throwable = error
+                  while (root.getCause != null) root = root.getCause
+                  assert(root.isInstanceOf[IllegalArgumentException], error.toString)
+                  assert(
+                    root.getStackTrace.exists(
+                      _.toString.contains("S3AEncryption.getS3EncryptionContext")))
+                }
+              }
+            }
+          }
+        } finally {
+          original.foreach {
+            case (key, Some(value)) => conf.set(key, value)
+            case (key, None) => conf.unset(key)
+          }
+        }
+      }
+    }
+  }
 
   test("shallow clone across buckets + append declines with the multi-store reason") {
     assume(dockerAvailable, "Docker is not available; skipping MinIO-backed Delta test")

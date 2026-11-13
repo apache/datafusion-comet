@@ -135,9 +135,9 @@ jobs:
   # The container job above has no Docker socket, so CometDeltaS3Suite cancels itself
   # there. This job runs it on the plain runner, where Testcontainers can start MinIO.
   contrib-delta-s3:
-    name: Delta contrib S3 suite (Spark 3.5, MinIO)
-    # Pinned to Spark 3.5, so only that caller runs it: once per ci.yml run.
-    if: inputs.spark == '3.5'
+    name: Delta contrib S3 suite (Spark ${{ inputs.spark }}, MinIO)
+    # Cover the oldest pairing and Hadoop 3.5's encryption-context initialization.
+    if: inputs.spark == '3.5' || inputs.spark == '4.2'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -167,7 +167,7 @@ jobs:
         with:
           path: |
             ~/.m2/repository
-          key: ${{ runner.os }}-delta-maven-${{ hashFiles('**/pom.xml') }}-3.5
+          key: ${{ runner.os }}-delta-maven-${{ hashFiles('**/pom.xml') }}-${{ inputs.spark }}
           # Its own prefix: the Spark SQL and Comet test jobs fall back to the
           # newest `java-maven-` entry, and this repository (built with
           # `-Pdelta`) broke Spark's Arrow tests when they restored it.
@@ -200,12 +200,12 @@ jobs:
 
       - name: Install Comet core jars
         run: |
-          ./mvnw -B -q -Prelease -Pspark-3.5,delta install -pl common,spark -DskipTests -Dspotless.check.skip=true
+          ./mvnw -B -q -Prelease -Pspark-${{ inputs.spark }},delta install -pl common,spark -DskipTests -Dspotless.check.skip=true
 
       - name: Run the MinIO-backed S3 suite
         run: |
           docker info > /dev/null
-          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-3.5,delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
+          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-${{ inputs.spark }},delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
         env:
           # This job exists only to run the suite, so a Docker or MinIO failure must fail
           # it instead of cancelling every test, which the container job above relies on.
@@ -218,7 +218,7 @@ jobs:
         with:
           path: |
             ~/.m2/repository
-          key: ${{ runner.os }}-delta-maven-${{ hashFiles('**/pom.xml') }}-3.5
+          key: ${{ runner.os }}-delta-maven-${{ hashFiles('**/pom.xml') }}-${{ inputs.spark }}
 
   # `delta` is in the default feature set, so no regular job builds without it;
   # this keeps the feature-off build and its "built without the delta feature"

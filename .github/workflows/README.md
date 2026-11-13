@@ -29,7 +29,7 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
   three Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, Iceberg
-  1.9/1.10, and the Delta contrib suites on Spark 3.5, 4.0 and 4.1. See
+  1.9/1.10, and the Delta contrib suites on Spark 3.5, 4.0, 4.1 and 4.2. See
   [Nightly tier](#nightly-tier) below for how a failure surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
@@ -122,6 +122,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                       delta_3_5           run-delta-tests
                                       delta_4_0           run-delta-tests
                                       delta_4_1           run-delta-tests
+                                      delta_4_2           run-delta-tests
 
         |                                   |                                   |
         +-----------------------------------+-----------------------------------+
@@ -161,6 +162,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `delta_3_5`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `delta_4_0`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `delta_4_1`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
+| `delta_4_2`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
 | `spark_4_1`          | PR or merge group for catalyst and `sql_core`; the `sql_hive` shards in the merge group, **or** PR with `run-spark-4.1-hive-tests`                                                                                                                     | Spark 4.1 sources                   |
@@ -379,16 +381,16 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                          | Called from `ci.yml` job(s)           |
-| ----------------------------- | ------------------------------------- |
-| `pr_build_linux.yml`          | `pr_build_linux`                      |
-| `pr_build_macos.yml`          | `pr_build_macos`                      |
-| `pr_benchmark_check.yml`      | `pr_benchmark_check`                  |
-| `delta_build_gate.yml`        | `delta_build_gate`                    |
-| `delta_contrib_test.yml`      | `delta_3_5`, `delta_4_0`, `delta_4_1` |
-| `pyarrow_udf_test.yml`        | `pyarrow_udf_test`                    |
-| `docs.yaml`                   | `docs`                                |
-| `spark_sql_test_reusable.yml` | `iceberg_spark_test_reusable.yml`     |
+| File                          | Called from `ci.yml` job(s)                        |
+| ----------------------------- | -------------------------------------------------- |
+| `pr_build_linux.yml`          | `pr_build_linux`                                   |
+| `pr_build_macos.yml`          | `pr_build_macos`                                   |
+| `pr_benchmark_check.yml`      | `pr_benchmark_check`                               |
+| `delta_build_gate.yml`        | `delta_build_gate`                                 |
+| `delta_contrib_test.yml`      | `delta_3_5`, `delta_4_0`, `delta_4_1`, `delta_4_2` |
+| `pyarrow_udf_test.yml`        | `pyarrow_udf_test`                                 |
+| `docs.yaml`                   | `docs`                                             |
+| `spark_sql_test_reusable.yml` | `iceberg_spark_test_reusable.yml`                  |
 
 ## Changing what runs when
 

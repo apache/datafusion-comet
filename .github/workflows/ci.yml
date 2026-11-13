@@ -302,6 +302,7 @@ jobs:
       delta_3_5:    ${{ steps.compute.outputs.delta_3_5 }}
       delta_4_0:    ${{ steps.compute.outputs.delta_4_0 }}
       delta_4_1:    ${{ steps.compute.outputs.delta_4_1 }}
+      delta_4_2:    ${{ steps.compute.outputs.delta_4_2 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -524,12 +525,23 @@ jobs:
     needs: changes
     permissions:
       contents: read
-    # Nightly by default; PRs need the `run-delta-tests` label. No Spark 4.2
-    # caller: the contrib profile is dormant until a Delta release supports it.
+    # Nightly by default; PRs need the `run-delta-tests` label.
     if: needs.changes.outputs.delta_4_1 == 'true'
     uses: ./.github/workflows/delta_contrib_test.yml
     with:
       spark: '4.1'
+      java: '17'
+
+  delta_4_2:
+    name: Delta Contrib Tests (Spark 4.2)
+    needs: changes
+    permissions:
+      contents: read
+    # Nightly by default; PRs need the `run-delta-tests` label.
+    if: needs.changes.outputs.delta_4_2 == 'true'
+    uses: ./.github/workflows/delta_contrib_test.yml
+    with:
+      spark: '4.2'
       java: '17'
 
   spark_4_0:
@@ -673,6 +685,7 @@ jobs:
       - delta_3_5
       - delta_4_0
       - delta_4_1
+      - delta_4_2
       - spark_4_0
       - spark_4_1
       - spark_4_2
