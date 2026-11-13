@@ -52,8 +52,8 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, Cast, CometCollectList, CometCollectSet,
-    Correlation, Covariance, EvalMode, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode,
-    Regr, RegrType, SparkBloomFilterVersion, SparkCastOptions, SparkListAgg, SparkMinMax,
+    Correlation, Covariance, EvalMode, HllPlusPlus, HllSketchAgg, HllUnionAgg, Kurtosis, MaxMinBy,
+    Mode, Regr, RegrType, SparkBloomFilterVersion, SparkCastOptions, SparkListAgg, SparkMinMax,
     SparkPercentile, SparkPivotFirst, SparkStructMinMax, Stddev, SumDecimal, SumInteger, Variance,
     ZeroOrder,
 };
@@ -621,6 +621,15 @@ impl PhysicalPlanner {
                         "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
+            }
+            AggExprStruct::Kurtosis(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(Kurtosis::new(
+                    "kurtosis",
+                    expr.null_on_divide_by_zero,
+                    expr.ansi_enabled,
+                ));
+                Self::create_aggr_func_expr("kurtosis", schema, vec![child], func)
             }
             AggExprStruct::Stddev(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;

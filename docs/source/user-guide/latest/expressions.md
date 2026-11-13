@@ -108,7 +108,7 @@ The tables below list every Spark built-in expression with its current status.
 | `grouping_id` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `hll_sketch_agg` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md)) |
 | `hll_union_agg` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md)) |
-| `kurtosis` | 🔜 | — | Not yet implemented natively |
+| `kurtosis` | ✅ | Native | Excess kurtosis (Fisher definition). |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
 | `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |

@@ -72,6 +72,15 @@
 - Performance (tuned 2026-09-09, PR [#5803](https://github.com/apache/datafusion-comet/pull/5803)): as for [collect_list](#collect-list), grouped `collect_set` no longer goes through `GroupsAccumulatorAdapter`. `CollectSetGroupsAccumulator` encodes each batch once for all of its groups and deduplicates against an open-addressed index over a shared arena, replacing one hash table plus one owned `Row` per distinct value per group. 60-93% faster ([#5797](https://github.com/apache/datafusion-comet/issues/5797)). Benchmark: `benches/collect.rs`.
 - `CometCollectSet` reports `Incompatible` for float and double input when `spark.comet.exec.strictFloatingPoint=true`, because the native distinct comparison treats `NaN == NaN` and collapses repeated `NaN`s into a single element while Spark keeps each one. The native path for floating-point input is then opt-in via `spark.comet.expression.CollectSet.allowIncompatible=true`. All other input types are `Compatible`.
 
+## kurtosis
+
+- Spark 3.4.3 (audited 2026-07-03): `Kurtosis(child, nullOnDivideByZero)` extends `CentralMomentAgg` with `momentOrder = 4`. Excess kurtosis (Fisher), formula `n * m4 / (m2 * m2) - 3.0`; empty group → `NULL`; `m2 == 0` → `NULL` when `nullOnDivideByZero=true` (default when `spark.sql.legacy.statisticalAggregate=false`) else `NaN`. Any numeric input is cast to `Double` by `ImplicitCastInputTypes`.
+- Spark 3.5.8 (audited 2026-07-03): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-03): identical to 3.4.3. No collation involvement.
+- Spark 4.1.1 (audited 2026-07-03): identical to 3.4.3.
+- `CometKurtosis` maps the aggregate to a Comet-owned `Kurtosis` UDAF whose intermediate state (`[n, avg, m2, m3, m4]` Float64) mirrors Spark's `CentralMomentAgg` buffer for `momentOrder = 4`, so Partial output produced by either engine has the same wire format. The Rust update/merge kernels are a direct port of Spark's `updateExpressionsDef` and `mergeExpressions`. `supportsMixedPartialFinal` is left at the default `false`, matching the conservative policy the other `CentralMomentAgg` serdes (`Variance`, `Stddev`) already use in the same file.
+- Window use (`kurtosis(x) OVER (...)`) currently falls back to Spark: the window path doesn't wire the Comet aggregate for kurtosis today.
+
 ## listagg
 
 - Spark 3.4.3 (audited 2026-07-03): does not exist. `ListAgg` was added in Spark 4.0.
