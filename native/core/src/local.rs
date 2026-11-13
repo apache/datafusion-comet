@@ -197,18 +197,28 @@ fn task_slots(cores: usize, task_cpus: usize) -> usize {
 /// planned only when it starts, as a Spark task plans only when it runs, so the plans held at once,
 /// and whatever each copies from the serialized plan, are those of the running partitions.
 ///
-/// Partition 0 is planned here too, for the output schema and so that a plan the planner rejects
-/// fails the query before it starts.
+/// Partition 0 is planned here, for the output schema and so that a plan the planner rejects
+/// fails the query before it starts, and that plan is the one partition 0 runs.
 fn local_plan(
     context: &ExecutionContext,
     partitions: usize,
 ) -> CometResult<(SchemaRef, PartitionStart)> {
     let planner = context.planner(0);
     let spark_plan = Arc::new(context.spark_plan.clone());
-    let schema = plan_partition(&planner, &spark_plan, 0, partitions)?.schema();
+    let first = plan_partition(&planner, &spark_plan, 0, partitions)?;
+    let schema = first.schema();
     let expected = Arc::clone(&schema);
+    let first = Mutex::new(Some(first));
     let start: PartitionStart = Arc::new(move |partition, task_context| {
-        let plan = plan_partition(&planner, &spark_plan, partition, partitions)?;
+        let planned = if partition == 0 {
+            first.lock().take()
+        } else {
+            None
+        };
+        let plan = match planned {
+            Some(plan) => plan,
+            None => plan_partition(&planner, &spark_plan, partition, partitions)?,
+        };
         if plan.schema() != expected {
             return Err(DataFusionError::Internal(format!(
                 "Local query partition {partition} has a different output schema"

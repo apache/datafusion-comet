@@ -63,9 +63,9 @@ single partition. That partition's task creates the native graph:
   for partition `i`, so per-partition state such as a range slice is the same as with ordinary
   Comet execution. A partition's operators are created when it starts, on its own task, as a Spark
   task creates its plan only when it runs, so only the running partitions hold operators and
-  what they copy from the serialized plan, such as a string literal. Partition 0 is also planned
-  up front, for the output schema and so that a plan the planner rejects fails before the query
-  starts.
+  what they copy from the serialized plan, such as a string literal. Partition 0 is planned up
+  front, for the output schema and so that a plan the planner rejects fails before the query
+  starts, and runs that plan when it starts.
 - `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
   order, so the result has Spark's row order. Each partition starts its operators on its own
   task, so a start that waits, for instance for a memory grant, does not hold up the pull, and a
