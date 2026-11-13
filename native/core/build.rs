@@ -18,6 +18,14 @@
 use std::env;
 use std::path::Path;
 
+fn target_profile_dir(out_dir: &Path) -> &Path {
+    out_dir
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR must be inside Cargo's profile build directory")
+}
+
 fn main() {
     // The `hdfs-sys` dependency (pulled in by the default `hdfs-opendal` feature)
     // links against `libjvm` and bakes an absolute `-L` path to the JDK's libjvm
@@ -46,13 +54,7 @@ fn main() {
     // DEP_<...>_OUT_DIR for non-rlib crates, so we compute the path
     // from OUT_DIR.
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
-        let out_path = std::path::PathBuf::from(out_dir);
-        // OUT_DIR is .../target/<profile>/build/<pkg-hash>/out
-        let target_profile_dir = out_path
-            .ancestors()
-            .nth(3)
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let target_profile_dir = target_profile_dir(Path::new(&out_dir));
         let dylib_ext = if cfg!(target_os = "macos") {
             "dylib"
         } else if cfg!(target_os = "windows") {
@@ -65,4 +67,40 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=../comet-test-udfs/src/lib.rs");
     println!("cargo:rerun-if-changed=../comet-test-udfs/Cargo.toml");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::target_profile_dir;
+    use std::path::Path;
+
+    #[test]
+    fn target_profile_dir_handles_cargo_build_directory_layouts() {
+        for (out_dir, expected) in [
+            (
+                "target/debug/build/datafusion-comet-b279/out",
+                "target/debug",
+            ),
+            (
+                "target/debug/build/datafusion-comet/b279/out",
+                "target/debug",
+            ),
+            (
+                "target/custom-profile/build/datafusion-comet/b279/out",
+                "target/custom-profile",
+            ),
+            (
+                "custom-target/aarch64-apple-darwin/debug/build/datafusion-comet/b279/out",
+                "custom-target/aarch64-apple-darwin/debug",
+            ),
+        ] {
+            assert_eq!(target_profile_dir(Path::new(out_dir)), Path::new(expected));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "OUT_DIR must be inside Cargo's profile build directory")]
+    fn target_profile_dir_rejects_paths_without_build_directory() {
+        target_profile_dir(Path::new("target/debug/out"));
+    }
 }

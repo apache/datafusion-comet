@@ -178,3 +178,7 @@ harness = false
 [[bench]]
 name = "sort_row_partitions"
 harness = false
+
+[[test]]
+name = "build_script"
+path = "build.rs"
