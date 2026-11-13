@@ -151,8 +151,10 @@ The gate has these properties, and a new rule has to keep them:
   exception is `parquet.*`: iceberg-java's writer builds its Parquet settings from `write.parquet.*`
   keys, so `UnsupportedParquetMrKeys` lists the few `parquet.*` keys it reads, from table
   properties or its Hadoop configuration, that change more than compressed bytes, and every other
-  `parquet.*` key is ignored. Re-check that list against `Parquet.java`, `ParquetWriter.java` and
-  the parquet-mr codecs when Iceberg or parquet-mr is bumped.
+  `parquet.*` key is ignored. A test in `CometIcebergWriteActionSuite` classifies every key the
+  parquet-mr that iceberg-java runs declares (iceberg-spark-runtime relocates its own copy), fails
+  on a key it has not classified, and checks that iceberg-java writes the same bytes with the
+  inert ones set, so an Iceberg or parquet-mr bump that adds a key cannot pass unaudited.
 - **It reads the effective configuration.** `TriggerContext.properties` is the table's properties
   overlaid with `SparkWrite.writeProperties`, which is where iceberg-java resolves per-write options
   and `spark.sql.iceberg.*` session overrides. Reading table properties alone misses those.

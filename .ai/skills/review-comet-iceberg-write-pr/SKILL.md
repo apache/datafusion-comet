@@ -76,8 +76,8 @@ For every gate change:
       namespace that reaches the writer must still decline. `parquet.*` is the one namespace
       checked the other way round: of the keys iceberg-java's writer reads, from table properties
       or its Hadoop configuration, only those in `UnsupportedParquetMrKeys` change more than
-      compressed bytes, so a change there must re-check that list against `Parquet.java`,
-      `ParquetWriter.java` and the parquet-mr codecs.
+      compressed bytes. A change there must keep the classification test in
+      `CometIcebergWriteActionSuite` passing, which fails on a key it has not classified.
 - [ ] **It reads the effective configuration** (`TriggerContext.properties`, table properties
       overlaid with `SparkWrite.writeProperties`), not the table properties alone.
 - [ ] **It fails closed.** A reflection lookup that cannot answer returns a reason. Look for
