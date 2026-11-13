@@ -517,7 +517,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: parquet.* table property other than enable.dictionary") {
+  test("fall-back: parquet.columnindex.truncate.length table property") {
+    // iceberg-java copies table properties into its Parquet writer's Hadoop configuration, where
+    // Iceberg's ParquetWriter reads the column index truncation length.
     withDetectionCatalog { _ =>
       createTable(
         "pq_mr_prop",
@@ -527,46 +529,101 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("Compatible when a parquet.* table property iceberg-java's writer ignores is set") {
+    // iceberg-java builds the Parquet writer's properties from write.parquet.* keys, so the
+    // parquet-mr spellings of the same settings change nothing.
+    withDetectionCatalog { _ =>
+      createTable(
+        "pq_mr_ignored",
+        partitionSpec = "",
+        properties = Some(
+          "'parquet.block.size'='1048576', 'parquet.page.size'='4096', " +
+            "'parquet.writer.version'='PARQUET_2_0'"))
+      assertSupportLevelIs[Compatible]("pq_mr_ignored")
+    }
+  }
+
   test("Compatible when a codec level side-channel property is set") {
     withDetectionCatalog { _ =>
       createTable(
         "codec_level",
         partitionSpec = "",
-        properties = Some("'zlib.compress.level'='9'"))
+        properties =
+          Some("'zlib.compress.level'='9', 'parquet.compression.codec.zstd.level'='19'"))
       assertSupportLevelIs[Compatible]("codec_level")
     }
   }
 
-  test("fall-back: parquet.* key in the session Hadoop configuration") {
+  test(
+    "Compatible when the session Hadoop configuration sets parquet.* keys the writer ignores") {
+    // Of the parquet.* keys, only the column index truncation length changes iceberg-java's data
+    // files beyond their compressed bytes. Reader settings, the parquet-mr spellings of
+    // write.parquet.* settings, the Hadoop-side dictionary switch, the zstd level and worker
+    // count, and keys parquet-mr does not declare do not.
     withDetectionCatalog { _ =>
       createTable("hadoop_conf", partitionSpec = "")
-      withSQLConf("parquet.block.size" -> "1048576") {
-        assertUnsupportedContains("hadoop_conf", "parquet.block.size", "Hadoop configuration")
+      withSQLConf(
+        "parquet.block.size" -> "1048576",
+        "parquet.writer.version" -> "PARQUET_2_0",
+        "parquet.enable.dictionary" -> "false",
+        "parquet.filter.stats.enabled" -> "false",
+        "parquet.hadoop.vectored.io.enabled" -> "true",
+        "parquet.compression.codec.zstd.level" -> "19",
+        "parquet.compression.codec.zstd.workers" -> "4",
+        "parquet.io.stats.enabled" -> "false") {
+        assertSupportLevelIs[Compatible]("hadoop_conf")
       }
     }
   }
 
-  // parquet.hadoop.vectored.io.enabled is a reader-side vectored-IO knob declared by
-  // parquet-hadoop (ParquetInputFormat.HADOOP_VECTORED_IO_ENABLED, default true in
-  // parquet-hadoop 1.16+). iceberg-java's writer never consumes it, so it must not
-  // disable native Iceberg writes when it happens to be present in the session
-  // Hadoop configuration.
-  test("Compatible when only parquet.hadoop.vectored.io.enabled is set in Hadoop configuration") {
+  test("fall-back: parquet.columnindex.truncate.length in the session Hadoop configuration") {
     withDetectionCatalog { _ =>
-      createTable("vectored_io_only", partitionSpec = "")
-      withSQLConf("parquet.hadoop.vectored.io.enabled" -> "true") {
-        assertSupportLevelIs[Compatible]("vectored_io_only")
+      createTable("hadoop_conf_read", partitionSpec = "")
+      withSQLConf("parquet.columnindex.truncate.length" -> "16") {
+        assertUnsupportedContains(
+          "hadoop_conf_read",
+          "Hadoop configuration sets parquet.columnindex.truncate.length")
       }
     }
   }
 
-  test("fall-back: io-impl set") {
+  test("fall-back: catalog Hadoop override of a parquet.* key the writer reads") {
+    // The catalog's hadoop.* overrides reach HadoopFileIO's configuration, which iceberg-java
+    // hands its Parquet writer, but not the session Hadoop configuration.
+    withTempIcebergDir { warehouseDir =>
+      val overrideCatalog = "parquet_hadoop_override_cat"
+      val key = "parquet.columnindex.truncate.length"
+      withSQLConf(
+        s"spark.sql.catalog.$overrideCatalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$overrideCatalog.type" -> "hadoop",
+        s"spark.sql.catalog.$overrideCatalog.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$overrideCatalog.hadoop.$key" -> "16") {
+        spark.sql(s"""
+          CREATE TABLE $overrideCatalog.$ns.parquet_hadoop_override (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+        """)
+        assert(spark.sessionState.newHadoopConf().get(key) == null)
+        val writeExec = planInsertWriteExec(s"$overrideCatalog.$ns.parquet_hadoop_override")
+        assertUnsupportedContains(
+          writeExec,
+          "parquet_hadoop_override",
+          s"Hadoop configuration sets $key")
+      }
+    }
+  }
+
+  test("Compatible when an io-impl table property is set") {
+    // iceberg-java reads io-impl from catalog properties only, so as a table property it changes
+    // nothing. requireRecognizedTableFileIO still checks the FileIO the table actually uses.
     withDetectionCatalog { _ =>
       createTable(
         "io_impl",
         partitionSpec = "",
         properties = Some("'io-impl'='com.example.MyFileIO'"))
-      assertUnsupportedContainsAllowingWriteFailure("io_impl", "io-impl")
+      assertSupportLevelIs[Compatible]("io_impl")
     }
   }
 
@@ -765,8 +822,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     hadoopConf.set("fs.s3a.bucket.target.path.style.access", "true")
     // Bucket `target.other` plus suffix `endpoint`, not bucket `target` plus `other.endpoint`.
     hadoopConf.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
-    hadoopConf.set("fs.s3a.bucket.target.other.encryption.algorithm", "SSE-KMS")
-    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "SSE-KMS")
+    // DSSE-KMS has no iceberg-rust equivalent, so it falls back for the bucket it applies to.
+    hadoopConf.set("fs.s3a.bucket.target.other.encryption.algorithm", "DSSE-KMS")
+    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "DSSE-KMS")
 
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
@@ -774,7 +832,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
     val longerBucket = new Configuration(false)
     longerBucket.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
-    longerBucket.set("fs.s3a.bucket.target.other.encryption.algorithm", "SSE-KMS")
+    longerBucket.set("fs.s3a.bucket.target.other.encryption.algorithm", "DSSE-KMS")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(longerBucket, Some("target.other")) ==
         Seq("fs.s3a.bucket.target.other.encryption.algorithm"))
@@ -803,21 +861,339 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("cluster-wide S3A delete, read and committer defaults do not block a native write") {
+  test("S3A settings that cannot change the written object do not block a native write") {
     val hadoopConf = new Configuration(false)
     Seq(
-      "fs.s3a.bulk.delete.page.size" -> "1000",
+      "fs.s3a.connection.maximum" -> "5000",
+      "fs.s3a.threads.max" -> "20",
+      "fs.s3a.connection.timeout" -> "200s",
+      "fs.s3a.connection.establish.timeout" -> "30s",
+      "fs.s3a.attempts.maximum" -> "5",
+      "fs.s3a.retry.limit" -> "7",
+      "fs.s3a.retry.throttle.interval" -> "100ms",
+      "fs.s3a.fast.upload.buffer" -> "disk",
+      "fs.s3a.multipart.size" -> "64M",
+      "fs.s3a.multipart.threshold" -> "128M",
+      "fs.s3a.buffer.dir" -> "/tmp/s3a",
+      "fs.s3a.block.size" -> "32M",
+      "fs.s3a.readahead.range" -> "64K",
       "fs.s3a.experimental.input.fadvise" -> "random",
+      "fs.s3a.bulk.delete.page.size" -> "1000",
       "fs.s3a.committer.magic.enabled" -> "true",
       "fs.s3a.committer.name" -> "magic",
-      "fs.s3a.committer.threads" -> "8").foreach { case (k, v) => hadoopConf.set(k, v) }
+      "fs.s3a.committer.threads" -> "8",
+      // hadoop-aws does not read fs.s3a.region, and Comet forwards endpoint.region instead.
+      "fs.s3a.region" -> "us-west-2",
+      "fs.s3a.impl" -> " org.apache.hadoop.fs.s3a.S3AFileSystem ",
+      // The data bucket's per-bucket spellings are admitted too.
+      "fs.s3a.bucket.target.connection.maximum" -> "100",
+      "fs.s3a.bucket.target.region" -> "us-west-2",
+      "fs.s3a.bucket.target.committer.name" -> "magic").foreach { case (k, v) =>
+      hadoopConf.set(k, v)
+    }
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
 
-    hadoopConf.set("fs.s3a.encryption.algorithm", "SSE-KMS")
+    // Another filesystem class can change every request, so it still falls back.
+    hadoopConf.set("fs.s3a.impl", "com.example.WrappingS3AFileSystem")
+    hadoopConf.set("fs.s3a.bucket.target.acl.default", "BucketOwnerFullControl")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.bucket.target.acl.default",
+        "fs.s3a.impl"))
+  }
+
+  test("S3 FileIO transport settings do not block a native write") {
+    val transport = Map(
+      "s3.multipart.part-size-bytes" -> "33554432",
+      "s3.multipart.num-threads" -> "8",
+      "s3.multipart.threshold" -> "1.5",
+      "s3.staging-dir" -> "/tmp/s3",
+      "s3.retry.num-retries" -> "5",
+      "s3.retry.min-wait-ms" -> "2000",
+      "s3.retry.max-wait-ms" -> "20000",
+      "s3.delete.batch-size" -> "250",
+      "s3.delete.num-threads" -> "4",
+      "s3.preload-client-enabled" -> "true",
+      "s3.delete-enabled" -> "TRUE")
+    assert(CometIcebergNativeWrite.unsupportedS3FileIOProperties(transport).isEmpty)
+
+    // With deletes disabled, S3FileIO keeps a failed task's files, which the native writer would
+    // delete, so that still falls back.
+    assert(
+      CometIcebergNativeWrite.unsupportedS3FileIOProperties(
+        transport + ("s3.delete-enabled" -> "false")) == Seq("s3.delete-enabled"))
+  }
+
+  test("Compatible for an S3 write under cluster-wide S3A transport and parquet-mr settings") {
+    // Settings clusters commonly set for every job. None of them can change the data file, where
+    // it is written or who writes it. The catalog reads them when it initializes its FileIO.
+    withSQLConf(
+      "fs.s3a.connection.maximum" -> "5000",
+      "fs.s3a.threads.max" -> "20",
+      "fs.s3a.region" -> "us-west-2",
+      "fs.s3a.impl" -> "org.apache.hadoop.fs.s3a.S3AFileSystem",
+      "parquet.io.stats.enabled" -> "false",
+      "parquet.hadoop.vectored.io.enabled" -> "true") {
+      withDetectionCatalog { _ =>
+        createTable(
+          "s3a_cluster_settings",
+          partitionSpec = "",
+          properties =
+            Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_cluster_settings'"))
+        val writeExec = planInsertWriteExec(s"$catalog.$ns.s3a_cluster_settings")
+        val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+        assert(support.isInstanceOf[Compatible], s"expected Compatible, got $support")
+      }
+    }
+  }
+
+  test("S3A server-side encryption translates to the s3.sse.* keys iceberg-rust reads") {
+    def translate(settings: (String, String)*): Option[Map[String, String]] = {
+      val hadoopConf = new Configuration(false)
+      settings.foreach { case (k, v) => hadoopConf.set(k, v) }
+      CometIcebergNativeWrite.hadoopS3EncryptionProperties(hadoopConf, Some("target"))
+    }
+    val kmsKey = "arn:aws:kms:us-east-1:111122223333:key/probe"
+    // A base64 AES-256 key of zero bytes and the base64 MD5 of those bytes.
+    val customerKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    val customerKeyMd5 = "cLyPS3KoaSFGi/joRB3OUQ=="
+
+    assert(translate() == Some(Map.empty))
+    assert(
+      translate("fs.s3a.encryption.algorithm" -> " aes256 ") == Some(Map("s3.sse.type" -> "s3")))
+    assert(
+      translate("fs.s3a.encryption.algorithm" -> "sse-kms") == Some(Map("s3.sse.type" -> "kms")))
+    assert(
+      translate("fs.s3a.encryption.algorithm" -> "SSE-KMS", "fs.s3a.encryption.key" -> kmsKey) ==
+        Some(Map("s3.sse.type" -> "kms", "s3.sse.key" -> kmsKey)))
+    assert(
+      translate(
+        "fs.s3a.encryption.algorithm" -> "SSE-C",
+        "fs.s3a.encryption.key" -> customerKey) == Some(
+        Map(
+          "s3.sse.type" -> "custom",
+          "s3.sse.key" -> customerKey,
+          "s3.sse.md5" -> customerKeyMd5)))
+    // The deprecated names, and the data bucket's setting over the global one.
+    assert(
+      translate("fs.s3a.server-side-encryption-algorithm" -> "AES256") == Some(
+        Map("s3.sse.type" -> "s3")))
+    assert(
+      translate(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.target.server-side-encryption-algorithm" -> "AES256") == Some(
+        Map("s3.sse.type" -> "s3")))
+    assert(translate("fs.s3a.bucket.other.encryption.algorithm" -> "DSSE-KMS") == Some(Map.empty))
+    // An empty setting for the data bucket turns a global one off, since NONE has no name.
+    assert(
+      translate(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.target.encryption.algorithm" -> "") == Some(Map.empty))
+    // S3A ignores a key without an algorithm.
+    assert(translate("fs.s3a.encryption.key" -> kmsKey) == Some(Map.empty))
+
+    // Encryption iceberg-rust cannot apply, settings that fail the S3A write, and a credential
+    // store, which can supply the values in place of the configuration.
+    val store = "jceks://file/tmp/s3a.jceks"
+    Seq(
+      Seq("fs.s3a.encryption.algorithm" -> "DSSE-KMS"),
+      Seq("fs.s3a.encryption.algorithm" -> "CSE-KMS"),
+      Seq("fs.s3a.encryption.algorithm" -> "SSE-S3"),
+      Seq("fs.s3a.encryption.algorithm" -> "AES256", "fs.s3a.encryption.key" -> kmsKey),
+      Seq("fs.s3a.encryption.algorithm" -> "SSE-C"),
+      Seq("fs.s3a.encryption.algorithm" -> "SSE-C", "fs.s3a.encryption.key" -> "not base64!"),
+      Seq(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "hadoop.security.credential.provider.path" -> store),
+      Seq(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.target.security.credential.provider.path" -> store)).foreach { settings =>
+      assert(translate(settings: _*).isEmpty, settings)
+    }
+  }
+
+  test("translated S3A encryption settings do not block a native write") {
+    val hadoopConf = new Configuration(false)
+    hadoopConf.set("fs.s3a.encryption.algorithm", "SSE-KMS")
+    hadoopConf.set("fs.s3a.bucket.target.encryption.key", "arn:aws:kms:us-east-1:1:key/k")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
+
+    // Client-side encryption for the data bucket makes every encryption setting fall back.
+    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "CSE-KMS")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.bucket.target.encryption.algorithm",
+        "fs.s3a.bucket.target.encryption.key",
         "fs.s3a.encryption.algorithm"))
+  }
+
+  test("S3A credential settings are admitted when the S3A provider list signs the write") {
+    val hadoopConf = new Configuration(false)
+    Seq(
+      "fs.s3a.aws.credentials.provider" ->
+        ("software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider," +
+          "software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider"),
+      "fs.s3a.assumed.role.arn" -> "arn:aws:iam::111122223333:role/probe",
+      "fs.s3a.assumed.role.session.duration" -> "30m",
+      "fs.s3a.security.credential.provider.path" -> "jceks://file/tmp/s3a.jceks",
+      "fs.s3a.bucket.target.assumed.role.arn" -> "arn:aws:iam::111122223333:role/target",
+      // A catalog's credential store, which Hadoop's password lookup reads for S3A's providers.
+      "hadoop.security.credential.provider.path" -> "jceks://file/tmp/catalog.jceks",
+      "hadoop.security.group.mapping.ldap.bind.password" -> "not-for-the-proto",
+      "dfs.replication" -> "2")
+      .foreach { case (k, v) => hadoopConf.set(k, v) }
+    assert(
+      CometIcebergNativeWrite.usesS3ACredentialAdapter(hadoopConf, Map.empty, Some("target")))
+    // The adapter gets the settings S3A's providers read, and nothing else.
+    assert(
+      CometIcebergNativeWrite.s3aCredentialAdapterProperties(hadoopConf).keySet == Set(
+        "fs.s3a.aws.credentials.provider",
+        "fs.s3a.assumed.role.arn",
+        "fs.s3a.assumed.role.session.duration",
+        "fs.s3a.security.credential.provider.path",
+        "fs.s3a.bucket.target.assumed.role.arn",
+        "hadoop.security.credential.provider.path",
+        "s3.comet.credential.provider.class"))
+    assert(
+      CometIcebergNativeWrite
+        .unsupportedHadoopS3Settings(hadoopConf, Some("target"), s3aCredentialAdapter = true)
+        .isEmpty)
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.assumed.role.arn",
+        "fs.s3a.assumed.role.session.duration",
+        "fs.s3a.aws.credentials.provider",
+        "fs.s3a.bucket.target.assumed.role.arn",
+        "fs.s3a.security.credential.provider.path"))
+
+    // The adapter refuses S3A delegation tokens, so they still fall back.
+    hadoopConf.set(
+      "fs.s3a.delegation.token.binding",
+      "org.apache.hadoop.fs.s3a.auth.delegation.SessionTokenBinding")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(
+        hadoopConf,
+        Some("target"),
+        s3aCredentialAdapter = true) == Seq("fs.s3a.delegation.token.binding"))
+  }
+
+  test("the S3A credential adapter needs an explicit provider list and no Comet provider class") {
+    val simple = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    def uses(settings: (String, String)*)(fileIOProperties: (String, String)*): Boolean = {
+      val hadoopConf = new Configuration(false)
+      settings.foreach { case (k, v) => hadoopConf.set(k, v) }
+      CometIcebergNativeWrite.usesS3ACredentialAdapter(
+        hadoopConf,
+        fileIOProperties.toMap,
+        Some("target"))
+    }
+
+    assert(uses("fs.s3a.aws.credentials.provider" -> simple)())
+    // The data bucket's own list counts, another bucket's does not.
+    assert(uses("fs.s3a.bucket.target.aws.credentials.provider" -> simple)())
+    assert(!uses("fs.s3a.bucket.other.aws.credentials.provider" -> simple)())
+    // An empty list for the data bucket leaves S3A's default providers, which the adapter does
+    // not stand in for, so the write keeps falling back.
+    assert(
+      !uses(
+        "fs.s3a.aws.credentials.provider" -> simple,
+        "fs.s3a.bucket.target.aws.credentials.provider" -> "")())
+    // The adapter cannot serve anonymous access.
+    val anonymous = "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider"
+    assert(!uses("fs.s3a.aws.credentials.provider" -> anonymous)())
+    // Hadoop 3.4 resolves a name through the provider mapping first, and fails the write on a
+    // malformed mapping.
+    val mapping = "fs.s3a.aws.credentials.provider.mapping"
+    assert(uses("fs.s3a.aws.credentials.provider" -> "keys", mapping -> s"keys=$simple")())
+    assert(!uses("fs.s3a.aws.credentials.provider" -> "anon", mapping -> s"anon=$anonymous")())
+    assert(!uses("fs.s3a.aws.credentials.provider" -> simple, mapping -> "keys")())
+    // A Comet provider class in the FileIO properties keeps its precedence.
+    assert(
+      !uses("fs.s3a.aws.credentials.provider" -> simple)(
+        "s3.comet.credential.provider.class" -> "com.example.Provider"))
+    assert(!uses()())
+
+    // Hadoop's built-in default list is not a setting.
+    val coreDefault = new Configuration(false)
+    coreDefault.addResource(
+      new java.io.ByteArrayInputStream(s"""<configuration>
+           |  <property><name>fs.s3a.aws.credentials.provider</name><value>$simple</value>
+           |  </property>
+           |</configuration>""".stripMargin.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+      "core-default.xml")
+    assert(coreDefault.get("fs.s3a.aws.credentials.provider") == simple)
+    assert(
+      !CometIcebergNativeWrite.usesS3ACredentialAdapter(coreDefault, Map.empty, Some("target")))
+  }
+
+  test("the write proto signs through the S3A adapter and carries the translated encryption") {
+    val provider = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    val kmsKey = "arn:aws:kms:us-east-1:111122223333:key/probe"
+    // Set before the catalog initializes its FileIO, which keeps the values it saw then.
+    withSQLConf(
+      "fs.s3a.aws.credentials.provider" -> provider,
+      "fs.s3a.connection.maximum" -> "64",
+      "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+      "fs.s3a.encryption.key" -> kmsKey,
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withDetectionCatalog { _ =>
+        // HadoopFileIO ignores its own s3.sse.* properties, so S3A's encryption replaces them.
+        withSQLConf(
+          s"spark.sql.catalog.$catalog.s3.sse.type" -> "custom",
+          s"spark.sql.catalog.$catalog.s3.sse.key" -> "ignored-key",
+          s"spark.sql.catalog.$catalog.s3.sse.md5" -> "ignored-md5") {
+          createTable(
+            "s3a_adapter",
+            partitionSpec = "",
+            properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_adapter'"))
+          // Planning only: inspect the native proto without issuing any S3 requests.
+          val insert = spark.sessionState.sqlParser.parsePlan(
+            s"INSERT INTO $catalog.$ns.s3a_adapter VALUES (1, 'us', 1.0)")
+          val plan =
+            spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
+          val cometWrite = findCometWriteExec(plan)
+            .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+          val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+          assert(
+            properties.get("s3.comet.credential.provider.class") ==
+              classOf[org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter].getName,
+            properties)
+          // The adapter reads these on the executor, with the catalog's hadoop.* overrides.
+          assert(properties.get("fs.s3a.aws.credentials.provider") == provider, properties)
+          assert(properties.get("fs.s3a.connection.maximum") == "64", properties)
+          assert(properties.get("s3.sse.type") == "kms", properties)
+          assert(properties.get("s3.sse.key") == kmsKey, properties)
+          assert(!properties.containsKey("s3.sse.md5"), properties)
+        }
+      }
+    }
+  }
+
+  test("fall-back: an S3A provider list beside a Comet credential provider class") {
+    withTempIcebergDir { warehouseDir =>
+      val providerCat = "s3a_provider_list_cat"
+      withSQLConf(
+        "fs.s3a.aws.credentials.provider" ->
+          "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        s"spark.sql.catalog.$providerCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$providerCat.type" -> "hadoop",
+        s"spark.sql.catalog.$providerCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$providerCat.s3.comet.credential.provider.class" ->
+          classOf[org.apache.comet.cloud.s3.MinioCometS3CredentialProvider].getName) {
+        spark.sql(s"""
+          CREATE TABLE $providerCat.$ns.provider_list (id INT, region STRING, amount DOUBLE)
+          USING iceberg
+          TBLPROPERTIES ('write.data.path'='s3a://probe-bucket/iceberg/db/provider_list')
+        """)
+        val writeExec = planInsertWriteExec(s"$providerCat.$ns.provider_list")
+        assertUnsupportedContains(
+          writeExec,
+          "provider_list",
+          "unsupported Hadoop S3A setting: fs.s3a.aws.credentials.provider")
+      }
+    }
   }
 
   test("Hadoop S3A built-in defaults are ignored but custom resources are effective") {
@@ -829,23 +1205,23 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     val key = "fs.s3a.encryption.algorithm"
 
     val coreDefaultOnly = new Configuration(false)
-    coreDefaultOnly.addResource(xml(key, "SSE-KMS"), "core-default.xml")
-    assert(coreDefaultOnly.get(key) == "SSE-KMS")
+    coreDefaultOnly.addResource(xml(key, "DSSE-KMS"), "core-default.xml")
+    assert(coreDefaultOnly.get(key) == "DSSE-KMS")
     assert(
       CometIcebergNativeWrite
         .unsupportedHadoopS3Settings(coreDefaultOnly, Some("target"))
         .isEmpty)
 
     val customDefault = new Configuration(false)
-    customDefault.addResource(xml(key, "SSE-KMS"), "tenant-default.xml")
-    assert(customDefault.get(key) == "SSE-KMS")
+    customDefault.addResource(xml(key, "DSSE-KMS"), "tenant-default.xml")
+    assert(customDefault.get(key) == "DSSE-KMS")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(customDefault, Some("target")) == Seq(
         key))
 
     val site = new Configuration(false)
-    site.addResource(xml(key, "SSE-KMS"), "probe-site.xml")
-    assert(site.get(key) == "SSE-KMS")
+    site.addResource(xml(key, "DSSE-KMS"), "probe-site.xml")
+    assert(site.get(key) == "DSSE-KMS")
     assert(CometIcebergNativeWrite.unsupportedHadoopS3Settings(site, Some("target")) == Seq(key))
 
     coreDefaultOnly.set(key, "SSE-S3")
@@ -862,7 +1238,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         s"spark.sql.catalog.$catalogWithOverride" -> "org.apache.iceberg.spark.SparkCatalog",
         s"spark.sql.catalog.$catalogWithOverride.type" -> "hadoop",
         s"spark.sql.catalog.$catalogWithOverride.warehouse" -> warehouseDir.getAbsolutePath,
-        s"spark.sql.catalog.$catalogWithOverride.hadoop.$hadoopKey" -> "SSE-KMS") {
+        s"spark.sql.catalog.$catalogWithOverride.hadoop.$hadoopKey" -> "DSSE-KMS") {
         spark.sql(s"""
           CREATE TABLE $catalogWithOverride.$ns.catalog_hadoop_override (
             id INT,
@@ -887,7 +1263,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           val fileIOConf = IcebergReflection
             .getFileIOHadoopConf(table)
             .getOrElse(fail("FileIO did not expose its Hadoop configuration"))
-          assert(fileIOConf.get(hadoopKey) == "SSE-KMS")
+          assert(fileIOConf.get(hadoopKey) == "DSSE-KMS")
           assertUnsupportedContains(
             writeExec,
             "catalog_hadoop_override",
@@ -1389,6 +1765,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         assert(props.get("s3.endpoint") == "http://localhost:9000", props)
         assert(props.get("s3.access-key-id") == "probe-access-key", props)
         assert(props.get("s3.path-style-access") == "true", props)
+        // Without an S3A provider list the native writer keeps its own credential chain.
+        assert(!props.containsKey("s3.comet.credential.provider.class"), props)
+        assert(!props.containsKey("fs.s3a.access.key"), props)
         // The exec's string rendering must never fall through to the protobuf's toString:
         // Spark's argString redaction only covers Scala Maps, so the property bag -- now
         // carrying credential-shaped values like the access key above -- would land verbatim
@@ -1448,13 +1827,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: write.parquet.shred-variants=true") {
+  test("Compatible when write.parquet.shred-variants=true") {
+    // iceberg-java shreds only top-level variant columns, and a variant column at any depth falls
+    // back on its type, so shredding cannot change a write the native writer takes.
     withDetectionCatalog { _ =>
       createTable(
         "shred",
         partitionSpec = "",
         properties = Some("'write.parquet.shred-variants'='true'"))
-      assertUnsupportedContains("shred", "write.parquet.shred-variants")
+      assertSupportLevelIs[Compatible]("shred")
     }
   }
 

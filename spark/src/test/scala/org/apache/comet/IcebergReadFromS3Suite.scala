@@ -20,12 +20,18 @@
 package org.apache.comet
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.comet.CometIcebergNativeScanExec
+import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec}
 import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.iceberg.RESTCatalogHelper
 
-class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
+class IcebergReadFromS3Suite
+    extends CometS3TestBase
+    with RESTCatalogHelper
+    with CometIcebergTestBase {
+
+  // Both base traits define it, the same way.
+  override protected def icebergAvailable: Boolean = super[CometIcebergTestBase].icebergAvailable
 
   override protected val testBucketName = "test-iceberg-bucket"
 
@@ -310,6 +316,52 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
           spark.sql("DROP TABLE vend_cat.db.simple")
           spark.sql("DROP NAMESPACE vend_cat.db")
         }
+    }
+  }
+
+  test("native Iceberg write signs with an explicit S3A provider list") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // With fs.s3a.aws.credentials.provider set, iceberg-java's S3A writer signs with exactly that
+    // list, and the native writer runs the same list through HadoopS3ACredentialProviderAdapter.
+    // The catalog's hadoop.* override reaches the adapter only through the write proto.
+    val providerCatalog = "s3a_provider_cat"
+    withSQLConf(
+      s"spark.sql.catalog.$providerCatalog" -> "org.apache.iceberg.spark.SparkCatalog",
+      s"spark.sql.catalog.$providerCatalog.type" -> "hadoop",
+      s"spark.sql.catalog.$providerCatalog.warehouse" ->
+        s"s3a://$testBucketName/warehouse-s3a-provider",
+      s"spark.sql.catalog.$providerCatalog.s3.endpoint" -> minioContainer.getS3URL,
+      s"spark.sql.catalog.$providerCatalog.s3.region" -> "us-east-1",
+      s"spark.sql.catalog.$providerCatalog.s3.path-style-access" -> "true",
+      s"spark.sql.catalog.$providerCatalog.hadoop.fs.s3a.aws.credentials.provider" ->
+        "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val rows = "(1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)"
+      spark.sql(
+        s"CREATE TABLE $providerCatalog.db.native_write (id INT, name STRING, value DOUBLE) " +
+          "USING iceberg")
+      val plans = capturePlans(spark) {
+        spark.sql(s"INSERT INTO $providerCatalog.db.native_write VALUES $rows")
+      }
+      assert(
+        plans.exists(plan =>
+          collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }.nonEmpty),
+        s"expected the native Iceberg write in:\n${plans.mkString("\n--\n")}")
+
+      // The same rows through iceberg-java's writer, which uses the same provider list.
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        spark.sql(
+          s"CREATE TABLE $providerCatalog.db.jvm_write (id INT, name STRING, value DOUBLE) " +
+            "USING iceberg")
+        spark.sql(s"INSERT INTO $providerCatalog.db.jvm_write VALUES $rows")
+      }
+      checkAnswer(
+        spark.sql(s"SELECT * FROM $providerCatalog.db.native_write"),
+        spark.sql(s"SELECT * FROM $providerCatalog.db.jvm_write"))
+
+      spark.sql(s"DROP TABLE $providerCatalog.db.native_write")
+      spark.sql(s"DROP TABLE $providerCatalog.db.jvm_write")
     }
   }
 }

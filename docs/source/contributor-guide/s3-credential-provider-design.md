@@ -130,15 +130,15 @@ STS endpoint selection (`configure_sts_endpoint`) overrides the SDK's own endpoi
 
 `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` differ in what they consume:
 
-| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                       |
-| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
-| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`    |
-| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                        |
-| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry    |
-| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry        |
-| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes |
+| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                                                           |
+| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`                                        |
+| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                                                            |
+| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry                                        |
+| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry                                            |
+| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes for a read and 1 minute for a write |
 
-The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader or writer. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
+The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. A write uses 1 minute instead. reqsign reloads a credential with less than 2 minutes left, so a write asks the SPI for every request, as the Parquet path does. A data file stays open while its rows arrive, and an AWS SDK v1 session provider keeps handing out its current credential until a minute before it expires, so the 5-minute window could sign a file's later parts with an expired token. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
 
 ## Property-bag handling on the Iceberg path
 

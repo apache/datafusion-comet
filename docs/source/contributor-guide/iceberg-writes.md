@@ -154,9 +154,15 @@ the context to `Option[String]`: `None` means the rule has no objection.
 The gate has these properties, and a new rule has to keep them:
 
 - **It is an allow list.** It accepts only configurations shown to produce iceberg-java's output.
-  Unknown `write.parquet.*` keys, any `parquet.*` table property, and any `parquet.*` key in the
-  session Hadoop configuration are declined, including keys a future Iceberg version adds. When you
-  support a new setting, add it to the vetted set and translate it; do not widen a prefix.
+  Unknown `write.parquet.*` keys are declined, including keys a future Iceberg version adds. When you
+  support a new setting, add it to the vetted set and translate it; do not widen a prefix. The one
+  exception is `parquet.*`: iceberg-java's writer builds its Parquet settings from `write.parquet.*`
+  keys, so `UnsupportedParquetMrKeys` lists the few `parquet.*` keys it reads, from table
+  properties or its Hadoop configuration, that change more than compressed bytes, and every other
+  `parquet.*` key is ignored. A test in `CometIcebergWriteActionSuite` classifies every key the
+  parquet-mr that iceberg-java runs declares (iceberg-spark-runtime relocates its own copy), fails
+  on a key it has not classified, and checks that iceberg-java writes the same bytes with the
+  inert ones set, so an Iceberg or parquet-mr bump that adds a key cannot pass unaudited.
 - **It reads the effective configuration.** `TriggerContext.properties` is the table's properties
   overlaid with `SparkWrite.writeProperties`, which is where iceberg-java resolves per-write options
   and `spark.sql.iceberg.*` session overrides. Reading table properties alone misses those.
@@ -343,13 +349,30 @@ Per-bucket `fs.s3a.bucket.<bucket>.*` keys are split into a complete bucket name
 suffix. `fs.s3a.bucket.target.other.endpoint` belongs to bucket `target.other`, so it does not
 make a write to `target` ineligible.
 The Hadoop check excludes keys whose only source is Hadoop's built-in `core-default.xml`, while
-retaining programmatic, site-XML, and custom `*-default.xml` settings. It also ignores the keys in
-`IgnoredHadoopS3Keys`: Spark's session-wide S3A vectored-read and `downgrade.syncable.exceptions`
-settings, plus the committer, `bulk.delete.page.size` and `experimental.input.fadvise` settings that
-deployments set cluster-wide (Spark 4.1 sets two of the committer keys itself). A key belongs on
-that list only if S3A would not apply it to a data-file write request. Settings that S3A does apply,
-such as encryption, ACLs, storage class, signing and the credentials provider, must keep falling
-back. The list matches the exact key, so a per-bucket spelling is not ignored. Keep those
+retaining programmatic, site-XML, and custom `*-default.xml` settings. It also ignores the suffixes
+in `IgnoredHadoopS3Suffixes`, in both their global and their data-bucket forms: the connection pool,
+thread, timeout, retry, upload-buffering, read, listing, delete and committer settings that
+deployments set cluster-wide (Spark seeds the vectored-read and `downgrade.syncable.exceptions`
+settings into every session, and Spark 4.1 sets two of the committer keys itself), plus
+`fs.s3a.region`, which no hadoop-aws release reads. `fs.s3a.impl` is ignored only when it names
+`S3AFileSystem`. A suffix belongs on that list only if it cannot change the written object, where it
+is written or who writes it. Settings that can, such as ACLs, storage class and signing, must keep
+falling back. Encryption and the credential settings are admitted only where the write proto
+reproduces them. `hadoopS3EncryptionProperties` translates S3A's server-side encryption into
+`s3.sse.*` with S3A's precedence, where the first key that is set wins even when it is empty, and
+returns `None`, which keeps the encryption keys unsupported, for anything iceberg-rust cannot
+apply. `buildIcebergWriteProto` lets that translation replace the FileIO's own `s3.sse.*`
+properties, which `HadoopFileIO` ignores. `usesS3ACredentialAdapter` decides when the proto names
+`HadoopS3ACredentialProviderAdapter` as `s3.comet.credential.provider.class`: when the FileIO's
+Hadoop configuration sets `fs.s3a.aws.credentials.provider` explicitly and the FileIO properties
+name no provider class of their own. The adapter then runs that same S3A list on the executor, and
+`s3aCredentialAdapterProperties` forwards the explicit `fs.s3a.*` settings and the
+`hadoop.security.credential.*` and `hadoop.security.credstore.*` settings its providers read. The gate and
+`buildIcebergWriteProto` call the same functions on the same configuration, so they cannot
+disagree. On the FileIO side, `IgnoredS3FileIOProperties` ignores
+`S3FileIO`'s multipart, staging-directory, retry, delete-batching and client-preload settings.
+`s3.delete-enabled` is admitted only when it is `true`, because a failed native write task deletes
+its files, which `S3FileIO` keeps when deletes are disabled. Keep those
 allowlists aligned when adding storage support. Reaching
 `FileIOBuilder.with_prop` is not proof of support: the builder accepts unknown properties and the
 backend ignores them. A fallback reason must contain property names only, never values.
