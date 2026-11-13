@@ -24,6 +24,7 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
 
 use super::super::parquet_reader::concrete_parquet_source;
+use crate::parquet::parquet_exec::METADATA_SIZE_HINT;
 
 // DataFusion 55.2 rechecks the entire unread tail at every row-group boundary,
 // even when the predicate has not changed. Until that work is bounded upstream,
@@ -53,7 +54,7 @@ pub(super) async fn within_row_group_limit(
         let Ok(mut reader) = factory.create_reader(
             partition,
             file.clone(),
-            file.metadata_size_hint,
+            file.metadata_size_hint.or(Some(METADATA_SIZE_HINT)),
             source.metrics(),
         ) else {
             return false;
