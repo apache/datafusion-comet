@@ -727,7 +727,7 @@ before the consuming operator decides which rows it needs.
 
 By default, Comet keeps affected operators in Spark to preserve skipped date evaluation.
 This applies to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins,
-`mapPartitions`, and `Dataset.rdd` consumers; date expressions inside joins, aggregates,
+`mapPartitions`, and Scala's `Dataset.rdd` consumers; date expressions inside joins, aggregates,
 and ordered limits; and projections below a window group limit. A parent projection can
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers,
@@ -739,6 +739,10 @@ These safeguards also cover required arguments, such as a computed year, on inpu
 the join rejects before producing an output row.
 Selecting the date eagerly does not force conditionally used sibling expressions; those
 computations also retain Spark evaluation when needed.
+
+Partial consumers of raw `QueryExecution.toRdd` or PySpark `DataFrame.rdd` can still encounter
+date errors from rows that Spark would skip, including Date32 overflow with ANSI disabled;
+this remaining gap is tracked in [#7616](https://github.com/apache/datafusion-comet/issues/7616).
 
 With ANSI disabled, a direct date projection can remain native below these consumers when
 all its computations are safe to evaluate early. This includes `make_date(2024, month, day)`
