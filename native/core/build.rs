@@ -47,10 +47,12 @@ fn main() {
     // from OUT_DIR.
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
         let out_path = std::path::PathBuf::from(out_dir);
-        // OUT_DIR is .../target/<profile>/build/<pkg-hash>/out
+        // Cargo 1.100 split <pkg-hash> into <pkg>/<hash>. Locate the enclosing
+        // build directory instead of assuming a fixed number of ancestors.
         let target_profile_dir = out_path
             .ancestors()
-            .nth(3)
+            .find(|path| path.file_name().is_some_and(|name| name == "build"))
+            .and_then(Path::parent)
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
         let dylib_ext = if cfg!(target_os = "macos") {
