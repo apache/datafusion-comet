@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.lang.reflect.Modifier
 import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
@@ -37,6 +38,7 @@ import org.json4s.jackson.JsonMethods.parse
 
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.metadata.ParquetMetadata
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
@@ -3169,35 +3171,184 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  /** The footer of every data file of `table`, by path. */
+  private def dataFileFooters(table: String): Map[String, ParquetMetadata] =
+    spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+      .collect()
+      .map { row =>
+        val path = row.getString(0)
+        val reader = ParquetFileReader.open(
+          HadoopInputFile.fromPath(new HadoopPath(path), spark.sessionState.newHadoopConf()))
+        try path -> reader.getFooter
+        finally reader.close()
+      }
+      .toMap
+
   /**
    * For every data file of `table`, by path: whether each of its columns has a dictionary page in
    * any row group, according to the encoding stats in the footer.
    */
-  private def dataFileDictionaryPages(table: String): Map[String, Map[String, Boolean]] = {
-    val paths = spark
-      .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
-      .collect()
-      .map(_.getString(0))
-    paths.map { path =>
-      val reader = ParquetFileReader.open(
-        HadoopInputFile.fromPath(new HadoopPath(path), spark.sessionState.newHadoopConf()))
-      val columns =
-        try {
-          reader.getFooter.getBlocks.asScala
-            .flatMap(_.getColumns.asScala)
-            .groupBy(_.getPath.toDotString)
-            .map { case (column, chunks) =>
-              column -> chunks.exists { chunk =>
-                val stats = chunk.getEncodingStats
-                assert(stats != null, s"$column in $path has no encoding stats")
-                stats.hasDictionaryPages
-              }
-            }
-        } finally {
-          reader.close()
+  private def dataFileDictionaryPages(table: String): Map[String, Map[String, Boolean]] =
+    dataFileFooters(table).map { case (path, footer) =>
+      path -> footer.getBlocks.asScala
+        .flatMap(_.getColumns.asScala)
+        .groupBy(_.getPath.toDotString)
+        .map { case (column, chunks) =>
+          column -> chunks.exists { chunk =>
+            val stats = chunk.getEncodingStats
+            assert(stats != null, s"$column in $path has no encoding stats")
+            stats.hasDictionaryPages
+          }
         }
-      path -> columns
-    }.toMap
+    }
+
+  test(
+    "native acceleration: parquet-mr settings iceberg-java ignores leave its files unchanged") {
+    assumeNativeAcceleration()
+    // Every key the parquet-mr that iceberg-java runs declares for writers, by how its writer
+    // treats the key. iceberg-spark-runtime relocates parquet-mr, so read the copy it links.
+    // An inert key gets a value that would change the file if the writer read it.
+    val inert = Map(
+      "parquet.block.row.count.limit" -> "1000",
+      "parquet.block.size" -> "65536",
+      "parquet.bloom.filter.adaptive.enabled" -> "true",
+      "parquet.bloom.filter.candidates.number" -> "3",
+      "parquet.bloom.filter.enabled" -> "true",
+      "parquet.bloom.filter.expected.ndv" -> "100",
+      "parquet.bloom.filter.fpp" -> "0.5",
+      "parquet.bloom.filter.max.bytes" -> "1024",
+      "parquet.column.statistics.enabled" -> "false",
+      "parquet.compression" -> "GZIP",
+      "parquet.compression.codec.zstd.bufferPool.enabled" -> "false",
+      "parquet.dictionary.page.size" -> "1024",
+      "parquet.enable.bytestreamsplit" -> "true",
+      "parquet.enable.summary-metadata" -> "true",
+      "parquet.memory.min.chunk.size" -> "1024",
+      "parquet.memory.pool.ratio" -> "0.1",
+      "parquet.page.row.count.limit" -> "100",
+      "parquet.page.size" -> "1024",
+      "parquet.page.size.check.estimate" -> "false",
+      "parquet.page.size.row.check.max" -> "2",
+      "parquet.page.size.row.check.min" -> "1",
+      "parquet.page.value.count.threshold" -> "100",
+      "parquet.page.write-checksum.enabled" -> "false",
+      "parquet.size.statistics.enabled" -> "false",
+      "parquet.statistics.truncate.length" -> "2",
+      "parquet.summary.metadata.level" -> "ALL",
+      "parquet.validation" -> "true",
+      "parquet.write.support.class" -> "org.apache.parquet.hadoop.example.GroupWriteSupport",
+      "parquet.writer.max-padding" -> "8388608",
+      "parquet.writer.version" -> "PARQUET_2_0")
+    // UnsupportedParquetMrKeys falls back on the first, and parquet.enable.dictionary is read
+    // from the table properties under its own rule.
+    val gated = Set("parquet.columnindex.truncate.length", "parquet.enable.dictionary")
+    // Codec-level side channels, which change only compressed bytes.
+    val sideChannels =
+      Set("parquet.compression.codec.zstd.level", "parquet.compression.codec.zstd.workers")
+    val parquetHadoop = IcebergReflection
+      .loadClass("org.apache.iceberg.parquet.ParquetCodecFactory")
+      .getSuperclass
+      .getName
+      .stripSuffix(".CodecFactory")
+    val declared = Seq("ParquetOutputFormat", "codec.ZstandardCodec")
+      .flatMap { name =>
+        IcebergReflection.loadClass(s"$parquetHadoop.$name").getFields.toSeq.collect {
+          case f if Modifier.isStatic(f.getModifiers) && f.getType == classOf[String] =>
+            f.get(null).asInstanceOf[String]
+        }
+      }
+      .filter(_.startsWith("parquet."))
+      .toSet
+    val unclassified = declared -- inert.keySet -- gated -- sideChannels
+    assert(
+      unclassified.isEmpty,
+      s"classify these parquet-mr keys here, and add any that iceberg-java's writer reads to " +
+        s"UnsupportedParquetMrKeys: ${unclassified.toSeq.sorted.mkString(", ")}")
+
+    withIcebergCatalog { warehouseDir =>
+      // One Parquet file read back as one task, so every write sees the same rows in the same
+      // order. With the small sizes above, a writer that read them would cut more row groups.
+      val source = new File(warehouseDir, "parquet_mr_src").getAbsolutePath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 20000, 1, 1)
+          .selectExpr(
+            "id",
+            "substr(sha2(cast(id AS STRING), 256), 1, 16) AS payload",
+            "concat('c', cast(id % 50 AS STRING)) AS category",
+            "cast(id % 10 AS INT) AS small",
+            "cast(id AS DOUBLE) / 7 AS ratio")
+          .write
+          .parquet(source)
+      }
+      def create(t: String, properties: Map[String, String]): Unit = {
+        val props = properties
+          .map { case (k, v) => s"'$k'='$v'" }
+          .mkString(" TBLPROPERTIES (", ", ", ")")
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$t (
+            id BIGINT, payload STRING, category STRING, small INT, ratio DOUBLE
+          ) USING iceberg${if (properties.isEmpty) "" else props}
+        """)
+      }
+      def insert(t: String): Unit =
+        spark.read.parquet(source).coalesce(1).writeTo(s"$catalog.$ns.$t").append()
+      def footer(t: String): (File, ParquetMetadata) = {
+        val footers = dataFileFooters(t)
+        assert(footers.size == 1, s"expected one data file for $t, got ${footers.keys}")
+        val (path, metadata) = footers.head
+        val uri = new java.net.URI(path)
+        (if (uri.getScheme == null) new File(path) else new File(uri), metadata)
+      }
+      // Row groups and, per column, everything but the sizes and offsets.
+      def shape(metadata: ParquetMetadata) = metadata.getBlocks.asScala.map { block =>
+        block.getRowCount -> block.getColumns.asScala.map { c =>
+          (
+            c.getPath.toDotString,
+            c.getCodec,
+            c.getEncodings.asScala.toSet,
+            c.getValueCount,
+            c.getStatistics.toString)
+        }
+      }
+
+      create("pq_plain", Map.empty)
+      create("pq_inert", inert)
+      create("pq_side", Map("parquet.compression.codec.zstd.level" -> "19"))
+      create("pq_native", inert)
+      Seq("pq_plain", "pq_inert", "pq_side").foreach(insert)
+
+      // iceberg-java ignores every inert key: it writes the same bytes with them as without.
+      val (plainFile, plainFooter) = footer("pq_plain")
+      val (inertFile, inertFooter) = footer("pq_inert")
+      assert(
+        Files.readAllBytes(inertFile.toPath).sameElements(Files.readAllBytes(plainFile.toPath)),
+        s"iceberg-java read an inert key: files of ${inertFile.length} and ${plainFile.length} " +
+          s"bytes, footers ${shape(inertFooter)} and ${shape(plainFooter)}")
+
+      // A side channel changes the compressed bytes and nothing else.
+      val (_, sideFooter) = footer("pq_side")
+      assert(shape(sideFooter) == shape(plainFooter))
+      assert(
+        sideFooter.getBlocks.asScala.map(_.getCompressedSize) !=
+          plainFooter.getBlocks.asScala.map(_.getCompressedSize),
+        "the zstd level did not reach iceberg-java's codec")
+
+      // The native writer takes the same table, and matches iceberg-java's rows and dictionaries.
+      val snapshot = withNativeEnabled { captureWrite("pq_native")(insert("pq_native")) }
+      assert(snapshot.snapshotDelta == 1L)
+      val nativeExecs = snapshot.plans.flatMap { p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+      }
+      assert(nativeExecs.nonEmpty, "expected the write to engage the native path")
+      checkAnswer(
+        spark.table(s"$catalog.$ns.pq_native"),
+        spark.table(s"$catalog.$ns.pq_inert").collect().toSeq)
+      assert(
+        dataFileDictionaryPages("pq_native").values.toSeq ==
+          dataFileDictionaryPages("pq_inert").values.toSeq)
+    }
   }
 
   test("native acceleration: empty append commits exactly once with zero data files") {
