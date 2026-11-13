@@ -383,19 +383,17 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         Option(field.get(null).asInstanceOf[String])
       }
 
-  // The parquet-mr settings that change what iceberg-java's Parquet writer writes. The writer
-  // copies every table and write property into its Hadoop configuration and builds the
-  // ParquetProperties itself, so of all `parquet.*` keys, from either source, only these reach a
-  // data file: the column index truncation length, read by Iceberg's ParquetWriter, and the zstd
-  // level and worker count, read by parquet-mr's ZstandardCodec. Any other `parquet.*` key cannot
-  // change a data file, including keys parquet-mr does not declare.
-  // `parquet.enable.dictionary` is read from the table and write properties only and has its own
-  // rule. Re-check this list against Parquet.java, ParquetWriter.java and ParquetCodecFactory.java
-  // on every Iceberg version bump.
-  private val ParquetKeysReadByIcebergWriter: Set[String] = Set(
-    "parquet.columnindex.truncate.length",
-    "parquet.compression.codec.zstd.level",
-    "parquet.compression.codec.zstd.workers")
+  // The parquet-mr settings that change iceberg-java's data files beyond their compressed bytes.
+  // The writer copies every table and write property into its Hadoop configuration and builds the
+  // ParquetProperties itself, so of all `parquet.*` keys, from either source, only the column
+  // index truncation length, read by Iceberg's ParquetWriter, does. parquet-mr's ZstandardCodec
+  // also reads the zstd level and worker count, but like the other codec-level side channels they
+  // only change compressed bytes, which are an accepted divergence. Any other `parquet.*` key,
+  // including one parquet-mr does not declare, changes nothing. `parquet.enable.dictionary` is
+  // read from the table and write properties only and has its own rule. Re-check this list
+  // against Parquet.java, ParquetWriter.java and the parquet-mr codecs on every Iceberg or
+  // parquet-mr version bump.
+  private val UnsupportedParquetMrKeys: Set[String] = Set("parquet.columnindex.truncate.length")
 
   private lazy val vettedParquetWriteKeys: Set[String] = Set(
     PropertyKeys.ParquetCompressionCodec,
@@ -553,11 +551,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
       "dictionary override unsupported"),
-    requireNoParquetPropertiesReadByIcebergWriter,
+    requireNoUnsupportedParquetMrProperties,
     requireRecognizedTableFileIO,
     requirePlaintextEncryptionManager,
     requirePositiveIntParquetSizes,
-    requireNoParquetHadoopSettingsReadByIcebergWriter,
+    requireNoUnsupportedParquetMrHadoopSettings,
     requireSupportedStorageScheme,
     requireSupportedHadoopS3Settings,
     requireSupportedS3FileIOProperties,
@@ -725,17 +723,17 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       }
       .map { case (k, v) => s"$k=$v is not a vetted parquet write property" }
 
-  private val requireNoParquetPropertiesReadByIcebergWriter: TriggerRule = ctx =>
+  private val requireNoUnsupportedParquetMrProperties: TriggerRule = ctx =>
     ctx.properties.keys
-      .find(ParquetKeysReadByIcebergWriter.contains)
+      .find(UnsupportedParquetMrKeys.contains)
       .map(k => s"$k is set (iceberg-java's Parquet writer reads it, the native writer does not)")
 
   // A HadoopFileIO hands the Parquet writer its own configuration, which carries the catalog's
   // `hadoop.*` overrides. Other FileIOs hand it a new Configuration, which loads the same site
   // files as the session configuration.
-  private val requireNoParquetHadoopSettingsReadByIcebergWriter: TriggerRule = ctx => {
+  private val requireNoUnsupportedParquetMrHadoopSettings: TriggerRule = ctx => {
     val confs = ctx.hadoopConf +: IcebergReflection.getFileIOHadoopConf(ctx.table).toSeq
-    ParquetKeysReadByIcebergWriter
+    UnsupportedParquetMrKeys
       .find(key => confs.exists(_.get(key) != null))
       .map(k => s"Hadoop configuration sets $k (reaches iceberg-java's writer but not native)")
   }

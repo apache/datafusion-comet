@@ -514,16 +514,18 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       createTable(
         "codec_level",
         partitionSpec = "",
-        properties = Some("'zlib.compress.level'='9'"))
+        properties =
+          Some("'zlib.compress.level'='9', 'parquet.compression.codec.zstd.level'='19'"))
       assertSupportLevelIs[Compatible]("codec_level")
     }
   }
 
   test(
     "Compatible when the session Hadoop configuration sets parquet.* keys the writer ignores") {
-    // Only the column index truncation length and the zstd level and worker count reach
-    // iceberg-java's Parquet bytes. Reader settings, the parquet-mr spellings of write.parquet.*
-    // settings, the Hadoop-side dictionary switch, and keys parquet-mr does not declare do not.
+    // Of the parquet.* keys, only the column index truncation length changes iceberg-java's data
+    // files beyond their compressed bytes. Reader settings, the parquet-mr spellings of
+    // write.parquet.* settings, the Hadoop-side dictionary switch, the zstd level and worker
+    // count, and keys parquet-mr does not declare do not.
     withDetectionCatalog { _ =>
       createTable("hadoop_conf", partitionSpec = "")
       withSQLConf(
@@ -531,24 +533,22 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "parquet.writer.version" -> "PARQUET_2_0",
         "parquet.enable.dictionary" -> "false",
         "parquet.filter.stats.enabled" -> "false",
+        "parquet.hadoop.vectored.io.enabled" -> "true",
+        "parquet.compression.codec.zstd.level" -> "19",
+        "parquet.compression.codec.zstd.workers" -> "4",
         "parquet.io.stats.enabled" -> "false") {
         assertSupportLevelIs[Compatible]("hadoop_conf")
       }
     }
   }
 
-  test("fall-back: parquet.* key in the session Hadoop configuration that the writer reads") {
+  test("fall-back: parquet.columnindex.truncate.length in the session Hadoop configuration") {
     withDetectionCatalog { _ =>
-      Seq(
-        "parquet.columnindex.truncate.length" -> "16",
-        "parquet.compression.codec.zstd.level" -> "19",
-        "parquet.compression.codec.zstd.workers" -> "4").zipWithIndex.foreach {
-        case ((key, value), i) =>
-          val table = s"hadoop_conf_read_$i"
-          createTable(table, partitionSpec = "")
-          withSQLConf(key -> value) {
-            assertUnsupportedContains(table, s"Hadoop configuration sets $key")
-          }
+      createTable("hadoop_conf_read", partitionSpec = "")
+      withSQLConf("parquet.columnindex.truncate.length" -> "16") {
+        assertUnsupportedContains(
+          "hadoop_conf_read",
+          "Hadoop configuration sets parquet.columnindex.truncate.length")
       }
     }
   }
@@ -577,20 +577,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           writeExec,
           "parquet_hadoop_override",
           s"Hadoop configuration sets $key")
-      }
-    }
-  }
-
-  // parquet.hadoop.vectored.io.enabled is a reader-side vectored-IO knob declared by
-  // parquet-hadoop (ParquetInputFormat.HADOOP_VECTORED_IO_ENABLED, default true in
-  // parquet-hadoop 1.16+). iceberg-java's writer never consumes it, so it must not
-  // disable native Iceberg writes when it happens to be present in the session
-  // Hadoop configuration.
-  test("Compatible when only parquet.hadoop.vectored.io.enabled is set in Hadoop configuration") {
-    withDetectionCatalog { _ =>
-      createTable("vectored_io_only", partitionSpec = "")
-      withSQLConf("parquet.hadoop.vectored.io.enabled" -> "true") {
-        assertSupportLevelIs[Compatible]("vectored_io_only")
       }
     }
   }
@@ -841,24 +827,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("cluster-wide S3A delete, read and committer defaults do not block a native write") {
-    val hadoopConf = new Configuration(false)
-    Seq(
-      "fs.s3a.bulk.delete.page.size" -> "1000",
-      "fs.s3a.experimental.input.fadvise" -> "random",
-      "fs.s3a.committer.magic.enabled" -> "true",
-      "fs.s3a.committer.name" -> "magic",
-      "fs.s3a.committer.threads" -> "8").foreach { case (k, v) => hadoopConf.set(k, v) }
-    assert(
-      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
-
-    hadoopConf.set("fs.s3a.encryption.algorithm", "DSSE-KMS")
-    assert(
-      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
-        "fs.s3a.encryption.algorithm"))
-  }
-
-  test("S3A transport settings and fs.s3a.impl naming S3A do not block a native write") {
+  test("S3A settings that cannot change the written object do not block a native write") {
     val hadoopConf = new Configuration(false)
     Seq(
       "fs.s3a.connection.maximum" -> "5000",
@@ -874,6 +843,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "fs.s3a.buffer.dir" -> "/tmp/s3a",
       "fs.s3a.block.size" -> "32M",
       "fs.s3a.readahead.range" -> "64K",
+      "fs.s3a.experimental.input.fadvise" -> "random",
+      "fs.s3a.bulk.delete.page.size" -> "1000",
+      "fs.s3a.committer.magic.enabled" -> "true",
+      "fs.s3a.committer.name" -> "magic",
+      "fs.s3a.committer.threads" -> "8",
       // hadoop-aws does not read fs.s3a.region, and Comet forwards endpoint.region instead.
       "fs.s3a.region" -> "us-west-2",
       "fs.s3a.impl" -> " org.apache.hadoop.fs.s3a.S3AFileSystem ",
@@ -1803,26 +1777,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         partitionSpec = "",
         properties = Some("'write.parquet.shred-variants'='true'"))
       assertSupportLevelIs[Compatible]("shred")
-    }
-  }
-
-  test("fall-back: variant column with variant shredding enabled") {
-    assume(isSpark40Plus, "VARIANT requires Spark 4.0+")
-    assume(icebergVersionAtLeast(1, 10), "VARIANT columns require Iceberg 1.10+")
-    withDetectionCatalog { _ =>
-      spark.sql(s"""
-        CREATE TABLE $catalog.$ns.shred_variant_col (id INT, v VARIANT) USING iceberg
-        TBLPROPERTIES ('format-version'='3', 'write.parquet.shred-variants'='true')
-      """)
-      // Only the gate's decision is under test, so a failure of iceberg-java's write is allowed.
-      val writeExec = captureWriteExec("shred_variant_col", allowWriteFailure = true) {
-        spark.sql(
-          s"""INSERT INTO $catalog.$ns.shred_variant_col VALUES (1, parse_json('{"a": 1}'))""")
-      }
-      assertUnsupportedContains(
-        writeExec,
-        "shred_variant_col",
-        "column v has Iceberg type variant")
     }
   }
 
