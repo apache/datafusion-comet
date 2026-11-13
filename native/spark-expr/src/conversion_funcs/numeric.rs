@@ -521,8 +521,8 @@ macro_rules! cast_float_to_int32_up {
 }
 
 /// 10^scale, or an error for a scale outside 0..=38. Negative scales need
-/// spark.sql.legacy.allowNegativeScaleOfDecimal and can still arrive from the Parquet schema
-/// adapter.
+/// spark.sql.legacy.allowNegativeScaleOfDecimal, and the serde and Parquet scan both leave those
+/// to Spark.
 fn decimal_scale_factor(scale: i8, cast: &str) -> SparkResult<i128> {
     u32::try_from(scale)
         .ok()

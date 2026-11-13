@@ -1243,6 +1243,12 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         fallbackReasons += s"Unsupported $name of type $dt (native Parquet scan does not " +
           "support TIME)"
         false
+      case d: DecimalType if d.scale < 0 =>
+        // Spark reads an integer column as a negative-scale decimal by rescaling each value,
+        // which the native cast kernels reject.
+        fallbackReasons += s"Unsupported $name of type $d (native Parquet scan does not " +
+          "support negative-scale decimals)"
+        false
       case dt if isStringCollationType(dt) =>
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now
