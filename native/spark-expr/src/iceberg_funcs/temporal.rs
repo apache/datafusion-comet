@@ -123,6 +123,7 @@ fn days_to_years(days: i32) -> i32 {
 /// `DateTimeUtil.daysToMonths`: whole calendar months between the epoch and the day, floored.
 fn days_to_months(days: i32) -> i32 {
     let (year, month, _) = civil_from_days(days.into());
+    // Years at the i32 day extremes are -5877641 and 5881580, so this fits in i32.
     ((year - UNIX_EPOCH_YEAR) * 12 + month - 1) as i32
 }
 
