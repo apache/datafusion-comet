@@ -99,7 +99,7 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 typetag = "0.2"
 uuid = "1.23.3"
-libloading = "0.8"
+libloading = "0.9"
 comet-udf-sdk = { path = "../comet-udf-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
