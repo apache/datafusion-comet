@@ -951,6 +951,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "fs.s3a.bucket.target.server-side-encryption-algorithm" -> "AES256") == Some(
         Map("s3.sse.type" -> "s3")))
     assert(translate("fs.s3a.bucket.other.encryption.algorithm" -> "DSSE-KMS") == Some(Map.empty))
+    // An empty setting for the data bucket turns a global one off, since NONE has no name.
+    assert(
+      translate(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.target.encryption.algorithm" -> "") == Some(Map.empty))
     // S3A ignores a key without an algorithm.
     assert(translate("fs.s3a.encryption.key" -> kmsKey) == Some(Map.empty))
 
@@ -1081,27 +1086,34 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "fs.s3a.encryption.key" -> kmsKey,
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       withDetectionCatalog { _ =>
-        createTable(
-          "s3a_adapter",
-          partitionSpec = "",
-          properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_adapter'"))
-        // Planning only: inspect the native proto without issuing any S3 requests.
-        val insert = spark.sessionState.sqlParser.parsePlan(
-          s"INSERT INTO $catalog.$ns.s3a_adapter VALUES (1, 'us', 1.0)")
-        val plan =
-          spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
-        val cometWrite = findCometWriteExec(plan)
-          .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
-        val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
-        assert(
-          properties.get("s3.comet.credential.provider.class") ==
-            CometIcebergNativeWrite.HadoopS3ACredentialAdapterClass,
-          properties)
-        // The adapter reads these on the executor, with the catalog's hadoop.* overrides.
-        assert(properties.get("fs.s3a.aws.credentials.provider") == provider, properties)
-        assert(properties.get("fs.s3a.connection.maximum") == "64", properties)
-        assert(properties.get("s3.sse.type") == "kms", properties)
-        assert(properties.get("s3.sse.key") == kmsKey, properties)
+        // HadoopFileIO ignores its own s3.sse.* properties, so S3A's encryption replaces them.
+        withSQLConf(
+          s"spark.sql.catalog.$catalog.s3.sse.type" -> "custom",
+          s"spark.sql.catalog.$catalog.s3.sse.key" -> "ignored-key",
+          s"spark.sql.catalog.$catalog.s3.sse.md5" -> "ignored-md5") {
+          createTable(
+            "s3a_adapter",
+            partitionSpec = "",
+            properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_adapter'"))
+          // Planning only: inspect the native proto without issuing any S3 requests.
+          val insert = spark.sessionState.sqlParser.parsePlan(
+            s"INSERT INTO $catalog.$ns.s3a_adapter VALUES (1, 'us', 1.0)")
+          val plan =
+            spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
+          val cometWrite = findCometWriteExec(plan)
+            .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+          val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+          assert(
+            properties.get("s3.comet.credential.provider.class") ==
+              classOf[org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter].getName,
+            properties)
+          // The adapter reads these on the executor, with the catalog's hadoop.* overrides.
+          assert(properties.get("fs.s3a.aws.credentials.provider") == provider, properties)
+          assert(properties.get("fs.s3a.connection.maximum") == "64", properties)
+          assert(properties.get("s3.sse.type") == "kms", properties)
+          assert(properties.get("s3.sse.key") == kmsKey, properties)
+          assert(!properties.containsKey("s3.sse.md5"), properties)
+        }
       }
     }
   }
@@ -1129,12 +1141,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           "unsupported Hadoop S3A setting: fs.s3a.aws.credentials.provider")
       }
     }
-  }
-
-  test("the S3A credential adapter the write proto names is Comet's adapter class") {
-    assert(
-      classOf[org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter].getName ==
-        CometIcebergNativeWrite.HadoopS3ACredentialAdapterClass)
   }
 
   test("Hadoop S3A built-in defaults are ignored but custom resources are effective") {

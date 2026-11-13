@@ -605,11 +605,13 @@ selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums
 access points.
 
 S3A server-side encryption is translated into iceberg-rust's `s3.sse.*` settings, with S3A's own
-precedence: the data bucket's `fs.s3a.bucket.<data-bucket>.*` setting wins over the global one, and
+precedence: the data bucket's `fs.s3a.bucket.<data-bucket>.*` setting wins over the global one,
+even when it is empty, which is how a bucket turns a global setting off, and
 `encryption.algorithm` and `encryption.key` win over the older `server-side-encryption-algorithm`
 and `server-side-encryption.key`. SSE-S3 (`AES256`), SSE-KMS (with or without a key) and SSE-C are
-supported. DSSE-KMS and client-side encryption fall back, and so do encryption settings when a
-Hadoop credential store (`hadoop.security.credential.provider.path` or
+supported. The translated settings replace the catalog's own `s3.sse.*` properties, which
+`HadoopFileIO` ignores. DSSE-KMS and client-side encryption fall back, and so do encryption
+settings when a Hadoop credential store (`hadoop.security.credential.provider.path` or
 `fs.s3a.security.credential.provider.path`) is configured, because the store can supply the values
 instead of the configuration.
 

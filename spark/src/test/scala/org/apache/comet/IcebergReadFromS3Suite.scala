@@ -19,16 +19,19 @@
 
 package org.apache.comet
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec}
-import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
-import org.apache.spark.sql.util.QueryExecutionListener
+import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.iceberg.RESTCatalogHelper
 
-class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
+class IcebergReadFromS3Suite
+    extends CometS3TestBase
+    with RESTCatalogHelper
+    with CometIcebergTestBase {
+
+  // Both base traits define it, the same way.
+  override protected def icebergAvailable: Boolean = super[CometIcebergTestBase].icebergAvailable
 
   override protected val testBucketName = "test-iceberg-bucket"
 
@@ -338,7 +341,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       spark.sql(
         s"CREATE TABLE $providerCatalog.db.native_write (id INT, name STRING, value DOUBLE) " +
           "USING iceberg")
-      val plans = executedPlansOf {
+      val plans = capturePlans(spark) {
         spark.sql(s"INSERT INTO $providerCatalog.db.native_write VALUES $rows")
       }
       assert(
@@ -360,24 +363,5 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       spark.sql(s"DROP TABLE $providerCatalog.db.native_write")
       spark.sql(s"DROP TABLE $providerCatalog.db.jvm_write")
     }
-  }
-
-  /** The executed plans of the queries `action` runs. */
-  private def executedPlansOf(action: => Unit): Seq[SparkPlan] = {
-    val plans = new java.util.concurrent.CopyOnWriteArrayList[SparkPlan]()
-    val listener = new QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
-        plans.add(qe.executedPlan)
-      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
-        plans.add(qe.executedPlan)
-    }
-    spark.listenerManager.register(listener)
-    try {
-      action
-      org.apache.spark.CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-    plans.asScala.toSeq
   }
 }
