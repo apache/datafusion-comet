@@ -715,6 +715,11 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 
 ## make_date evaluation
 
+A valid calendar date outside Date32's range raises `ARITHMETIC_OVERFLOW` in both ANSI
+modes. For example, `make_date(6000000, 1, 1)` raises an error even with ANSI disabled.
+Invalid calendar fields still return NULL with ANSI disabled and raise a date error with
+ANSI enabled; a NULL argument returns NULL before date validation.
+
 With ANSI mode enabled, `make_date(2024, 13, 1)` raises an invalid-date error. If an
 input iterator yields a valid row followed by that invalid row, a `LIMIT 1` can stop
 before evaluating the second date. A native projection can evaluate a whole batch
@@ -722,7 +727,7 @@ before the consuming operator decides which rows it needs.
 
 By default, Comet keeps affected operators in Spark to preserve skipped date evaluation.
 This applies to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins,
-`mapPartitions`, and `Dataset.rdd` consumers; date expressions inside joins, aggregates,
+`mapPartitions`, and Scala's `Dataset.rdd` consumers; date expressions inside joins, aggregates,
 and ordered limits; and projections below a window group limit. A parent projection can
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers,
@@ -734,6 +739,10 @@ These safeguards also cover required arguments, such as a computed year, on inpu
 the join rejects before producing an output row.
 Selecting the date eagerly does not force conditionally used sibling expressions; those
 computations also retain Spark evaluation when needed.
+
+Partial consumers of raw `QueryExecution.toRdd` or PySpark `DataFrame.rdd` can still encounter
+date errors from rows that Spark would skip, including Date32 overflow with ANSI disabled;
+this remaining gap is tracked in [#7616](https://github.com/apache/datafusion-comet/issues/7616).
 
 With ANSI disabled, a direct date projection can remain native below these consumers when
 all its computations are safe to evaluate early. This includes `make_date(2024, month, day)`
@@ -758,12 +767,20 @@ Exchanges materialize their inputs and partition keys independently, so an outer
 not force an eager date partition key to Spark. Local sorts and aggregates can also separate
 date evaluation from an outer limit.
 
+Parquet scans below a filter whose `make_date` can throw use Spark's reader. This preserves
+Spark's dictionary and metadata pruning, which determine whether an overflowing date is read,
+as well as its predicate order and structured errors. The safeguard inspects complete filters,
+including projected date arguments and predicates absent from the native scan's data filters.
+ANSI-off dates with bounded years and safe arguments can retain the native reader and sibling
+row filtering. Predicates containing `make_date` remain above a native scan without weakening
+their Boolean structure. Other native scans retain their existing pruning behavior.
+
 Users who accept eagerly evaluating dates, projected arguments, and sibling expressions can set
 `spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for
 these shapes. The default is `true`. Disabling it can expose invalid-date or argument errors
-that Spark would skip under ANSI mode. This setting does not change
-`make_date`'s invalid-date handling or the expression-level safeguards for skipped
-arguments and operands. For example, an empty `IN` predicate containing `make_date`
+that Spark would skip, including Date32 overflow with ANSI disabled. This setting does not change
+`make_date`'s invalid-date handling, the Spark-reader safeguard, or the expression-level safeguards
+for skipped arguments and operands. For example, an empty `IN` predicate containing `make_date`
 still falls back when needed.
 
 ## See also

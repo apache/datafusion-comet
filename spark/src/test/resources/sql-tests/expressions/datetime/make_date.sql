@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.sql.ansi.enabled=false
+
 statement
 CREATE TABLE test_make_date(year int, month int, day int) USING parquet
 
@@ -177,3 +179,37 @@ SELECT make_date(2024, 2, 29)
 
 query
 SELECT make_date(2023, 2, 28)
+
+-- The Date32 endpoints remain valid, and NULL arguments skip overflow validation.
+statement
+CREATE TABLE make_date_bounds(y INT, m INT, d INT) USING parquet
+
+statement
+INSERT INTO make_date_bounds VALUES
+  (5881580, 7, 11), (-5877641, 6, 23),
+  (NULL, 13, 32), (6000000, NULL, 1), (6000000, 1, NULL)
+
+query expect_native(make_date)
+SELECT unix_date(make_date(y, m, d)) FROM make_date_bounds
+
+-- Valid calendar dates just outside Date32 must overflow, regardless of ANSI mode.
+statement
+CREATE TABLE make_date_overflow(y INT, m INT, d INT) USING parquet
+
+statement
+INSERT INTO make_date_overflow VALUES (5881580, 7, 12), (-5877641, 6, 22)
+
+query expect_error_class(ARITHMETIC_OVERFLOW)
+SELECT make_date(y, m, d) FROM make_date_overflow WHERE y > 0
+
+query expect_error_class(ARITHMETIC_OVERFLOW)
+SELECT make_date(y, m, d) FROM make_date_overflow WHERE y < 0
+
+-- An empty input must not evaluate overflowing scalar arguments.
+query expect_native(make_date)
+SELECT make_date(6000000, 1, 1) FROM make_date_overflow WHERE y = 0
+
+-- Calendar validation precedes the checked epoch-day conversion.
+query
+SELECT make_date(6000000, 13, 32), make_date(6000000, 2, 30),
+       make_date(1000000000, 1, 1), make_date(-1000000000, 1, 1)

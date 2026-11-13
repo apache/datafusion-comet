@@ -25,7 +25,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.Resolver
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal, MakeDate}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -327,6 +327,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     }
   }
 
+  /** Keep each make_date predicate above the scan, without weakening its Boolean structure. */
+  def filterForParquetPushdown(filter: Expression): Option[Expression] =
+    if (filter.exists(_.isInstanceOf[MakeDate])) None else Some(filter)
+
   /**
    * Build the `NativeScanCommon` proto shared by the core parquet scan and contrib scans that
    * delegate to the same native parquet machinery (e.g. a Delta scan contrib, which passes
@@ -366,7 +370,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
       commonBuilder.setHasDataFilters(dataFilters.nonEmpty)
       val filterProtos = new ListBuffer[Expr]()
-      for (filter <- dataFilters) {
+      for (filter <- dataFilters.flatMap(filterForParquetPushdown)) {
         exprToProto(filter, output) match {
           case Some(proto) => filterProtos += proto
           case _ =>

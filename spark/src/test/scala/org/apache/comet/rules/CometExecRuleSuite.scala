@@ -29,7 +29,7 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, Ascending, Attribute, AttributeReference, BoundReference, Cast, Cos, CreateArray, Descending, ElementAt, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, Rand, RuntimeReplaceable, Sin, SortOrder, Unevaluable, UnixDate}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Count, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
@@ -48,7 +48,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
@@ -235,8 +235,12 @@ class CometExecRuleSuite extends CometTestBase {
         withParquetTable(path.getCanonicalPath, "make_date_non_ansi") {
           // A literal or widened small-integer year cannot overflow the Date32 representation.
           // The invalid month is harmless with ANSI off, including below a lazy row consumer.
-          for (year <- Seq("2024", "_1")) {
-            val df = sql(s"SELECT make_date($year, _2, 1) FROM make_date_non_ansi LIMIT 10")
+          for (year <- Seq("2024", "_1");
+            projection <- Seq(
+              s"make_date($year, _2, 1)",
+              s"unix_date(make_date($year, _2, 1))",
+              s"make_date($year, _2, 1) IS NULL")) {
+            val df = sql(s"SELECT $projection FROM make_date_non_ansi LIMIT 10")
             checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
           }
 
@@ -308,6 +312,163 @@ class CometExecRuleSuite extends CometTestBase {
         val plan = df.queryExecution.executedPlan
         assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
         assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+      }
+    }
+  }
+
+  test("make_date safe residual filters keep the native Parquet reader") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((1, 1, 1), (13, 1, 2)), "make_date_residual") {
+        val df = sql("""
+          |SELECT _3 FROM make_date_residual
+          |WHERE unix_date(make_date(2024, _1, _2)) > 0
+          |""".stripMargin)
+        checkSparkAnswer(df)
+        val plan = df.queryExecution.executedPlan
+        val scan = plan
+          .collectFirst { case scan: CometNativeScanExec => scan }
+          .getOrElse(fail(s"Expected a native Parquet reader:\n${plan.treeString}"))
+        assert(scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
+        assert(countOperators(plan, classOf[FileSourceScanExec]) == 0, plan.treeString)
+      }
+    }
+  }
+
+  test("make_date scan fallback follows projected arguments and current native children") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
+      withParquetTable(Seq((2024, 1, 1)), "make_date_scan_arguments") {
+        def input: FileSourceScanExec =
+          createSparkPlan(spark, "SELECT * FROM make_date_scan_arguments").collectFirst {
+            case scan: FileSourceScanExec => scan
+          }.get
+        val scanRule = CometScanRule(spark)
+        def filterDate(child: SparkPlan, date: Expression): FilterExec =
+          FilterExec(GreaterThan(UnixDate(date), Literal(0)), child)
+        def assertReader(plan: SparkPlan, sparkReader: Boolean): Unit = {
+          assert(
+            countOperators(plan, classOf[FileSourceScanExec]) == (if (sparkReader) 1 else 0),
+            plan.treeString)
+          assert(
+            countOperators(plan, classOf[CometScanExec]) +
+              countOperators(plan, classOf[CometNativeScanExec]) == (if (sparkReader) 0 else 1),
+            plan.treeString)
+        }
+
+        // The upper date looks safe until its month alias is traced to the lower producer.
+        for (computedMonth <- Seq(false, true); converted <- Seq(false, true)) {
+          val source = if (converted) CometRule(spark).apply(input) else input
+          val month =
+            if (computedMonth) ElementAt(CreateArray(Seq(Literal(1))), Literal(0))
+            else source.output(1)
+          val project = ProjectExec(
+            Seq(Alias(Literal(2024), "y")(), Alias(month, "m")(), source.output(2)),
+            source)
+          val date =
+            MakeDate(project.output(0), project.output(1), project.output(2), failOnError = false)
+          val result = scanRule(filterDate(project, date))
+          assertReader(result, sparkReader = computedMonth)
+          assertReader(scanRule(result), sparkReader = computedMonth)
+        }
+
+        // A projected date can be hidden behind an attribute in the enclosing filter.
+        for (converted <- Seq(false, true)) {
+          val source = input
+          val date = MakeDate(source.output.head, Literal(1), Literal(1), failOnError = false)
+          val original = ProjectExec(Seq(Alias(date, "d")()), source)
+          val project = if (converted) CometRule(spark).apply(original) else original
+          val result = scanRule(filterDate(project, project.output.head))
+          assertReader(result, sparkReader = true)
+          assert(countOperators(result, classOf[CometProjectExec]) == 0, result.treeString)
+        }
+
+        // A materializing boundary prevents an outer filter from changing its source scan.
+        val source = input
+        val exchange = ShuffleExchangeExec(SinglePartition, source)
+        val date = MakeDate(exchange.output.head, Literal(1), Literal(1), failOnError = false)
+        assertReader(scanRule(filterDate(exchange, date)), sparkReader = false)
+
+        // Re-planning a guarded scan without that parent must release only our own reason.
+        val guarded = scanRule(filterDate(source, date)).collectFirst {
+          case scan: FileSourceScanExec => scan
+        }.get
+        assertReader(scanRule(guarded), sparkReader = false)
+      }
+    }
+  }
+
+  test("make_date scan fallback visits shared projection dependencies without expanding them") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq(Tuple1(2024)), "make_date_scan_dependencies") {
+        val source =
+          createSparkPlan(spark, "SELECT * FROM make_date_scan_dependencies").collectFirst {
+            case scan: FileSourceScanExec => scan
+          }.get
+        var expressionVisits = 0
+        case class CountedExpression(child: Expression) extends Expression with Unevaluable {
+          override def children: Seq[Expression] = {
+            expressionVisits += 1
+            assert(
+              expressionVisits <= 10000,
+              "Scan analysis expanded shared projection dependencies")
+            Seq(child)
+          }
+          override def nullable: Boolean = true
+          override def dataType: DataType = DoubleType
+          override protected def withNewChildrenInternal(
+              newChildren: IndexedSeq[Expression]): Expression = copy(child = newChildren.head)
+        }
+        val findScans =
+          PrivateMethod[Map[Int, FileSourceScanExec]](Symbol("scansRequiringSparkForMakeDate"))
+        val scanRule = CometScanRule(spark)
+        for (throwingDate <- Seq(false, true)) {
+          val input = if (throwingDate) {
+            UnixDate(MakeDate(source.output.head, Literal(1), Literal(1), failOnError = false))
+          } else {
+            source.output.head
+          }
+          var project =
+            ProjectExec(Seq(Alias(CountedExpression(Cast(input, DoubleType)), "x")()), source)
+          for (level <- 0 until 20) {
+            val previous = project.output.head
+            val expression = Add(Add(Sin(previous), Cos(previous)), Rand(Literal(level.toLong)))
+            // Count every layer so alias expansion fails before building an exponential tree.
+            project = ProjectExec(Seq(Alias(CountedExpression(expression), "x")()), project)
+          }
+          val filter = FilterExec(GreaterThan(project.output.head, Literal(0.0)), project)
+          expressionVisits = 0
+          withClue(s"throwingDate=$throwingDate: ") {
+            val scans = scanRule invokePrivate findScans(filter)
+            assert(scans.keySet == (if (throwingDate) Set(source.id) else Set.empty[Int]))
+          }
+        }
+      }
+    }
+  }
+
+  test("make_date scan fallback preserves current native partition filters") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq(Tuple1(2024)), "make_date_scan_reuse") {
+        val source = createSparkPlan(spark, "SELECT * FROM make_date_scan_reuse").collectFirst {
+          case scan: FileSourceScanExec => scan
+        }.get
+        val native = CometRule(spark).apply(source).asInstanceOf[CometNativeScanExec]
+        val current = native.copy(partitionFilters = Seq(Literal(true)))
+        val date = MakeDate(current.output.head, Literal(1), Literal(1), failOnError = false)
+        val filtered = FilterExec(GreaterThan(UnixDate(date), Literal(0)), current)
+        val result = CometScanRule(spark).apply(filtered)
+        val restored = result.collectFirst { case scan: FileSourceScanExec => scan }.get
+        assert(restored.partitionFilters == current.partitionFilters)
+        assert(restored.dataFilters == current.dataFilters)
+        assert(countOperators(result, classOf[CometNativeScanExec]) == 0, result.treeString)
       }
     }
   }

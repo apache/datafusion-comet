@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualTo, GreaterThan, Literal, MakeDate, Or, UnixDate}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, StringType, StructField, StructType}
@@ -108,5 +108,19 @@ class CometNativeScanSuite extends AnyFunSuite {
       Seq(AttributeReference("file_size", LongType)()),
       Set("id", colliding, colliding + "_"))
     assert(fields.map(_.name) == Seq(colliding + "__"))
+  }
+
+  test("Parquet pushdown excludes whole make_date predicates and preserves independent filters") {
+    val year = AttributeReference("year", IntegerType)()
+    val a = AttributeReference("a", IntegerType)()
+    val b = AttributeReference("b", IntegerType)()
+    val date = GreaterThan(
+      UnixDate(MakeDate(year, Literal(1), Literal(1), failOnError = false)),
+      Literal(0))
+    val predicate = Or(And(date, EqualTo(a, Literal(1))), EqualTo(b, Literal(1)))
+    val independent = EqualTo(AttributeReference("keep", IntegerType)(), Literal(1))
+    assert(
+      Seq(predicate, independent).flatMap(CometNativeScan.filterForParquetPushdown) ==
+        Seq(independent))
   }
 }

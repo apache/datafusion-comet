@@ -32,24 +32,26 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, DynamicPruningExpression, Expression, ExprId, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, MakeDate, NamedExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
-import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometFilterExec, CometProjectExec, CometScanExec, CometScanUtils, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.{FileSourceScanExec, FilterExec, InSubqueryExec, ProjectExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
+import org.apache.comet.{CometConf, CometExplainInfo, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
+import org.apache.comet.serde.CometMakeDate
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -62,6 +64,7 @@ case class CometScanRule(session: SparkSession)
     with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+  private val makeDateScanReason = "make_date filters require Spark's reader to preserve pruning"
 
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
@@ -81,6 +84,8 @@ case class CometScanRule(session: SparkSession)
     // CometExecRule only stops operator wrapping, so without this check we
     // would still rewrite scans to CometScanExec in a streaming plan.
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan
+
+    val sparkScans = scansRequiringSparkForMakeDate(plan)
 
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
       case _: FileSourceScanExec => true
@@ -122,9 +127,123 @@ case class CometScanRule(session: SparkSession)
         transformV2Scan(fullPlan, scanExec)
     }
 
-    plan.transform {
-      case scan if isSupportedScanNode(scan) => transformScan(scan)
+    def transform(node: SparkPlan): SparkPlan = sparkScans.get(node.id) match {
+      // This guard precedes the contrib hook so Delta keeps its Spark reader too.
+      case Some(scan) => withFallbackReason(scan, makeDateScanReason)
+      case None =>
+        val children = node.children.map(transform)
+        val rebuilt =
+          if (children == node.children) node
+          else {
+            // Re-plan native parents when a restored reader changes their serialized input.
+            val restored = node match {
+              case _: CometSinkPlaceHolder => children.head
+              case native: CometExec => native.sparkFallback(children)
+              case exchange: CometBroadcastExchangeExec =>
+                exchange.originalPlan.withNewChildren(children)
+              case exchange: CometShuffleExchangeExec =>
+                exchange.originalPlan.withNewChildren(children)
+              case _ => node.withNewChildren(children)
+            }
+            restored.copyTagsFrom(node)
+            restored
+          }
+        if (isSupportedScanNode(rebuilt)) transformScan(rebuilt) else rebuilt
     }
+    transform(plan)
+  }
+
+  /**
+   * Spark omits partition-column and nondeterministic predicates from a V1 scan's data filters.
+   * Keep its original reader when those filters can throw: native metadata pruning need not visit
+   * the same rows as Spark's per-file statistics and dictionary filters.
+   */
+  private def scansRequiringSparkForMakeDate(plan: SparkPlan): Map[Int, FileSourceScanExec] = {
+    val scans = mutable.Map.empty[Int, FileSourceScanExec]
+
+    def inspectScan(
+        node: SparkPlan,
+        scan: FileSourceScanExec,
+        filters: Seq[Expression],
+        aliases: Map[ExprId, Expression]): Unit = {
+      // This pass owns only its own reason; an earlier parent context must not prevent conversion.
+      scan.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach { reasons =>
+        val remaining = reasons - makeDateScanReason
+        if (remaining.isEmpty) scan.unsetTagValue(CometExplainInfo.FALLBACK_REASONS)
+        else scan.setTagValue(CometExplainInfo.FALLBACK_REASONS, remaining)
+      }
+      // Follow each producer once instead of expanding repeated references through projections.
+      // These caches belong to this scan's filter/project pipeline, not to the rule instance.
+      val resolvedAliases = mutable.Map.empty[ExprId, Expression]
+      val argumentSafety = mutable.Map.empty[ExprId, Boolean]
+      val throwingDates = mutable.Map.empty[ExprId, Boolean]
+
+      def resolveAlias(expression: Expression): Expression = expression match {
+        case attribute: Attribute if aliases.contains(attribute.exprId) =>
+          resolvedAliases.getOrElseUpdate(
+            attribute.exprId,
+            resolveAlias(aliases(attribute.exprId)))
+        case _ => expression
+      }
+
+      def canEvaluateArgument(expression: Expression): Boolean =
+        CometMakeDate.canEvaluateEagerly(expression) && expression.references.forall {
+          attribute =>
+            aliases.get(attribute.exprId).forall { producer =>
+              argumentSafety.getOrElseUpdate(attribute.exprId, canEvaluateArgument(producer))
+            }
+        }
+
+      def containsThrowingDate(expression: Expression): Boolean = expression match {
+        case attribute: Attribute =>
+          aliases.get(attribute.exprId).exists { producer =>
+            throwingDates.getOrElseUpdate(attribute.exprId, containsThrowingDate(producer))
+          }
+        case date: MakeDate =>
+          val resolved = date.copy(
+            year = resolveAlias(date.year),
+            month = resolveAlias(date.month),
+            day = resolveAlias(date.day))
+          !MakeDateEvaluation.canEvaluateMakeDateEagerly(resolved, canEvaluateArgument)
+        case _ => expression.children.exists(containsThrowingDate)
+      }
+
+      if ((filters ++ scan.dataFilters).exists(containsThrowingDate)) {
+        scans(node.id) = scan
+      }
+    }
+
+    def projectAliases(expressions: Seq[NamedExpression]): Map[ExprId, Expression] =
+      expressions.collect { case alias: Alias => alias.exprId -> alias.child }.toMap
+
+    def visit(node: SparkPlan, filters: Seq[Expression], aliases: Map[ExprId, Expression]): Unit =
+      node match {
+        case scan: FileSourceScanExec => inspectScan(scan, scan, filters, aliases)
+        case scan: CometScanExec =>
+          val restored = scan.wrapped.copy(
+            partitionFilters = scan.partitionFilters,
+            dataFilters = scan.dataFilters)
+          restored.copyTagsFrom(scan.wrapped)
+          inspectScan(scan, restored, filters, aliases)
+        case native: CometExec if native.originalPlan.isInstanceOf[FileSourceScanExec] =>
+          inspectScan(
+            native,
+            native.sparkFallback(Nil).asInstanceOf[FileSourceScanExec],
+            filters,
+            aliases)
+        case filter: FilterExec => visit(filter.child, filters :+ filter.condition, aliases)
+        case filter: CometFilterExec => visit(filter.child, filters :+ filter.condition, aliases)
+        case project: ProjectExec =>
+          visit(project.child, filters, aliases ++ projectAliases(project.projectList))
+        case project: CometProjectExec =>
+          visit(project.child, filters, aliases ++ projectAliases(project.projectList))
+        // Only the same filter/project pipeline shares predicate evaluation order. Joins and
+        // materializing operators must not propagate this guard into unrelated scans.
+        case _ => node.children.foreach(visit(_, Nil, Map.empty))
+      }
+
+    visit(plan, Nil, Map.empty)
+    scans.toMap
   }
 
   /**
