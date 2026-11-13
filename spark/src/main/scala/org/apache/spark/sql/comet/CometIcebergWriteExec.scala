@@ -21,8 +21,7 @@ package org.apache.spark.sql.comet
 
 import java.util.concurrent.atomic.AtomicReference
 
-import org.apache.arrow.c.ArrowArrayStream
-import org.apache.spark.TaskContext
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -57,7 +56,8 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * @param originalPlan
  *   The JVM Iceberg write operator restored when Comet reverts a transition-heavy stage.
  * @param child
- *   Comet native child (must be a [[CometNativeExec]] so columnar batches flow through FFI).
+ *   Comet native child. The native plan imports its Arrow batches over FFI, or, when the child is
+ *   a Comet shuffle that the plan reads with a `ShuffleScan`, decodes its shuffle blocks.
  * @param output
  *   Commit-message output attributes copied from the JVM Iceberg write plan.
  * @param batchWrite
@@ -231,79 +231,73 @@ case class CometIcebergWriteExec(
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val schedulerProbe = IcebergSchedulerTestProbe.current
-    // One Arrow stream per partition, which native consumes through the C Stream Interface.
-    val streamRDD: RDD[ArrowArrayStream] = child match {
-      // Native reads the source's Arrow stream, as it does for a native operator's input. The
-      // source reuses its vectors for the next batch, and wrapping its `executeColumnar` batches
-      // below closes each batch once native has it; closing a struct vector drops its children,
-      // so the next batch would lose them (#7239). The scheduler probe counts rows as batches.
-      case source: CometNativeArrowSource if schedulerProbe.isEmpty =>
-        source.doExecuteAsArrowStream()
-      case _ if child.supportsColumnar =>
-        val inputRDD = child.executeColumnar()
-        val childRDD = schedulerProbe
-          .map(probe =>
-            new IcebergSchedulerProbeRDD(
-              inputRDD,
-              probe,
-              nativeOp.getIcebergWrite.getCommon.getDataLocation,
-              nativeOp.getIcebergWrite.getCommon.getOperationId))
-          .getOrElse(inputRDD)
-        CometArrowStream.wrapColumnarBatchRDD(
-          childRDD,
-          CometUtils.fromAttributes(child.output),
-          CometArrowStream.NATIVE_TIMEZONE,
-          "CometIcebergWriteExec")
-      case _ =>
-        throw new UnsupportedOperationException(
-          "CometIcebergWriteExec requires a columnar (Comet native) child; got " +
-            child.getClass.getName)
+    if (!child.supportsColumnar) {
+      throw new UnsupportedOperationException(
+        "CometIcebergWriteExec requires a columnar (Comet native) child; got " +
+          child.getClass.getName)
     }
-    val numPartitions = streamRDD.getNumPartitions
-    // Native side emits the per-task Avro `DataFile` blob and the locations it wrote, one Binary
-    // column each (see `build_output_schema` in `iceberg_write.rs`).
-    val numOutputCols = 2
-    val capturedNativeOp = nativeOp
+    val dataLocation = nativeOp.getIcebergWrite.getCommon.getDataLocation
+    val operationId = nativeOp.getIcebergWrite.getCommon.getOperationId
 
-    streamRDD.mapPartitionsInternal { iter =>
-      val partitionId = TaskContext.getPartitionId()
-      val taskAttemptId = TaskContext.get().taskAttemptId()
-
-      // No child metric nodes: the write's native tree (IcebergWrite -> Projection -> Scan) does
-      // not line up with the JVM child operators, which own their own native blocks; zipping
-      // them by index would overwrite the child operators' SQLMetrics with the write block's.
-      // The root node still receives the native operator's own metrics by name (`write_time`);
-      // the file/row/byte SQL metrics and the task OutputMetrics are populated in doExecute from
-      // the decoded manifest instead.
-      val nativeMetrics = CometMetricNode(metrics, Nil)
-
-      val taskNativeOp = {
-        val builder = capturedNativeOp.getIcebergWrite.toBuilder
-          .setPartitionId(partitionId)
-          .setTaskAttemptId(taskAttemptId)
-        val icebergWrite = builder.build()
-        capturedNativeOp.toBuilder.setIcebergWrite(icebergWrite).build()
+    // The native plan has one leaf, which reads `child` (see `buildInputScan` in
+    // `CometIcebergNativeWrite`). A `ShuffleScan` leaf takes the child's shuffle RDD and decodes
+    // its blocks natively; a `Scan` leaf imports one Arrow stream per partition. For an input
+    // the native plan reads itself, the scheduler probe's `beforeInput` runs in
+    // `CometIcebergWriteRDD.compute`, ahead of the shuffle fetch or the stream export that
+    // `resolveInputObjects` starts; the probe's RDD would hide the shuffle RDD that
+    // `resolveInputObjects` needs, so only a wrapped child gets it.
+    val shuffleScanIndices = CometExec.findShuffleScanIndices(nativeOp)
+    val (input, inputProbe): (RDD[_], Option[IcebergSchedulerTestProbe]) =
+      if (shuffleScanIndices.nonEmpty) {
+        (child.executeColumnar(), schedulerProbe)
+      } else {
+        child match {
+          case source: CometNativeArrowSource =>
+            // Native reads the source's own Arrow stream, as a native operator and native
+            // shuffle (#6689) do, instead of a stream wrapped around the source's
+            // `executeColumnar` batches. That wrap closes each batch once native has it, and the
+            // source reuses its vectors for the next batch: before #7325, closing a struct vector
+            // dropped its children and the next batch lost them, which the release branches
+            // still do (#7239). On `main` the wrap only costs a copy of every batch into a fresh
+            // `VectorSchemaRoot` in `readerBatchIter` and an unload and load back in
+            // `ColumnarBatchArrowReader`. The probe observes the batches native pulls from the
+            // reader behind the stream.
+            val stream = source.doExecuteAsArrowStream((allocator, reader) =>
+              schedulerProbe.fold(reader)(probe =>
+                new IcebergSchedulerProbeReader(
+                  allocator,
+                  reader,
+                  probe,
+                  dataLocation,
+                  operationId)))
+            (stream, schedulerProbe)
+          case _ =>
+            val inputRDD = child.executeColumnar()
+            val probed = schedulerProbe
+              .map(probe =>
+                new IcebergSchedulerProbeRDD(inputRDD, probe, dataLocation, operationId))
+              .getOrElse(inputRDD)
+            val stream = CometArrowStream.wrapColumnarBatchRDD(
+              probed,
+              CometUtils.fromAttributes(child.output),
+              CometArrowStream.NATIVE_TIMEZONE,
+              "CometIcebergWriteExec")
+            (stream, None)
+        }
       }
 
-      val size = taskNativeOp.getSerializedSize
-      val planBytes = new Array[Byte](size)
-      val codedOutput = CodedOutputStream.newInstance(planBytes)
-      taskNativeOp.writeTo(codedOutput)
-      codedOutput.checkNoSpaceLeft()
-
-      val execIterator = new CometExecIterator(
-        CometExec.newIterId,
-        Array[Object](iter.next()),
-        numOutputCols,
-        planBytes,
-        nativeMetrics,
-        numPartitions,
-        partitionId,
-        None,
-        Seq.empty)
-
-      execIterator
-    }
+    // No child metric nodes: the write's native tree (IcebergWrite -> Projection -> Scan or
+    // ShuffleScan) does not line up with the JVM child operators, which own their own native
+    // blocks; zipping them by index would overwrite the child operators' SQLMetrics with the
+    // write block's. The root node still receives the native operator's own metrics by name
+    // (`write_time`); the file/row/byte SQL metrics and the task OutputMetrics are populated in
+    // doExecute from the decoded manifest instead.
+    new CometIcebergWriteRDD(
+      input,
+      shuffleScanIndices,
+      nativeOp,
+      CometMetricNode(metrics, Nil),
+      inputProbe)
   }
 
   /**
@@ -435,5 +429,65 @@ object CometIcebergWriteExec {
     override def onTaskFailure(context: TaskContext, error: Throwable): Unit = {
       val _ = IcebergReflection.deleteFilesQuietly(io, locations, describeTask)
     }
+  }
+}
+
+/**
+ * Runs one native Iceberg write task per partition of `input`, the RDD that feeds the write
+ * plan's one leaf. Like `mapPartitions`, it has `input`'s partitions and a one-to-one dependency
+ * on it, but `compute` does not iterate `input`. It hands the partition to
+ * [[CometExecRDD.resolveInputObjects]], as every native block does, which gives a `ShuffleScan`
+ * leaf the raw shuffle blocks and a `Scan` leaf an Arrow stream. Iterating a shuffle input would
+ * fetch and decode its blocks in the JVM instead.
+ *
+ * Each task runs a copy of `nativeOp` stamped with the task's `partition_id` and
+ * `task_attempt_id`, which the native writer needs to name its files.
+ */
+private class CometIcebergWriteRDD(
+    var input: RDD[_],
+    shuffleScanIndices: Set[Int],
+    nativeOp: Operator,
+    nativeMetrics: CometMetricNode,
+    inputProbe: Option[IcebergSchedulerTestProbe])
+    extends RDD[ColumnarBatch](input) {
+
+  // Read here on the driver, where the input's partitions are known.
+  private val numPartitions = input.getNumPartitions
+
+  override protected def getPartitions: Array[Partition] = firstParent[Any].partitions
+
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+    // Before the shuffle fetch or the stream export that `resolveInputObjects` starts, as the
+    // probe's RDD does for a wrapped child. The probe is test-only, and only the
+    // scheduler-ordering tests need this hook. A shuffle input does not report `afterInput`: the
+    // JVM never sees the rows of a shuffle that the native plan decodes. A stream input reports
+    // it from the reader behind the stream.
+    inputProbe.foreach(_.beforeInput())
+    val (inputObjects, shuffleBlockIterators) =
+      CometExecRDD.resolveInputObjects(Seq(input), Array(split), shuffleScanIndices, context)
+    val partitionId = context.partitionId()
+    val icebergWrite = nativeOp.getIcebergWrite.toBuilder
+      .setPartitionId(partitionId)
+      .setTaskAttemptId(context.taskAttemptId())
+      .build()
+    val planBytes =
+      CometExec.serializeNativePlan(nativeOp.toBuilder.setIcebergWrite(icebergWrite).build())
+    // Native side emits the per-task Avro `DataFile` blob and the locations it wrote, one Binary
+    // column each (see `build_output_schema` in `iceberg_write.rs`).
+    val numOutputCols = 2
+    new CometExecIterator(
+      CometExec.newIterId,
+      inputObjects,
+      numOutputCols,
+      planBytes,
+      nativeMetrics,
+      numPartitions,
+      partitionId,
+      shuffleBlockIterators = shuffleBlockIterators)
+  }
+
+  override def clearDependencies(): Unit = {
+    super.clearDependencies()
+    input = null
   }
 }

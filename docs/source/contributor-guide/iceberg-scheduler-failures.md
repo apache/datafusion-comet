@@ -229,6 +229,7 @@ stability, and retain each invocation's evidence.
 ## Regression checks
 
 Compilation and formatting checks do not replace execution on the required cluster. An Iceberg
-write-path change also needs an upstream Iceberg regression verdict before merging, using the
-`run-iceberg-tests` label or an appropriate `dev/local-ci.sh iceberg` shard as described in
+write-path change also needs an upstream Iceberg regression verdict before merging. Iceberg 1.11
+runs on every matching pull request. For the older versions, use the `run-iceberg-tests` label
+(1.8, 1.9 and 1.10) or an appropriate `dev/local-ci.sh iceberg` shard as described in
 [Continuous Integration](ci.md). That regression run does not replace this scheduler suite.

@@ -554,6 +554,20 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       // ABFS keeps the container from the user info; WASB does not.
       Case(s"abfss://container@$account/k.parquet", "", "", s"abfss://container@$account", false),
       Case(s"abfs://container@$account/k.parquet", "", "", s"abfs://container@$account", false),
+      // The password never joins the key; credentials come from the configuration.
+      Case(
+        s"abfss://container:secret@$account/k.parquet",
+        "",
+        "",
+        s"abfss://container@$account",
+        hdfs = false),
+      Case(s"abfss://:secret@$account/k.parquet", "", "", s"abfss://$account", hdfs = false),
+      Case(
+        s"abfss://container:secret@$account:8443/k.parquet",
+        "",
+        "",
+        s"abfss://container@$account:8443",
+        hdfs = false),
       Case(
         "wasbs://container@account.blob.core.windows.net/k.parquet",
         "",
@@ -716,6 +730,46 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       Seq(abfsFile("data", "accta", "a.parquet"), abfsFile("data", "acctb", "b.parquet")))
   }
 
+  test("extractScanObjectStoreOptions - a decline names ABFS stores without password or query") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    val uris = Seq("SECRET", "OTHER").map { password =>
+      new URI(s"abfss://data:$password@accta.dfs.core.windows.net/path/a.parquet?sig=SAS-MARKER")
+    }
+
+    def declineReason(uris: Seq[URI]): String =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+        case Left(reason) =>
+          Seq("SECRET", "OTHER", "SAS-MARKER", "/path").foreach { leaked =>
+            reason should not include leaked
+          }
+          reason
+        case Right(options) => fail(s"expected a decline, got $options")
+      }
+
+    declineReason(uris) should include(
+      "(abfss://data@accta.dfs.core.windows.net, with different user info)")
+    val otherContainer =
+      new URI("abfss://logs:OTHER@accta.dfs.core.windows.net/path/b.parquet?sig=SAS-MARKER")
+    declineReason(Seq(uris.head, otherContainer)) should include(
+      "(abfss://data@accta.dfs.core.windows.net and abfss://logs@accta.dfs.core.windows.net)")
+  }
+
+  test("authorityWithoutPassword - an authority without a password is returned as is") {
+    for (authority <- Seq("container@acct.dfs.core.windows.net", "container@acct:8443")) {
+      val uri = new URI(s"abfss://$authority/k.parquet")
+      NativeConfig.authorityWithoutPassword(uri) should be theSameInstanceAs uri.getRawAuthority
+    }
+    NativeConfig.authorityWithoutPassword(new URI("/tmp/t/k.parquet")) shouldBe ""
+  }
+
+  test("displayAuthority - lowercase scheme and no password, path or query") {
+    NativeConfig.displayAuthority(
+      new URI("ABFSS://data:SECRET@acct.dfs.core.windows.net:8443/p?sig=SAS-MARKER")) shouldBe
+      "abfss://data@acct.dfs.core.windows.net:8443"
+    NativeConfig.displayAuthority(new URI("/tmp/t/k.parquet")) shouldBe "file://"
+  }
+
   test("extractScanObjectStoreOptions - files in one container keep the first file's options") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
@@ -822,6 +876,17 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     val userbound = AbfsAuthResolver.Declined("UserboundSASWithOAuth", None)
     AbfsAuthResolver.nativeFallbackReason(uri, userbound).get should include(
       "auth type UserboundSASWithOAuth")
+  }
+
+  test("nativeFallbackReason - renders the location as the resolver's other messages do") {
+    val uri =
+      new URI("ABFSS://data:pw-secret@acct.dfs.core.windows.net/dir/f.parquet?sig=SAS-MARKER")
+    val reason =
+      AbfsAuthResolver.nativeFallbackReason(uri, AbfsAuthResolver.Declined("Custom", None)).get
+    reason should include(NativeConfig.displayAuthority(uri))
+    reason should include("abfss://data@acct.dfs.core.windows.net")
+    reason should not include "pw-secret"
+    reason should not include "SAS-MARKER"
   }
 
   test("nativeStoreError - passes native's answer through") {

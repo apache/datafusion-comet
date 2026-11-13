@@ -22,7 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable
@@ -46,12 +46,12 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometExec, CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
 import org.apache.spark.sql.comet.execution.arrow.CometNativeArrowSource
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.Trigger
@@ -419,18 +419,62 @@ class CometIcebergWriteActionSuite
   // close once native had them, which left the second batch of a partition without them.
   test("native write reads a struct column that a conversion writes over several batches") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("s", new StructType().add("a", IntegerType))
+    val data = (1 to 100).map(i => Row(i, Row(i)))
     withIcebergCatalog { _ =>
-      spark.sql(s"CREATE TABLE $catalog.$ns.struct_rdd (id INT, s STRUCT<a: INT>) USING iceberg")
-      val schema = new StructType()
-        .add("id", IntegerType)
-        .add("s", new StructType().add("a", IntegerType))
-      val rows = spark.sparkContext.parallelize((1 to 10).map(i => Row(i, Row(i))), 1)
-      val snapshot = captureWrite("struct_rdd") {
+      // A converted RDD scan and a local table scan, in several partitions of several batches.
+      val rdd = spark.createDataFrame(spark.sparkContext.parallelize(data, 3), schema)
+      val local = spark.createDataFrame(java.util.Arrays.asList(data: _*), schema)
+      for ((df, table) <- Seq((rdd, "struct_rdd"), (local, "struct_local"))) {
+        spark.sql(s"CREATE TABLE $catalog.$ns.$table (id INT, s STRUCT<a: INT>) USING iceberg")
+        val snapshot = captureWrite(table) {
+          withNativeEnabled {
+            withSQLConf(
+              CometConf.COMET_BATCH_SIZE.key -> "7",
+              CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+              df.writeTo(s"$catalog.$ns.$table").append()
+            }
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+        }
+        assert(
+          nativeWrites.exists(_.child.isInstanceOf[CometNativeArrowSource]),
+          s"expected a CometIcebergWriteExec over the $table source. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        assertRows(table, expectedIds = 1 to 100)
+        val fields = spark
+          .sql(s"SELECT s.a FROM $catalog.$ns.$table ORDER BY id")
+          .collect()
+          .map(_.getInt(0))
+          .toSeq
+        assert(fields == (1 to 100), s"$table: expected ${1 to 100}, got $fields")
+      }
+    }
+  }
+
+  // The write reads a conversion's stream directly, so the probe's RDD cannot sit between
+  // them. The probe still runs before each task exports its stream and sees the rows native
+  // pulls, as it does for a wrapped child.
+  test("the scheduler probe observes a source whose stream the write reads directly") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"CREATE TABLE $catalog.$ns.probe_stream (id INT) USING iceberg")
+      val rows = spark.sparkContext.parallelize((1 to 20).map(i => Row(i)), 2)
+      val schema = new StructType().add("id", IntegerType)
+      StreamSourceProbe.reset()
+      val snapshot = IcebergSchedulerTestProbe.withProbe(StreamSourceProbe) {
         withNativeEnabled {
-          withSQLConf(
-            CometConf.COMET_BATCH_SIZE.key -> "2",
-            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
-            spark.createDataFrame(rows, schema).writeTo(s"$catalog.$ns.struct_rdd").append()
+          captureWrite("probe_stream") {
+            withSQLConf(
+              CometConf.COMET_BATCH_SIZE.key -> "3",
+              CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+              spark.createDataFrame(rows, schema).writeTo(s"$catalog.$ns.probe_stream").append()
+            }
           }
         }
       }
@@ -442,13 +486,11 @@ class CometIcebergWriteActionSuite
         nativeWrites.exists(_.child.isInstanceOf[CometNativeArrowSource]),
         "expected a CometIcebergWriteExec over the conversion. Plans:\n" +
           snapshot.plans.mkString("\n--\n"))
-      assertRows("struct_rdd", expectedIds = 1 to 10)
-      val fields = spark
-        .sql(s"SELECT s.a FROM $catalog.$ns.struct_rdd ORDER BY id")
-        .collect()
-        .map(_.getInt(0))
-        .toSeq
-      assert(fields == (1 to 10), s"expected ${1 to 10}, got $fields")
+      assert(StreamSourceProbe.started == Set(0, 1), StreamSourceProbe.started)
+      // The rows each partition supplied, counted up to the pull that found the stream drained.
+      assert(StreamSourceProbe.rows == Map(0 -> 10L, 1 -> 10L), StreamSourceProbe.rows)
+      assert(StreamSourceProbe.handoffs == Set(0, 1), StreamSourceProbe.handoffs)
+      assertRows("probe_stream", expectedIds = 1 to 20)
     }
   }
 
@@ -1170,6 +1212,182 @@ class CometIcebergWriteActionSuite
           "INSERT INTO cat.db.native_append_values VALUES " +
             "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
       }
+    }
+  }
+
+  // A Comet shuffle directly under the native write is decoded inside the write's native plan by
+  // a `ShuffleScan`, rather than decoded in the JVM and imported again over FFI. Under AQE the
+  // write's child is the shuffle stage or a coalesced read of it. Without AQE, Comet reads no
+  // shuffle directly, so the write keeps its FFI `Scan`. Each case is written twice, with direct
+  // read on and off, so the two input paths are checked against each other as well as the source.
+  test("native acceleration: a write over a shuffle decodes the shuffle blocks natively") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val columns = "id BIGINT, s STRING, d DOUBLE, st STRUCT<a: INT, b: STRING>, " +
+        "arr ARRAY<INT>, m MAP<STRING, INT>, dt DATE, ts TIMESTAMP, ntz TIMESTAMP_NTZ, " +
+        "dec DECIMAL(12, 3), bin BINARY, b BOOLEAN, f FLOAT, " +
+        "nested ARRAY<STRUCT<x: INT, y: STRING>>, " +
+        "deep STRUCT<k: MAP<STRING, ARRAY<INT>>, v: INT>"
+      spark.sql(s"CREATE TABLE $catalog.$ns.shuffle_src ($columns) USING iceberg")
+      spark.sql(s"""
+        INSERT INTO $catalog.$ns.shuffle_src
+        SELECT id,
+          CASE WHEN id % 7 = 0 THEN NULL
+            WHEN id % 5 = 0 THEN CONCAT('日本語-', CAST(id AS STRING))
+            WHEN id % 3 = 0 THEN CONCAT('é😀-', CAST(id AS STRING))
+            ELSE CONCAT('s', CAST(id AS STRING)) END,
+          CASE id % 11 WHEN 0 THEN NULL WHEN 1 THEN CAST('NaN' AS DOUBLE) WHEN 2 THEN -0.0D
+            WHEN 3 THEN CAST('Infinity' AS DOUBLE) WHEN 4 THEN CAST('-Infinity' AS DOUBLE)
+            ELSE id / 3.0 END,
+          IF(id % 13 = 0, NULL,
+            NAMED_STRUCT('a', CAST(id AS INT), 'b', IF(id % 2 = 0, NULL, CAST(id AS STRING)))),
+          IF(id % 17 = 0, NULL, ARRAY(CAST(id AS INT), NULL)),
+          IF(id % 19 = 0, NULL, MAP(CAST(id AS STRING), CAST(id AS INT))),
+          CASE WHEN id % 23 = 0 THEN NULL
+            WHEN id % 23 = 1 THEN DATE '1900-01-01'
+            WHEN id % 23 = 2 THEN DATE '1969-12-31'
+            WHEN id % 23 = 3 THEN DATE '9999-12-31'
+            ELSE DATE_ADD(DATE '1970-01-01', CAST(id * 7 AS INT)) END,
+          CASE WHEN id % 29 = 0 THEN NULL
+            WHEN id % 29 = 1 THEN TIMESTAMP_MICROS(-2208988800000000)
+            WHEN id % 29 = 2 THEN TIMESTAMP_MICROS(-1)
+            WHEN id % 29 = 3 THEN TIMESTAMP_MICROS(253402300799999999)
+            ELSE TIMESTAMP_MICROS(id * 1000003) END,
+          CASE WHEN id % 31 = 0 THEN NULL
+            WHEN id % 31 = 1 THEN CAST(TIMESTAMP_MICROS(-2208988800000000) AS TIMESTAMP_NTZ)
+            WHEN id % 31 = 2 THEN CAST(TIMESTAMP_MICROS(253402300799999999) AS TIMESTAMP_NTZ)
+            ELSE CAST(TIMESTAMP_MICROS(id * 999983) AS TIMESTAMP_NTZ) END,
+          IF(id % 37 = 0, NULL, CAST(CAST(id AS DECIMAL(12, 3)) / 7 AS DECIMAL(12, 3))),
+          IF(id % 41 = 0, NULL, CAST(CONCAT('b', CAST(id AS STRING)) AS BINARY)),
+          IF(id % 43 = 0, NULL, id % 2 = 0),
+          CASE id % 10 WHEN 0 THEN CAST('NaN' AS FLOAT) WHEN 1 THEN CAST(-0.0D AS FLOAT)
+            WHEN 2 THEN CAST('Infinity' AS FLOAT) WHEN 3 THEN CAST('-Infinity' AS FLOAT)
+            WHEN 4 THEN NULL ELSE CAST(id AS FLOAT) / 3 END,
+          IF(id % 47 = 0, NULL,
+            ARRAY(NAMED_STRUCT('x', CAST(id AS INT), 'y', CONCAT('日', CAST(id AS STRING))),
+              NULL, NAMED_STRUCT('x', CAST(NULL AS INT), 'y', CAST(NULL AS STRING)))),
+          IF(id % 53 = 0, NULL,
+            NAMED_STRUCT('k', IF(id % 2 = 0, MAP('a', ARRAY(CAST(id AS INT), NULL), 'b', ARRAY()),
+              CAST(NULL AS MAP<STRING, ARRAY<INT>>)), 'v', CAST(id AS INT)))
+        FROM range(0, 2000)""")
+
+      // (case, hint, filter, AQE on, the write's leaf when direct read is on, extra confs).
+      // REBALANCE runs on Comet's JVM columnar shuffle, which writes the same block format as
+      // native shuffle. The `empty_partitions` case keeps 64 reducer partitions, of which the
+      // filter leaves at most five with rows, so most `ShuffleScan`s reach the end of their input
+      // without a block while the writer still emits its payload row.
+      val cases = Seq(
+        ("stage", "REPARTITION(8, id)", "", true, "SHUFFLE_SCAN", Seq.empty[(String, String)]),
+        ("coalesced", "REPARTITION(id)", "", true, "SHUFFLE_SCAN", Seq.empty[(String, String)]),
+        ("columnar", "REBALANCE", "", true, "SHUFFLE_SCAN", Seq.empty[(String, String)]),
+        (
+          "empty_partitions",
+          "REPARTITION(64, id)",
+          "WHERE id < 5",
+          true,
+          "SHUFFLE_SCAN",
+          Seq(SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false")),
+        // The timestamp columns hold instants, so a session time zone must not change what the
+        // shuffle blocks decode to.
+        (
+          "non_utc_session",
+          "REPARTITION(8, id)",
+          "",
+          true,
+          "SHUFFLE_SCAN",
+          Seq(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles")),
+        ("no_aqe", "REPARTITION(8, id)", "", false, "SCAN", Seq.empty[(String, String)]))
+      cases.foreach { case (name, hint, filter, adaptive, directReadLeaf, extraConfs) =>
+        val expected =
+          spark.sql(s"SELECT * FROM $catalog.$ns.shuffle_src $filter").collect().toSeq
+        val fileRecordCounts = Seq(true, false).map { directRead =>
+          val table = s"shuffle_${name}_$directRead"
+          spark.sql(s"CREATE TABLE $catalog.$ns.$table ($columns) USING iceberg")
+          // `withSQLConf` returns Unit on Spark 3.x, so it wraps only the statement.
+          val snapshot = withNativeEnabled {
+            captureWrite(table) {
+              withSQLConf(
+                (Seq(
+                  SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+                  CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) ++
+                  extraConfs): _*) {
+                spark.sql(s"INSERT INTO $catalog.$ns.$table " +
+                  s"SELECT /*+ $hint */ * FROM $catalog.$ns.shuffle_src $filter")
+              }
+            }
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"$table: expected 1 commit, got ${snapshot.snapshotDelta}")
+          val leaves = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case write: CometIcebergWriteExec =>
+              CometExec.nativeLeaves(write.nativeOp).map(_.getOpStructCase.name)
+            }
+          }
+          val expectedLeaf = if (directRead) directReadLeaf else "SCAN"
+          assert(
+            leaves == Seq(Seq(expectedLeaf)),
+            s"$table: expected the write to read its input with $expectedLeaf, got $leaves. " +
+              s"Plans:\n${snapshot.plans.mkString("\n--\n")}")
+          // The case is only the coalesced one if AQE coalesced the reducer partitions.
+          if (name == "coalesced") {
+            val coalesced = snapshot.plans.flatMap { plan =>
+              collectWithSubqueries(plan) { case read: AQEShuffleReadExec =>
+                read.hasCoalescedPartition
+              }
+            }
+            assert(
+              coalesced.contains(true),
+              s"$table: expected a coalesced shuffle read. Plans:\n${snapshot.plans.mkString("\n--\n")}")
+          }
+          checkAnswer(spark.table(s"$catalog.$ns.$table"), expected)
+          spark
+            .sql(s"SELECT record_count FROM $catalog.$ns.$table.files ORDER BY record_count")
+            .collect()
+            .map(_.getLong(0))
+            .toSeq
+        }
+        assert(
+          fileRecordCounts.distinct.length == 1,
+          s"$name: data file record counts differ between direct read on and off: " +
+            fileRecordCounts)
+      }
+    }
+  }
+
+  // The scheduler probe's RDD cannot wrap a shuffle that the write reads directly, because the
+  // direct read needs the shuffle RDD itself. The probe still has to run before each task reads
+  // its input, and the shuffle fetch is part of reading it.
+  test(
+    "native acceleration: the scheduler probe runs for a write that reads a shuffle directly") {
+    val table = "scheduler_shuffle_direct"
+    withSchedulerProbeSource(table) { source =>
+      ShuffleReadProbe.reset()
+      val snapshot = IcebergSchedulerTestProbe.withProbe(ShuffleReadProbe) {
+        withNativeEnabled {
+          captureWrite(table) {
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+              SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+              CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true") {
+              spark.read
+                .parquet(source.getAbsolutePath)
+                .repartition(4, org.apache.spark.sql.functions.col("id"))
+                .writeTo(s"$catalog.$ns.$table")
+                .append()
+            }
+          }
+        }
+      }
+      val leaves = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case write: CometIcebergWriteExec =>
+          CometExec.nativeLeaves(write.nativeOp).map(_.getOpStructCase.name)
+        }
+      }
+      assert(leaves == Seq(Seq("SHUFFLE_SCAN")), leaves)
+      assert(ShuffleReadProbe.partitions == Set(0, 1, 2, 3))
+      assert(snapshot.snapshotDelta == 1L)
+      assertRows(table, 0 until 5000)
     }
   }
 
@@ -5379,4 +5597,45 @@ private object ConflictGate {
   def awaitScanStarted(timeout: Long, unit: TimeUnit): Boolean = scanStarted.await(timeout, unit)
 
   def releaseWrite(): Unit = writeReleased.countDown()
+}
+
+/** Records the partitions whose input the probe saw, in the one JVM of a local test. */
+private[comet] object ShuffleReadProbe extends IcebergSchedulerTestProbe {
+  private val seen = ConcurrentHashMap.newKeySet[Integer]()
+
+  def reset(): Unit = seen.clear()
+  def partitions: Set[Int] = seen.asScala.map(_.intValue()).toSet
+
+  override def beforeInput(): Unit = seen.add(TaskContext.getPartitionId())
+  override def afterInput(rows: Long, dataLocation: String, operationId: String): Unit = {}
+  override def afterHandoff(locations: Seq[String]): Unit = {}
+  override def accepted(partition: Int, locations: Seq[String]): Unit = {}
+  override def committed(): Unit = {}
+}
+
+/**
+ * Records, per partition, what the probe saw of a write's input, in the one JVM of a local test.
+ */
+private[comet] object StreamSourceProbe extends IcebergSchedulerTestProbe {
+  private val startedPartitions = ConcurrentHashMap.newKeySet[Integer]()
+  private val rowsByPartition = new ConcurrentHashMap[Integer, java.lang.Long]()
+  private val handoffPartitions = ConcurrentHashMap.newKeySet[Integer]()
+
+  def reset(): Unit = {
+    startedPartitions.clear()
+    rowsByPartition.clear()
+    handoffPartitions.clear()
+  }
+  def started: Set[Int] = startedPartitions.asScala.map(_.intValue()).toSet
+  def rows: Map[Int, Long] =
+    rowsByPartition.asScala.map { case (p, n) => p.intValue() -> n.longValue() }.toMap
+  def handoffs: Set[Int] = handoffPartitions.asScala.map(_.intValue()).toSet
+
+  override def beforeInput(): Unit = startedPartitions.add(TaskContext.getPartitionId())
+  override def afterInput(rows: Long, dataLocation: String, operationId: String): Unit =
+    rowsByPartition.put(TaskContext.getPartitionId(), rows)
+  override def afterHandoff(locations: Seq[String]): Unit =
+    handoffPartitions.add(TaskContext.getPartitionId())
+  override def accepted(partition: Int, locations: Seq[String]): Unit = {}
+  override def committed(): Unit = {}
 }
