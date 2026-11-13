@@ -4004,6 +4004,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator(dfWithNullSeed)
       val dfWithIntSeed = df.selectExpr("_1", "rand(42) as rnd")
       checkSparkAnswerAndOperator(dfWithIntSeed)
+      val dfWithNegativeIntSeed = df.selectExpr("_1", "rand(-42) as rnd")
+      checkSparkAnswerAndOperator(dfWithNegativeIntSeed)
+      val dfWithMinIntSeed = df.selectExpr("_1", s"rand(${Int.MinValue}) as rnd")
+      checkSparkAnswerAndOperator(dfWithMinIntSeed)
     }
   }
 
@@ -4018,6 +4022,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
       val dfWithIntSeed = df.selectExpr("_1", "randn(42) as randn")
       checkSparkAnswerAndOperatorWithTol(dfWithIntSeed)
+      val dfWithNegativeIntSeed = df.selectExpr("_1", "randn(-42) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithNegativeIntSeed)
+      val dfWithMinIntSeed = df.selectExpr("_1", s"randn(${Int.MinValue}) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithMinIntSeed)
     }
   }
 
