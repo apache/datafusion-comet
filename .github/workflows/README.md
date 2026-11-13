@@ -29,7 +29,7 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
   three Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, Iceberg
-  1.9/1.10, and the Delta contrib suites on Spark 3.5, 4.0 and 4.1. See
+  1.9/1.10/1.12, and the Delta contrib suites on Spark 3.5, 4.0 and 4.1. See
   [Nightly tier](#nightly-tier) below for how a failure surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
@@ -119,6 +119,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                       spark_4_2           run-spark-4.2-tests
                                       iceberg_1_9         run-iceberg-tests
                                       iceberg_1_10        run-iceberg-tests
+                                      iceberg_1_12        run-iceberg-tests
                                       delta_3_5           run-delta-tests
                                       delta_4_0           run-delta-tests
                                       delta_4_1           run-delta-tests
@@ -169,6 +170,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `iceberg_1_11`       | PR or merge group, paths matched                                                                                                                                                                                                                       | Iceberg sources                     |
 | `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `iceberg_1_10`       | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
+| `iceberg_1_12`       | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `required_checks`    | always, after every job above except `docs`                                                                                                                                                                                                            | none (always runs)                  |
 | `nightly_report`     | schedule only, after `required_checks`, when it is not green                                                                                                                                                                                           | none                                |
 
