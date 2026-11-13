@@ -387,13 +387,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // The parquet-mr settings that change iceberg-java's data files beyond their compressed bytes.
   // The writer copies every table and write property into its Hadoop configuration and builds the
   // ParquetProperties itself, so of all `parquet.*` keys, from either source, only the column
-  // index truncation length, read by Iceberg's ParquetWriter, does. parquet-mr's ZstandardCodec
-  // also reads the zstd level and worker count, but like the other codec-level side channels they
-  // only change compressed bytes, which are an accepted divergence. Any other `parquet.*` key,
-  // including one parquet-mr does not declare, changes nothing. `parquet.enable.dictionary` is
-  // read from the table and write properties only and has its own rule. Re-check this list
-  // against Parquet.java, ParquetWriter.java and the parquet-mr codecs on every Iceberg or
-  // parquet-mr version bump.
+  // index truncation length, read by Iceberg's ParquetWriter, does. The codec-level side channels
+  // only change compressed bytes, which are an accepted divergence: parquet-mr's ZstandardCodec
+  // reads the zstd level and worker count, Hadoop's codecs read `zlib.compress.level` and
+  // `compression.brotli.quality`, and `io.compression.codec.zstd.level` only keys Iceberg's codec
+  // cache. Any other `parquet.*` key, including one parquet-mr does not declare, changes nothing.
+  // `parquet.enable.dictionary` is read from the table and write properties only and has its own
+  // rule. CometIcebergWriteActionSuite classifies every key the parquet-mr iceberg-java runs
+  // declares, fails on a new one, and checks that iceberg-java writes the same bytes with the
+  // inert ones set.
   private val UnsupportedParquetMrKeys: Set[String] = Set("parquet.columnindex.truncate.length")
 
   private lazy val vettedParquetWriteKeys: Set[String] = Set(
