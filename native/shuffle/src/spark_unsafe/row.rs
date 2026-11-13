@@ -364,11 +364,14 @@ pub(super) fn append_field(
     Ok(())
 }
 
-/// Appends nested struct fields to the struct builder using field-major order.
-/// This is a helper function for processing nested struct fields recursively.
+/// Appends struct fields to the struct builder using field-major order. This is the single
+/// field-major implementation, shared by top-level struct columns and nested struct fields.
 ///
-/// Unlike `append_struct_fields_field_major`, this function takes slices of row addresses,
-/// sizes, and null flags directly, without needing to navigate from a parent row.
+/// It takes slices of struct row addresses, sizes, and null flags directly, without needing to
+/// navigate from a parent row. The top-level caller, `append_struct_fields_field_major`, builds
+/// these slices from the parent rows before calling this function. For a nested struct field,
+/// this function builds the slices from its own rows and calls itself recursively. Entries for
+/// null structs hold placeholder addresses and sizes that are never read.
 fn append_nested_struct_fields_field_major(
     row_addresses: &[jlong],
     row_sizes: &[jint],
@@ -750,6 +753,7 @@ fn append_struct_fields_field_major(
 
         if is_null {
             struct_builder.append_null();
+            // Placeholders for a null struct. Never dereferenced, since every read is gated on `struct_is_null`.
             struct_addresses.push(0);
             struct_sizes.push(0);
         } else {
