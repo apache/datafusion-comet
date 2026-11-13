@@ -26,6 +26,7 @@ checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 original = Path('.github/workflows/docs.yaml').read_text(encoding='utf-8')
 mutations = [
+    original.replace('          include-hidden-files: true\n', ''),
     original.replace('      - name: Copy & push the generated HTML',
                      '      - run: bash site-output/build.sh\n      - name: Copy & push the generated HTML'),
     original.replace('          ref: asf-site', '          ref: main'),

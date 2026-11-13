@@ -105,6 +105,7 @@ jobs:
           name: comet-docs-site
           path: docs/build/html/
           retention-days: 1
+          include-hidden-files: true
           if-no-files-found: error
 
   deploy-docs:

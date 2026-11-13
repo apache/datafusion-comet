@@ -41,6 +41,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (trusted / '.asf.yaml').write_text('trusted metadata')
     (output / '.asf.yaml').write_text('artifact metadata')
     (output / 'index.html').write_text('new page')
+    (output / '.buildinfo').write_text('sphinx metadata')
     (output / '.git').write_text('gitdir: /untrusted')
     (output / '.nojekyll').write_text('artifact marker')
     subprocess.run(['bash', '-e', '-c', script], cwd=fixture, check=True)
@@ -49,6 +50,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert (site / '.nojekyll').is_file() and not (site / '.nojekyll').is_symlink()
     assert (site / '.nojekyll').read_bytes() == b''
     assert (site / 'index.html').read_text() == 'new page'
+    assert (site / '.buildinfo').read_text() == 'sphinx metadata'
     assert not (site / 'old-page').exists()
 
 print('Docs site copy check passed')

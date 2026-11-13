@@ -1951,6 +1951,12 @@ def check_docs_permission_boundary():
     if (not checkout_count or len(checkout_steps) != checkout_count
             or any("persist-credentials: false" not in step for step in checkout_steps)):
         failures.append("every build checkout must disable persisted credentials")
+    build_steps = re.split(r"^      - ", build, flags=re.M)[1:]
+    uploads = [step for step in build_steps
+               if re.search(r"^        uses: \./\.github/actions/upload-artifact-retry$", step, re.M)]
+    if (len(uploads) != 1 or
+            re.findall(r"^          include-hidden-files: (.+)$", uploads[0], re.M) != ["true"]):
+        failures.append("the site upload must include hidden files such as .buildinfo")
     if not re.search(r"^    needs: build-docs$", deploy, re.M):
         failures.append("deploy-docs must depend on the build")
     steps = re.split(r"^      - ", deploy, flags=re.M)[1:]
