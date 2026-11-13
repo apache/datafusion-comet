@@ -18,6 +18,48 @@
 use super::*;
 
 #[tokio::test]
+async fn row_group_preflight_reads_a_cold_footer_in_one_request() {
+    use super::super::row_group_limit::within_row_group_limit;
+    use crate::parquet::eager_page_index_reader_factory::{
+        EagerPageIndexReaderFactory, ScanIoSource,
+    };
+    use datafusion::execution::object_store::ObjectStoreUrl;
+
+    let session = session(1);
+    let (_file, scan) = parquet_input(vec![Some(1)], &DataType::Int32, &session, 1);
+    let runtime = session.runtime_env();
+    let metrics = ExecutionPlanMetricsSet::new();
+    // Instrument the local fixture's store like a cloud store so range requests
+    // are counted; ordinary local scans deliberately omit object-store metrics.
+    let factory = EagerPageIndexReaderFactory::new(
+        runtime
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap(),
+        runtime.cache_manager.get_file_metadata_cache(),
+        ScanIoSource::ObjectStore,
+        &metrics,
+    );
+    let (config, source, _) = concrete_parquet_source(&scan).unwrap();
+    let mut config = config.clone();
+    config.file_source = Arc::new(
+        source
+            .clone()
+            .with_parquet_file_reader_factory(Arc::new(factory)),
+    );
+    let input = Arc::new(scan.as_ref().clone().with_data_source(Arc::new(config))) as _;
+
+    assert!(within_row_group_limit(&input, 0).await);
+    assert_eq!(
+        metrics
+            .clone_inner()
+            .sum_by_name("scan_io_object_store_get_calls")
+            .unwrap()
+            .as_usize(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn oversized_files_skip_runtime_pruning_when_every_row_group_improves_min() {
     use super::super::row_group_limit::MAX_ROW_GROUPS_PER_FILE;
     use std::time::Instant;
