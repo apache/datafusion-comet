@@ -1004,10 +1004,24 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "fs.s3a.assumed.role.arn" -> "arn:aws:iam::111122223333:role/probe",
       "fs.s3a.assumed.role.session.duration" -> "30m",
       "fs.s3a.security.credential.provider.path" -> "jceks://file/tmp/s3a.jceks",
-      "fs.s3a.bucket.target.assumed.role.arn" -> "arn:aws:iam::111122223333:role/target")
+      "fs.s3a.bucket.target.assumed.role.arn" -> "arn:aws:iam::111122223333:role/target",
+      // A catalog's credential store, which Hadoop's password lookup reads for S3A's providers.
+      "hadoop.security.credential.provider.path" -> "jceks://file/tmp/catalog.jceks",
+      "hadoop.security.group.mapping.ldap.bind.password" -> "not-for-the-proto",
+      "dfs.replication" -> "2")
       .foreach { case (k, v) => hadoopConf.set(k, v) }
     assert(
       CometIcebergNativeWrite.usesS3ACredentialAdapter(hadoopConf, Map.empty, Some("target")))
+    // The adapter gets the settings S3A's providers read, and nothing else.
+    assert(
+      CometIcebergNativeWrite.s3aCredentialAdapterProperties(hadoopConf).keySet == Set(
+        "fs.s3a.aws.credentials.provider",
+        "fs.s3a.assumed.role.arn",
+        "fs.s3a.assumed.role.session.duration",
+        "fs.s3a.security.credential.provider.path",
+        "fs.s3a.bucket.target.assumed.role.arn",
+        "hadoop.security.credential.provider.path",
+        "s3.comet.credential.provider.class"))
     assert(
       CometIcebergNativeWrite
         .unsupportedHadoopS3Settings(hadoopConf, Some("target"), s3aCredentialAdapter = true)
@@ -1053,9 +1067,14 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "fs.s3a.aws.credentials.provider" -> simple,
         "fs.s3a.bucket.target.aws.credentials.provider" -> "")())
     // The adapter cannot serve anonymous access.
-    assert(
-      !uses("fs.s3a.aws.credentials.provider" ->
-        "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")())
+    val anonymous = "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider"
+    assert(!uses("fs.s3a.aws.credentials.provider" -> anonymous)())
+    // Hadoop 3.4 resolves a name through the provider mapping first, and fails the write on a
+    // malformed mapping.
+    val mapping = "fs.s3a.aws.credentials.provider.mapping"
+    assert(uses("fs.s3a.aws.credentials.provider" -> "keys", mapping -> s"keys=$simple")())
+    assert(!uses("fs.s3a.aws.credentials.provider" -> "anon", mapping -> s"anon=$anonymous")())
+    assert(!uses("fs.s3a.aws.credentials.provider" -> simple, mapping -> "keys")())
     // A Comet provider class in the FileIO properties keeps its precedence.
     assert(
       !uses("fs.s3a.aws.credentials.provider" -> simple)(

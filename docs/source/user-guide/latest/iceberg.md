@@ -621,7 +621,8 @@ through `HadoopS3ACredentialProviderAdapter`, which runs S3A's own provider fact
 executor (see [S3 credential providers](s3-credential-providers.md)). The provider list and the
 assumed-role and credential-store settings it reads are then admitted. This applies only when the
 catalog names no `s3.comet.credential.provider.class` of its own. A list that names an anonymous
-provider, and S3A delegation tokens, still fall back. Without an explicit list, the native writer
+provider, directly or through `aws.credentials.provider.mapping`, and S3A delegation tokens,
+still fall back. Without an explicit list, the native writer
 uses its own credential chain, as for a read.
 
 On the `FileIO` side, the multipart, staging-directory,

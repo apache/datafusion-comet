@@ -205,10 +205,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // (see usesS3ACredentialAdapter), and these settings are admitted then. Delegation tokens stay
   // unsupported, because the adapter refuses them.
   private val S3ACredentialProviderSuffix = "aws.credentials.provider"
+  private val S3ACredentialProviderMappingSuffix = "aws.credentials.provider.mapping"
   private val S3ACredentialStoreSuffix = "security.credential.provider.path"
   private val S3ACredentialSuffixes: Set[String] = Set(
     S3ACredentialProviderSuffix,
-    "aws.credentials.provider.mapping",
+    S3ACredentialProviderMappingSuffix,
     "assumed.role.arn",
     "assumed.role.session.name",
     "assumed.role.session.duration",
@@ -222,8 +223,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val HadoopS3ACredentialAdapterClass =
     "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter"
 
-  // The adapter cannot serve anonymous access, so a list that names an anonymous provider keeps
-  // falling back.
+  // The adapter cannot serve anonymous access, so a list that names an anonymous provider,
+  // directly or through the provider mapping, keeps falling back.
   private val AnonymousS3ACredentialProviders: Set[String] = Set(
     "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider",
     "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider",
@@ -951,20 +952,38 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       fileIOProperties: Map[String, String],
       bucket: Option[String]): Boolean = {
     // S3A copies a bucket's settings over the global ones before it builds the list.
-    val providers = s3aKeys(bucket, Seq(S3ACredentialProviderSuffix))
-      .find(hasExplicitSource(hadoopConf, _))
-      .map(hadoopConf.getTrimmedStrings(_).toSeq)
+    def setting(suffix: String): Option[Seq[String]] =
+      s3aKeys(bucket, Seq(suffix))
+        .find(hasExplicitSource(hadoopConf, _))
+        .map(hadoopConf.getTrimmedStrings(_).toSeq.filter(_.nonEmpty))
+    // Hadoop 3.4 resolves each name through this mapping, and fails the write on an entry that
+    // is not one non-empty name and value.
+    val mapping = setting(S3ACredentialProviderMappingSuffix)
+      .getOrElse(Nil)
+      .map(_.split("=", -1).map(_.trim))
     !fileIOProperties.get(CometS3CredentialProviderClassProperty).exists(_.trim.nonEmpty) &&
-    providers.exists(names =>
-      names.nonEmpty && !names.exists(AnonymousS3ACredentialProviders.contains))
+    mapping.forall(pair => pair.length == 2 && pair.forall(_.nonEmpty)) &&
+    setting(S3ACredentialProviderSuffix).exists { names =>
+      val mapped = mapping.map(pair => pair(0) -> pair(1)).toMap
+      names.nonEmpty && !names.exists(name =>
+        AnonymousS3ACredentialProviders.contains(name) ||
+          mapped.get(name).exists(AnonymousS3ACredentialProviders.contains))
+    }
   }
+
+  // The keys S3A's providers read: their own `fs.s3a.*` settings, and the credential-store
+  // settings Hadoop's password lookup reads for them. Other `hadoop.security.*` keys, such as an
+  // LDAP bind password, stay out of the write proto.
+  private val S3ACredentialAdapterPrefixes =
+    Seq(FsS3aPrefix, "hadoop.security.credential.", "hadoop.security.credstore.")
 
   /**
    * The catalog properties that route a native write's S3 credentials through
    * HadoopS3ACredentialProviderAdapter. The adapter rebuilds the S3A configuration on the
    * executor from that JVM's `spark.hadoop.*` settings, so it also gets the FileIO's explicit
-   * `fs.s3a.*` settings, which carry the catalog's `hadoop.*` overrides. The native side passes
-   * the whole property bag to the adapter and none of these `fs.s3a.*` keys to iceberg-rust.
+   * settings under `S3ACredentialAdapterPrefixes`, which carry the catalog's `hadoop.*`
+   * overrides. The native side passes the whole property bag to the adapter. It hands
+   * iceberg-rust none of the `fs.s3a.*` keys, and its S3 storage ignores the `hadoop.*` ones.
    */
   private[comet] def s3aCredentialAdapterProperties(
       hadoopConf: Configuration): Map[String, String] =
@@ -972,7 +991,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .iterator()
       .asScala
       .map(_.getKey)
-      .filter(key => key.startsWith(FsS3aPrefix) && hasExplicitSource(hadoopConf, key))
+      .filter(key =>
+        S3ACredentialAdapterPrefixes.exists(key.startsWith) && hasExplicitSource(hadoopConf, key))
       .flatMap(key => Option(hadoopConf.get(key)).map(key -> _))
       .toMap + (CometS3CredentialProviderClassProperty -> HadoopS3ACredentialAdapterClass)
 

@@ -356,7 +356,8 @@ properties, which `HadoopFileIO` ignores. `usesS3ACredentialAdapter` decides whe
 `HadoopS3ACredentialProviderAdapter` as `s3.comet.credential.provider.class`: when the FileIO's
 Hadoop configuration sets `fs.s3a.aws.credentials.provider` explicitly and the FileIO properties
 name no provider class of their own. The adapter then runs that same S3A list on the executor, and
-`s3aCredentialAdapterProperties` forwards the explicit `fs.s3a.*` settings it reads. The gate and
+`s3aCredentialAdapterProperties` forwards the explicit `fs.s3a.*` settings and the
+`hadoop.security.credential.*` and `hadoop.security.credstore.*` settings its providers read. The gate and
 `buildIcebergWriteProto` call the same functions on the same configuration, so they cannot
 disagree. On the FileIO side, `IgnoredS3FileIOProperties` ignores
 `S3FileIO`'s multipart, staging-directory, retry, delete-batching and client-preload settings.
