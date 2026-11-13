@@ -52,8 +52,8 @@ import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -120,6 +120,7 @@ object CometExecRule {
       classOf[BroadcastNestedLoopJoinExec] -> CometBroadcastNestedLoopJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
+      classOf[CartesianProductExec] -> CometCartesianProductExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[RangeExec] -> CometRangeExec,
@@ -141,6 +142,7 @@ object CometExecRule {
     Map(
       classOf[CoalesceExec] -> CometCoalesceExec,
       classOf[CollectLimitExec] -> CometCollectLimitExec,
+      classOf[CollectMetricsExec] -> CometCollectMetricsExec,
       classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec,
       classOf[UnionExec] -> CometUnionExec)
 
@@ -536,6 +538,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
 
+      // AQE may revisit an observation between native blocks. Keep its Spark accumulator and
+      // expose the columnar output as a fresh native input rather than skipping its counters.
+      case c: CometCollectMetricsExec =>
+        if (c.getTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION).contains(true)) {
+          c.toSpark
+        } else {
+          convertToComet(c, CometCollectMetricsExec).getOrElse(c)
+        }
+
       // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
       // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
       case op: LeafExecNode if hasEnabledHandler(op) =>
@@ -898,8 +909,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
   /**
-   * Whether `op` is a writer whose native plan builds its own `Scan` over its child, so that the
-   * child runs as a separate native block instead of inside that plan.
+   * Whether `op` is a writer whose native plan reads its child through a leaf of its own, an FFI
+   * `Scan` or the `ShuffleScan` of a shuffle it reads directly, so that the child runs as a
+   * separate native block instead of inside that plan.
    */
   private def scansChildAsSeparateBlock(op: SparkPlan): Boolean = op match {
     case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => true
@@ -944,10 +956,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
             // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
             // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
-            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
-            // sits directly under the exchange.
+            // InputAdapter(cometPlan))).
             val cometChild = b.child match {
-              case c2r: CometNativeColumnarToRowExec => c2r.child
               case c2r: CometColumnarToRowExec => c2r.child
               case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
                 c2r.child match {
@@ -1032,6 +1042,61 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
+  /** A batch observer must not count rows that a short-circuiting consumer would never read. */
+  private def preserveCollectMetricsRowConsumption(plan: SparkPlan): Unit = {
+    def visit(node: SparkPlan, requiresRowConsumption: Boolean): Unit = {
+      val original = node match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+      val childRequiresRowConsumption = original match {
+        // A join can finish when one input is exhausted without draining the other input.
+        case _: BaseJoinExec => true
+        // User functions can consume only part of the partition iterator.
+        case _: MapPartitionsExec => true
+        // Nonpositive Poisson sampling may return an empty iterator without reading its input.
+        case sample: SampleExec
+            if sample.withReplacement && sample.upperBound - sample.lowerBound <= 0.0 =>
+          true
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec |
+            _: TakeOrderedAndProjectExec =>
+          true
+        case windowLimit
+            if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
+              _.isInstance(windowLimit)) =>
+          true
+        case _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec =>
+          false
+        // Even a sort or aggregate may never be polled by an external iterator consumer.
+        case _ => requiresRowConsumption
+      }
+      node match {
+        case observation: CollectMetricsExec if requiresRowConsumption =>
+          observation.setTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION, true)
+        case _ =>
+      }
+      node.children.foreach(visit(_, childRequiresRowConsumption))
+    }
+    // External actions such as foreachPartition or RDD.take can stop reading without adding a
+    // physical-plan node. Require a materializing exchange before enabling batch observation.
+    visit(plan, requiresRowConsumption = true)
+  }
+
+  /**
+   * Sorts the input of a window that runs in Spark, a Python one included, when its order may be
+   * false. Spark plans no sort below a window whose child reports the order it needs, and its
+   * window trusts that order. A Comet operator that may not keep the order it reports, such as a
+   * native nested loop join (#6898), then hands the window rows out of order, and it groups them
+   * wrongly.
+   */
+  private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
+    case window: WindowExecBase
+        if window.requiredChildOrdering.head.nonEmpty &&
+          CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
+      window.withNewChildren(
+        Seq(SortExec(window.requiredChildOrdering.head, global = false, child = window.child)))
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -1053,6 +1118,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
     } else {
       val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
+      preserveCollectMetricsRowConsumption(planWithDateEvaluation)
       // The rewrite removes the sorts of each join it converts, so put back any sort a kept
       // operator above still needs. This runs before transform(), which converts the sorts it
       // adds like any other SortExec.
@@ -1082,7 +1148,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       if (clearWastedBuildSideBridges(transformed)) {
         transformed = transform(planWithJoinRewritten)
       }
-      var newPlan = revertUnsafePartialAggregates(transformed)
+      var newPlan = sortDoubtedWindowInputs(revertUnsafePartialAggregates(transformed))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)

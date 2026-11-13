@@ -68,7 +68,7 @@ jobs:
   build-native:
     needs: lint
     name: Build Native Library (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 
@@ -143,7 +143,7 @@ jobs:
     if: ${{ !inputs.cache-refresh-only }}
     strategy:
       matrix:
-        os: [macos-14]
+        os: [macos-15]
 
         # macOS runs cover platform-specific concerns (native library loading, FFI,
         # threading, shuffle on Apple Silicon) that are largely independent of the
@@ -173,6 +173,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergHdfsSuite
               org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
@@ -191,7 +192,6 @@ jobs:
             value: |
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
-              org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometDirectColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleInputConversionSuite
@@ -209,6 +209,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.spark.sql.comet.execution.shuffle.CometBlockStoreShuffleReaderSuite
+              org.apache.spark.sql.comet.execution.shuffle.NativeBatchDecoderIteratorSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
@@ -235,6 +236,7 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
+              org.apache.spark.sql.comet.CometCollectMetricsSuite
               org.apache.spark.sql.comet.CometArrowPythonUdfSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
@@ -251,7 +253,7 @@ jobs:
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
-              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
+              org.apache.spark.CometPluginsDeprecatedConfigWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
@@ -299,6 +301,7 @@ jobs:
               org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
               org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
+              org.apache.spark.sql.comet.execution.arrow.CometZstdCompressionCodecSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
