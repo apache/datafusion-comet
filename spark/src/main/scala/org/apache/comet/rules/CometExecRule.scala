@@ -909,8 +909,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
   /**
-   * Whether `op` is a writer whose native plan builds its own `Scan` over its child, so that the
-   * child runs as a separate native block instead of inside that plan.
+   * Whether `op` is a writer whose native plan reads its child through a leaf of its own, an FFI
+   * `Scan` or the `ShuffleScan` of a shuffle it reads directly, so that the child runs as a
+   * separate native block instead of inside that plan.
    */
   private def scansChildAsSeparateBlock(op: SparkPlan): Boolean = op match {
     case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => true
@@ -955,10 +956,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
             // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
             // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
-            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
-            // sits directly under the exchange.
+            // InputAdapter(cometPlan))).
             val cometChild = b.child match {
-              case c2r: CometNativeColumnarToRowExec => c2r.child
               case c2r: CometColumnarToRowExec => c2r.child
               case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
                 c2r.child match {
