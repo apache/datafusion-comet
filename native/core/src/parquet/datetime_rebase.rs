@@ -80,7 +80,6 @@
 //! Spark writer metadata; the plain NativeScan keeps its documented no-rebase behavior (see
 //! the compatibility guide and issue #5010).
 
-use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -90,8 +89,8 @@ use arrow::array::{
     PrimitiveArray, RecordBatch, StructArray,
 };
 use arrow::datatypes::{
-    ArrowPrimitiveType, ArrowTimestampType, DataType, Date32Type, FieldRef, Int32Type, Schema,
-    SchemaRef, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+    ArrowPrimitiveType, ArrowTimestampType, DataType, Date32Type, FieldRef, Int32Type, Metadata,
+    Schema, SchemaRef, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
     TimestampNanosecondType, TimestampSecondType,
 };
 use arrow::error::ArrowError;
@@ -394,8 +393,7 @@ pub(crate) fn stamp_int96_leaves(metadata: &ParquetMetaData) -> Option<ParquetMe
     Some(
         ParquetMetaData::new(stamped_file_metadata, metadata.row_groups().to_vec())
             .into_builder()
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
+            .set_page_index(metadata.page_index().cloned())
             .build(),
     )
 }
@@ -720,7 +718,7 @@ fn push_unrequested_leaves(
 /// when the key is absent (`RebaseSpec.timeZone`), which is unavailable natively, so an absent or
 /// non-UTC zone classifies as [`WriterTimeZone::OtherOrUnknown`] (dates still rebase fully --
 /// the day rebase is zone-free -- while ancient timestamps refuse rather than guess).
-fn writer_time_zone(metadata: &HashMap<String, String>) -> WriterTimeZone {
+fn writer_time_zone(metadata: &Metadata) -> WriterTimeZone {
     match metadata.get(SPARK_TIMEZONE_KEY) {
         Some(tz) if UTC_EQUIVALENT_TIMEZONES.contains(&tz.as_str()) => WriterTimeZone::Utc,
         _ => WriterTimeZone::OtherOrUnknown,
@@ -736,7 +734,7 @@ fn writer_time_zone(metadata: &HashMap<String, String>) -> WriterTimeZone {
 /// file's `org.apache.spark.timeZone` key, same lookup as the metadata-driven LEGACY path),
 /// and EXCEPTION refuses ancient values as [`RebasePolicy::CheckAncient`].
 fn resolve_spec(
-    metadata: &HashMap<String, String>,
+    metadata: &Metadata,
     min_version: &str,
     legacy_key: &str,
     conf_mode: RebaseReadMode,
@@ -1284,6 +1282,7 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::Field;
     use parquet::schema::parser::parse_message_type;
+    use std::collections::HashMap;
 
     /// Julian-calendar civil date -> hybrid day count (the number a legacy writer stores for
     /// that nominal date), the inverse of `julian_day_to_civil`. Fliegel-Van Flandern style

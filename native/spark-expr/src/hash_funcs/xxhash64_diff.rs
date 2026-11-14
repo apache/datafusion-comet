@@ -35,8 +35,8 @@
 //! | Map&lt;Utf8, Int32&gt; / Map&lt;Int32, Utf8&gt; / Map&lt;Utf8, Utf8&gt; / Map&lt;Int32, Int32&gt; | yes |
 //! | Map&lt;Utf8, Decimal128&gt; | only for precision ≤ 18 |
 //! | Struct (non-null parent) | yes, but not routed (see below) |
-//! | Struct NULL with hidden children | **no** — `SparkXxhash64` hashes hidden children |
-//! | List&lt;Dictionary&gt; | **no** — upstream restarts from seed 42 |
+//! | Struct NULL with hidden children | yes since DataFusion 56 (apache/datafusion#25774), but not routed |
+//! | List&lt;Dictionary&gt; | yes since DataFusion 56 (apache/datafusion#25813), but not routed |
 //! | Time64(ns) | **no** — upstream does not dispatch |
 //! | Float32/64 NaN with non-canonical bits | **no** — upstream hashes the raw bits |
 //! | custom seed | **no** — `SparkXxhash64` hardcodes 42 |
@@ -800,8 +800,10 @@ fn null_struct_ignores_hidden_child_values_comet() {
     );
 }
 
+/// `SparkXxhash64` used to hash the hidden child values of a NULL struct. DataFusion 56 fixed it
+/// (apache/datafusion#25774), so upstream now agrees with the Comet kernel here.
 #[test]
-fn null_struct_hidden_children_diverge_from_spark_xxhash64() {
+fn null_struct_hidden_children_match_spark_xxhash64() {
     let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
     let nulls = NullBuffer::from(vec![true, false]);
     let hidden: ArrayRef = Arc::new(StructArray::new(
@@ -813,9 +815,9 @@ fn null_struct_hidden_children_diverge_from_spark_xxhash64() {
     let upstream = spark_xxhash64_upstream(&[hidden]).unwrap();
     assert_eq!(comet[0], upstream[0], "non-null struct row still matches");
     assert_eq!(comet[1], SPARK_DEFAULT_SEED);
-    assert_ne!(
+    assert_eq!(
         comet[1], upstream[1],
-        "SparkXxhash64 hashes hidden child values of a NULL struct"
+        "SparkXxhash64 ignores hidden child values of a NULL struct"
     );
 }
 
@@ -1034,8 +1036,10 @@ fn struct_of_list() {
     assert_compatible("Struct<List<Int32>>", &[array]);
 }
 
+/// `SparkXxhash64` used to restart the hash of a nested dictionary from seed 42. DataFusion 56
+/// fixed it (apache/datafusion#25813), so upstream now agrees with the Comet kernel here.
 #[test]
-fn list_of_dictionary_is_incompatible() {
+fn list_of_dictionary_matches_spark_xxhash64() {
     let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
     let keys = Int8Array::from(vec![0i8, 1]);
     let dict: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
@@ -1056,9 +1060,9 @@ fn list_of_dictionary_is_incompatible() {
     );
 
     let upstream = spark_xxhash64_upstream(&[as_list(dict)]).unwrap();
-    assert_ne!(
+    assert_eq!(
         comet_dict, upstream,
-        "SparkXxhash64 restarts nested dictionary hashes from seed 42"
+        "SparkXxhash64 keeps the running hash for nested dictionaries"
     );
 }
 
@@ -1177,7 +1181,9 @@ fn null_struct_expression_matches_comet_kernel() {
     assert_eq!(expr, kernel);
     assert_eq!(expr[1], SPARK_DEFAULT_SEED);
     let upstream = spark_xxhash64_upstream(&[hidden]).unwrap();
-    assert_ne!(expr[1], upstream[1]);
+    // Upstream used to hash the hidden children of a NULL struct; DataFusion 56 fixed it
+    // (apache/datafusion#25774).
+    assert_eq!(expr[1], upstream[1]);
 }
 
 #[test]

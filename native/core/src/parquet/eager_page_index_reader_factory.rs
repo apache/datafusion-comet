@@ -523,8 +523,7 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
     Ok(Arc::new(
         ParquetMetaDataBuilder::new(file)
             .set_row_groups(metadata.row_groups().to_vec())
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
+            .set_page_index(metadata.page_index().cloned())
             .build(),
     ))
 }
@@ -1170,6 +1169,7 @@ impl ObjectStore for ScanIoObjectStore {
         let meta = result.meta.clone();
         let range = result.range.clone();
         let attributes = result.attributes.clone();
+        let extensions = result.extensions.clone();
         let payload = if matches!(&result.payload, GetResultPayload::File(..)) {
             let bytes = result.bytes().await?;
             self.record_returned(Some(&range), &bytes);
@@ -1198,6 +1198,7 @@ impl ObjectStore for ScanIoObjectStore {
             meta,
             range,
             attributes,
+            extensions,
         })
     }
 
@@ -1617,8 +1618,7 @@ mod tests {
     async fn put_int_file(store: &InMemory, location: &str, id: Option<&str>) -> PartitionedFile {
         let mut field = arrow::datatypes::Field::new("a", DataType::Int32, false);
         if let Some(id) = id {
-            field = field
-                .with_metadata([(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string())].into());
+            field = field.with_metadata([(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string())]);
         }
         let schema = Arc::new(Schema::new(vec![field]));
         let batch = RecordBatch::try_new(
@@ -1739,7 +1739,7 @@ mod tests {
     fn variant_policy_preserves_footer_metadata_and_indexes() {
         let schema = Arc::new(Schema::new_with_metadata(
             vec![arrow::datatypes::Field::new("id", DataType::Int32, false)],
-            [("application".to_string(), "keep".to_string())].into(),
+            [("application".to_string(), "keep".to_string())],
         ));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -1765,10 +1765,9 @@ mod tests {
         .unwrap();
         let original = Arc::new(reader.metadata().clone());
         let rewritten = with_spark_arrow_schema(Arc::clone(&original)).unwrap();
-        assert!(original.column_index().is_some());
-        assert!(original.offset_index().is_some());
-        assert_eq!(rewritten.column_index(), original.column_index());
-        assert_eq!(rewritten.offset_index(), original.offset_index());
+        let page_index = original.page_index().expect("original has a page index");
+        assert!(page_index.is_complete());
+        assert!(Arc::ptr_eq(rewritten.page_index().unwrap(), page_index));
         assert_eq!(rewritten.row_groups(), original.row_groups());
         assert_eq!(
             rewritten.file_metadata().column_orders(),
@@ -1852,7 +1851,9 @@ mod tests {
         for file in &files {
             let metadata = open(&factory, file, &metrics).await.unwrap();
             assert_eq!(metadata.file_metadata().num_rows(), 2);
-            assert!(metadata.column_index().is_some() && metadata.offset_index().is_some());
+            assert!(metadata
+                .page_index()
+                .is_some_and(|page_index| page_index.is_complete()));
         }
 
         assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 3);
