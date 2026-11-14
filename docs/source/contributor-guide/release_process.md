@@ -75,6 +75,7 @@ instructions on each step.
   - [ ] Promote Maven artifacts to production
   - [ ] Push the release tag
   - [ ] Bring the finalized change log into main
+  - [ ] Update the download page
   - [ ] Close the vote and announce the release
 - [ ] Post release:
   - [ ] Register the release with Apache Reporter
@@ -443,6 +444,9 @@ deployed to https://datafusion.apache.org/comet/ by the documentation publishing
 Note that the download links in the installation guide will not work until the release is finalized, but having the
 documentation available could be useful for anyone testing out the release candidate during the voting period.
 
+The [Download](../download.md) page is not part of this step. It is updated only after
+the release is published; see [Update the download page](#update-the-download-page).
+
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.
@@ -595,11 +599,29 @@ git tag 0.13.0
 git push apache 0.13.0
 ```
 
+### Update the download page
+
+ASF release policy requires the project website to have a download page for the source release, and the
+announcement to link to it. Update `docs/source/download.md` to point at the new release: change the version in the
+links and commands and the changelog link, and create a pull request against `main`.
+
+Wait at least one hour after the tarball is uploaded to the release repository, so that it has reached
+`downloads.apache.org` and the mirrors, before merging the pull request. Do not merge it before the release is
+published, because ASF release policy forbids linking to unreleased packages.
+
+Check that the tarball link redirects to a mirror and that the signature, checksum and `KEYS` links resolve. The
+tarball must be linked through the mirror system (`https://www.apache.org/dyn/closer.lua/...`), and the signature,
+checksum and `KEYS` links must point at `https://downloads.apache.org/`, not at a mirror. Send the announcement
+email only after the updated page is live on the website.
+
+### Announce the release
+
 Reply to the vote thread to close the vote and announce the release. The announcement email should include:
 
 - The release version
 - A link to the release notes / changelog
-- A link to the download page or Maven coordinates
+- A link to the [Download](../download.md) page for the source release (required by
+  ASF release policy), and optionally the Maven coordinates
 - Thanks to everyone who contributed and voted
 
 ## Post Release
