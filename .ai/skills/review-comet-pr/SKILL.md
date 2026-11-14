@@ -174,7 +174,7 @@ Report the comparison in the review even when nothing changed, so the reviewer k
 
 Comet supports several Spark versions. The check on the Spark version belongs in Scala, either in a
 shim under `spark/src/main/spark-*/` or in one named predicate such as `isSpark42Plus` or
-`RegrSparkVersions.slopeFiltersVarByPairNulls`. It does not belong in an ad hoc comparison on the
+`SparkFixes.slopeFiltersVarByPairNulls`. It does not belong in an ad hoc comparison on the
 version string in shared code, or in native Rust. If the PR adds a shim for one 4.x version, check
 that the sibling 4.x source sets got it too.
 

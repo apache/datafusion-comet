@@ -46,31 +46,9 @@ object SizeChildCounter {
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  test("array set signed-zero Spark patch versions") {
-    // 4.2.0 normalizes the arguments in the plan (SPARK-54918), and 4.0.5+, 4.1.4+ and 4.2.1+
-    // normalize during evaluation (SPARK-59602). Earlier releases keep flat signed zeros apart.
-    Seq("3.4.3", "3.5.9", "4.0.0", "4.0.4", "4.0.4-SNAPSHOT", "4.1.0", "4.1.3").foreach {
-      version =>
-        assert(!ArraySetSupport.normalizesFloats(version), version)
-    }
-    Seq(
-      "4.0.5",
-      "4.0.10",
-      "4.1.4",
-      "4.1.10",
-      "4.2.0",
-      "4.2.0-SNAPSHOT",
-      "4.2.1",
-      "4.2.10",
-      "4.3.0",
-      "5.0.0").foreach { version =>
-      assert(ArraySetSupport.normalizesFloats(version), version)
-    }
-  }
-
   test("array set signed-zero support levels") {
-    // This test covers element-type detection; the preceding test pins the version boundaries.
-    val fixed = ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)
+    // This test covers element-type detection; SparkFixesSuite pins the version boundaries.
+    val fixed = SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)
     Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
       .foreach { elementType =>
         val child = AttributeReference("a", ArrayType(elementType))()
@@ -120,7 +98,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
           .foreach { case (function, arguments) =>
             val query = s"SELECT $function($arguments)"
-            if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+            if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
               checkSparkAnswerAndOperator(query)
             } else {
               checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -160,7 +138,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union(array(named_struct('x', d)), array(named_struct('x', -d)))")
         expressions.foreach { expression =>
           val query = s"SELECT size($expression) FROM array_set_nan"
-          if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+          if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
             checkSparkAnswerAndOperator(query)
           } else {
             checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -191,7 +169,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             s"array_union(array(named_struct('x', $column)), array(named_struct('x', -$column)))")
             .foreach { expression =>
               val query = s"SELECT $expression FROM array_set_zero"
-              if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+              if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
                 checkSparkAnswerAndOperator(query)
               } else {
                 checkSparkAnswerAndFallbackReason(query, "SPARK-54918")

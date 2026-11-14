@@ -52,10 +52,9 @@ the same plan is shown in the Spark SQL UI. When reading a plan, look for:
 
 - **Node prefix.** `Comet*` nodes are accelerated by Comet. Anything without
   the prefix is unmodified Spark.
-- **Transitions.** `CometColumnarToRow`, `CometNativeColumnarToRow`, and
-  `CometSparkRowToColumnar` mark boundaries between columnar Comet execution
-  and row-based Spark execution. Frequent transitions usually indicate
-  fallback inside the plan.
+- **Transitions.** `CometColumnarToRow` and `CometSparkRowToColumnar` mark
+  boundaries between columnar Comet execution and row-based Spark execution.
+  Frequent transitions usually indicate fallback inside the plan.
 - **Exchange type.** `CometExchange` is the native shuffle path,
   `CometColumnarExchange` is the JVM columnar shuffle path, and a plain
   `Exchange` means Spark shuffle. See [Shuffle Operators](#shuffle-operators)
@@ -183,9 +182,9 @@ the config has no effect there.
 Not every node in the plan is an eligible operator. The following are excluded
 from both operator counts:
 
-- Transition nodes (`CometColumnarToRow`, `CometNativeColumnarToRow`,
-  `CometSparkRowToColumnar`, `CometSparkColumnarToColumnar`, `ColumnarToRow`,
-  `RowToColumnar`), which are reported separately as the transition count.
+- Transition nodes (`CometColumnarToRow`, `CometSparkRowToColumnar`,
+  `CometSparkColumnarToColumnar`, `ColumnarToRow`, `RowToColumnar`), which are
+  reported separately as the transition count.
   `CometSparkRowToColumnar` and `CometSparkColumnarToColumnar` are the two names
   a single operator renders under, depending on whether its child already
   produces columnar data, and both are excluded.
@@ -391,15 +390,12 @@ shuffle and choose between the implementations.
 ### Columnar/Row Transitions
 
 Comet inserts these nodes wherever data has to cross the columnar/row boundary.
-Multiple implementations exist because the optimal strategy depends on what
-produced the columnar data.
 
-| Node                           | Direction           | Notes                                                                                                                                                                                                                                               |
-| ------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix. This is the default.                                                                                                                             |
-| `CometNativeColumnarToRow`     | columnar → row      | Rust-based row conversion via `NativeColumnarToRowConverter`. Disabled by default; enable with `spark.comet.exec.columnarToRow.native.enabled=true`. It carries a fixed JNI cost per batch and is slower than the JVM conversion for small batches. |
-| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                                                                                                                                                           |
-| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                                                                                                                                                                              |
+| Node                           | Direction           | Notes                                                                                              |
+| ------------------------------ | ------------------- | -------------------------------------------------------------------------------------------------- |
+| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix. |
+| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.          |
+| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                             |
 
 The two `CometSpark*` names come from a single `CometSparkToColumnarExec`
 operator that picks the node name based on whether its child supports
