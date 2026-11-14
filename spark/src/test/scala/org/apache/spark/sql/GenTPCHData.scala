@@ -119,14 +119,18 @@ object GenTPCHData {
     }
   }
 
-  // Install tpch-dbgen (with the stdout patch)
+  // Install tpch-dbgen, pinned to a commit so the TPC-H dataset cache, which is
+  // keyed on this file, rotates only when the generator changes.
   def installDBGEN(
       baseDir: String,
       url: String = "https://github.com/databricks/tpch-dbgen.git",
       useStdout: Boolean = true)(i: java.lang.Long): Unit = {
-    // Check if we want the revision which makes dbgen output to stdout
+    val dbgenRevision = "6985da461c641fd0d255b214f2d693f1bf08bc33"
+    // The revision whose bm_utils.c makes dbgen output to stdout.
+    val stdoutPatchRevision = "0469309147b42abac8857fa61b4cf69a6d3128a8"
     val checkoutRevision: String =
-      if (useStdout) "git checkout 0469309147b42abac8857fa61b4cf69a6d3128a8 -- bm_utils.c" else ""
+      s"git checkout $dbgenRevision" +
+        (if (useStdout) s" && git checkout $stdoutPatchRevision -- bm_utils.c" else "")
 
     Seq("mkdir", "-p", baseDir).!
     val pw = new PrintWriter(s"${baseDir}/dbgen_$i.sh")
