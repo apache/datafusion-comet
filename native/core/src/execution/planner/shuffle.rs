@@ -85,6 +85,15 @@ impl OperatorBuilder for ShuffleWriterBuilder {
 
         let partitioning = planner
             .create_partitioning(writer.partitioning.as_ref().unwrap(), writer_input.schema())?;
+        let writer_input = match &partitioning {
+            CometPartitioning::Hash(exprs, _) => {
+                planner.bound_scalar_expansion(writer_input, exprs)
+            }
+            CometPartitioning::RangePartitioning(ordering, ..) => {
+                planner.bound_scalar_expansion(writer_input, ordering.iter().map(|sort| &sort.expr))
+            }
+            _ => writer_input,
+        };
 
         let codec = match writer.codec.try_into() {
             Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
