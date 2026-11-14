@@ -138,8 +138,7 @@ safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-
 - Local filesystem
 - S3-compatible storage (AWS S3, MinIO)
 - Google Cloud Storage (`gs`) and Alibaba Cloud OSS (`oss`)
-
-HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.
+- HDFS (`hdfs`), experimental (see [HDFS](#hdfs))
 
 ### REST Catalog
 
@@ -194,6 +193,47 @@ For a custom S3-compatible endpoint, configure the catalog with the endpoint, pa
 
 These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). The region is not auto-detected: when neither the catalog (`client.region` or `s3.region`) nor the executor environment (`AWS_REGION` or `AWS_DEFAULT_REGION`) supplies one, Comet uses `us-east-1`, so set it for AWS buckets in any other region. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
+### HDFS
+
+The native reader reads HDFS through iceberg-rust's experimental `hdfs-native` backend, a Rust HDFS
+client that uses neither libhdfs nor the JVM. The client reads `core-site.xml` and `hdfs-site.xml`
+from `$HADOOP_CONF_DIR`, or from `$HADOOP_HOME/etc/hadoop`, on each executor. Of the session's
+Hadoop configuration (the driver's XML and `spark.hadoop.*`), Comet forwards the settings the
+client reads: `dfs.client.use.datanode.hostname`, `dfs.client.socket-timeout`,
+`dfs.client.failover.max.attempts`, `dfs.client.failover.sleep.base.millis` and
+`dfs.client.failover.sleep.max.millis` when the session sets them, and the NameNodes of an HA
+nameservice. A location such as `hdfs://ns1/warehouse` has no port, and Comet passes the client
+the NameNodes that the session's Hadoop configuration declares for `ns1` with
+`dfs.ha.namenodes.ns1` and `dfs.namenode.rpc-address.ns1.<id>`. A portless location that the
+configuration does not declare is a single NameNode on Hadoop's default port, 8020, as it is to
+the JVM client. A catalog property under `hadoop.` sets any client key directly and wins over the
+forwarded value. The client does not read the JVM client's other settings, among them short-circuit
+and hedged reads, `dfs.client.retry.*`, `ipc.client.*`, `hadoop.rpc.protection` and the
+per-nameservice `dfs.client.failover.*.<ns>` keys. Data transfer is encrypted when the NameNode
+requires it (`dfs.encrypt.data.transfer`), as for the JVM client.
+
+A scan of HDFS files falls back to Spark when `hadoop.security.authentication` is not `simple`,
+because the client cannot authenticate with the delegation tokens that Spark executors use on a
+Kerberos cluster. It also falls back when a file location has no port and names a nameservice that
+the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`), and when a
+data or delete file lies in an HDFS encryption zone: the client is built without KMS support and
+cannot decrypt it. Comet checks that at planning, on clusters whose NameNode advertises a key
+provider, with one directory listing per parent of the data directories. A listing is kept per
+table for an hour, or for `spark.sql.metadataCacheTTLSeconds` when that is set, so a table
+re-created at the same path lists again on its first scan, and a new partition lists its parent
+again; a scan that would list more than a million directory entries falls back, and later scans
+continue from the listings kept, which hold a million entries at most.
+
+On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
+operating system user when that variable is unset, rather than as the Spark user. Comet therefore
+claims an HDFS scan only when the executors are known to read as the Spark user: set
+`spark.executorEnv.HADOOP_USER_NAME` to the user that submits the job, when the application is
+submitted (Comet reads it from the SparkContext's configuration; a value set on a session
+afterwards never reaches the executors). In local mode, the JVM's `HADOOP_USER_NAME` or operating
+system user must be that user. Otherwise the scan falls back with a reason that names the setting.
+To read HDFS tables with Spark's Iceberg reader and keep the native scan for other storage, set
+`spark.comet.scan.icebergNative.hdfs.enabled=false`. Writes to HDFS use Iceberg's own writer.
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:
@@ -210,6 +250,12 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
+- HDFS scans on a cluster with Kerberos, or whose executors are not known to read as the Spark
+  user; HDFS file locations that name a nameservice without NameNodes or that have no authority;
+  and HDFS files in an encryption zone (see [HDFS](#hdfs))
+- Scans whose data or delete files are on a different storage backend than the table metadata, for
+  example a local or REST-served metadata location with `write.data.path` on S3 or HDFS. The native
+  reader opens every file of a scan through one storage, chosen from the metadata location
 - Scans where Iceberg reports an output ordering (for example with
   `spark.sql.iceberg.planning.preserve-data-ordering=true`). Spark may then skip the sort above the
   scan, and the native reader does not preserve file order
@@ -484,7 +530,7 @@ A write is eligible only when ALL of the following hold:
 | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | resolved write format (`write-format` option overlaid on `write.format.default`)                                                            | `parquet`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `format-version`                                                                                                                            | `1`, `2` or `3` (on `3`, writes that carry row lineage fall back; see below)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | the sizes/limit must be positive Java ints (`Integer.parseInt` semantics — no trimming, no values past `Int.MaxValue` — matching iceberg-java, whose writer fails on anything else); `compression-level` must be a Java int within the native writer's per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored by both writers for snappy/lz4/none) — iceberg-java never validates the level, so an out-of-range value falls back rather than becoming a native task failure |
+| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | the sizes/limit must be positive Java ints (`Integer.parseInt` semantics — no trimming, no values past `Int.MaxValue` — matching iceberg-java, whose writer fails on anything else); `compression-level` must be a Java int within the native writer's per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored for snappy/lz4/none), which iceberg-java never validates, so other levels fall back; `brotli` needs Hadoop's `BrotliCodec` class on the classpath (see below) |
 | `write.parquet.row-group-check-min-record-count`                                                                                            | unset or `100` (the default)                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `write.parquet.row-group-check-max-record-count`                                                                                            | unset or `10000` (the default)                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `write.parquet.page-version`                                                                                                                | unset or `v1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -567,6 +613,15 @@ can be dropped afterwards. A spec that mixes such a field with a live one falls 
 cannot write through it either, so the write fails with iceberg-java's own error rather than in
 the native writer ([#6141](https://github.com/apache/datafusion-comet/issues/6141)). A spec whose
 fields are all `void` writes unpartitioned and stays eligible.
+
+A write that compresses with `brotli` falls back unless Hadoop's
+`org.apache.hadoop.io.compress.BrotliCodec` class can be loaded. parquet-mr compresses and
+decompresses brotli pages with that class, and neither Spark nor Iceberg ships it. Without a brotli
+codec jar on the classpath, iceberg-java fails the write, and no JVM Parquet reader, Spark's or
+Iceberg's, can read a brotli file. parquet-rs compresses brotli without the class, so a native write
+would commit files that only a native reader could read. The gate looks the class up on the
+driver, through the class loader that Spark adds application jars to
+([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -742,8 +797,16 @@ a data file but not what any reader computes from it:
   for a default `zstd` table. The decompressed data is identical. For the same reason,
   codec-level side channels (`zlib.compress.level`, `compression.brotli.quality`,
   `io.compression.codec.zstd.level` — the last is present in every Hadoop configuration by
-  default) are not gated: they can only shift compressed bytes, which are already accepted as
-  divergent.
+  default) are not gated: the native writer does not read them, and they can only shift
+  compressed bytes, which are already accepted as divergent. A numeric gzip level is the one
+  exception, because it changes whether iceberg-java can write at all. Hadoop reads
+  `zlib.compress.level` as the name of a `ZlibCompressor.CompressionLevel` constant, such as
+  `BEST_SPEED`, so iceberg-java fails a gzip write whose level is a number, set either as
+  `write.parquet.compression-level` or as `zlib.compress.level` in the Hadoop configuration. It
+  fails on Hadoop 3.4, and on Hadoop 3.3 when Hadoop's native zlib library is loaded. The native
+  writer writes such a table at its `write.parquet.compression-level`, or at gzip's default level,
+  and any reader can decompress the pages, whatever the level
+  ([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 #### Manifest metadata visible to later readers
 
@@ -788,16 +851,19 @@ the [S3](datasources.md#s3-limitations) and [Azure](datasources.md#azure-limitat
 
 Which entries apply depends on which native paths are enabled:
 
-| Native path    | Setting                                  | Default |
-| -------------- | ---------------------------------------- | ------- |
-| Iceberg scan   | `spark.comet.scan.icebergNative.enabled` | `true`  |
-| Iceberg writer | `spark.comet.write.iceberg.enabled`      | `false` |
+| Native path          | Setting                                       | Default |
+| -------------------- | --------------------------------------------- | ------- |
+| Iceberg scan         | `spark.comet.scan.icebergNative.enabled`      | `true`  |
+| Iceberg scan of HDFS | `spark.comet.scan.icebergNative.hdfs.enabled` | `true`  |
+| Iceberg writer       | `spark.comet.write.iceberg.enabled`           | `false` |
 
 ### Reads that differ from Spark
 
-- **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
-  a file as NULL, and the native scan returns the values stored in the file. A read of only some
-  of a struct's fields fails instead
+- **Data files with neither field ids nor a name mapping.** Neither reader can match such a
+  file's nested fields to the table's, so a struct's fields read as NULL in both. The containers
+  differ: Spark's reader returns NULL for an optional struct itself, where the native scan
+  returns a struct of NULL fields, and an empty list for a list of structs, where the native scan
+  returns the list with each element's fields NULL
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values
@@ -811,9 +877,6 @@ Which entries apply depends on which native paths are enabled:
 
 The native Iceberg writer is disabled by default. With `spark.comet.write.iceberg.enabled=true`:
 
-- **Brotli tables.** The native writer commits brotli-compressed files. JVM Parquet readers can
-  read them only if Hadoop's `BrotliCodec` is on the classpath. iceberg-java fails the write
-  instead ([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 - **`write.parquet.compression-codec=none`.** The native writer writes the table uncompressed, and
   iceberg-java rejects the value. The native writer also trims or lowercases a few other settings
   that iceberg-java reads as written
