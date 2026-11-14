@@ -403,6 +403,22 @@ public abstract class NativeBase {
   public static native String icebergStorageSchemes(boolean forWrite);
 
   /**
+   * For tests: builds the Iceberg {@code FileIO} a read of {@code referencePath} with these catalog
+   * properties uses, and keeps it in the native {@code FileIO} cache as a read would. Building it
+   * registers the configured S3 credential provider and makes no storage request.
+   *
+   * @param referencePath the table metadata file the read would open
+   * @param catalogName the catalog name, which is the provider's dispatch key
+   * @param keys the catalog property keys
+   * @param values the catalog property values, in the order of {@code keys}
+   */
+  public static native void loadIcebergFileIOForTesting(
+      String referencePath, String catalogName, String[] keys, String[] values);
+
+  /** For tests: drops every cached Iceberg {@code FileIO}, releasing the providers they hold. */
+  public static native void clearIcebergFileIOCacheForTesting();
+
+  /**
    * Why the native scan cannot build its ABFS object store for {@code url} from the given object
    * store options, or null when it can. This runs the store construction the scan itself runs, so
    * the planner falls back on exactly the configurations native rejects rather than a copy of its

@@ -50,8 +50,14 @@ public interface CometS3CredentialProvider extends AutoCloseable {
   CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) throws Exception;
 
   /**
-   * Invoked from the dispatcher's best-effort JVM shutdown hook. Default no-op suits stateless
-   * providers; override to release HTTP clients, refresh executors, etc.
+   * Invoked once nothing reads through this instance any more, such as after an Iceberg catalog
+   * re-vends credentials for a table, and from the dispatcher's best-effort JVM shutdown hook for
+   * instances still in use then. Default no-op suits stateless providers; override to release HTTP
+   * clients, refresh executors, etc.
+   *
+   * <p>A release while the job runs closes the instance on a dispatcher thread, possibly while a
+   * new instance for the same key initializes, so release only this instance's own resources, not
+   * state other instances share. Comet calls it at most once.
    */
   @Override
   default void close() throws Exception {}
