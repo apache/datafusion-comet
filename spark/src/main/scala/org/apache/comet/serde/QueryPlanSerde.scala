@@ -1402,8 +1402,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * batch, so one that can fail, such as an ANSI cast of a malformed string, fails on a row that
    * Spark returns NULL for without evaluating it (#6613). The arguments must be in the order
    * Spark evaluates them, and the function must return NULL wherever an argument other than the
-   * last is NULL. The native planner drops the guard when every later argument can be evaluated
-   * for any row, such as a column or a literal.
+   * last is NULL, without first checking the later ones: native execution may try a later
+   * argument over the whole batch, so on a skipped row the function can see any value there. The
+   * native planner drops the guard when every later argument can be evaluated for any row, such
+   * as a column or a literal.
    */
   def withNullShortCircuit(expr: Expression, scalarFunc: Option[Expr]): Option[Expr] =
     scalarFunc.map { proto =>

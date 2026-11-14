@@ -154,7 +154,7 @@ When the return type is set on the proto, the native planner skips the registry 
 
 #### Arguments that Spark skips after a NULL
 
-A null-intolerant `BinaryExpression` or `TernaryExpression` returns NULL as soon as one of its arguments is NULL, without evaluating the arguments after it. Native execution evaluates every argument of a `ScalarFunc` over the whole batch, so an argument that can fail, such as an ANSI cast of a malformed string, would fail on rows that Spark skips. Wrap the serialized call of such an expression in `withNullShortCircuit`, as `CometArrayContains` and `CometSlice` do, after checking the conditions in its Scaladoc.
+A null-intolerant `BinaryExpression` or `TernaryExpression` returns NULL as soon as one of its arguments is NULL, without evaluating the arguments after it. Native execution evaluates every argument of a `ScalarFunc` over the whole batch, so an argument that can fail, such as an ANSI cast of a malformed string, would fail on rows that Spark skips. Wrap the serialized call of such an expression in `withNullShortCircuit`, as `CometArrayContains` and `CometSlice` do, after checking the conditions in its Scaladoc. `CometConcat` wraps `concat` the same way. Arithmetic is a `MathExpr` rather than a `ScalarFunc`, so `createMathExpression` sets `MathExpr.null_short_circuit` instead, which also evaluates the divisor of `/`, `DIV` and `%` first, as Spark does.
 
 #### Registering the Expression Handler
 

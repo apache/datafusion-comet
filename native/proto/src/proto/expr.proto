@@ -458,6 +458,11 @@ message MathExpr {
   // instead of wrapping around. Never set for DECIMAL operands, which wrap around on
   // the cast to LONG even in ANSI mode, matching Spark.
   bool check_divide_overflow = 6;
+  // Evaluate the operand Spark evaluates second only for the rows where the first one is not
+  // NULL: the right operand of add, subtract and multiply, and the left operand (the dividend)
+  // of divide, integral divide and remainder, whose divisor Spark evaluates first. Set when the
+  // second operand can be skipped, see QueryPlanSerde.canSkipEvaluation.
+  bool null_short_circuit = 7;
 }
 
 message Cast {

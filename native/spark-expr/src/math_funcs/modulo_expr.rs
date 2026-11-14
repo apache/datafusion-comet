@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::{create_comet_physical_fun, spark_comparison, FloatOperands, IfExpr};
-use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
+use crate::{remainder_by_zero_error, Cast, EvalMode, NullShortCircuit, SparkCastOptions};
 use arrow::array::{ArrayRef, ArrowNativeTypeOp, AsArray, PrimitiveArray};
 use arrow::compute::kernels::arity::try_binary;
 use arrow::compute::kernels::numeric::rem;
@@ -148,12 +148,16 @@ pub fn decimal128_add_sub_width(p1: u8, s1: i8, p2: u8, s2: i8) -> i16 {
     max(s1 as i16, s2 as i16) + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
 }
 
+/// Creates Spark's remainder of `left` by `right`. With `null_short_circuit` it evaluates the
+/// dividend only for the rows where the divisor, which Spark evaluates first, is not NULL. See
+/// [`NullShortCircuit`].
 pub fn create_modulo_expr(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
     data_type: DataType,
     input_schema: SchemaRef,
     fail_on_error: bool,
+    null_short_circuit: bool,
     registry: &dyn FunctionRegistry,
 ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
     // For non-ANSI mode, wrap the right expression such that any zero value is replaced with `NULL`
@@ -201,6 +205,7 @@ pub fn create_modulo_expr(
                 &decimal256_return_type,
                 registry,
                 fail_on_error,
+                null_short_circuit.then_some(input_schema.as_ref()),
             )?;
 
             Ok(Arc::new(Cast::new(
@@ -217,6 +222,7 @@ pub fn create_modulo_expr(
             &data_type,
             registry,
             fail_on_error,
+            null_short_circuit.then_some(input_schema.as_ref()),
         ),
     }
 }
@@ -287,17 +293,23 @@ fn create_modulo_scalar_function(
     data_type: &DataType,
     registry: &dyn FunctionRegistry,
     fail_on_error: bool,
+    null_short_circuit_schema: Option<&Schema>,
 ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
     let func_name = "spark_modulo";
     let modulo_expr =
         create_comet_physical_fun(func_name, data_type.clone(), registry, Some(fail_on_error))?;
-    Ok(Arc::new(ScalarFunctionExpr::new(
+    let modulo = Arc::new(ScalarFunctionExpr::new(
         func_name,
         modulo_expr,
         vec![left, right],
         Arc::new(Field::new(func_name, data_type.clone(), true)),
         Arc::new(ConfigOptions::default()),
-    )))
+    ));
+    match null_short_circuit_schema {
+        // Spark evaluates the divisor first
+        Some(schema) => NullShortCircuit::wrap_in_order(modulo, &[1, 0], schema),
+        None => Ok(modulo),
+    }
 }
 
 #[cfg(test)]
@@ -398,6 +410,7 @@ mod tests {
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -445,6 +458,7 @@ mod tests {
             DataType::Decimal128(10, -1),
             Arc::clone(&schema),
             false,
+            false,
             &SessionContext::new().state(),
         )
         .unwrap();
@@ -485,6 +499,7 @@ mod tests {
                 DataType::Decimal128(18, 4),
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -521,6 +536,7 @@ mod tests {
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -565,6 +581,7 @@ mod tests {
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -596,6 +613,7 @@ mod tests {
             data_type,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -691,6 +709,7 @@ mod tests {
             DataType::Float32,
             schema,
             false,
+            false,
             &SessionContext::new().state(),
         )
         .unwrap();
@@ -773,6 +792,7 @@ mod tests {
             DataType::Float64,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -848,6 +868,7 @@ mod tests {
             DataType::Float64,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -899,6 +920,7 @@ mod tests {
             DataType::Float64,
             schema,
             true,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -923,6 +945,7 @@ mod tests {
             DataType::Float64,
             schema,
             true,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -978,6 +1001,7 @@ mod tests {
             DataType::Float64,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
