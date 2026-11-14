@@ -54,14 +54,16 @@ sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpress
 
   protected def seedExprOf(expr: T): Expression
 
-  override def getSupportLevel(expr: T): SupportLevel = seedExprOf(expr) match {
-    case _: Literal => Compatible()
-    case _ => Unsupported(Some(nonLiteralSeedReason))
+  override def getSupportLevel(expr: T): SupportLevel = extractSeedFromExpr(
+    seedExprOf(expr)) match {
+    case Some(_) => Compatible()
+    case None => Unsupported(Some(nonLiteralSeedReason))
   }
 
   protected def extractSeedFromExpr(expr: Expression): Option[Long] = {
     expr match {
       case Literal(seed: Long, _) => Some(seed)
+      case Literal(seed: Int, _) => Some(seed.toLong)
       case Literal(null, _) => Some(0L)
       case _ => None
     }
