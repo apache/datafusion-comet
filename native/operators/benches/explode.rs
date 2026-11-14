@@ -28,7 +28,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Int32Array, Int64Array, ListArray, StringArray, StructArray};
+use arrow::array::{
+    Array, ArrayRef, AsArray, Int32Array, Int64Array, ListArray, StringArray, StructArray,
+};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -40,6 +42,7 @@ use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion::physical_plan::{common::collect, ExecutionPlan};
 use datafusion::prelude::SessionConfig;
 use datafusion_comet_operators::ExplodeExec;
+use futures::StreamExt;
 use tokio::runtime::Runtime;
 
 /// Input rows per batch, and batches per run. 8192 is DataFusion's default `batch_size`, so the
@@ -264,6 +267,61 @@ fn run(runtime: &Runtime, plan: &Arc<dyn ExecutionPlan>, ctx: &Arc<TaskContext>)
     assert!(!batches.is_empty());
 }
 
+fn wide_carried_plan() -> Arc<dyn ExecutionPlan> {
+    let values = Arc::new(Int64Array::from_iter_values(
+        0..(ROWS_PER_BATCH * 300) as i64,
+    ));
+    let list = ListArray::new(
+        Arc::new(Field::new("item", DataType::Int64, false)),
+        OffsetBuffer::from_lengths(std::iter::repeat_n(300, ROWS_PER_BATCH)),
+        values,
+        None,
+    );
+    let payload = "x".repeat(1024);
+    let batch = RecordBatch::try_from_iter(vec![
+        ("l", Arc::new(list) as ArrayRef),
+        (
+            "payload",
+            Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                payload.as_str(),
+                ROWS_PER_BATCH,
+            ))) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let source =
+        MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
+    Arc::new(
+        ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            vec![],
+            Arc::new(Schema::new(vec![
+                Field::new("l", DataType::Int64, false),
+                Field::new("payload", DataType::Utf8, false),
+            ])),
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap(),
+    )
+}
+
+fn run_wide(runtime: &Runtime, plan: &Arc<dyn ExecutionPlan>, ctx: &Arc<TaskContext>) -> usize {
+    runtime.block_on(async {
+        let mut stream = plan.execute(0, Arc::clone(ctx)).unwrap();
+        let mut bytes = 0;
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            bytes += batch.column(1).as_string::<i32>().value_data().len();
+            std::hint::black_box(batch);
+        }
+        bytes
+    })
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let runtime = Runtime::new().unwrap();
     let ctx = Arc::new(
@@ -320,6 +378,12 @@ fn criterion_benchmark(c: &mut Criterion) {
         }
     }
     group.finish();
+
+    let plan = wide_carried_plan();
+    assert_eq!(run_wide(&runtime, &plan, &ctx), ROWS_PER_BATCH * 300 * 1024);
+    c.bench_function("explode_1kib_carried_fan_out_300", |b| {
+        b.iter(|| run_wide(&runtime, &plan, &ctx))
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);

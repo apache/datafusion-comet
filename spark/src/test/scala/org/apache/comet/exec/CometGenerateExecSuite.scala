@@ -20,7 +20,7 @@
 package org.apache.comet.exec
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.comet.CometExplodeExec
+import org.apache.spark.sql.comet.{CometExplodeExec, CometNativeScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.col
@@ -224,16 +224,153 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("explode with map input falls back") {
-    withSQLConf(
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
-      val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
-        .toDF("id", "map")
-        .selectExpr("id", "explode(map) as (key, value)")
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "Comet only supports explode/explode_outer for arrays, not maps")
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer")) {
+    test(s"$generator with JVM-fed map input") {
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val input = Seq(
+          (1, Map("b" -> Integer.valueOf(20), "a" -> Integer.valueOf(10))),
+          (2, Map.empty[String, Integer]),
+          (3, null.asInstanceOf[Map[String, Integer]]),
+          (4, Map("null" -> null.asInstanceOf[Integer])))
+          .toDF("id", "m")
+        checkMapGenerator(input, "m", generator)
+      }
+    }
+
+    test(s"$generator with map input across batch boundaries") {
+      withSQLConf(
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "4") {
+        val rows = (0 until 16).map { i =>
+          val m = i % 4 match {
+            case 0 => null.asInstanceOf[Map[Int, java.lang.Integer]]
+            case 1 => Map.empty[Int, java.lang.Integer]
+            case _ =>
+              (0 until 13).map { j =>
+                j -> (if (j % 3 == 0) null else java.lang.Integer.valueOf(i * 100 + j))
+              }.toMap
+          }
+          val booleans = Option(m)
+            .map(_.map { case (key, value) =>
+              // A period of five cannot hide a wrong bitmap offset at four-row batch boundaries.
+              key -> (if (value == null) null else java.lang.Boolean.valueOf((i + key) % 5 < 2))
+            })
+            .orNull
+          (i, m, booleans)
+        }
+        withParquetDataFrame(rows) { input =>
+          // One map exceeds the output batch size. Carry the map through too, so
+          // outer padding cannot accidentally replace the original empty map.
+          val maps = input.toDF("id", "ints", "booleans")
+          Seq("ints", "booleans").foreach { name =>
+            withClue(s"$name: ") { checkMapGenerator(maps, name, generator) }
+          }
+        }
+      }
+    }
+
+    test(s"$generator splits a map before repeating a wide carried column") {
+      withSQLConf(
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "256") {
+        val payload = "x" * (1024 * 1024)
+        val entries = (0 until 2049).map(i => i -> i).toMap
+        withParquetDataFrame(Seq((payload, entries))) { input =>
+          val generated = input.toDF("payload", "m").selectExpr("payload", s"$generator(m)")
+          val aggregates = Seq(
+            "sum(CAST(length(concat(payload, CAST(key AS STRING))) AS BIGINT))",
+            "sum(CAST(value AS BIGINT))") ++
+            (if (generator.startsWith("pos")) Seq("sum(CAST(pos AS BIGINT))") else Nil)
+          val query = generated.selectExpr(aggregates: _*)
+          checkSparkAnswerAndOperator(query, Seq(classOf[CometExplodeExec]))
+        }
+      }
+    }
+  }
+
+  private def checkMapGenerator(input: DataFrame, name: String, generator: String): Unit = {
+    val query = input.selectExpr("id", name, s"$generator($name)")
+    checkSparkAnswerAndOperator(query, Seq(classOf[CometExplodeExec]))
+    checkSparkSchema(query)
+  }
+
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer");
+    adaptive <- Seq(false, true)) {
+    test(s"map followed by array generators stay native: $generator, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val rows = Seq(
+          (1, Map("keep" -> Seq[Integer](10, null, 20), "drop" -> Seq[Integer](30))),
+          (2, Map.empty[String, Seq[Integer]]),
+          (3, null.asInstanceOf[Map[String, Seq[Integer]]]))
+        withParquetDataFrame(rows) { input =>
+          val mapAliases = if (generator.startsWith("pos")) "(map_pos, k, a)" else "(k, a)"
+          val arrayAliases = if (generator.startsWith("pos")) "(array_pos, v)" else "v"
+          val generated = input
+            .toDF("id", "m")
+            .selectExpr("id", s"$generator(m) AS $mapAliases")
+            .filter("k IS NULL OR k <> 'drop'")
+            .selectExpr("*", s"$generator(a) AS $arrayAliases")
+            .repartition(2, col("id"))
+          val (_, plan) = checkSparkAnswerAndOperator(generated, Seq(classOf[CometExplodeExec]))
+          assert(collect(plan) { case e: CometExplodeExec => e }.size == 2)
+          assert(collect(plan) { case e: CometNativeScanExec => e }.nonEmpty)
+          checkSparkSchema(generated)
+        }
+      }
+    }
+  }
+
+  test("single map generator with array values stays native") {
+    withSQLConf(CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withParquetDataFrame(Seq((1, Map("a" -> Seq(10, 20), "b" -> Seq.empty[Int])))) { input =>
+        checkMapGenerator(input.toDF("id", "m"), "m", "explode")
+      }
+    }
+  }
+
+  test("array-only generator chain stays native") {
+    withSQLConf(CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withParquetDataFrame(Seq((1, Seq(Seq(10, 20), Seq(30))))) { input =>
+        val generated = input
+          .toDF("id", "a")
+          .selectExpr("id", "explode(a) AS inner_array")
+          .selectExpr("id", "explode(inner_array) AS value")
+        checkSparkAnswerAndOperator(generated, Seq(classOf[CometExplodeExec]))
+        assert(collect(generated.queryExecution.executedPlan) { case e: CometExplodeExec =>
+          e
+        }.size == 2)
+      }
+    }
+  }
+
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer");
+    adaptive <- Seq(false, true)) {
+    test(s"array followed by map generators stay native: $generator, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val rows = Seq(
+          (1, Seq(Map("a" -> Integer.valueOf(10), "b" -> null), Map.empty[String, Integer])),
+          (2, Seq.empty[Map[String, Integer]]),
+          (3, null.asInstanceOf[Seq[Map[String, Integer]]]),
+          (4, Seq(null.asInstanceOf[Map[String, Integer]], Map("c" -> Integer.valueOf(30)))))
+        withParquetDataFrame(rows) { input =>
+          val arrayAliases = if (generator.startsWith("pos")) "(array_pos, m)" else "m"
+          val mapAliases = if (generator.startsWith("pos")) "(map_pos, k, v)" else "(k, v)"
+          val generated = input
+            .toDF("id", "a")
+            .selectExpr("id", s"$generator(a) AS $arrayAliases")
+            .selectExpr("*", s"$generator(m) AS $mapAliases")
+            .repartition(2, col("id"))
+          val (_, plan) = checkSparkAnswerAndOperator(generated, Seq(classOf[CometExplodeExec]))
+          assert(collect(plan) { case e: CometExplodeExec => e }.size == 2)
+          checkSparkSchema(generated)
+        }
+      }
     }
   }
 
@@ -390,16 +527,16 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("posexplode with map input falls back") {
+  test("posexplode with map input falls back when disabled") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "false") {
       val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
         .toDF("id", "map")
         .selectExpr("id", "posexplode(map) as (pos, key, value)")
       checkSparkAnswerAndFallbackReason(
         df,
-        "Comet only supports explode/explode_outer for arrays, not maps")
+        "Native support for operator GenerateExec is disabled")
     }
   }
 
@@ -698,8 +835,7 @@ class CometGenerateExecSuite extends CometTestBase {
   }
 
   test("explode of structs keeps boolean fields when one row exceeds the batch size") {
-    // A row longer than the batch size is unnested in one build, which is then sliced into
-    // batch-size pieces on the way out, here at elements 100 and 200.
+    // A single row spans batches at elements 100 and 200, including non-byte-aligned bitmaps.
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
       withBooleanArrays(numRows = 1, arrayLength = 250) {
         checkSparkAnswerAndOperator(sql("SELECT id, explode(structs) FROM t"))

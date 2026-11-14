@@ -85,18 +85,6 @@ INSERT INTO test_posexplode_struct VALUES
 query
 SELECT id, pos, value.v1 AS v1, value.v2 AS v2 FROM test_posexplode_struct LATERAL VIEW posexplode(arr) p AS pos, value
 
-statement
-CREATE TABLE test_posexplode_map(id int, m map<string, int>) USING parquet
-
-statement
-INSERT INTO test_posexplode_map VALUES
-  (1, map('a', 1, 'b', 2)),
-  (2, map('c', 3))
-
--- posexplode over a map falls back to Spark (Comet only supports array inputs, not maps)
-query expect_fallback(Comet only supports explode/explode_outer for arrays, not maps)
-SELECT id, posexplode(m) FROM test_posexplode_map
-
 -- ===== posexplode_outer across non-int element types =====
 
 -- posexplode_outer with nullable int elements (in-array NULLs plus outer null row)
