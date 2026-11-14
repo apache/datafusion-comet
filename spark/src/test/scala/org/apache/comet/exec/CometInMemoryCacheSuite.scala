@@ -357,7 +357,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "id + 1 AS id1, a, s",
           Seq(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true"),
           false),
-        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, false))
+        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, true),
+        // The cache serializer takes an empty struct, which the conversion still declines.
+        ("empty struct", "id + 1 AS id1, a, named_struct() AS e", Nil, false))
       for ((name, projection, confs, converted) <- cases) {
         withSQLConf(
           Seq(
