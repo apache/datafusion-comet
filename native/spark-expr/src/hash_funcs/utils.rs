@@ -313,6 +313,47 @@ macro_rules! hash_list_primitive {
     };
 }
 
+/// Hash the entries of a map array whose key and value arrays have been downcast to concrete
+/// types. Spark hashes each entry as key then value, chaining the running hash. A null map
+/// row leaves the hash unchanged, and a null key or value is skipped on its own.
+#[macro_export]
+macro_rules! hash_map_entries {
+    ($offsets:expr, $map_array:ident, $key_array:ident, $value_array:ident, $hashes:expr, $hash_method:ident, $key_transform:expr, $value_transform:expr) => {
+        if $map_array.null_count() == 0
+            && $key_array.null_count() == 0
+            && $value_array.null_count() == 0
+        {
+            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
+                let start = $offsets[row_idx] as usize;
+                let end = $offsets[row_idx + 1] as usize;
+                for entry_idx in start..end {
+                    *hash = $hash_method($key_transform($key_array.value(entry_idx)), *hash);
+                    *hash = $hash_method($value_transform($value_array.value(entry_idx)), *hash);
+                }
+            }
+        } else {
+            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
+                if !$map_array.is_null(row_idx) {
+                    let start = $offsets[row_idx] as usize;
+                    let end = $offsets[row_idx + 1] as usize;
+                    for entry_idx in start..end {
+                        if !$key_array.is_null(entry_idx) {
+                            *hash =
+                                $hash_method($key_transform($key_array.value(entry_idx)), *hash);
+                        }
+                        if !$value_array.is_null(entry_idx) {
+                            *hash = $hash_method(
+                                $value_transform($value_array.value(entry_idx)),
+                                *hash,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
 /// Hash a list array by recursively hashing each element.
 /// For each row, we hash all elements in the list.
 /// Spark hashes arrays by recursively hashing each element, where each
@@ -1134,118 +1175,22 @@ macro_rules! create_hashes_internal {
                             (DataType::Utf8, DataType::Int32) => {
                                 let key_array = keys.as_any().downcast_ref::<StringArray>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v| v, |v: i32| v.to_le_bytes());
                             }
                             (DataType::Int32, DataType::Utf8) => {
                                 let key_array = keys.as_any().downcast_ref::<Int32Array>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<StringArray>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes(), |v| v);
                             }
                             (DataType::Utf8, DataType::Utf8) => {
                                 let key_array = keys.as_any().downcast_ref::<StringArray>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<StringArray>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v| v, |v| v);
                             }
                             (DataType::Int32, DataType::Int32) => {
                                 let key_array = keys.as_any().downcast_ref::<Int32Array>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes(), |v: i32| v.to_le_bytes());
                             }
                             _ => {
                                 // Fall back to recursive approach for other type combinations
