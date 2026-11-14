@@ -923,11 +923,25 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 </section>
 <section id="text">
 <h3>Text<a class="headerlink" href="#text" title="Link to this heading">#</a></h3>
-<p>Comet does not provide a Rust-based Text scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled</span></code> is enabled, data from Spark’s
-Text reader is immediately converted into Arrow format, allowing the Comet pipeline to take over after that. Spark’s Text
-reader keeps the bytes of each line as they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings
-that are not valid UTF-8. Arrow strings must be valid UTF-8, so the conversion replaces those bytes with <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>, and
-results that depend on the original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
+<p>Comet provides experimental Rust-based text scan support (a single <code class="docutils literal notranslate"><span class="pre">value:</span> <span class="pre">string</span></code> column). When
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.text.v2.enabled</span></code> is enabled, text files are read in Rust. This feature is experimental and
+performance benefits are workload-dependent. Only Spark’s DataSource V2 text scan is accelerated, and Spark reads
+text through the V1 API by default, so also remove <code class="docutils literal notranslate"><span class="pre">text</span></code> from <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code>. The native scan
+falls back to Spark for cases it does not handle – including compressed files, files larger than
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.text.maxFileSize</span></code> (64MB by default, since the reader loads each file whole), files Spark splits
+into byte ranges, unsupported filesystem schemes, and <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code> or
+<code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code>/<code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> usage. It also falls back for local files that have a Hadoop checksum
+(<code class="docutils literal notranslate"><span class="pre">.crc</span></code>) file, such as data Spark itself wrote to the local filesystem, because Hadoop verifies the checksum on read and
+the native reader does not. It targets small lookup tables such as a broadcast join’s build side.
+Reading a partition column from a partitioned directory falls back to Spark, but selecting only <code class="docutils literal notranslate"><span class="pre">value</span></code> stays native.</p>
+<p>Text files are a common source of ill-formed UTF-8. The native reader replaces invalid byte sequences with the
+Unicode replacement character (U+FFFD), so byte-level comparisons and functions can differ from Spark on those rows;
+see <a class="reference internal" href="compatibility/index.html#strings-with-non-utf-8-bytes"><span class="std std-ref">Strings with non-UTF-8 bytes</span></a> in the compatibility guide.</p>
+<p>Separately, <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled</span></code> converts data from Spark’s own Text reader into Arrow format
+immediately, allowing the Comet pipeline to take over after that. Spark’s Text reader keeps the bytes of each line as
+they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Arrow
+strings must be valid UTF-8, so the conversion replaces those bytes with <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>, and results that depend on the
+original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
 <a class="reference internal" href="compatibility/index.html#strings-with-non-utf-8-bytes"><span class="std std-ref">Strings with non-UTF-8 bytes</span></a>.</p>
 </section>
 <section id="other-spark-inputs">
@@ -998,13 +1012,11 @@ them, and the conversion and the Comet operators above it would read ahead of th
 <p>Comet supports most standard storage systems, such as local file system and object storage.</p>
 <section id="scans-over-more-than-one-object-store">
 <h3>Scans over more than one object store<a class="headerlink" href="#scans-over-more-than-one-object-store" title="Link to this heading">#</a></h3>
-<p>A native Parquet or CSV scan reads each of its partitions through one object store, such as one S3
+<p>A native Parquet, CSV, or Text scan reads each of its partitions through one object store, such as one S3
 bucket, one GCS bucket, or one HDFS name node. When a scan’s files live in more than one store,
 Comet puts the files of each store into separate partitions, so such a scan can run with a different
 number of partitions than Spark would use. A native Parquet scan packs each store’s files on their
-own, so <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionNum</span></code> applies to each store’s files separately. A native CSV
-scan that would split a partition falls back to Spark when Spark planned the operators above it for
-the scan’s own partitioning.</p>
+own, so <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionNum</span></code> applies to each store’s files separately.</p>
 <p>Such a scan forwards the object store settings of every scheme it reads, so its files can mix
 schemes such as <code class="docutils literal notranslate"><span class="pre">s3a://</span></code>, <code class="docutils literal notranslate"><span class="pre">gs://</span></code> and <code class="docutils literal notranslate"><span class="pre">hdfs://</span></code>. It falls back to Spark when it reads one bucket
 through an S3-compliant alias and through another scheme (for example <code class="docutils literal notranslate"><span class="pre">blob://bucket</span></code> and

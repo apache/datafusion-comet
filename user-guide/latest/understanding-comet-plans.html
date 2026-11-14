@@ -1198,16 +1198,19 @@ by role. Names match what is shown in the plan output.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometCsvNativeScan</span></code></p></td>
 <td><p>CSV scan that runs entirely in Rust via DataFusion (experimental).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometTextNativeScan</span></code></p></td>
+<td><p>Text scan (single <code class="docutils literal notranslate"><span class="pre">value</span></code> string column) that runs entirely in Rust via DataFusion (experimental).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code></p></td>
 <td><p>JVM-side scan of a table cached in Comet’s Arrow format (experimental, disabled by default).</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometLocalTableScan</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometLocalTableScan</span></code></p></td>
 <td><p>JVM-side scan of a <code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code> (disabled by default).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometEmptyRelation</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometEmptyRelation</span></code></p></td>
 <td><p>Empty input to a Rust plan that replaces <code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code> (Spark 4.0 and later).</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometRange</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometRange</span></code></p></td>
 <td><p>Generates the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in Rust, replacing <code class="docutils literal notranslate"><span class="pre">RangeExec</span></code> (disabled by default).</p></td>
 </tr>
 </tbody>

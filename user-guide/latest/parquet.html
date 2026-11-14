@@ -969,8 +969,9 @@ non-UTF-8 bytes fails with <code class="docutils literal notranslate"><span clas
 query, or cast the column to <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> before persisting, if you need to preserve non-UTF-8 bytes.
 By contrast, Comet decodes non-UTF-8 bytes at the JVM-to-native Arrow FFI boundaries using
 JVM-compatible replacement semantics. This covers native query input from the JVM-exported Arrow
-stream (including JVM scans, shuffle reads, and <code class="docutils literal notranslate"><span class="pre">mapInArrow</span></code>), columnar-to-row conversion, and JVM
-UDF results. It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
+stream (including JVM scans, shuffle reads, and <code class="docutils literal notranslate"><span class="pre">mapInArrow</span></code>), columnar-to-row conversion, JVM
+UDF results, and the native text scan (which replaces invalid bytes in each line’s <code class="docutils literal notranslate"><span class="pre">value</span></code> with
+U+FFFD). It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
 Gap A of <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4764">#4764</a>. See
 <a class="reference internal" href="compatibility/index.html#strings-with-non-utf-8-bytes"><span class="std std-ref">Strings with non-UTF-8 bytes</span></a>,
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>, and the tracking issue above.</p></li>
