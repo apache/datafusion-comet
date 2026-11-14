@@ -3527,6 +3527,32 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("native operator above a partitioned bucketed scan with empty buckets") {
+    withSQLConf(
+      SQLConf.BUCKETING_ENABLED.key -> "true",
+      SQLConf.AUTO_BUCKETED_SCAN_ENABLED.key -> "false") {
+      withTable("bucketed_partitioned") {
+        // Two rows cannot fill eight buckets, so most scan partitions have no files.
+        Seq((1, 10), (2, 20))
+          .toDF("id", "p")
+          .coalesce(1)
+          .write
+          .format("parquet")
+          .partitionBy("p")
+          .bucketBy(8, "id")
+          .saveAsTable("bucketed_partitioned")
+
+        val df = sql("SELECT p, id * 2 AS x FROM bucketed_partitioned")
+        checkSparkAnswerAndOperator(df)
+        val scans = collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec =>
+          s
+        }
+        assert(scans.size == 1 && scans.head.bucketedScan)
+        assert(scans.head.perPartitionFilePaths.count(_.isEmpty) >= 6)
+      }
+    }
+  }
+
   def withBucket(
       writer: DataFrameWriter[Row],
       bucketSpec: Option[BucketSpec]): DataFrameWriter[Row] = {
