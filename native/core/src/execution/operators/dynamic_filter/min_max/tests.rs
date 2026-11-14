@@ -36,6 +36,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 mod correctness;
 mod eligibility;
 mod lifecycle;
+mod preflight;
 mod reader;
 mod schema;
 

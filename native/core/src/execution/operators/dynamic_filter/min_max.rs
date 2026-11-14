@@ -264,14 +264,15 @@ impl ExecutionPlan for MinMaxReaderFilterExec {
         let input = Arc::clone(self.template.input());
         let metrics = self.metrics.clone();
         let stream = futures::stream::once(async move {
-            if runtime.reader_filter_attached
-                && !row_group_limit::within_row_group_limit(&input, partition).await
-            {
+            if runtime.reader_filter_attached {
+                let filtered_input = Arc::clone(runtime.aggregate.children()[0]);
+                let (input, within_limit) =
+                    row_group_limit::prepare_scan(&input, &filtered_input, partition).await;
                 runtime.aggregate = runtime.aggregate.replace_children(
                     vec![input],
                     ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
                 )?;
-                runtime.reader_filter_attached = false;
+                runtime.reader_filter_attached = within_limit;
             }
             let attachment_metric = if runtime.reader_filter_attached {
                 "dynamic_filter_minmax_filters_attached"
