@@ -21,6 +21,11 @@ package org.apache.spark.sql.comet
 
 import java.util.concurrent.atomic.AtomicReference
 
+import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.dictionary.Dictionary
+import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -89,4 +94,53 @@ private[comet] class IcebergSchedulerProbeRDD(
       }
     }
   }
+}
+
+/**
+ * The reader behind a stream the write reads directly, for a child the probe's RDD cannot wrap.
+ * Reports the rows native has pulled before the next batch is loaded, as the RDD does before the
+ * next batch is taken. Forwards everything else to `reader`; its own `ArrowReader` state is never
+ * initialized, every method the stream exporter calls is forwarded, and so is `close`.
+ */
+private[comet] class IcebergSchedulerProbeReader(
+    allocator: BufferAllocator,
+    reader: ArrowReader,
+    probe: IcebergSchedulerTestProbe,
+    dataLocation: String,
+    operationId: String)
+    extends ArrowReader(allocator) {
+  private var rows = 0L
+  private var pending = false
+
+  override def loadNextBatch(): Boolean = {
+    if (pending) {
+      pending = false
+      probe.afterInput(rows, dataLocation, operationId)
+    }
+    val loaded = reader.loadNextBatch()
+    if (loaded) {
+      rows += reader.getVectorSchemaRoot.getRowCount.toLong
+      pending = true
+    }
+    loaded
+  }
+
+  override def getVectorSchemaRoot(): VectorSchemaRoot = reader.getVectorSchemaRoot()
+
+  override def getDictionaryVectors(): java.util.Map[java.lang.Long, Dictionary] =
+    reader.getDictionaryVectors()
+
+  override def lookup(id: Long): Dictionary = reader.lookup(id)
+
+  override def getDictionaryIds(): java.util.Set[java.lang.Long] = reader.getDictionaryIds()
+
+  override def bytesRead(): Long = reader.bytesRead()
+
+  override def close(): Unit = reader.close()
+
+  override def close(closeReadSource: Boolean): Unit = reader.close(closeReadSource)
+
+  override protected def closeReadSource(): Unit = ()
+
+  override protected def readSchema(): Schema = reader.getVectorSchemaRoot().getSchema
 }

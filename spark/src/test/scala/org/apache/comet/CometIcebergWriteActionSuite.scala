@@ -47,6 +47,7 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.{CometExec, CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.execution.arrow.CometNativeArrowSource
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -409,6 +410,87 @@ class CometIcebergWriteActionSuite
         commitNodes.exists(_.metrics("numCommittedMessages").value == 1),
         "expected the dummy single-partition write task to produce one commit message")
       assertRows("zero_part", expectedIds = Seq.empty)
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/7239. A conversion of Spark rows writes
+  // every batch into the same vectors, and closing a struct vector drops its children. The write
+  // reads the conversion's Arrow stream, as native shuffle does, rather than batches it would
+  // close once native had them, which left the second batch of a partition without them.
+  test("native write reads a struct column that a conversion writes over several batches") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("s", new StructType().add("a", IntegerType))
+    val data = (1 to 100).map(i => Row(i, Row(i)))
+    withIcebergCatalog { _ =>
+      // A converted RDD scan and a local table scan, in several partitions of several batches.
+      val rdd = spark.createDataFrame(spark.sparkContext.parallelize(data, 3), schema)
+      val local = spark.createDataFrame(java.util.Arrays.asList(data: _*), schema)
+      for ((df, table) <- Seq((rdd, "struct_rdd"), (local, "struct_local"))) {
+        spark.sql(s"CREATE TABLE $catalog.$ns.$table (id INT, s STRUCT<a: INT>) USING iceberg")
+        val snapshot = captureWrite(table) {
+          withNativeEnabled {
+            withSQLConf(
+              CometConf.COMET_BATCH_SIZE.key -> "7",
+              CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+              df.writeTo(s"$catalog.$ns.$table").append()
+            }
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+        }
+        assert(
+          nativeWrites.exists(_.child.isInstanceOf[CometNativeArrowSource]),
+          s"expected a CometIcebergWriteExec over the $table source. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        assertRows(table, expectedIds = 1 to 100)
+        val fields = spark
+          .sql(s"SELECT s.a FROM $catalog.$ns.$table ORDER BY id")
+          .collect()
+          .map(_.getInt(0))
+          .toSeq
+        assert(fields == (1 to 100), s"$table: expected ${1 to 100}, got $fields")
+      }
+    }
+  }
+
+  // The write reads a conversion's stream directly, so the probe's RDD cannot sit between
+  // them. The probe still runs before each task exports its stream and sees the rows native
+  // pulls, as it does for a wrapped child.
+  test("the scheduler probe observes a source whose stream the write reads directly") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"CREATE TABLE $catalog.$ns.probe_stream (id INT) USING iceberg")
+      val rows = spark.sparkContext.parallelize((1 to 20).map(i => Row(i)), 2)
+      val schema = new StructType().add("id", IntegerType)
+      StreamSourceProbe.reset()
+      val snapshot = IcebergSchedulerTestProbe.withProbe(StreamSourceProbe) {
+        withNativeEnabled {
+          captureWrite("probe_stream") {
+            withSQLConf(
+              CometConf.COMET_BATCH_SIZE.key -> "3",
+              CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+              spark.createDataFrame(rows, schema).writeTo(s"$catalog.$ns.probe_stream").append()
+            }
+          }
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+      val nativeWrites = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+      }
+      assert(
+        nativeWrites.exists(_.child.isInstanceOf[CometNativeArrowSource]),
+        "expected a CometIcebergWriteExec over the conversion. Plans:\n" +
+          snapshot.plans.mkString("\n--\n"))
+      assert(StreamSourceProbe.started == Set(0, 1), StreamSourceProbe.started)
+      // The rows each partition supplied, counted up to the pull that found the stream drained.
+      assert(StreamSourceProbe.rows == Map(0 -> 10L, 1 -> 10L), StreamSourceProbe.rows)
+      assert(StreamSourceProbe.handoffs == Set(0, 1), StreamSourceProbe.handoffs)
+      assertRows("probe_stream", expectedIds = 1 to 20)
     }
   }
 
@@ -5527,6 +5609,33 @@ private[comet] object ShuffleReadProbe extends IcebergSchedulerTestProbe {
   override def beforeInput(): Unit = seen.add(TaskContext.getPartitionId())
   override def afterInput(rows: Long, dataLocation: String, operationId: String): Unit = {}
   override def afterHandoff(locations: Seq[String]): Unit = {}
+  override def accepted(partition: Int, locations: Seq[String]): Unit = {}
+  override def committed(): Unit = {}
+}
+
+/**
+ * Records, per partition, what the probe saw of a write's input, in the one JVM of a local test.
+ */
+private[comet] object StreamSourceProbe extends IcebergSchedulerTestProbe {
+  private val startedPartitions = ConcurrentHashMap.newKeySet[Integer]()
+  private val rowsByPartition = new ConcurrentHashMap[Integer, java.lang.Long]()
+  private val handoffPartitions = ConcurrentHashMap.newKeySet[Integer]()
+
+  def reset(): Unit = {
+    startedPartitions.clear()
+    rowsByPartition.clear()
+    handoffPartitions.clear()
+  }
+  def started: Set[Int] = startedPartitions.asScala.map(_.intValue()).toSet
+  def rows: Map[Int, Long] =
+    rowsByPartition.asScala.map { case (p, n) => p.intValue() -> n.longValue() }.toMap
+  def handoffs: Set[Int] = handoffPartitions.asScala.map(_.intValue()).toSet
+
+  override def beforeInput(): Unit = startedPartitions.add(TaskContext.getPartitionId())
+  override def afterInput(rows: Long, dataLocation: String, operationId: String): Unit =
+    rowsByPartition.put(TaskContext.getPartitionId(), rows)
+  override def afterHandoff(locations: Seq[String]): Unit =
+    handoffPartitions.add(TaskContext.getPartitionId())
   override def accepted(partition: Int, locations: Seq[String]): Unit = {}
   override def committed(): Unit = {}
 }

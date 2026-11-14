@@ -64,8 +64,15 @@ trait CometNativeArrowSource extends SparkPlan {
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
     mapToReaders(CometArrowStream.readerBatchIter)
 
-  def doExecuteAsArrowStream(): RDD[ArrowArrayStream] =
-    mapToReaders(CometArrowStream.stream)
+  /**
+   * The output as one Arrow C stream per partition. `wrapReader` may wrap the partition's reader
+   * before it is exported, to observe the batches native pulls.
+   */
+  def doExecuteAsArrowStream(
+      wrapReader: (BufferAllocator, ArrowReader) => ArrowReader = (_, reader) => reader)
+      : RDD[ArrowArrayStream] =
+    mapToReaders((name, readerFactory) =>
+      CometArrowStream.stream(name, allocator => wrapReader(allocator, readerFactory(allocator))))
 }
 
 object CometArrowStream extends Logging {

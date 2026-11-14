@@ -26,7 +26,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
-import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -231,38 +231,59 @@ case class CometIcebergWriteExec(
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val schedulerProbe = IcebergSchedulerTestProbe.current
-    val inputRDD = if (child.supportsColumnar) {
-      child.executeColumnar()
-    } else {
+    if (!child.supportsColumnar) {
       throw new UnsupportedOperationException(
         "CometIcebergWriteExec requires a columnar (Comet native) child; got " +
           child.getClass.getName)
     }
+    val dataLocation = nativeOp.getIcebergWrite.getCommon.getDataLocation
+    val operationId = nativeOp.getIcebergWrite.getCommon.getOperationId
 
     // The native plan has one leaf, which reads `child` (see `buildInputScan` in
     // `CometIcebergNativeWrite`). A `ShuffleScan` leaf takes the child's shuffle RDD and decodes
-    // its blocks natively; a `Scan` leaf imports the child's batches as an Arrow stream.
+    // its blocks natively; a `Scan` leaf imports one Arrow stream per partition. For an input
+    // the native plan reads itself, the scheduler probe's `beforeInput` runs in
+    // `CometIcebergWriteRDD.compute`, ahead of the shuffle fetch or the stream export that
+    // `resolveInputObjects` starts; the probe's RDD would hide the shuffle RDD that
+    // `resolveInputObjects` needs, so only a wrapped child gets it.
     val shuffleScanIndices = CometExec.findShuffleScanIndices(nativeOp)
-    val input =
+    val (input, inputProbe): (RDD[_], Option[IcebergSchedulerTestProbe]) =
       if (shuffleScanIndices.nonEmpty) {
-        // `resolveInputObjects` needs the shuffle RDD itself, which the scheduler probe's RDD
-        // would hide, so the probe's `beforeInput` runs in `CometIcebergWriteRDD.compute`, ahead
-        // of the shuffle fetch that `resolveInputObjects` starts.
-        inputRDD
+        (child.executeColumnar(), schedulerProbe)
       } else {
-        val probed = schedulerProbe
-          .map(probe =>
-            new IcebergSchedulerProbeRDD(
-              inputRDD,
-              probe,
-              nativeOp.getIcebergWrite.getCommon.getDataLocation,
-              nativeOp.getIcebergWrite.getCommon.getOperationId))
-          .getOrElse(inputRDD)
-        CometArrowStream.wrapColumnarBatchRDD(
-          probed,
-          CometUtils.fromAttributes(child.output),
-          CometArrowStream.NATIVE_TIMEZONE,
-          "CometIcebergWriteExec")
+        child match {
+          case source: CometNativeArrowSource =>
+            // Native reads the source's own Arrow stream, as a native operator and native
+            // shuffle (#6689) do, instead of a stream wrapped around the source's
+            // `executeColumnar` batches. That wrap closes each batch once native has it, and the
+            // source reuses its vectors for the next batch: before #7325, closing a struct vector
+            // dropped its children and the next batch lost them, which the release branches
+            // still do (#7239). On `main` the wrap only costs a copy of every batch into a fresh
+            // `VectorSchemaRoot` in `readerBatchIter` and an unload and load back in
+            // `ColumnarBatchArrowReader`. The probe observes the batches native pulls from the
+            // reader behind the stream.
+            val stream = source.doExecuteAsArrowStream((allocator, reader) =>
+              schedulerProbe.fold(reader)(probe =>
+                new IcebergSchedulerProbeReader(
+                  allocator,
+                  reader,
+                  probe,
+                  dataLocation,
+                  operationId)))
+            (stream, schedulerProbe)
+          case _ =>
+            val inputRDD = child.executeColumnar()
+            val probed = schedulerProbe
+              .map(probe =>
+                new IcebergSchedulerProbeRDD(inputRDD, probe, dataLocation, operationId))
+              .getOrElse(inputRDD)
+            val stream = CometArrowStream.wrapColumnarBatchRDD(
+              probed,
+              CometUtils.fromAttributes(child.output),
+              CometArrowStream.NATIVE_TIMEZONE,
+              "CometIcebergWriteExec")
+            (stream, None)
+        }
       }
 
     // No child metric nodes: the write's native tree (IcebergWrite -> Projection -> Scan or
@@ -276,7 +297,7 @@ case class CometIcebergWriteExec(
       shuffleScanIndices,
       nativeOp,
       CometMetricNode(metrics, Nil),
-      if (shuffleScanIndices.nonEmpty) schedulerProbe else None)
+      inputProbe)
   }
 
   /**
@@ -427,7 +448,7 @@ private class CometIcebergWriteRDD(
     shuffleScanIndices: Set[Int],
     nativeOp: Operator,
     nativeMetrics: CometMetricNode,
-    shuffleProbe: Option[IcebergSchedulerTestProbe])
+    inputProbe: Option[IcebergSchedulerTestProbe])
     extends RDD[ColumnarBatch](input) {
 
   // Read here on the driver, where the input's partitions are known.
@@ -436,11 +457,12 @@ private class CometIcebergWriteRDD(
   override protected def getPartitions: Array[Partition] = firstParent[Any].partitions
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    // Before the shuffle fetch that `resolveInputObjects` starts, as the probe's RDD does for a
-    // child that is not read natively. The probe is test-only, and only the scheduler-ordering
-    // tests need this hook, so this path does not report `afterInput`: the JVM never sees the
-    // rows of a shuffle that the native plan decodes.
-    shuffleProbe.foreach(_.beforeInput())
+    // Before the shuffle fetch or the stream export that `resolveInputObjects` starts, as the
+    // probe's RDD does for a wrapped child. The probe is test-only, and only the
+    // scheduler-ordering tests need this hook. A shuffle input does not report `afterInput`: the
+    // JVM never sees the rows of a shuffle that the native plan decodes. A stream input reports
+    // it from the reader behind the stream.
+    inputProbe.foreach(_.beforeInput())
     val (inputObjects, shuffleBlockIterators) =
       CometExecRDD.resolveInputObjects(Seq(input), Array(split), shuffleScanIndices, context)
     val partitionId = context.partitionId()
