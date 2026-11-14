@@ -39,9 +39,10 @@ import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, DoubleType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, CometSparkSessionExtensions}
 
@@ -118,9 +119,12 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(args: Array[String]): Unit = {
-    runStatsBenchmark()
-    // Run just the JVM statistics loop without constructing or scanning a cached relation.
+    // --stats-only and --serialize-only run just the JVM loop they name, without constructing or
+    // scanning a cached relation.
+    if (!args.contains("--serialize-only")) runStatsBenchmark()
     if (args.contains("--stats-only")) return
+    runSerializeBenchmark()
+    if (args.contains("--serialize-only")) return
 
     withTempTable(sourceTable, cacheTable, nestedSourceTable, nestedCacheTable) {
       // Every column nullable, in both relations, so that `count(c)` genuinely reads c. Spark's
@@ -349,6 +353,84 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       }
 
       spark.catalog.uncacheTable(view)
+    }
+  }
+
+  /**
+   * Writing one cached batch, and the heap that takes, by the number of rows in the batch.
+   *
+   * Only `CachedBatchIpc.serialize` is timed, on batches of Arrow vectors that were built
+   * beforehand, so this is the write step alone: the part of a build that sizes a payload's
+   * chunks and copies the payload into them. A batch is written as `encodeBatches` writes one,
+   * with the default codec and chunk size. The bytes a batch allocates are the thread's own
+   * allocation counter around the writes, which covers the payload's chunks and everything the
+   * write touches on the heap, but not Arrow's off-heap buffers.
+   */
+  private def runSerializeBenchmark(): Unit = {
+    val numBatches = 200
+    val chunkSize = CometConf.COMET_EXEC_IN_MEMORY_CACHE_CHUNK_SIZE.get().toInt
+    val codec = CometCachedBatchHelper.compressionCodec("zstd")
+    val threads = java.lang.management.ManagementFactory.getThreadMXBean match {
+      case bean: com.sun.management.ThreadMXBean
+          if bean.isThreadAllocatedMemorySupported && bean.isThreadAllocatedMemoryEnabled =>
+        bean
+      case _ =>
+        throw new IllegalStateException("this JVM does not count the bytes a thread allocates")
+    }
+
+    val types: Seq[DataType] = Seq(LongType, IntegerType, DoubleType, StringType)
+    val attrs = types.zipWithIndex.map { case (dt, i) => AttributeReference(s"c$i", dt)() }
+    val schema = Utils.fromAttributes(attrs)
+
+    Seq(100, 500, 2000, 8192).foreach { rowsPerBatch =>
+      // One row in ten has a null int, and the strings are 16 bytes.
+      val rows = Array.tabulate[InternalRow](rowsPerBatch) { r =>
+        InternalRow(
+          r.toLong,
+          if (r % 10 == 0) null else r,
+          r * 0.5,
+          UTF8String.fromString(f"value-$r%010d"))
+      }
+      def newBatch(): ColumnarBatch =
+        CometArrowConverters
+          .rowToArrowBatchIter(
+            rows.iterator,
+            schema,
+            rowsPerBatch,
+            CometArrowStream.NATIVE_TIMEZONE,
+            CometArrowAllocator)
+          .next()
+
+      var allocated = 0L
+      var payloadBytes = 0L
+      val benchmark = new Benchmark(
+        s"in-memory cache write, $rowsPerBatch rows per batch",
+        numBatches.toLong * rowsPerBatch,
+        output = output)
+      benchmark.addTimerCase("CachedBatchIpc.serialize, zstd") { timer =>
+        // serialize clears a batch's vectors, so each round writes batches of its own.
+        val batches = Array.fill(numBatches)(newBatch())
+        val payloads = new Array[ChunkedByteBuffer](numBatches)
+        val thread = Thread.currentThread().getId
+        val before = threads.getThreadAllocatedBytes(thread)
+        timer.startTiming()
+        var i = 0
+        while (i < numBatches) {
+          payloads(i) =
+            CometCachedBatchHelper.serialize(batches(i), codec, CometArrowAllocator, chunkSize)
+          i += 1
+        }
+        timer.stopTiming()
+        allocated = threads.getThreadAllocatedBytes(thread) - before
+        payloadBytes = payloads.map(_.size).sum
+        batches.foreach(_.close())
+      }
+      benchmark.run()
+
+      // As in runCodecBenchmark, these have no column in a Benchmark table.
+      benchmark.out.println(
+        f"Allocated per batch: ${allocated / numBatches / 1024.0}%.1f KiB, " +
+          f"payload per batch: ${payloadBytes / numBatches / 1024.0}%.1f KiB")
     }
   }
 
