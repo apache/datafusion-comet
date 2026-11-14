@@ -1,0 +1,868 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use super::*;
+
+use std::sync::Mutex;
+
+use arrow::array::{
+    Array, DictionaryArray, Int64Array, Int8Array, ListArray, StringArray, StringViewArray,
+    StructArray,
+};
+use arrow::buffer::NullBuffer;
+use arrow::compute::concat_batches;
+use arrow::datatypes::{DataType, Field, Int64Type, Int8Type, Schema};
+use datafusion::common::ScalarValue;
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryLimit, MemoryPool};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::{
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+};
+use datafusion::physical_expr::expressions::col;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+use datafusion::physical_plan::windows::create_window_expr;
+use datafusion::physical_plan::{collect, ExecutionPlanProperties, InputOrderMode};
+use datafusion::prelude::SessionContext;
+
+fn batch(keys: ArrayRef) -> RecordBatch {
+    batch_with_offset(keys, 0)
+}
+
+fn batch_with_offset(keys: ArrayRef, offset: i64) -> RecordBatch {
+    let rows = keys.len();
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("k", keys.data_type().clone(), true),
+            Field::new("i", DataType::Int64, false),
+        ])),
+        vec![
+            keys,
+            Arc::new(Int64Array::from_iter_values(offset..offset + rows as i64)),
+        ],
+    )
+    .unwrap()
+}
+
+fn window(batches: &[RecordBatch], partitioned: bool, functions: &[&str]) -> BoundedWindowAggExec {
+    window_with_order_mode(
+        batches,
+        if partitioned { &["k"] } else { &[] },
+        functions,
+        InputOrderMode::Sorted,
+    )
+}
+
+fn window_with_order_mode(
+    batches: &[RecordBatch],
+    partition_columns: &[&str],
+    functions: &[&str],
+    input_order_mode: InputOrderMode,
+) -> BoundedWindowAggExec {
+    let schema = batches[0].schema();
+    let sort = |name| PhysicalSortExpr::new(col(name, &schema).unwrap(), SortOptions::default());
+    let mut ordering: Vec<_> = match &input_order_mode {
+        InputOrderMode::Sorted => partition_columns.iter().map(|&name| sort(name)).collect(),
+        InputOrderMode::PartiallySorted(indices) => indices
+            .iter()
+            .map(|&index| sort(partition_columns[index]))
+            .collect(),
+        InputOrderMode::Linear => vec![],
+    };
+    ordering.push(sort("i"));
+    let source = MemorySourceConfig::try_new(&[batches.to_vec()], Arc::clone(&schema), None)
+        .unwrap()
+        .try_with_sort_information(vec![LexOrdering::new(ordering).unwrap()])
+        .unwrap();
+    window_on_input(
+        DataSourceExec::from_data_source(source),
+        partition_columns,
+        functions,
+        input_order_mode,
+    )
+}
+
+fn window_on_input(
+    input: Arc<dyn ExecutionPlan>,
+    partition_columns: &[&str],
+    functions: &[&str],
+    input_order_mode: InputOrderMode,
+) -> BoundedWindowAggExec {
+    let schema = input.schema();
+    let sort = |name| PhysicalSortExpr::new(col(name, &schema).unwrap(), SortOptions::default());
+    let ctx = SessionContext::new();
+    let keys = partition_columns
+        .iter()
+        .map(|&name| col(name, &schema).unwrap())
+        .collect::<Vec<_>>();
+    let frame = Arc::new(WindowFrame::new_bounds(
+        WindowFrameUnits::Rows,
+        WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+        WindowFrameBound::CurrentRow,
+    ));
+    let expressions = functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| {
+            create_window_expr(
+                &WindowFunctionDefinition::WindowUDF(ctx.udwf(function).unwrap()),
+                format!("result_{index}"),
+                &[],
+                &keys,
+                &[sort("i")],
+                Arc::clone(&frame),
+                Arc::clone(&schema),
+                false,
+                false,
+                None,
+            )
+            .unwrap()
+        })
+        .collect();
+    BoundedWindowAggExec::try_new(
+        expressions,
+        input,
+        input_order_mode,
+        !partition_columns.is_empty(),
+    )
+    .unwrap()
+}
+
+async fn compare(
+    batches: &[RecordBatch],
+    partitioned: bool,
+    functions: &[&str],
+) -> Vec<RecordBatch> {
+    let generic = window(batches, partitioned, functions);
+    let streaming = Arc::new(RowNumberExec::try_new(generic.clone()).unwrap());
+    let ctx = SessionContext::new();
+    let expected = collect(Arc::new(generic), ctx.task_ctx()).await.unwrap();
+    let actual = collect(Arc::clone(&streaming) as _, ctx.task_ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        concat_batches(&streaming.schema(), &actual).unwrap(),
+        concat_batches(&streaming.schema(), &expected).unwrap()
+    );
+    assert_eq!(
+        actual.iter().map(RecordBatch::num_rows).collect::<Vec<_>>(),
+        batches
+            .iter()
+            .map(RecordBatch::num_rows)
+            .collect::<Vec<_>>()
+    );
+    actual
+}
+
+fn row_numbers(batches: &[RecordBatch]) -> Vec<u64> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap()
+                .values()
+                .iter()
+                .copied()
+        })
+        .collect()
+}
+
+fn assert_ordering_rejected(generic: BoundedWindowAggExec, message: &str) {
+    let streaming = RowNumberExec::try_new(generic.clone()).unwrap();
+    let context = Arc::new(TaskContext::default());
+    for plan in [
+        &generic as &dyn ExecutionPlan,
+        &streaming as &dyn ExecutionPlan,
+    ] {
+        let error = plan
+            .execute(0, Arc::clone(&context))
+            .err()
+            .expect("window must reject missing partition ordering");
+        assert!(matches!(
+            &error,
+            datafusion::common::DataFusionError::Execution(_)
+        ));
+        assert!(error.to_string().contains(message), "{error}");
+    }
+}
+
+#[test]
+fn missing_partition_order_is_rejected() {
+    for (keys, partition_columns, declared_columns) in [
+        (vec![1, 2, 1, 2], vec!["k"], vec![]),
+        (vec![1, 1, 2, 2], vec!["k"], vec![]),
+        (vec![1, 1, 2, 2], vec!["k", "i"], vec!["k"]),
+    ] {
+        let input = batch(Arc::new(Int64Array::from(keys)));
+        let schema = input.schema();
+        let ordering = declared_columns
+            .iter()
+            .map(|name| PhysicalSortExpr::new_default(col(name, &schema).unwrap()))
+            .collect::<Vec<_>>();
+        let source = MemorySourceConfig::try_new(&[vec![input]], schema, None)
+            .unwrap()
+            .try_with_sort_information(LexOrdering::new(ordering).into_iter().collect())
+            .unwrap();
+        let generic = window_on_input(
+            DataSourceExec::from_data_source(source),
+            &partition_columns,
+            &["row_number"],
+            InputOrderMode::Sorted,
+        );
+        assert_ordering_rejected(generic, "Expects PARTITION BY expression to be ordered");
+    }
+}
+
+#[test]
+fn sorted_mode_requires_all_cached_partition_keys() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2, 2])));
+    let mut generic =
+        window_with_order_mode(&[input], &["k"], &["row_number"], InputOrderMode::Linear);
+    // The mode is public, but changing it does not rebuild the cached partition-key indices.
+    generic.input_order_mode = InputOrderMode::Sorted;
+    assert_ordering_rejected(
+        generic,
+        "All partition by columns should have an ordering in Sorted mode",
+    );
+}
+
+#[tokio::test]
+async fn global_window_needs_no_declared_partition_order() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 2, 1, 2])));
+    let source =
+        MemorySourceConfig::try_new_exec(&[vec![input.clone()]], input.schema(), None).unwrap();
+    let generic = window_on_input(source, &[], &["row_number"], InputOrderMode::Sorted);
+    let streaming = Arc::new(RowNumberExec::try_new(generic.clone()).unwrap());
+    let ctx = SessionContext::new();
+    let expected = collect(Arc::new(generic), ctx.task_ctx()).await.unwrap();
+    let actual = collect(Arc::clone(&streaming) as _, ctx.task_ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        concat_batches(&streaming.schema(), &actual).unwrap(),
+        concat_batches(&streaming.schema(), &expected).unwrap()
+    );
+    assert_eq!(row_numbers(&actual), vec![1, 2, 3, 4]);
+}
+
+#[tokio::test]
+async fn partitions_reset_at_batch_boundaries() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2, 2])));
+    let actual = compare(
+        &[input.slice(0, 2), input.slice(2, 2)],
+        true,
+        &["row_number"],
+    )
+    .await;
+    assert_eq!(row_numbers(&actual), vec![1, 2, 1, 2]);
+}
+
+#[tokio::test]
+async fn dictionary_partitions_reset_at_batch_boundaries() {
+    let dictionary = |value: &str| -> ArrayRef {
+        Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(vec![0, 0]),
+                Arc::new(StringArray::from(vec![value])),
+            )
+            .unwrap(),
+        )
+    };
+    let actual = compare(
+        &[
+            batch_with_offset(dictionary("a"), 0),
+            batch_with_offset(dictionary("b"), 2),
+        ],
+        true,
+        &["row_number"],
+    )
+    .await;
+    assert_eq!(row_numbers(&actual), vec![1, 2, 1, 2]);
+}
+
+#[tokio::test]
+async fn mixed_batch_retains_its_final_partition_key() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2, 2, 3, 3])));
+    let actual = compare(
+        &[input.slice(0, 1), input.slice(1, 4), input.slice(5, 1)],
+        true,
+        &["row_number"],
+    )
+    .await;
+    assert_eq!(row_numbers(&actual), vec![1, 2, 1, 2, 1, 2]);
+}
+
+#[tokio::test]
+async fn partitions_continue_across_slices_and_empty_batches() {
+    let input = batch(Arc::new(Int64Array::from(vec![
+        None,
+        None,
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(2),
+        Some(2),
+        Some(3),
+    ])));
+    let batches = vec![
+        input.slice(0, 0),
+        input.slice(0, 3),
+        input.slice(3, 0),
+        input.slice(3, 1),
+        input.slice(4, 4),
+        input.slice(8, 0),
+    ];
+    let output = compare(&batches, true, &["row_number"]).await;
+    let ranks = output
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap()
+                .values()
+                .to_vec()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ranks, vec![1, 2, 1, 2, 3, 1, 2, 1]);
+}
+
+#[tokio::test]
+async fn global_windows_share_alias_output_and_input_columns() {
+    let input = batch(Arc::new(Int64Array::from_iter_values(0..23)));
+    let batches = vec![input.slice(0, 5), input.slice(5, 7), input.slice(12, 11)];
+    let actual = compare(&batches, false, &["row_number", "row_number"]).await;
+    for (output, input) in actual.iter().zip(&batches) {
+        assert!(Arc::ptr_eq(output.column(0), input.column(0)));
+        assert!(Arc::ptr_eq(output.column(2), output.column(3)));
+        assert_eq!(output.column(2).null_count(), 0);
+    }
+    let last = actual[2]
+        .column(2)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    assert_eq!(last.values().as_ref(), &(13..=23).collect::<Vec<u64>>());
+}
+
+#[tokio::test]
+async fn empty_input_preserves_schema() {
+    compare(
+        &[batch(Arc::new(Int64Array::from(Vec::<i64>::new())))],
+        true,
+        &["row_number"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn dictionary_keys_compare_values_across_different_codebooks() {
+    let first = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![None, Some(0), Some(1), Some(1)]),
+            Arc::new(StringArray::from(vec![None, Some("a")])),
+        )
+        .unwrap(),
+    );
+    let second = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![Some(1), Some(0), Some(0)]),
+            Arc::new(StringArray::from(vec![Some("b"), Some("a")])),
+        )
+        .unwrap(),
+    );
+    let output = compare(
+        &[batch(first), batch_with_offset(second, 4)],
+        true,
+        &["row_number"],
+    )
+    .await;
+    let ranks = output[1]
+        .column(2)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    assert_eq!(ranks.values().as_ref(), &[3, 1, 2]);
+}
+
+#[tokio::test]
+async fn nested_keys_and_nullable_children_match_generic_windows() {
+    let keys = Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
+        None,
+        Some(vec![]),
+        Some(vec![None]),
+        Some(vec![None]),
+        Some(vec![Some(2)]),
+        Some(vec![Some(2)]),
+    ]));
+    let input = batch(keys);
+    compare(
+        &[input.slice(0, 3), input.slice(3, 3)],
+        true,
+        &["row_number"],
+    )
+    .await;
+    let keys = Arc::new(StructArray::new(
+        vec![Field::new("value", DataType::Int64, true)].into(),
+        vec![Arc::new(Int64Array::from(vec![
+            None,
+            None,
+            Some(1),
+            Some(1),
+        ]))],
+        Some(NullBuffer::from(vec![false, false, true, true])),
+    ));
+    let input = batch(keys);
+    compare(
+        &[input.slice(0, 1), input.slice(1, 2), input.slice(3, 1)],
+        true,
+        &["row_number"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn interleaved_partitions_require_the_generic_executor() {
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("prefix", DataType::Int64, false),
+            Field::new("k", DataType::Int64, false),
+            Field::new("i", DataType::Int64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 0, 0, 1, 1, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 2, 1, 2, 1, 2])),
+            Arc::new(Int64Array::from_iter_values(0..6)),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    for mode in [
+        InputOrderMode::Linear,
+        InputOrderMode::PartiallySorted(vec![0]),
+    ] {
+        for batch_size in [1, 2, input.num_rows()] {
+            let batches = (0..input.num_rows())
+                .step_by(batch_size)
+                .map(|start| input.slice(start, batch_size.min(input.num_rows() - start)))
+                .collect::<Vec<_>>();
+            // Only the prefix is grouped. The complete partition keys recur within each prefix.
+            let generic =
+                window_with_order_mode(&batches, &["prefix", "k"], &["row_number"], mode.clone());
+            let mut columns = input.columns().to_vec();
+            columns.push(Arc::new(UInt64Array::from(vec![1, 1, 2, 1, 1, 2])));
+            let expected = RecordBatch::try_new(generic.schema(), columns).unwrap();
+            let actual = collect(Arc::new(generic.clone()), ctx.task_ctx())
+                .await
+                .unwrap();
+            assert_eq!(
+                concat_batches(&expected.schema(), &actual).unwrap(),
+                expected
+            );
+            assert!(
+                !RowNumberExec::supports(&generic),
+                "{mode:?} with batch size {batch_size} must retain the generic executor"
+            );
+            assert!(RowNumberExec::try_new(generic).is_err());
+        }
+    }
+}
+
+#[test]
+fn other_functions_cannot_enter_the_specialised_executor() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2])));
+    let mixed = window(std::slice::from_ref(&input), true, &["row_number", "rank"]);
+    assert!(!RowNumberExec::supports(&mixed));
+    assert!(RowNumberExec::try_new(mixed).is_err());
+    assert!(!RowNumberExec::supports(&window(&[input], true, &["rank"])));
+}
+
+#[test]
+fn plan_rewrites_keep_the_window_contracts() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2])));
+    let generic = window(&[input], true, &["row_number"]);
+    let expected_order = generic.required_input_ordering();
+    let expected_partitions = generic.properties().output_partitioning().partition_count();
+    let plan = Arc::new(RowNumberExec::try_new(generic.clone()).unwrap());
+    let child = Arc::clone(generic.input());
+    for replacement in [
+        Arc::clone(&plan)
+            .replace_children(
+                vec![Arc::clone(&child)],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap(),
+        Arc::clone(&plan)
+            .replace_children(
+                vec![Arc::clone(&child)],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+            )
+            .unwrap(),
+    ] {
+        assert_eq!(replacement.schema(), generic.schema());
+        assert_eq!(replacement.required_input_ordering(), expected_order);
+        assert!(matches!(
+            replacement.input_distribution_requirements().into_per_child().as_slice(),
+            [Distribution::KeyPartitioned(keys)] if keys == &generic.partition_keys()
+        ));
+        assert_eq!(
+            replacement.output_partitioning().partition_count(),
+            expected_partitions
+        );
+        assert!(matches!(
+            replacement.cardinality_effect(),
+            CardinalityEffect::Equal
+        ));
+        assert_eq!(replacement.maintains_input_order(), vec![true]);
+    }
+}
+
+#[test]
+fn retained_view_buffers_are_charged_and_a_continuing_key_is_reused() {
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
+    let reservation = MemoryConsumer::new("test boundary").register(&pool);
+    let mut state = RowNumberState {
+        key: vec![],
+        rank: 0,
+        reservation,
+    };
+    let keys: ArrayRef = Arc::new(StringViewArray::from(vec!["x".repeat(16 * 1024); 3]));
+    let input = batch(keys);
+    let plan = window(std::slice::from_ref(&input), true, &["row_number"]);
+    let expressions = plan.window_expr()[0].partition_by();
+    state
+        .evaluate(input.clone(), expressions, plan.schema(), 1)
+        .unwrap();
+    let retained = pool.reserved();
+    assert!(retained >= 16 * 1024);
+    let key = Arc::clone(&state.key[0]);
+    state
+        .evaluate(input, expressions, plan.schema(), 1)
+        .unwrap();
+    assert!(Arc::ptr_eq(&key, &state.key[0]));
+    assert_eq!(pool.reserved(), retained);
+    drop(key);
+    drop(state);
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PoolCall {
+    Grow(usize),
+    TryGrow(usize),
+    Shrink(usize),
+}
+
+#[derive(Debug)]
+struct RecordingMemoryPool {
+    inner: GreedyMemoryPool,
+    calls: Mutex<Vec<PoolCall>>,
+}
+
+impl RecordingMemoryPool {
+    fn new(limit: usize) -> Self {
+        Self {
+            inner: GreedyMemoryPool::new(limit),
+            calls: Mutex::new(vec![]),
+        }
+    }
+
+    fn take_calls(&self) -> Vec<PoolCall> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+}
+
+impl std::fmt::Display for RecordingMemoryPool {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RecordingMemoryPool({})", self.inner)
+    }
+}
+
+impl MemoryPool for RecordingMemoryPool {
+    fn name(&self) -> &str {
+        "RecordingMemoryPool"
+    }
+
+    fn register(&self, consumer: &MemoryConsumer) {
+        self.inner.register(consumer);
+    }
+
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        self.inner.unregister(consumer);
+    }
+
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        self.calls.lock().unwrap().push(PoolCall::Grow(additional));
+        self.inner.grow(reservation, additional);
+    }
+
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(PoolCall::TryGrow(additional));
+        self.inner.try_grow(reservation, additional)
+    }
+
+    fn shrink(&self, reservation: &MemoryReservation, size: usize) {
+        self.calls.lock().unwrap().push(PoolCall::Shrink(size));
+        self.inner.shrink(reservation, size);
+    }
+
+    fn reserved(&self) -> usize {
+        self.inner.reserved()
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        self.inner.memory_limit()
+    }
+}
+
+fn task_context_with_pool(pool: Arc<dyn MemoryPool>) -> Arc<TaskContext> {
+    Arc::new(
+        TaskContext::default().with_runtime(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(pool)
+                .build_arc()
+                .unwrap(),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn changing_keys_reuse_the_boundary_reservation() {
+    let batches = [
+        batch_with_offset(Arc::new(Int64Array::from(vec![1, 1])), 0),
+        batch_with_offset(Arc::new(Int64Array::from(vec![2, 2])), 2),
+    ];
+    let plan = RowNumberExec::try_new(window(&batches, true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(1024));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let retained = pool.reserved();
+    assert!(retained > 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(retained)]);
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    assert_eq!(pool.reserved(), retained);
+    assert!(pool.take_calls().is_empty());
+    assert!(stream.next().await.is_none());
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(retained)]);
+}
+
+#[tokio::test]
+async fn boundary_reservations_follow_key_size_changes() {
+    let batches = ["a".repeat(32), "b".repeat(8192), "c".repeat(32)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            batch_with_offset(Arc::new(StringArray::from(vec![key; 2])), index as i64 * 2)
+        })
+        .collect::<Vec<_>>();
+    let plan = RowNumberExec::try_new(window(&batches, true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(64 * 1024));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let small = pool.reserved();
+    assert!(small > 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(small)]);
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let large = pool.reserved();
+    assert!(large > small);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(large - small)]);
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    assert_eq!(pool.reserved(), small);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(large - small)]);
+    drop(stream);
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(small)]);
+}
+
+#[tokio::test]
+async fn replacement_growth_can_exceed_the_pool_limit() {
+    let batches = ["a".repeat(32), "b".repeat(8192)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            batch_with_offset(Arc::new(StringArray::from(vec![key; 2])), index as i64 * 2)
+        })
+        .collect::<Vec<_>>();
+    let plan = RowNumberExec::try_new(window(&batches, true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(1024));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let small = pool.reserved();
+    assert!(small > 0 && small < 1024);
+    let mut calls = pool.take_calls();
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let large = pool.reserved();
+    assert!(large >= 8192);
+    calls.extend(pool.take_calls());
+    assert_eq!(
+        calls,
+        vec![PoolCall::Grow(small), PoolCall::Grow(large - small)]
+    );
+    drop(stream);
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(large)]);
+}
+
+#[tokio::test]
+async fn initial_nested_key_can_exceed_the_pool_limit() {
+    let keys: ArrayRef = Arc::new(StructArray::new(
+        vec![Field::new("value", DataType::Utf8View, true)].into(),
+        vec![Arc::new(StringViewArray::from(vec!["x".repeat(8192); 2]))],
+        None,
+    ));
+    let input = batch(keys);
+    let plan = RowNumberExec::try_new(window(&[input], true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(1));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let retained = pool.reserved();
+    assert!(retained >= 8192);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(retained)]);
+    assert!(stream.next().await.is_none());
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(retained)]);
+}
+
+#[tokio::test]
+async fn completion_and_cancellation_release_the_boundary_key() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 1, 2])));
+    let plan = RowNumberExec::try_new(window(
+        &[input.slice(0, 2), input.slice(2, 2)],
+        true,
+        &["row_number"],
+    ))
+    .unwrap();
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
+    let runtime = RuntimeEnvBuilder::new()
+        .with_memory_pool(Arc::clone(&pool))
+        .build_arc()
+        .unwrap();
+    let ctx = SessionContext::new_with_config_rt(Default::default(), runtime);
+    let mut stream = plan.execute(0, ctx.task_ctx()).unwrap();
+    assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 2);
+    assert!(pool.reserved() > 0);
+    drop(stream);
+    assert_eq!(pool.reserved(), 0);
+    let mut stream = plan.execute(0, ctx.task_ctx()).unwrap();
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[test]
+fn a_dictionary_boundary_does_not_retain_unused_values() {
+    let values: ArrayRef = Arc::new(StringArray::from(vec![
+        "small",
+        &"unused".repeat(64 * 1024),
+    ]));
+    let keys: ArrayRef = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0, 0]), values).unwrap(),
+    );
+    let input = batch(keys);
+    let plan = window(std::slice::from_ref(&input), true, &["row_number"]);
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
+    let mut state = RowNumberState {
+        key: vec![],
+        rank: 0,
+        reservation: MemoryConsumer::new("dictionary boundary").register(&pool),
+    };
+    state
+        .evaluate(
+            input,
+            plan.window_expr()[0].partition_by(),
+            plan.schema(),
+            1,
+        )
+        .unwrap();
+    assert!(pool.reserved() < 4096);
+    drop(state);
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[test]
+fn a_view_boundary_does_not_retain_an_unrelated_large_buffer() {
+    let keys: ArrayRef = Arc::new(StringViewArray::from(vec![
+        "a".repeat(1024 * 1024),
+        "z".repeat(13),
+    ]));
+    let input = batch(keys);
+    let plan = window(std::slice::from_ref(&input), true, &["row_number"]);
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64 * 1024));
+    let mut state = RowNumberState {
+        key: vec![],
+        rank: 0,
+        reservation: MemoryConsumer::new("view boundary").register(&pool),
+    };
+    state
+        .evaluate(
+            input,
+            plan.window_expr()[0].partition_by(),
+            plan.schema(),
+            1,
+        )
+        .unwrap();
+    assert!(pool.reserved() < 64 * 1024);
+    drop(state);
+    assert_eq!(pool.reserved(), 0);
+}

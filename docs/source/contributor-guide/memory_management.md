@@ -489,6 +489,25 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
 
+### ROW_NUMBER windows
+
+A window containing only `ROW_NUMBER` uses `RowNumberExec` in Rust. It generates one rank
+array per input batch and retains only the final partition key and counter between batches.
+The key's Arrow buffers are charged to the `ROW_NUMBER partition key` consumer. Top-level
+views and dictionaries are rebuilt from the selected value so unrelated source bytes are released.
+Nested values may retain shared buffers, which are included in the reservation. A continuing
+partition reuses its key. Completion, cancellation, and errors release the reservation.
+
+Replacement keys reuse the reservation, so only a change in retained bytes adjusts the pool.
+The key has already been allocated and cannot spill, so its reservation uses `resize`.
+Comet's unified pools carry any bytes Spark does not grant as overcommit. This avoids
+failing the task solely because the pool cannot admit the key, but retained keys can
+exceed the pool budget.
+
+The reservation covers retained key state. Per-batch comparison, key-copy workspace, and emitted
+rank arrays follow the allocation model described in [The accounting gap](#the-accounting-gap).
+Other window functions keep their existing DataFusion executors and memory behaviour.
+
 ### Native writers
 
 Both native writers reserve what they hold between batches through a single consumer per task,

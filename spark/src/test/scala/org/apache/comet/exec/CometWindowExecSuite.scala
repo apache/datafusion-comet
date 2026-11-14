@@ -336,7 +336,9 @@ class CometWindowExecSuite extends CometTestBase {
       "RANK()" -> false,
       "PERCENT_RANK()" -> false,
       "NTILE(2)" -> false,
-      "RANK()" -> true)
+      "RANK()" -> true,
+      "ROW_NUMBER()" -> false,
+      "ROW_NUMBER()" -> true)
   } {
     test(
       s"window: floating partition keys ($partitionColumn, $function, group limit=$groupLimit)") {
@@ -360,6 +362,7 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "3",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> groupLimit.toString) {
         withTempView("floating_window_partitions") {
           data
@@ -367,9 +370,9 @@ class CometWindowExecSuite extends CometTestBase {
             .createOrReplaceTempView("floating_window_partitions")
 
           for (partitionBy <- Seq(partitionColumn, s"secondary, $partitionColumn")) {
-            // Spark normalizes floating partition keys before constructing the child sort.
-            // Native sort and window expressions must still agree on these keys, including
-            // for bounded RANK and non-bounded PERCENT_RANK/NTILE without WindowGroupLimit.
+            // Spark normalises floating partition keys before constructing the child sort.
+            // Native sort and window expressions must still agree across batches, including
+            // streaming ROW_NUMBER, bounded RANK, and non-bounded PERCENT_RANK/NTILE.
             val windowQuery = s"""
                  |SELECT id, $function OVER (PARTITION BY $partitionBy ORDER BY id) AS rnk
                  |FROM floating_window_partitions
