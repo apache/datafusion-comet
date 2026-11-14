@@ -1010,8 +1010,7 @@ dependencies = [
 [[package]]
 name = "ballista-api-types"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97d9eea12c759eda5f828b4f0eba2b42784d96a4e7858afe5624a9522507841"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "serde",
  "utoipa",
@@ -1020,8 +1019,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a090511fa9b3661dbf17444ecbbf5efcd11793e140ddd7fe2fb85f2de88f561"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1051,8 +1049,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "403cdac6a4e822e6025348f4f7e43765ba0ca176ca1f225888a9eeb90b9c66ce"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1081,8 +1078,7 @@ dependencies = [
 [[package]]
 name = "ballista-history"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "926ed4783d3b4d24fc28e899c7aef2f0127a511238320eadfc06c65ba2772bf8"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "ballista-api-types",
  "log",
@@ -1094,8 +1090,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "845bb1c2c763ae2b50ecfd9debdfe8e092d13a4fefe84c20e9262bb191a1f1e7"
+source = "git+https://github.com/apache/datafusion-ballista?rev=2f4938ef05c38f8e68f944d6aed22f2f5714a9ed#2f4938ef05c38f8e68f944d6aed22f2f5714a9ed"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1103,6 +1098,7 @@ dependencies = [
  "ballista-api-types",
  "ballista-core",
  "ballista-history",
+ "blake3",
  "dashmap",
  "datafusion",
  "datafusion-proto",
@@ -1117,6 +1113,7 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "serde_json",
+ "socket2",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -4302,9 +4299,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.18.5"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -6966,7 +6963,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.9.5",
+ "rand 0.10.3",
 ]
 
 [[package]]

@@ -23,6 +23,7 @@ syntax = "proto3";
 
 package spark.spark_native_executors;
 
+import "expr.proto";
 import "operator.proto";
 import "partitioning.proto";
 
@@ -58,6 +59,14 @@ message Stage {
   // leaves the stage, as a Spark task's shuffle writer does, because a hash exchange places
   // rows by the types of their values too.
   repeated spark.spark_operator.SparkStructField output_schema = 5;
+  // For a stage that reads a range exchange, the order its block sorts each partition by, as
+  // SortOrder expressions over the block's output. Rather than range-partition the exchange,
+  // which needs bounds Spark would sample for, the cluster reads the producer's partitions as
+  // they are, sorts each, and merges them in this order.
+  repeated spark.spark_expression.Expr output_ordering = 6;
+  // Spark's estimate of the stage's output size in bytes, when it has one. The scheduler reads
+  // it to decide whether measuring a join's build side before shuffling its probe side pays off.
+  optional uint64 estimated_output_bytes = 7;
 }
 
 // How a scheduler sends a stage to its executors, inside the task plans Ballista ships. The
@@ -70,6 +79,8 @@ message Fragment {
   // Whether every partition reads all of each input, one entry per input.
   repeated bool broadcast = 3;
   map<string, string> conf = 4;
+  // Spark's estimate of the stage's output size in bytes, from Stage.estimated_output_bytes.
+  optional uint64 estimated_output_bytes = 5;
 }
 
 message StageInput {
@@ -79,4 +90,18 @@ message StageInput {
   spark.spark_partitioning.Partitioning partitioning = 2;
   // Every partition of this stage reads the producer's whole output.
   bool broadcast = 3;
+}
+
+// The result partitions of a query, in order. The driver's native library converts the
+// endpoints of the FlightInfo the scheduler returns into this message for the JVM.
+message ResultEndpoints {
+  repeated ResultEndpoint endpoints = 1;
+}
+
+message ResultEndpoint {
+  // Arrow Flight location of the executor that holds the partition, such as
+  // grpc+tcp://host:port.
+  string location = 1;
+  // Opaque ticket to pass to DoGet.
+  bytes ticket = 2;
 }

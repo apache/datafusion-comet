@@ -25,6 +25,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+import org.apache.spark.sql.comet.CometNativeExecutors
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, InsertAdaptiveSparkPlan, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange}
@@ -163,6 +164,10 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     if (CometRule.planOnlyApplies(conf, plan)) {
       reportPlanOnlyCoverage(plan)
       plan
+    } else if (CometNativeExecutors.applies(conf, plan, queryStagePrep)) {
+      // The whole query runs on a Comet Native Executor cluster. The conversion alone leaves
+      // every native block serialized, and nothing reverts a stage to Spark.
+      CometNativeExecutors.offload(plan, convert(plan))
     } else {
       convert(plan)
     }
