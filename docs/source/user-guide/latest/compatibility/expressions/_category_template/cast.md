@@ -211,9 +211,10 @@ integer types to a negative-scale `DecimalType`. Comet reports these as unsuppor
 routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
 pipeline, so the results match Spark exactly.
 
-The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
-overflows when the scale is negative. See
-[#5013](https://github.com/apache/datafusion-comet/issues/5013).
+The native kernels reject a negative scale with an error. See
+[#5013](https://github.com/apache/datafusion-comet/issues/5013). For the same reason, the native
+Parquet scan falls back to Spark when the read schema has a negative-scale decimal, such as an
+integer column read as `DECIMAL(12,-2)`.
 
 All other cast directions to and from negative-scale decimals run natively: `FloatType` and
 `DoubleType`, `StringType` in both directions (subject to the config gate described above),

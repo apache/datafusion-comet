@@ -239,6 +239,36 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometScanTypeChecker declines negative-scale decimals") {
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val negative = StructField("d", DecimalType(10, -2))
+      val declined = Seq[(String, StructType)](
+        "root" -> StructType(Array(negative)),
+        "nested struct" -> StructType(Array(StructField("s", StructType(Array(negative))))))
+      for ((label, schema) <- declined) {
+        val reasons = ListBuffer.empty[String]
+        assert(!CometScanTypeChecker().isSchemaSupported(schema, reasons), s"$label: accepted")
+        assert(reasons.exists(_.contains("negative-scale decimals")), s"$label: $reasons")
+      }
+      val positive = StructType(Array(StructField("d", DecimalType(10, 2))))
+      assert(CometScanTypeChecker().isSchemaSupported(positive, ListBuffer.empty))
+    }
+  }
+
+  test("an integer column read as a negative-scale decimal falls back to Spark") {
+    // Spark reads multiples of 100 as DECIMAL(12,-2) and keeps nulls. The native scan sent this
+    // read through the integer to decimal cast kernel, which cannot take a negative scale.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      withTempPath { path =>
+        Seq(Some(100), Some(200), None).toDF("a").repartition(1).write.parquet(path.toString)
+        val schema = StructType(Array(StructField("a", DecimalType(12, -2))))
+        checkSparkAnswerAndFallbackReason(
+          spark.read.schema(schema).parquet(path.toString),
+          "native Parquet scan does not support negative-scale decimals")
+      }
+    }
+  }
+
   test("DataTypeSupport finds sibling field names that collide case-insensitively") {
     // See https://github.com/apache/datafusion-comet/issues/6136.
     def fields(names: String*): StructType =
