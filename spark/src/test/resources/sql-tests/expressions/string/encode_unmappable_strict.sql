@@ -20,7 +20,7 @@
 --
 -- Spark 4.0 added `spark.sql.legacy.codingErrorAction` (default `false`), which builds the
 -- encoder with `CodingErrorAction.REPORT`. `Encode.encode` converts the resulting
--- `CharacterCodingException` into `MALFORMED_CHARACTER_CODING`. On Spark 3.4/3.5 the same input
+-- `CharacterCodingException` into `MALFORMED_CHARACTER_CODING`. On Spark 3.5 the same input
 -- is silently substituted; that branch is covered by the paired fixture encode_unmappable.sql.
 -- MinSparkVersion: 4.0
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true

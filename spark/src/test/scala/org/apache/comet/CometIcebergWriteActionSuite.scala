@@ -58,7 +58,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener, PositionDeltaWrite}
 import org.apache.comet.serde.Unsupported
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
@@ -272,7 +272,6 @@ class CometIcebergWriteActionSuite
   // https://github.com/apache/datafusion-comet/issues/6240
   test("a merge-on-read write keeps Spark's own write plan when only the write flag is set") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
     withIcebergCatalog { _ =>
       createTable(
         "mor_defaults",
@@ -977,7 +976,6 @@ class CometIcebergWriteActionSuite
   Seq("DELETE", "UPDATE", "MERGE").foreach { command =>
     test(s"WriteDelta $command is recognized and stays on Iceberg JVM DeltaWriter") {
       assume(icebergAvailable, "Iceberg not available in classpath")
-      assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
       withIcebergCatalog { _ =>
         val suffix = command.toLowerCase(java.util.Locale.ROOT)
         val cometTable = s"write_delta_${suffix}_comet"
@@ -1554,7 +1552,6 @@ class CometIcebergWriteActionSuite
   // the new rows their ids at commit time, so those writes stay native on a v3 table.
   test("native acceleration: format-version=3 appends and overwrites match iceberg-java") {
     assumeNativeAcceleration()
-    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
     withIcebergCatalog { warehouseDir =>
       Seq("v3_native", "v3_jvm").foreach { t =>
         createTable(
@@ -1890,31 +1887,27 @@ class CometIcebergWriteActionSuite
       }
 
       withSQLConf(CometConf.COMET_EXEC_MERGE_ROWS_ENABLED.key -> "true") {
-        if (!isSpark35Plus) {
-          assertNativeWriteDoesNotEngage("native_cow_merge", Seq(1, 2, 3))(runMerge())
-        } else {
-          val snapshot = withNativeEnabled {
-            captureWrite("native_cow_merge")(runMerge())
-          }
-          assert(
-            snapshot.snapshotDelta == 1L,
-            s"expected exactly one Iceberg snapshot from native MERGE, got ${snapshot.snapshotDelta}")
-          val mergeExecs = snapshot.plans.flatMap { plan =>
-            collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
-          }
-          assert(
-            mergeExecs.nonEmpty,
-            "expected Iceberg MERGE to execute through CometMergeRowsExec. Plans:\n" +
-              snapshot.plans.mkString("\n--\n"))
-          val nativeWrites = snapshot.plans.flatMap { plan =>
-            collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
-          }
-          assert(
-            nativeWrites.nonEmpty,
-            "expected Iceberg MERGE to feed CometIcebergWriteExec. Plans:\n" +
-              snapshot.plans.mkString("\n--\n"))
-          assertRows("native_cow_merge", expectedIds = Seq(1, 2, 3))
+        val snapshot = withNativeEnabled {
+          captureWrite("native_cow_merge")(runMerge())
         }
+        assert(
+          snapshot.snapshotDelta == 1L,
+          s"expected exactly one Iceberg snapshot from native MERGE, got ${snapshot.snapshotDelta}")
+        val mergeExecs = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
+        }
+        assert(
+          mergeExecs.nonEmpty,
+          "expected Iceberg MERGE to execute through CometMergeRowsExec. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+        }
+        assert(
+          nativeWrites.nonEmpty,
+          "expected Iceberg MERGE to feed CometIcebergWriteExec. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        assertRows("native_cow_merge", expectedIds = Seq(1, 2, 3))
       }
 
       val updated = spark
@@ -1926,7 +1919,6 @@ class CometIcebergWriteActionSuite
 
   test("MERGE matches Spark on partitioned Iceberg copy-on-write and merge-on-read") {
     assumeNativeAcceleration()
-    assume(isSpark35Plus, "native MergeRows requires Spark 3.5+")
     withIcebergCatalog { _ =>
       spark
         .range(0, 20000, 1, 8)
@@ -2083,7 +2075,6 @@ class CometIcebergWriteActionSuite
 
   test("native MergeRows Iceberg cardinality violation matches Spark") {
     assumeNativeAcceleration()
-    assume(isSpark35Plus, "native MergeRows requires Spark 3.5+")
     withIcebergCatalog { _ =>
       val nativeTable = "merge_cardinality_native"
       val sparkTable = "merge_cardinality_spark"
@@ -2449,7 +2440,6 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: CTAS runs its inner append through the native writer") {
     assumeNativeAcceleration()
-    assume(isSpark35Plus, "CTAS re-plans its inner append only on Spark 3.5+")
     withIcebergCatalog { _ =>
       // A brand-new table has no metadata file yet, so this also pins the empty
       // metadata-location path in the proto builder.
@@ -2472,7 +2462,6 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: RTAS replaces table contents through the native writer") {
     assumeNativeAcceleration()
-    assume(isSpark35Plus, "RTAS re-plans its inner append only on Spark 3.5+")
     withIcebergCatalog { _ =>
       createTable("rtas_native", partitionSpec = "")
       coalesceInsert("rtas_native", Seq((1, "old", 1.0)))
@@ -2500,13 +2489,7 @@ class CometIcebergWriteActionSuite
   // (apache/datafusion-comet#5694) -- and the second as uppercase hex. Comet renders the path
   // itself; this pins the result against the layout iceberg-java's own writer produces.
   //
-  // The byte-for-byte comparison against the JVM writer holds on Iceberg 1.8+ only. Iceberg 1.5.x
-  // (the Spark 3.4 profile) rendered a `timestamptz` partition value with
-  // `ChronoUnit.MICROS.addTo(EPOCH, micros).toString()`, i.e. `OffsetDateTime.toString()`, which
-  // spells the same instant `1969-12-31T23:59:58.500Z` rather than `1969-12-31T23:59:58.5+00:00`;
-  // 1.8 switched it to `microsToIsoTimestamptz` (and started escaping the field name too). Comet
-  // targets the 1.8+ spelling on every profile. The values Comet writes are the same either way,
-  // so the pinned expectations and the readback below stay unconditional.
+  // The byte-for-byte comparison targets Iceberg 1.8+'s `microsToIsoTimestamptz` spelling.
   test("native acceleration: timestamptz and binary partition paths match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -4520,8 +4503,6 @@ class CometIcebergWriteActionSuite
 
   test("CoW MERGE with a NOT MATCHED BY SOURCE leg routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    // Iceberg 1.5.x (the Spark 3.4 pairing) rejects the clause in its extensions parser.
-    assume(isSpark35Plus, "NOT MATCHED BY SOURCE needs Iceberg 1.8+")
     withIcebergCatalog { _ =>
       createTable(
         "merge_nmbs",
@@ -4591,10 +4572,9 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // On Spark 3.5+ the staged CTAS/RTAS operators run their inner append as its own
-  // `AppendData` QueryExecution, which IcebergWriteStrategy intercepts like any other append.
-  // Spark 3.4 writes inline inside the exec (no re-planning), so nothing is intercepted there.
-  test("CTAS and RTAS write through the split operators on Spark 3.5+") {
+  // The staged CTAS/RTAS operators run their inner append as its own `AppendData` QueryExecution,
+  // which IcebergWriteStrategy intercepts like any other append.
+  test("CTAS and RTAS write through the split operators") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { _ =>
       val session = spark
@@ -4606,15 +4586,9 @@ class CometIcebergWriteActionSuite
 
       def assertSplitUsage(plans: Seq[SparkPlan], statement: String): Unit = {
         val (commits, writes) = collectIcebergWriteOps(plans)
-        if (isSpark35Plus) {
-          assert(
-            commits.nonEmpty && writes.nonEmpty,
-            s"expected the $statement inner append to plan through the split operators: $plans")
-        } else {
-          assert(
-            commits.isEmpty && writes.isEmpty,
-            s"expected the $statement write to stay inside Spark's staged exec: $plans")
-        }
+        assert(
+          commits.nonEmpty && writes.nonEmpty,
+          s"expected the $statement inner append to plan through the split operators: $plans")
       }
 
       val ctasPlans = capturePlans(spark) {
@@ -5317,14 +5291,12 @@ class CometIcebergWriteActionSuite
         "report_orc",
         partitionSpec = "",
         properties = Some("'write.format.default'='orc'"))
-      if (isSpark35Plus) {
-        createTable(
-          "report_delta",
-          partitionSpec = "PARTITIONED BY (region)",
-          properties = Some("'format-version'='2', 'write.delete.mode'='merge-on-read'"))
-        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
-          coalesceInsert("report_delta", Seq((1, "us-east", 1.5), (2, "us-east", 2.5)))
-        }
+      createTable(
+        "report_delta",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'format-version'='2', 'write.delete.mode'='merge-on-read'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert("report_delta", Seq((1, "us-east", 1.5), (2, "us-east", 2.5)))
       }
 
       val writes = reportedWrites {
@@ -5335,16 +5307,13 @@ class CometIcebergWriteActionSuite
             .sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (1, 'us-east', 1.5)")
             .collect()
           spark.sql(s"INSERT INTO $catalog.$ns.report_orc VALUES (2, 'eu', 2.5)")
-          if (isSpark35Plus) {
-            spark.sql(s"DELETE FROM $catalog.$ns.report_delta WHERE id = 1")
-          }
+          spark.sql(s"DELETE FROM $catalog.$ns.report_delta WHERE id = 1")
         }
         withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
           spark.sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (3, 'eu', 3.5)")
         }
       }
-      val expectedWriters =
-        Seq("native", "jvm") ++ (if (isSpark35Plus) Seq("jvm") else Nil) ++ Seq("spark")
+      val expectedWriters = Seq("native", "jvm", "jvm", "spark")
       assert(writes.map(_.writer) == expectedWriters, writes.mkString("\n"))
       assert(writes(1).reasons.exists(_.contains("only parquet")))
       assert(writes.last.node == "AppendData")
@@ -5367,11 +5336,7 @@ class CometIcebergWriteActionSuite
           """)
         }
       }
-      // Spark 3.5+ runs each write as a nested append or overwrite, which Comet's split operator
-      // plans. Spark 3.4 writes from the create and replace execs, which it never sees.
-      val expected =
-        if (isSpark35Plus) Seq("native" -> "CometIcebergWrite", "native" -> "CometIcebergWrite")
-        else Seq("spark" -> "AtomicCreateTableAsSelect", "spark" -> "AtomicReplaceTableAsSelect")
+      val expected = Seq("native" -> "CometIcebergWrite", "native" -> "CometIcebergWrite")
       assert(writes.map(w => w.writer -> w.node) == expected, writes.mkString("\n"))
       assert(writes.forall(!_.failed))
       assertRows("report_ctas", Seq(3))
@@ -5517,7 +5482,7 @@ class CometIcebergWriteActionSuite
   /**
    * Runs an [[IcebergCommitExec]] over `child` whose commit throws `commitFailure` and whose
    * abort fails. Asserts the failure is wrapped the way Spark's `V2TableWriteExec.writeWithV2`
-   * (3.4 through 4.2) wraps it, in `QueryExecutionErrors.writingJobFailedError` with the abort
+   * (3.5 through 4.2) wraps it, in `QueryExecutionErrors.writingJobFailedError` with the abort
    * failure suppressed on the original failure, and returns that original failure.
    */
   private def failWithFailingAbort(child: SparkPlan, commitFailure: Throwable): Throwable = {

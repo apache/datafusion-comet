@@ -1386,8 +1386,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       return None
     }
     // Iceberg's Spark `SparkWrite$WriterFactory` does NOT wire the table sort order into the
-    // per-file writer factory for batch appends in any Iceberg version Comet targets (1.5.2 /
-    // 1.8.1 / 1.10.0): it builds `SparkFileWriterFactory` without `.dataSortOrder(...)`, so every
+    // per-file writer factory for batch appends in Iceberg 1.8.1 / 1.10.0: it builds
+    // `SparkFileWriterFactory` without `.dataSortOrder(...)`, so every
     // committed data file is stamped `sort_order_id = 0` (unsorted) even when the table itself has
     // a non-default sort order. We match that exactly. The
     // `SparkWriteConf.outputSortOrderId(writeRequirements)` resolver (explicit option / table order

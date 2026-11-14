@@ -114,7 +114,7 @@ SELECT c0, timestamp_seconds(c0) FROM test_ts_seconds_dec38_18
 
 -- Spark converts decimal input with longValueExact, so a nonzero digit past microsecond precision
 -- raises rather than rounds. Spark raises a bare java.lang.ArithmeticException with no error class
--- on 3.4 through 4.1, so the expect_error patterns below match the JDK message.
+-- on 3.5 through 4.1, so the expect_error patterns below match the JDK message.
 statement
 CREATE TABLE test_ts_seconds_dec20_7(c0 decimal(20, 7)) USING parquet
 

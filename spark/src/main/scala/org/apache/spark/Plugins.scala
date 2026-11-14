@@ -307,7 +307,7 @@ object CometDriverPlugin extends Logging {
   // spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
   //
   // Comet used to add an overhead of its own to it here, but a driver plugin cannot: on Spark
-  // 3.4, 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
+  // 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
   // container, and the cluster managers size executors from that profile rather than re-reading
   // the conf, so the new value never reached the container. Say so while the application is still
   // starting up instead, because this has to be set before the SparkContext is created.
