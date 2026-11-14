@@ -140,6 +140,15 @@ def create_fixture(root, junit_classpath):
             file('build/candidates.json').text = JsonOutput.toJson(candidates)
           }
         }
+        tasks.register('iceberg-spark-extensions-fixture', Test) {
+          testClassesDirs = sourceSets.test.output.classesDirs
+          classpath = sourceSets.test.runtimeClasspath
+          useJUnitPlatform { excludeTags 'excluded-tag' }
+          include project.findProperty('extensionFixtureIncludes') ?: '**/Test*.class'
+          exclude '**/TestStructuredStreamingRead*.class', '**/TestExcludedByPattern.class',
+              '**/TestOtherTask.class'
+          exclude { it.name == 'TestExcludedBySpec.class' }
+        }
         tasks.register('otherTest', Test) {
           testClassesDirs = sourceSets.test.output.classesDirs
           classpath = sourceSets.test.runtimeClasspath
@@ -158,6 +167,7 @@ def create_fixture(root, junit_classpath):
             @org.junit.jupiter.api.Test void nested() {}
           }
         """,
+        "TestExtensionD": "@org.junit.jupiter.api.Test void extensionShardFour() {}",
         "TestAlpha": "@org.junit.jupiter.api.Test void alpha() {}",
         "TestBeta": "@org.junit.jupiter.api.Test void beta() {}",
         "TestDelta": "@org.junit.jupiter.api.Test void delta() {}",
@@ -239,7 +249,7 @@ def check(root, gradle, junit_classpath):
 
     baseline = run("baseline")
     inventory = set(json.loads((root / "build/candidates.json").read_text()))
-    assert sum(baseline.values()) == 12, baseline
+    assert sum(baseline.values()) == 13, baseline
     assert all(state == "passed" for _, _, state in baseline), baseline
     assert any(cls == "fixture.TestNewlyAdded" for cls, _, _ in baseline)
     assert any("$Nested" in cls for cls, _, _ in baseline)
@@ -255,6 +265,8 @@ def check(root, gradle, junit_classpath):
         assert candidates == manifest["candidates"]
         assert set(manifest["unshardedCandidates"]) == inventory
         assert cases, f"empty fixture shard {index}"
+        assert all(("TestStructuredStreamingRead" in name) == (index == 1)
+                   for name in candidates), (index, candidates)
         combined_cases.update(cases)
         combined_candidates.update(candidates)
         if any(cls == "fixture.TestFailurePropagation" for cls, _, _ in cases):
@@ -265,6 +277,46 @@ def check(root, gradle, junit_classpath):
     assert combined_cases == baseline, (combined_cases, baseline)
     verify_manifests(results, ":test")
     assert run("single-shard", shard_args(1, count=1)) == baseline
+    # Extensions have no streaming family. Exercise the actual shared init
+    # script against that candidate set, rather than a Python allocation model.
+    extensions_task = "iceberg-spark-extensions-fixture"
+    extensions_baseline = run("extensions-baseline", task=extensions_task)
+    assert sum(extensions_baseline.values()) == 9, extensions_baseline
+    extensions_cases = Counter()
+    extensions_candidates = Counter()
+    extensions_results = results / "extensions"
+    extensions_results.mkdir()
+    sizes = []
+    for index in range(1, SHARD_COUNT + 1):
+        cases = run(f"extensions-shard-{index}",
+                    shard_args(index, task=f":{extensions_task}"), task=extensions_task)
+        assert cases, f"empty extensions fixture shard {index}"
+        manifest = json.loads((root / f"build/comet-shards/{extensions_task}-{index}.json").read_text())
+        assert all("StructuredStreamingRead" not in name for name in manifest["unshardedCandidates"])
+        extensions_cases.update(cases)
+        extensions_candidates.update(manifest["candidates"])
+        sizes.append(len(manifest["candidates"]))
+        (extensions_results / f"shard-{index}.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    assert extensions_cases == extensions_baseline, (extensions_cases, extensions_baseline)
+    assert set(extensions_candidates.values()) == {1}, extensions_candidates
+    verify_manifests(extensions_results, f":{extensions_task}")
+    assert run("extensions-single-shard", shard_args(1, count=1, task=f":{extensions_task}"),
+               task=extensions_task) == extensions_baseline
+    print(f"Extensions fixture candidate counts: {sizes}", flush=True)
+    # Hash partitions may legitimately be empty when fewer classes than shards
+    # exist. They must still execute the small inventory exactly once in total.
+    small = ["-PextensionFixtureIncludes=**/TestAlpha.class"]
+    small_baseline = run("extensions-small-baseline", small, task=extensions_task)
+    assert sum(small_baseline.values()) == 1, small_baseline
+    small_combined = Counter()
+    for index in range(1, SHARD_COUNT + 1):
+        small_combined.update(run(f"extensions-small-shard-{index}",
+                                 shard_args(index, task=f":{extensions_task}") + small,
+                                 task=extensions_task))
+    assert small_combined == small_baseline, (small_combined, small_baseline)
+    empty = ["-PextensionFixtureIncludes=**/NoTests.class"]
+    assert not run("extensions-empty", shard_args(1, task=f":{extensions_task}") + empty,
+                   task=extensions_task)
 
     other_baseline = run("other-baseline", task="otherTest")
     assert sum(other_baseline.values()) == 1
