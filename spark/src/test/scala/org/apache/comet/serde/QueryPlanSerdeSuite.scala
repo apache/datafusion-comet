@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, Expression, In, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, Expression, GetStructField, In, Length, Literal, MakeDate, Not, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -208,13 +208,14 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
   test("canShortCircuitNulls skips an argument only where the shared subexpressions are known") {
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val value = AttributeReference("i", IntegerType)()
-    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
-    val contains = ArrayContains(array, cast)
-    val position = ArrayPosition(array, cast)
+    // element_at with the index 0 raises in every mode, so it is a shared subexpression to keep
+    val risky = ElementAt(AttributeReference("other", ArrayType(IntegerType))(), Literal(0))
+    val contains = ArrayContains(array, risky)
+    val position = ArrayPosition(array, risky)
 
     // A column is never shared, so it can be skipped anywhere
     assert(canShortCircuitNulls(ArrayContains(array, value)))
-    // Something serialized outside an operator's conversion might share the cast
+    // Something serialized outside an operator's conversion might share the element_at
     assert(!canShortCircuitNulls(contains))
     withSharedSubexpressions(Seq(contains)) {
       assert(canShortCircuitNulls(contains))
@@ -226,10 +227,10 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
   }
 
   test("canShortCircuitNulls follows subexpression elimination except in aggregates") {
-    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
+    val risky = ElementAt(AttributeReference("other", ArrayType(IntegerType))(), Literal(0))
     val array = AttributeReference("ai", ArrayType(IntegerType))()
-    val contains = ArrayContains(array, cast)
-    val shared = Seq(contains, ArrayPosition(array, cast))
+    val contains = ArrayContains(array, risky)
+    val shared = Seq(contains, ArrayPosition(array, risky))
 
     def withSubexpressionElimination(enabled: Boolean)(f: => Unit): Unit = {
       val conf = new SQLConf
@@ -249,6 +250,39 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
       }
       // Outside an operator's conversion what they share is still unknown
       assert(!canShortCircuitNulls(contains))
+    }
+  }
+
+  test("canSkipEvaluation ignores shared subexpressions that cannot raise") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val struct = AttributeReference("st", StructType(Seq(StructField("f", IntegerType))))()
+    val months = AttributeReference("m", YearMonthIntervalType())()
+    // element_at with the index 0 raises in every mode
+    val risky = ElementAt(AttributeReference("other", ArrayType(IntegerType))(), Literal(0))
+
+    // Whether `e` can be skipped when the operator shares it between two expressions
+    def skippable(e: Expression): Boolean =
+      withSharedSubexpressions(Seq(e, e), alwaysShared = true)(canSkipEvaluation(Seq(e)))
+
+    assert(skippable(Length(text)))
+    // A field of a struct is NULL for a NULL struct and never fails
+    assert(skippable(GetStructField(struct, 0)))
+    assert(!skippable(risky))
+    // Interval arithmetic raises on overflow in every mode, unlike numeric arithmetic
+    assert(!skippable(Add(months, months)))
+    // An expression that cannot raise but holds one that does is kept as well
+    assert(!skippable(Length(Cast(risky, StringType))))
+
+    // A shared subexpression that raises does not keep a consumer of another one from being skipped
+    val safe = Length(text)
+    val riskyContains = ArrayContains(array, risky)
+    val safeContains = ArrayContains(array, safe)
+    withSharedSubexpressions(
+      Seq(riskyContains, ArrayPosition(array, risky), safeContains, ArrayPosition(array, safe)),
+      alwaysShared = true) {
+      assert(!canShortCircuitNulls(riskyContains))
+      assert(canShortCircuitNulls(safeContains))
     }
   }
 
