@@ -52,6 +52,7 @@ use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
+use datafusion::execution::cache::cache_manager::CacheManagerConfig;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
@@ -149,6 +150,7 @@ use crate::execution::spark_config::{
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::CometParquetScanOptions;
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
+use crate::parquet::shared_metadata_cache::shared_metadata_cache_for_task;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
 use std::sync::OnceLock;
@@ -454,7 +456,8 @@ pub fn get_runtime() -> Handle {
         .clone()
 }
 
-/// Tears down the global Tokio runtime, if it has been initialized.
+/// Tears down the global Tokio runtime, if it has been initialized, and frees the process-wide
+/// caches that outlive tasks: the Iceberg `FileIO`s and the retained Parquet metadata caches.
 ///
 /// The runtime is moved out of the global slot, so the next [`init_runtime`] or
 /// [`get_runtime`] call builds a new one. Shutting it down blocks the calling (JNI) thread
@@ -467,6 +470,7 @@ pub fn get_runtime() -> Handle {
 /// would deadlock/panic.
 pub fn release_runtime() {
     crate::execution::operators::clear_file_io_cache();
+    crate::parquet::shared_metadata_cache::clear_shared_metadata_caches();
     let runtime = TOKIO_RUNTIME.lock().take();
     if let Some(runtime) = runtime {
         runtime.shutdown_timeout(Duration::from_secs(3));
@@ -1070,8 +1074,17 @@ fn prepare_datafusion_session_context(
     spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let rt_config = comet_runtime_env(memory_pool)
+    let mut rt_config = comet_runtime_env(memory_pool)
         .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size));
+
+    // Let the tasks of one stage on this executor share the Parquet footer and page index cache
+    // instead of each fetching and parsing the footers of the files it reads.
+    if let Some(cache) = shared_metadata_cache_for_task(spark_config) {
+        rt_config = rt_config.with_cache_manager(
+            CacheManagerConfig::default().with_file_metadata_cache(Some(cache)),
+        );
+    }
+
     comet_session_context(rt_config, batch_size, task_cpus, spark_config, spark_plan)
 }
 
