@@ -57,7 +57,7 @@ import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometConfValidator, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -1105,6 +1105,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
+    // The session conf covers SET, spark.conf.set and sessions without the driver plugin. This
+    // runs before the checks below, since a misspelled key can be why Comet is disabled.
+    CometConfValidator.warnUnrecognized(conf.getAllConfs.keys)
+
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
       explainSparkReadsOfCometCache(plan, "Comet is disabled")
