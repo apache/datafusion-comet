@@ -19,13 +19,13 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{CoalesceExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
@@ -85,5 +85,5 @@ case class CometCoalesceExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(numPartitions: java.lang.Integer, child)
+  override def hashCode(): Int = Objects.hash(numPartitions: java.lang.Integer, child)
 }

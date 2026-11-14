@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.rdd._
@@ -33,8 +35,6 @@ import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 import org.apache.spark.sql.vectorized._
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{DataTypeSupport, MetricsSupport}
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
@@ -108,7 +108,7 @@ case class CometBatchScanExec(
   }
 
   override def hashCode(): Int = {
-    Objects.hashCode(wrappedScan, runtimeFilters)
+    Objects.hash(wrappedScan, runtimeFilters)
   }
 
   override def doCanonicalize(): CometBatchScanExec = {

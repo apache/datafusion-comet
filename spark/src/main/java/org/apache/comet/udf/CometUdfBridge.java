@@ -32,8 +32,6 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
 
-import com.google.common.annotations.VisibleForTesting;
-
 import org.apache.comet.util.ClassLoaders;
 
 /**
@@ -315,7 +313,6 @@ public class CometUdfBridge {
   }
 
   /** The instance of {@code udfClassName} that task {@code taskAttemptId} holds, or null. */
-  @VisibleForTesting
   public static CometUDF instanceFor(long taskAttemptId, String udfClassName) {
     ConcurrentHashMap<String, CometUDF> perTask = INSTANCES.get(taskAttemptId);
     return perTask == null ? null : perTask.get(udfClassName);

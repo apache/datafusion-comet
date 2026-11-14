@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import java.nio.charset.StandardCharsets
+import java.util.Objects
 
 import scala.jdk.CollectionConverters._
 
@@ -31,7 +32,6 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType}
 
-import com.google.common.base.Objects
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry, NativeBase}
@@ -243,7 +243,7 @@ case class CometArrowEvalPythonExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       output,
       resultAttrs,
       udfs,

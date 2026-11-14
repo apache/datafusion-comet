@@ -19,11 +19,11 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{SampleExec, SparkPlan}
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -117,7 +117,7 @@ case class CometSampleExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       output,
       lowerBound: java.lang.Double,
       upperBound: java.lang.Double,

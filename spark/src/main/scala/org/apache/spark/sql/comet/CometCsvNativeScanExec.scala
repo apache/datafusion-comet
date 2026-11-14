@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.csv.CSVOptions
@@ -28,8 +30,6 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -76,7 +76,7 @@ case class CometCsvNativeScanExec(
   }
 
   override def hashCode(): Int = {
-    Objects.hashCode(output, serializedPlanOpt, originalPlan)
+    Objects.hash(output, serializedPlanOpt, originalPlan)
   }
 }
 

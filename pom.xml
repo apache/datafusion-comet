@@ -364,15 +364,15 @@ under the License.
         <scope>${spark.maven.scope}</scope>
       </dependency>
 
-      <!-- Shaded deps marked as provided. These are promoted to compile scope
-           in the modules where we want the shaded classes to appear in the
-           associated jar. -->
+      <!-- Comet does not use Guava itself. Hive's test-only catalog integration and Delta 4.x
+           still need it at test runtime, so it is managed here at test scope and neither
+           exposed by nor packaged into the published artifact. -->
       <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
         <version>${guava.version}</version>
+        <scope>test</scope>
       </dependency>
-      <!-- End of shaded deps -->
 
       <!-- Test dependencies -->
       <dependency>
@@ -1410,15 +1410,6 @@ under the License.
                         <ignoreClass>javax.annotation.meta.TypeQualifierValidator</ignoreClass>
                         <ignoreClass>javax.annotation.Nullable</ignoreClass>
                         <ignoreClass>javax.annotation.meta.TypeQualifierNickname</ignoreClass>
-                      </ignoreClasses>
-                    </dependency>
-                    <dependency>
-                      <groupId>com.google.guava</groupId>
-                      <artifactId>guava</artifactId>
-                      <ignoreClasses>
-                        <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
-                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
-                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                     <dependency>

@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle;
 
+import java.io.Closeable;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -74,10 +75,6 @@ import org.apache.spark.unsafe.Platform;
 import org.apache.spark.util.TaskCompletionListener;
 import org.apache.spark.util.Utils;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.io.ByteStreams;
-import com.google.common.io.Closeables;
-
 import org.apache.comet.CometConf;
 import org.apache.comet.Native;
 
@@ -102,7 +99,7 @@ import static scala.jdk.javaapi.CollectionConverters.*;
 @Private
 public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
-  @VisibleForTesting static final int DEFAULT_INITIAL_SER_BUFFER_SIZE = 1024 * 1024;
+  static final int DEFAULT_INITIAL_SER_BUFFER_SIZE = 1024 * 1024;
   private static final Logger logger = LoggerFactory.getLogger(CometUnsafeShuffleWriter.class);
   private static final ClassTag<Object> OBJECT_CLASS_TAG = ClassTag$.MODULE$.Object();
   private final BlockManager blockManager;
@@ -201,6 +198,22 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     }
   }
 
+  /** Close a resource without masking an exception already thrown by the copy operation. */
+  private static void close(Closeable closeable, boolean copyThrewException) throws IOException {
+    if (closeable == null) {
+      return;
+    }
+    try {
+      closeable.close();
+    } catch (IOException e) {
+      if (copyThrewException) {
+        logger.warn("Suppressing exception thrown while closing a shuffle resource", e);
+      } else {
+        throw e;
+      }
+    }
+  }
+
   private void updatePeakMemoryUsed() {
     // sorter can be null if this writer is closed
     if (sorter != null) {
@@ -218,7 +231,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   }
 
   /** This convenience method should only be called in test code. */
-  @VisibleForTesting
   public void write(Iterator<Product2<K, V>> records) throws IOException {
     write(asScala(records));
   }
@@ -300,7 +312,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     serOutputStream = serializer.serializeStream(serBuffer);
   }
 
-  @VisibleForTesting
   void closeAndWriteOutput() throws IOException {
     assert (sorter != null);
     updatePeakMemoryUsed();
@@ -326,7 +337,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     mapStatus = MapStatusHelper.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
   }
 
-  @VisibleForTesting
   /** Serializes records and inserts into external sorter */
   void insertRecordIntoSorter(Product2<K, V> record) throws IOException {
     assert (sorter != null);
@@ -344,7 +354,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         serBuffer.getBuf(), Platform.BYTE_ARRAY_OFFSET, serializedRecordSize, partitionId);
   }
 
-  @VisibleForTesting
   void forceSorterToSpill() throws IOException {
     assert (sorter != null);
     sorter.spill();
@@ -496,16 +505,16 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
               try {
                 partitionInputStream =
                     new LimitedInputStream(spillInputStreams[i], partitionLengthInSpill, false);
-                ByteStreams.copy(partitionInputStream, partitionOutput);
+                partitionInputStream.transferTo(partitionOutput);
                 copySpillThrewException = false;
               } finally {
-                Closeables.close(partitionInputStream, copySpillThrewException);
+                close(partitionInputStream, copySpillThrewException);
               }
             }
           }
           copyThrewException = false;
         } finally {
-          Closeables.close(partitionOutput, copyThrewException);
+          close(partitionOutput, copyThrewException);
         }
         long numBytesWritten = writer.getNumBytesWritten();
         writeMetrics.incBytesWritten(numBytesWritten);
@@ -515,7 +524,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       // To avoid masking exceptions that caused us to prematurely enter the finally block, only
       // throw exceptions during cleanup if threwException == false.
       for (InputStream stream : spillInputStreams) {
-        Closeables.close(stream, threwException);
+        close(stream, threwException);
       }
     }
   }
@@ -571,7 +580,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
             writeMetrics.incWriteTime(System.nanoTime() - writeStartTime);
           }
         } finally {
-          Closeables.close(resolvedChannel, copyThrewException);
+          close(resolvedChannel, copyThrewException);
         }
         long numBytes = writer.getNumBytesWritten();
         writeMetrics.incBytesWritten(numBytes);
@@ -582,7 +591,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       // throw exceptions during cleanup if threwException == false.
       for (int i = 0; i < spills.length; i++) {
         assert (spillInputChannelPositions[i] == spills[i].file.length());
-        Closeables.close(spillInputChannels[i], threwException);
+        close(spillInputChannels[i], threwException);
       }
     }
   }

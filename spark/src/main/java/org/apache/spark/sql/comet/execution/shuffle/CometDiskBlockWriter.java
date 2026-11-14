@@ -44,8 +44,6 @@ import org.apache.spark.storage.FileSegment;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.UnsafeAlignedOffset;
 
-import com.google.common.annotations.VisibleForTesting;
-
 import org.apache.comet.CometConf$;
 import org.apache.comet.Native;
 
@@ -70,7 +68,7 @@ public final class CometDiskBlockWriter {
 
   private final TaskContext taskContext;
 
-  @VisibleForTesting static final int DEFAULT_INITIAL_SER_BUFFER_SIZE = 1024 * 1024;
+  static final int DEFAULT_INITIAL_SER_BUFFER_SIZE = 1024 * 1024;
 
   // Copied from Spark `org.apache.spark.shuffle.sort.PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES`
   static final int MAXIMUM_PAGE_SIZE_BYTES = 1 << 27;
