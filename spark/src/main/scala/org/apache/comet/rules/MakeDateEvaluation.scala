@@ -164,16 +164,6 @@ private[rules] object MakeDateEvaluation {
       AttributeSet(children.flatMap(eagerReferences))
   }
 
-  private def copyLogicalLinks(from: SparkPlan, to: SparkPlan): Unit = {
-    if (from ne to) {
-      // setLogicalLink promotes inherited links to direct links and rewrites descendants.
-      // Keep each tag's role and retain the fallback plan's links when the source has none.
-      Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
-        from.getTagValue(tag).foreach(to.setTagValue(tag, _))
-      }
-    }
-  }
-
   private def nativeBroadcastInput(plan: SparkPlan): Option[SparkPlan] = plan match {
     case _: CometBroadcastExchangeExec => Some(plan)
     case stage: BroadcastQueryStageExec => nativeBroadcastInput(stage.plan).map(_ => stage)
@@ -191,7 +181,7 @@ private[rules] object MakeDateEvaluation {
         // mode, including through AQE/reuse wrappers, without re-executing the build input.
         val restored = CometColumnarToRowExec(input)
         restored.setTagValue(sparkEvaluation, reason)
-        copyLogicalLinks(plan, restored)
+        CometExecRule.copyLogicalLinks(plan, restored, clearMissing = false)
         restored
       }
       .getOrElse(plan)
@@ -453,7 +443,7 @@ private[rules] object MakeDateEvaluation {
           original.withNewChildren(children)
         case _ => node.withNewChildren(children)
       }
-      copyLogicalLinks(node, rebuilt)
+      CometExecRule.copyLogicalLinks(node, rebuilt, clearMissing = false)
       rebuilt.unsetTagValue(collectProjectionLimit)
       if (original.isInstanceOf[ProjectExec] && rowReason.contains(collectLimitReason) &&
         operatorReason.isEmpty && childReason.isEmpty &&
