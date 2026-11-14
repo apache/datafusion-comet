@@ -22,10 +22,37 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.{SparkException, SparkThrowable}
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class SparkErrorConverterSuite extends AnyFunSuite {
+
+  test("ParquetSchemaConvert preserves the file error and its typed cause") {
+    Seq(None, Some(""), Some("file:/tmp/data/part-0.parquet")).foreach { path =>
+      val fileParam = path.map(p => s""", "filePath":"$p"""").getOrElse("")
+      val json =
+        s"""{"errorType":"ParquetSchemaConvert","errorClass":"","params":{
+           |"column":"[c]","physicalType":"BINARY","sparkType":"decimal(37,1)"$fileParam}}
+           |""".stripMargin
+      val error = SparkErrorConverter.convertToSparkException(
+        new org.apache.comet.exceptions.CometQueryExecutionException(json))
+      assert(error.isInstanceOf[SparkException])
+      val expectedClass = if (CometSparkSessionExtensions.isSpark40Plus) {
+        "FAILED_READ_FILE.PARQUET_COLUMN_DATA_TYPE_MISMATCH"
+      } else {
+        "_LEGACY_ERROR_TEMP_2063"
+      }
+      assert(error.asInstanceOf[SparkException].getErrorClass == expectedClass)
+      assert(error.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
+      val cause = error.getCause.asInstanceOf[SchemaColumnConvertNotSupportedException]
+      assert(cause.getColumn == "[c]")
+      assert(cause.getPhysicalType == "BINARY")
+      assert(cause.getLogicalType == "decimal(37,1)")
+      assert(cause.getCause == null)
+      path.filter(_.nonEmpty).foreach(p => assert(error.getMessage.contains(p)))
+    }
+  }
 
   test("ArithmeticOverflow preserves the suggested function") {
     for (function <- Seq("try_add", "try_subtract", "try_multiply")) {

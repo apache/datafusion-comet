@@ -718,6 +718,9 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
             message: exception.msg,
         };
     }
+    if let Some(json) = spark_error_json(error) {
+        return JvmException::Spark { json };
+    }
     match error {
         CometError::JavaException {
             class,
@@ -803,6 +806,24 @@ fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exce
         ) = error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
+        }
+        cause = error.source();
+    }
+    None
+}
+
+/// Recover structured Spark errors through DataFusion, Arrow and Parquet wrappers.
+/// Inspect outer errors first so a SparkErrorWithContext retains its query context.
+/// In particular, DataFusion's Parquet row filter preserves predicate failures as
+/// Arrow ExternalError -> DataFusion Context -> the original error (DF #24638).
+fn spark_error_json(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if let Some(error) = error.downcast_ref::<SparkErrorWithContext>() {
+            return Some(error.to_json());
+        }
+        if let Some(error) = error.downcast_ref::<SparkError>() {
+            return Some(error.to_json());
         }
         cause = error.source();
     }
@@ -1440,6 +1461,26 @@ mod tests {
         )));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(message, SparkError::DivideByZero.to_json());
+    }
+
+    #[test]
+    fn native_error_spark_error_survives_parquet_predicate_wrappers() {
+        let spark_error = SparkError::ParquetSchemaConvert {
+            file_path: String::new(),
+            column: "[c]".to_string(),
+            physical_type: "INT32".to_string(),
+            spark_type: "bigint".to_string(),
+        };
+        let expected = spark_error.to_json();
+        let predicate = DataFusionError::External(Box::new(spark_error))
+            .context("Error evaluating filter predicate");
+        let arrow = ArrowError::ExternalError(Box::new(predicate));
+        let parquet = ParquetError::External(Box::new(arrow));
+        let error = CometError::from(DataFusionError::ParquetError(Box::new(parquet)));
+
+        let native_error = NativeError::from_comet_error(&error);
+        assert_eq!(native_error.exception_class(), QUERY_EXECUTION_EXCEPTION);
+        assert_eq!(native_error.message(), expected);
     }
 
     #[test]
