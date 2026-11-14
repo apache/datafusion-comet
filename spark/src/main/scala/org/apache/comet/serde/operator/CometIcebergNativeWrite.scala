@@ -158,7 +158,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     "block.size",
     "multipart.size",
     "multipart.threshold",
-    "multipart.uploads.enabled",
     "multipart.purge",
     "multipart.purge.age",
     "downgrade.syncable.exceptions",
@@ -191,11 +190,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // Many Spark configurations name S3A itself as the `s3a` filesystem, which changes nothing.
   private val FileSystemImplSuffix = "impl"
   private val S3AFileSystemClass = "org.apache.hadoop.fs.s3a.S3AFileSystem"
+  // Stores without multipart uploads need `false`, which makes S3A send each file in one PUT. The
+  // native writer starts a multipart upload once a file passes 5 MiB and cannot be told not to.
+  private val MultipartUploadsSuffix = "multipart.uploads.enabled"
 
   // Every suffix the gate can admit. Their per-bucket spellings resolve through this set even
   // where the runtime Hadoop version does not declare the property.
   private val AdmittedHadoopS3Suffixes: Set[String] =
-    SupportedHadoopS3Suffixes ++ IgnoredHadoopS3Suffixes + FileSystemImplSuffix
+    SupportedHadoopS3Suffixes ++ IgnoredHadoopS3Suffixes + FileSystemImplSuffix +
+      MultipartUploadsSuffix
 
   private val FsS3aPrefix = "fs.s3a."
   private val FsS3aBucketPrefix = "fs.s3a.bucket."
@@ -353,9 +356,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `compression.brotli.quality`, and `io.compression.codec.zstd.level` only keys Iceberg's codec
   // cache. Any other `parquet.*` key, including one parquet-mr does not declare, changes nothing.
   // `parquet.enable.dictionary` is read from the table and write properties only and has its own
-  // rule. CometIcebergWriteActionSuite classifies every key the parquet-mr iceberg-java runs
-  // declares, fails on a new one, and checks that iceberg-java writes the same bytes with the
-  // inert ones set.
+  // rule. CometIcebergWriteActionSuite classifies the keys parquet-mr's ParquetOutputFormat and
+  // ZstandardCodec declare, fails on a new one, and checks that iceberg-java writes the same bytes
+  // with the inert ones set. A key read anywhere else is checked by hand on an Iceberg bump.
   private val UnsupportedParquetMrKeys: Set[String] = Set("parquet.columnindex.truncate.length")
 
   private lazy val vettedParquetWriteKeys: Set[String] = Set(
@@ -859,7 +862,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       suffix: String): Boolean =
     SupportedHadoopS3Suffixes.contains(suffix) || IgnoredHadoopS3Suffixes.contains(suffix) ||
       (suffix == FileSystemImplSuffix &&
-        Option(hadoopConf.getTrimmed(key)).contains(S3AFileSystemClass))
+        Option(hadoopConf.getTrimmed(key)).contains(S3AFileSystemClass)) ||
+      (suffix == MultipartUploadsSuffix && "true".equalsIgnoreCase(hadoopConf.getTrimmed(key)))
 
   /** Return unsupported FileIO S3/client property names in deterministic order. */
   private[comet] def unsupportedS3FileIOProperties(properties: Map[String, String]): Seq[String] =

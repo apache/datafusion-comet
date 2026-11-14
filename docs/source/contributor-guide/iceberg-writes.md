@@ -159,10 +159,12 @@ The gate has these properties, and a new rule has to keep them:
   exception is `parquet.*`: iceberg-java's writer builds its Parquet settings from `write.parquet.*`
   keys, so `UnsupportedParquetMrKeys` lists the few `parquet.*` keys it reads, from table
   properties or its Hadoop configuration, that change more than compressed bytes, and every other
-  `parquet.*` key is ignored. A test in `CometIcebergWriteActionSuite` classifies every key the
-  parquet-mr that iceberg-java runs declares (iceberg-spark-runtime relocates its own copy), fails
-  on a key it has not classified, and checks that iceberg-java writes the same bytes with the
-  inert ones set, so an Iceberg or parquet-mr bump that adds a key cannot pass unaudited.
+  `parquet.*` key is ignored. A test in `CometIcebergWriteActionSuite` classifies every key that
+  `ParquetOutputFormat` and `ZstandardCodec` declare in the parquet-mr iceberg-java runs
+  (iceberg-spark-runtime relocates its own copy), fails on a key it has not classified, and checks
+  that iceberg-java writes the same bytes with the inert ones set. So a bump that adds a key to
+  those classes, or makes iceberg-java read an inert one, fails it. A key declared elsewhere, or
+  read only by Iceberg's own code, is not covered.
 - **It reads the effective configuration.** `TriggerContext.properties` is the table's properties
   overlaid with `SparkWrite.writeProperties`, which is where iceberg-java resolves per-write options
   and `spark.sql.iceberg.*` session overrides. Reading table properties alone misses those.
@@ -355,10 +357,14 @@ thread, timeout, retry, upload-buffering, read, listing, delete and committer se
 deployments set cluster-wide (Spark seeds the vectored-read and `downgrade.syncable.exceptions`
 settings into every session, and Spark 4.1 sets two of the committer keys itself), plus
 `fs.s3a.region`, which no hadoop-aws release reads. `fs.s3a.impl` is ignored only when it names
-`S3AFileSystem`. A suffix belongs on that list only if it cannot change the written object, where it
-is written or who writes it. Settings that can, such as encryption, ACLs, storage class, signing and
-the credentials provider, must keep falling back. `IgnoredS3FileIOProperties` does the same for
-`S3FileIO`'s multipart, staging-directory, retry, delete-batching and client-preload settings.
+`S3AFileSystem`, and `multipart.uploads.enabled` only when it is `true`. With `false`, S3A sends each
+file in one PUT, which a store without multipart uploads needs and the native writer cannot do. A
+suffix belongs on that list only if it cannot change the written object, where it is written or who
+writes it, and the native writer either does not need it or has its own setting for it, such as
+`spark.comet.iceberg.ioTimeout` for the timeouts. Settings that can change the object, such as
+encryption, ACLs, storage class, signing and the credentials provider, must keep falling back.
+`IgnoredS3FileIOProperties` does the same for `S3FileIO`'s multipart, staging-directory, retry,
+delete-batching and client-preload settings.
 `s3.delete-enabled` is admitted only when it is `true`, because a failed native write task deletes
 its files, which `S3FileIO` keeps when deletes are disabled. Keep those
 allowlists aligned when adding storage support. Reaching
@@ -480,7 +486,9 @@ for Spark 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is publish
 for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg suites skip there
 (`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
-and partition path spelling, needs a test that runs on each.
+and partition path spelling, needs a test that runs on each. When you bump one of these pins, also
+re-read how Iceberg's `ParquetWriter` and `Parquet.WriteBuilder` read their Hadoop `Configuration`,
+which the `parquet.*` classification test does not cover.
 
 When writing a native-write test:
 

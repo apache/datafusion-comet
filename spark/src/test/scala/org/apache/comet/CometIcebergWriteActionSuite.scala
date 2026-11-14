@@ -3263,7 +3263,7 @@ class CometIcebergWriteActionSuite
     val unclassified = declared -- inert.keySet -- gated -- sideChannels
     assert(
       unclassified.isEmpty,
-      s"classify these parquet-mr keys here, and add any that iceberg-java's writer reads to " +
+      "classify these parquet-mr keys here, and add any that iceberg-java's writer reads to " +
         s"UnsupportedParquetMrKeys: ${unclassified.toSeq.sorted.mkString(", ")}")
 
     withIcebergCatalog { warehouseDir =>

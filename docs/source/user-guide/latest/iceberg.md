@@ -600,8 +600,15 @@ Spark's session-wide vectored-read settings, `readahead.range`, `experimental.in
 `org.apache.hadoop.fs.s3a.S3AFileSystem`, and `fs.s3a.region`, which S3A does not read. Spark 4.1
 sets `committer.name` and `committer.magic.enabled` itself when `spark-hadoop-cloud` is on the
 classpath. The data bucket's per-bucket `fs.s3a.bucket.<data-bucket>.<name>` forms of these
-settings are ignored too. Settings that can change a request still fall back: endpoint and region
-selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers,
+settings are ignored too. The native writer applies none of these values. It bounds each storage
+call, which can upload a whole row group, by `spark.comet.iceberg.ioTimeout` (30 seconds by
+default), so on a slow endpoint raise that rather than the S3A timeouts. It never sends
+`Expect: 100-continue`, which is what `connection.expect.continue=false` turns off.
+`multipart.uploads.enabled` is ignored only when it is `true`. A store without multipart uploads
+needs `false`, which makes S3A send each file in one PUT, but the native writer uses a multipart
+upload for any file over 5 MiB, so a write with `false` falls back. Settings that can change a
+request still fall back: endpoint and region selection, SSL, proxies, signing, requester pays,
+ACLs, storage class, checksums, headers,
 encryption, access points and credentials. On the `FileIO` side, the multipart, staging-directory,
 retry, delete-batching and client-preload settings are ignored, and so is `s3.delete-enabled=true`.
 `s3.delete-enabled=false` falls back, because a failed native write task deletes the files it

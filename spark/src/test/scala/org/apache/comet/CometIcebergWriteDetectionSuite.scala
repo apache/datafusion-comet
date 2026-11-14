@@ -884,8 +884,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       // hadoop-aws does not read fs.s3a.region, and Comet forwards endpoint.region instead.
       "fs.s3a.region" -> "us-west-2",
       "fs.s3a.impl" -> " org.apache.hadoop.fs.s3a.S3AFileSystem ",
+      "fs.s3a.multipart.uploads.enabled" -> " TRUE ",
       // The data bucket's per-bucket spellings are admitted too.
       "fs.s3a.bucket.target.connection.maximum" -> "100",
+      "fs.s3a.bucket.target.multipart.uploads.enabled" -> "true",
       "fs.s3a.bucket.target.region" -> "us-west-2",
       "fs.s3a.bucket.target.committer.name" -> "magic").foreach { case (k, v) =>
       hadoopConf.set(k, v)
@@ -893,13 +895,18 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
 
-    // Another filesystem class can change every request, so it still falls back.
+    // Another filesystem class can change every request, so it still falls back, and so does a
+    // store without multipart uploads, which the native writer always uses past 5 MiB.
     hadoopConf.set("fs.s3a.impl", "com.example.WrappingS3AFileSystem")
     hadoopConf.set("fs.s3a.bucket.target.acl.default", "BucketOwnerFullControl")
+    hadoopConf.set("fs.s3a.multipart.uploads.enabled", "false")
+    hadoopConf.set("fs.s3a.bucket.target.multipart.uploads.enabled", "false")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
         "fs.s3a.bucket.target.acl.default",
-        "fs.s3a.impl"))
+        "fs.s3a.bucket.target.multipart.uploads.enabled",
+        "fs.s3a.impl",
+        "fs.s3a.multipart.uploads.enabled"))
   }
 
   test("S3 FileIO transport settings do not block a native write") {
