@@ -1229,7 +1229,20 @@ mod buffer_tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), crate::CompressionCodec::None)
                 .unwrap();
-        let mut output = BoundedBuffer::try_new(65_948).unwrap();
+        // Measure the frame unbounded first so the test doesn't pin Arrow's IPC encoding size.
+        let mut unbounded = Cursor::new(Vec::new());
+        block_writer
+            .write_rss_batch(
+                &batch,
+                &mut unbounded,
+                &mut ShuffleCodecContext::default(),
+                &Time::default(),
+            )
+            .unwrap();
+        let frame_size = unbounded.get_ref().len();
+        assert!(frame_size > 64 * 1024);
+
+        let mut output = BoundedBuffer::try_new(frame_size).unwrap();
         block_writer
             .write_rss_batch(
                 &batch,
@@ -1238,11 +1251,11 @@ mod buffer_tests {
                 &Time::default(),
             )
             .unwrap();
-        assert_eq!(output.inner.get_ref().len(), 65_948);
-        assert_eq!(output.inner.get_ref().capacity(), 65_948);
+        assert_eq!(output.inner.get_ref().len(), frame_size);
+        assert_eq!(output.inner.get_ref().capacity(), frame_size);
         assert!(output.write(&[1]).is_err());
         assert!(output.exceeded);
-        assert_eq!(output.minimum_size, 65_949);
-        assert_eq!(output.inner.get_ref().capacity(), 65_948);
+        assert_eq!(output.minimum_size, frame_size + 1);
+        assert_eq!(output.inner.get_ref().capacity(), frame_size);
     }
 }

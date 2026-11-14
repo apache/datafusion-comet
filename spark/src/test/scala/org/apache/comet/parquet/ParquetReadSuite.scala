@@ -147,7 +147,11 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native scan decodes invalid UTF-8 in nested BINARY read as string") {
+  // Ignored while Comet is on DataFusion 56: its file-schema coercion reads nested BINARY as
+  // Utf8 without validating UTF-8, so the native scan panics in debug builds.
+  // Re-enable once https://github.com/apache/datafusion/issues/27065 is fixed.
+  // https://github.com/apache/datafusion-comet/issues/7469
+  ignore("native scan decodes invalid UTF-8 in nested BINARY read as string") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "nested-binary.parquet")
       val parquetSchema = MessageTypeParser.parseMessageType("""message root {

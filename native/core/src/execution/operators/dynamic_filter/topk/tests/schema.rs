@@ -17,7 +17,7 @@
 
 use super::*;
 use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::expressions::BinaryExpr;
+use datafusion::physical_expr::expressions::{lit, BinaryExpr};
 
 fn write_file(payload_type: &DataType, start: i32) -> tempfile::NamedTempFile {
     let schema = Arc::new(Schema::new(vec![

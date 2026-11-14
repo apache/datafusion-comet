@@ -652,10 +652,11 @@ mod tests {
         use datafusion::physical_expr::aggregate::AggregateExprBuilder;
         use datafusion::physical_expr::expressions::{col, Column};
         use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::aggregates::GroupClusteringMode;
         use datafusion::physical_plan::aggregates::{
             AggregateExec, AggregateMode, PhysicalGroupBy,
         };
-        use datafusion::physical_plan::{collect, ExecutionPlan, InputOrderMode};
+        use datafusion::physical_plan::{collect, ExecutionPlan};
         use datafusion::prelude::SessionConfig;
 
         const GROUPS: i64 = 4096;
@@ -714,7 +715,7 @@ mod tests {
             Arc::clone(&partial) as Arc<dyn ExecutionPlan>,
             Arc::clone(&schema),
         )?);
-        assert_eq!(partial.input_order_mode(), &InputOrderMode::Sorted);
+        assert_eq!(partial.group_clustering_mode(), &GroupClusteringMode::Full);
         // No disk, so an over-reserving accumulator fails instead of spilling.
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_limit(2 * 1024 * 1024, 1.0)

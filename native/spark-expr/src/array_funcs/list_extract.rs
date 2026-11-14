@@ -474,7 +474,7 @@ mod test {
             let offsets = OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| {
                 std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(16, WIDTH))
             }));
-            let count = *offsets.last().unwrap();
+            let count = offsets.last();
             let inner: arrow::array::ArrayRef = Arc::new(ListArray::new(
                 Arc::new(Field::new("item", DataType::Int32, true)),
                 offsets,

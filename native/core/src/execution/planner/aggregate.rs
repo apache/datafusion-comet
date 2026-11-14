@@ -250,7 +250,7 @@ impl OperatorBuilder for HashAggBuilder {
 
         // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
         // GroupedHashAggregateStream, whose spill can fail against the fair limit (#6880). Final
-        // runs an OrderedFinalAggregateStream there, which spills, and which the fair pool exempts
+        // runs a ClusteredFinalAggregateStream there, which spills, and which the fair pool exempts
         // from that limit (`limited_to_its_share`). MergeAsPartial evaluates to its state under
         // Final as under Single.
         // Only partially sorted input switches: with fully sorted input Final has no spill path
@@ -258,7 +258,7 @@ impl OperatorBuilder for HashAggBuilder {
         // after the keys, so the input must be the keys followed by native states (Spark's binary
         // collect buffers keep Single, and arrive unordered anyway).
         // Drop this on DataFusion 56, where the stream is ClusteredFinalAggregateStream
-        // (apache/datafusion#24697), and update the name prefix in `spill_replay.rs` (#6410).
+        // (apache/datafusion#24697), and update the name prefix in `fair_pool.rs` (#6410).
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
             && {

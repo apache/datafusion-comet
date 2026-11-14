@@ -30,8 +30,8 @@
 //! - `make_ts_utc_c` / `make_ts_naive_c`: `(Int64) -> Timestamp`, built with
 //!   and without a UTC tag, pinning which one Spark's `TimestampType`
 //!   accepts
-//! - `make_map_c`: `(Int64) -> Map`, built with arrow-rs's default
-//!   `MapBuilder` field names, which differ from the ones Comet emits
+//! - `make_map_c`: `(Int64) -> Map`, built with `MapBuilder` field names
+//!   (`keys` / `values`) that differ from the ones Comet emits
 //! - `make_struct_c`: `(Int64) -> Struct`, whose field is declared
 //!   non-nullable where Spark's `StructField` is nullable by default
 //! - `panics_on_invoke` / `panics_on_return_field`: panic containment
@@ -44,8 +44,8 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, Int32Array, Int32Builder, Int64Array, MapBuilder, StringArray, StringBuilder,
-    StructArray, TimestampMicrosecondArray,
+    Array, ArrayRef, Int32Array, Int32Builder, Int64Array, MapBuilder, MapFieldNames, StringArray,
+    StringBuilder, StructArray, TimestampMicrosecondArray,
 };
 use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
@@ -299,17 +299,29 @@ fn micros(arg: &ArrayRef) -> Result<TimestampMicrosecondArray, String> {
     Ok(arr.iter().collect::<TimestampMicrosecondArray>())
 }
 
-/// `(Int64) -> Map(String, Int32)` built through arrow-rs's default
-/// [`MapBuilder`].
+/// `(Int64) -> Map(String, Int32)` built through a [`MapBuilder`] with
+/// explicit field names.
 ///
-/// That builder names the map's children `entries` / `keys` / `values`,
-/// where Comet's own Spark-to-Arrow conversion emits `entries` / `key` /
-/// `value`. Those names are positional in the Arrow format, so the two
-/// spellings have to be accepted interchangeably; this UDF is what proves
-/// it end to end, since `echo_c` hands back the map Comet gave it and so
-/// always carries Comet's own names.
+/// The names are `entries` / `keys` / `values`, which is what arrow-rs's
+/// default builder used before arrow 60 changed its default to `entries` /
+/// `key` / `value`. Comet's own Spark-to-Arrow conversion emits the latter.
+/// Those names are positional in the Arrow format, so the two spellings
+/// have to be accepted interchangeably; this UDF is what proves it end to
+/// end, since `echo_c` hands back the map Comet gave it and so always
+/// carries Comet's own names.
 #[derive(Default)]
 pub struct MakeMapC;
+
+impl MakeMapC {
+    fn builder() -> MapBuilder<StringBuilder, Int32Builder> {
+        let names = MapFieldNames {
+            entry: "entries".to_string(),
+            key: "keys".to_string(),
+            value: "values".to_string(),
+        };
+        MapBuilder::new(Some(names), StringBuilder::new(), Int32Builder::new())
+    }
+}
 
 impl CometCScalarUdf for MakeMapC {
     fn name(&self) -> &str {
@@ -322,7 +334,7 @@ impl CometCScalarUdf for MakeMapC {
         }
         // Ask the builder itself for the type, so the declared type and the
         // built array cannot drift apart.
-        let mut builder = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+        let mut builder = Self::builder();
         builder.append(true).map_err(|e| e.to_string())?;
         Ok(Field::new(
             "make_map_c",
@@ -336,7 +348,7 @@ impl CometCScalarUdf for MakeMapC {
             .as_any()
             .downcast_ref::<Int64Array>()
             .ok_or_else(|| "expected Int64Array".to_string())?;
-        let mut builder = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+        let mut builder = Self::builder();
         for value in arr.iter() {
             match value {
                 Some(v) => {
