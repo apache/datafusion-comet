@@ -22,6 +22,15 @@ $(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs $(P
 endef
 
 # Build optional Comet native features (like hdfs-opendal e.g)
+comma := ,
+# The jemalloc Maven profile also builds the native library with the jemalloc allocator. With
+# mimalloc as well, native/core/src/lib.rs would quietly select the system allocator instead.
+ifneq (,$(findstring jemalloc,$(PROFILES)))
+ifneq (,$(findstring mimalloc,$(COMET_FEATURES)))
+$(error The jemalloc profile cannot be combined with the mimalloc feature)
+endif
+override COMET_FEATURES := $(if $(COMET_FEATURES),$(COMET_FEATURES)$(comma))jemalloc
+endif
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
 
 # JVM max heap for the benchmark targets. Lower this when benchmarking on a
@@ -79,7 +88,7 @@ release:
 	cd native && RUSTFLAGS="$(RUSTFLAGS) -Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 release-nogit:
-	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
+	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
 	./mvnw install -Prelease -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 benchmark-%: release
 	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='$(BENCH_MAVEN_OPTS)' ../mvnw $(BENCH_MVN_ARGS) -Dexec.mainClass="$*" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
