@@ -234,6 +234,15 @@ system user must be that user. Otherwise the scan falls back with a reason that 
 To read HDFS tables with Spark's Iceberg reader and keep the native scan for other storage, set
 `spark.comet.scan.icebergNative.hdfs.enabled=false`. Writes to HDFS use Iceberg's own writer.
 
+### Plan data per task
+
+The native reader sends each task only the delete files, partition values and residual filters
+that its own files need, the way Spark's Iceberg reader does. A delete file or residual filter
+that many partitions use, such as an unpartitioned equality delete or a filter on a
+non-partition column, is serialized once and shared by those partitions. The driver keeps one
+copy of it, and a coalesce without a shuffle (`coalesce(n)`, or a write that coalesces its
+input), which combines several input partitions into one task, sends that task one copy.
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:

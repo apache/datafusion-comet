@@ -389,7 +389,12 @@ message IcebergScanCommon {
   // Schema to read
   repeated SparkStructField required_schema = 3;
 
-  // Deduplication pools (must contain all entries for cross-partition deduplication)
+  // Deduplication pools. In the common block every task gets, the per-file pools
+  // (partition_data_pool, delete_files_pool, residual_pool, delete_file_pool,
+  // delete_file_path_pool) are empty: each partition's IcebergScan.common holds the entries its
+  // tasks use, and the JVM merges the two before the plan reaches native. The driver ships a
+  // partition's delete files and their paths apart from its message, shared with the other
+  // partitions that use them, and the executor JVM adds them to the partition's pools.
   repeated string schema_pool = 4;
   // Index-aligned with partition_spec_pool: entry i is the StructType JSON for the spec at
   // partition_spec_pool[i]. Native uses this pairing to recover each entry's spec_id when
@@ -415,8 +420,8 @@ message IcebergScanCommon {
 
   // Flat pool of unique delete files, referenced by index from DeleteFileList. Iceberg's default
   // partition delete granularity has one delete file apply to many data files, so interning each
-  // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
-  // common message from growing with the number of references.
+  // delete file here (rather than embedding copies per delete_files_pool set) keeps a
+  // partition's pools from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
 
   // Flat pool of unique delete-file paths, referenced by index from IcebergDeleteFile. A V3
@@ -433,7 +438,8 @@ message IcebergScanCommon {
 }
 
 message IcebergScan {
-  // Common data shared across partitions (pools, metadata, catalog props)
+  // Common data shared across partitions (pools, metadata, catalog props). In the per-partition
+  // message the driver ships, it holds only that partition's per-file pool entries.
   IcebergScanCommon common = 1;
 
   // Single partition's file scan tasks

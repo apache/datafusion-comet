@@ -37,7 +37,7 @@ import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleB
 private[spark] class CometExecPartition(
     override val index: Int,
     val inputPartitions: Array[Partition],
-    val planDataByKey: Map[String, Array[Byte]],
+    val planDataByKey: Map[String, PartitionPlanData],
     val filePaths: Seq[String] = Seq.empty)
     extends Partition
 
@@ -58,7 +58,7 @@ private[spark] class CometExecRDD(
     sc: SparkContext,
     var inputRDDs: Seq[RDD[_]],
     commonByKey: Map[String, Array[Byte]],
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
+    @transient perPartitionByKey: Map[String, Array[PartitionPlanData]],
     serializedPlan: Array[Byte],
     planFingerprint: Long,
     defaultNumPartitions: Int,
@@ -134,8 +134,8 @@ private[spark] class CometExecRDD(
     // fingerprints the bytes once so the probe here does not rehash them.
     val actualPlan = if (commonByKey.nonEmpty) {
       val basePlan = PlanDataInjector.parseBasePlan(serializedPlan, planFingerprint)
-      val injected =
-        PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
+      val partitionBytes = partition.planDataByKey.map { case (key, data) => key -> data.bytes }
+      val injected = PlanDataInjector.injectPlanData(basePlan, commonByKey, partitionBytes)
       PlanDataInjector.serializeOperator(injected)
     } else {
       serializedPlan
@@ -236,7 +236,7 @@ object CometExecRDD {
       sc: SparkContext,
       inputRDDs: Seq[RDD[_]],
       commonByKey: Map[String, Array[Byte]],
-      perPartitionByKey: Map[String, Array[Array[Byte]]],
+      perPartitionByKey: Map[String, Array[PartitionPlanData]],
       serializedPlan: Array[Byte],
       planFingerprint: Long,
       numPartitions: Int,
