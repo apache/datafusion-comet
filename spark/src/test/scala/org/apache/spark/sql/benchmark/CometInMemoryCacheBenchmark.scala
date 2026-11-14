@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, Decimal, DecimalType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -876,6 +876,85 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       addStatsCase(benchmark, "Arrow vectors", nestedBatch, nestedAttrs)
       benchmark.run()
     } finally nestedBatch.close()
+
+    // Decimals of one narrow and two wide precisions, one row in ten null and the values on both
+    // sides of zero. A decimal past 18 digits is the one the by-value loop paid a BigInteger and a
+    // BigDecimal for on every row.
+    val decimalTypes: Seq[DataType] =
+      Seq(DecimalType(10, 2), DecimalType(18, 2), DecimalType(38, 2))
+    val decimalAttrs = decimalTypes.zipWithIndex.map { case (dt, i) =>
+      AttributeReference(s"d$i", dt)()
+    }
+    val decimalRows = Iterator.tabulate(batchSize) { r =>
+      if (r % 10 == 0) {
+        new GenericInternalRow(decimalTypes.length)
+      } else {
+        val unscaled = BigInt(r - batchSize / 2) * 7919
+        InternalRow(
+          Decimal(unscaled.toLong, 10, 2),
+          Decimal(unscaled.toLong * 100000, 18, 2),
+          Decimal(BigDecimal(unscaled * BigInt(10).pow(20) + r, 2), 38, 2))
+      }
+    }
+    val decimalBatch = CometArrowConverters
+      .rowToArrowBatchIter(
+        decimalRows,
+        Utils.fromAttributes(decimalAttrs),
+        batchSize,
+        CometArrowStream.NATIVE_TIMEZONE,
+        CometArrowAllocator)
+      .next()
+    try {
+      val benchmark = new Benchmark(
+        "in-memory cache statistics, decimal columns",
+        numRows.toLong,
+        output = output)
+      addStatsCase(benchmark, "Arrow vectors", decimalBatch, decimalAttrs)
+      benchmark.run()
+    } finally decimalBatch.close()
+
+    // Three string columns and nothing else, one row in ten null, so the strings' share of the
+    // cost is measured on its own. The first set of keys shares 30 to 50 bytes with its neighbours,
+    // as URLs and file paths do, so a comparison reads several 8-byte words before it finds a
+    // difference. The second is short keys that differ at the first byte or two, where a
+    // comparison ends inside its first word.
+    def addStringCase(name: String, key: Seq[Int => String]): Unit = {
+      val stringAttrs = key.indices.map(i => AttributeReference(s"s$i", StringType)())
+      val stringRows = Iterator.tabulate(batchSize) { r =>
+        if (r % 10 == 0) {
+          new GenericInternalRow(key.length)
+        } else {
+          InternalRow.fromSeq(key.map(k => UTF8String.fromString(k(r))))
+        }
+      }
+      val stringBatch = CometArrowConverters
+        .rowToArrowBatchIter(
+          stringRows,
+          Utils.fromAttributes(stringAttrs),
+          batchSize,
+          CometArrowStream.NATIVE_TIMEZONE,
+          CometArrowAllocator)
+        .next()
+      try {
+        val benchmark = new Benchmark(name, numRows.toLong, output = output)
+        addStatsCase(benchmark, "Arrow vectors", stringBatch, stringAttrs)
+        benchmark.run()
+      } finally stringBatch.close()
+    }
+
+    addStringCase(
+      "in-memory cache statistics, string columns with long shared prefixes",
+      Seq(
+        r => s"https://www.example.com/catalog/products/category-${r % 40}/item-$r",
+        r => s"/var/lib/datasets/warehouse/events/2026/11/11/part-${r % 5000}.parquet",
+        r => s"s3://analytics-bucket/warehouse/orders/dt=2026-11-${10 + r % 20}/part-$r"))
+
+    addStringCase(
+      "in-memory cache statistics, short string columns",
+      Seq(
+        r => s"k$r",
+        r => ((r.toLong * 7919) % 100000).toString,
+        r => Integer.toHexString(r * 31)))
   }
 
   private def runCacheBenchmark(
