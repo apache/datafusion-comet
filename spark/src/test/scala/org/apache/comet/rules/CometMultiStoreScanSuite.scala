@@ -481,4 +481,25 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       assert(!options.keys.exists(_.startsWith("fs.azure.account.key.")), options)
     }
   }
+
+  test("a root path object_store rejects is named without the password or a non-ABFS user") {
+    // The newline (`%0A` in the URI) is what makes object_store reject the root path.
+    val dir = s"${rootDir.getAbsolutePath}/rejected\n/data"
+    writeIds(s"file://$dir", 0)
+    val cases = Seq(
+      s"s3a://alice:SECRET@bucket$dir" -> "'s3a://***@bucket",
+      // The ABFS user is the container, which names the store.
+      s"abfss://data:SECRET@accta.dfs.core.windows.net$dir" ->
+        "'abfss://data@accta.dfs.core.windows.net")
+    withSQLConf(nativeScan ++ onePartition: _*) {
+      for ((path, authority) <- cases) {
+        val reason = s"cannot open path $authority${rootDir.getAbsolutePath}/rejected%0A/data'"
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(spark.read.parquet(path), reason)
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+        Seq("alice", "SECRET").foreach { marker =>
+          assert(!reasons.exists(_.contains(marker)), reasons)
+        }
+      }
+    }
+  }
 }

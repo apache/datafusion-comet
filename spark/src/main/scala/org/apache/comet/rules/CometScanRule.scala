@@ -322,9 +322,10 @@ case class CometScanRule(session: SparkSession)
       root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
         !CometScanRule.objectStoreAcceptsPath(root.uri))
     if (rejectedPath.nonEmpty) {
+      val shown = NativeConfig.displayPath(rejectedPath.get.uri)
       withFallbackReason(
         scanExec,
-        s"Native Parquet scan cannot open path '${rejectedPath.get.uri}': object_store " +
+        s"Native Parquet scan cannot open path '$shown': object_store " +
           "rejects it (e.g. an unsupported character in the path)")
       return None
     }
