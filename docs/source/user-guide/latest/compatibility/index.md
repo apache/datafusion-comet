@@ -161,15 +161,18 @@ Spark returns `'0'` after the first row matches. Comet can evaluate the filter p
 second row in the same batch and raise `CAST_INVALID_INPUT`. SQL without `ORDER BY` does not
 guarantee this input order; the example describes a physical scan order that exposes the difference.
 
-Comet caps projection input when a collect limit directly consumes the projection. This protects
-that projection's expressions, but does not bound evaluation inside its child operators. Throwing
-filter predicates and projections beneath non-collect `LocalLimit` / `GlobalLimit` plans, such as
-a `LIMIT` inside a subquery, remain affected. These existing limitations and the investigation of
+With native local limits enabled, Comet caps projection input when `CollectLimit`, `LocalLimit`,
+or `GlobalLimit` directly consumes the projection. This protects the projection's expressions
+from evaluating rows beyond the limit, but does not bound evaluation inside its child operators.
+Throwing filter predicates remain affected. These limitations and the investigation of
 already-ordered `TakeOrderedAndProject` inputs are tracked in
 [#7147](https://github.com/apache/datafusion-comet/issues/7147).
 
 An error on a row absent from the final result is not always a mismatch: Spark can also need to
-evaluate that row, for example to sort the input or process an `OFFSET` prefix.
+evaluate that row, for example to sort the input or process an `OFFSET` prefix. The projection
+input cap includes that prefix. When `GlobalLimit` and the projection share a whole-stage codegen
+stage, Spark can skip evaluating the prefix, while Comet still evaluates it. Comet can therefore
+raise an error that Spark does not. The input cap does not address this existing difference.
 
 ## ANSI-mode error classes and messages
 
