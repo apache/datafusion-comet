@@ -46,12 +46,12 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
     if (!isCometShuffleEnabled(op.conf)) {
       return Unsupported(Some("TakeOrderedAndProject requires shuffle to be enabled"))
     }
-    op.projectList.foreach { p =>
-      val o = exprToProto(p, op.child.output)
-      if (o.isEmpty) {
-        return Unsupported(Some(s"unsupported projection: $p"))
-      }
-      o
+    // The same scope as `finalNativePlan`, which serializes the projection at execution
+    val unsupportedProjection = withSharedSubexpressions(op.projectList) {
+      op.projectList.find(p => exprToProto(p, op.child.output).isEmpty)
+    }
+    if (unsupportedProjection.isDefined) {
+      return Unsupported(Some(s"unsupported projection: ${unsupportedProjection.get}"))
     }
     op.sortOrder.foreach { s =>
       val o = exprToProto(s, op.child.output)
