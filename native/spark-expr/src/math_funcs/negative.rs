@@ -163,6 +163,12 @@ impl PhysicalExpr for NegativeExpr {
                             // Overflow checks are not supported for other datatypes
                         }
                     }
+                } else if scalar.data_type().is_signed_integer() {
+                    // `arithmetic_negate` is checked and errors on the minimum of a signed
+                    // integer type, but legacy mode wraps it as the array path does.
+                    let negated = neg_wrapping(scalar.to_array()?.as_ref())?;
+                    let wrapped = ScalarValue::try_from_array(&negated, 0)?;
+                    return Ok(ColumnarValue::Scalar(wrapped));
                 }
                 Ok(ColumnarValue::Scalar((scalar.arithmetic_negate())?))
             }
@@ -446,5 +452,92 @@ mod tests {
                 if matches!(inner.as_ref(), ArrowError::InvalidArgumentError(msg) if msg == "test custom error")),
             "expected the ArrowError to pass through unchanged, got: {err:?}"
         );
+    }
+
+    /// Negate `input` as a scalar and as a one element array, and return both results.
+    fn negate_as_scalar_and_array(
+        input: &ScalarValue,
+        fail_on_error: bool,
+    ) -> (ScalarValue, ScalarValue) {
+        let ColumnarValue::Scalar(from_scalar) = eval_scalar(input.clone(), fail_on_error).unwrap()
+        else {
+            panic!("expected scalar result")
+        };
+        let ColumnarValue::Array(from_array) =
+            eval_array(input.to_array().unwrap(), fail_on_error).unwrap()
+        else {
+            panic!("expected array result")
+        };
+        (
+            from_scalar,
+            ScalarValue::try_from_array(&from_array, 0).unwrap(),
+        )
+    }
+
+    /// In legacy mode the minimum of a signed integer type negates to itself, as a scalar just
+    /// as in an array. ANSI mode still raises the overflow for the same scalar.
+    fn assert_legacy_scalar_wraps_min(min: ScalarValue) {
+        let (from_scalar, from_array) = negate_as_scalar_and_array(&min, false);
+        assert_eq!(from_array, min);
+        assert_eq!(from_scalar, min);
+        assert!(eval_scalar(min, true).is_err());
+    }
+
+    #[test]
+    fn test_legacy_scalar_negation_wraps_int8_min() {
+        assert_legacy_scalar_wraps_min(ScalarValue::Int8(Some(i8::MIN)));
+    }
+
+    #[test]
+    fn test_legacy_scalar_negation_wraps_int16_min() {
+        assert_legacy_scalar_wraps_min(ScalarValue::Int16(Some(i16::MIN)));
+    }
+
+    #[test]
+    fn test_legacy_scalar_negation_wraps_int32_min() {
+        assert_legacy_scalar_wraps_min(ScalarValue::Int32(Some(i32::MIN)));
+    }
+
+    #[test]
+    fn test_legacy_scalar_negation_wraps_int64_min() {
+        assert_legacy_scalar_wraps_min(ScalarValue::Int64(Some(i64::MIN)));
+    }
+
+    /// Ordinary values, the value next to the minimum and typed nulls negate the same way as a
+    /// scalar and as an array, in both modes.
+    #[test]
+    fn test_scalar_negation_matches_array_negation_for_non_minimum_values() {
+        for fail_on_error in [false, true] {
+            for (input, expected) in [
+                (ScalarValue::Int8(Some(-7)), ScalarValue::Int8(Some(7))),
+                (
+                    ScalarValue::Int8(Some(i8::MAX)),
+                    ScalarValue::Int8(Some(i8::MIN + 1)),
+                ),
+                (ScalarValue::Int8(None), ScalarValue::Int8(None)),
+                (ScalarValue::Int16(Some(-7)), ScalarValue::Int16(Some(7))),
+                (
+                    ScalarValue::Int16(Some(i16::MAX)),
+                    ScalarValue::Int16(Some(i16::MIN + 1)),
+                ),
+                (ScalarValue::Int16(None), ScalarValue::Int16(None)),
+                (ScalarValue::Int32(Some(-7)), ScalarValue::Int32(Some(7))),
+                (
+                    ScalarValue::Int32(Some(i32::MAX)),
+                    ScalarValue::Int32(Some(i32::MIN + 1)),
+                ),
+                (ScalarValue::Int32(None), ScalarValue::Int32(None)),
+                (ScalarValue::Int64(Some(-7)), ScalarValue::Int64(Some(7))),
+                (
+                    ScalarValue::Int64(Some(i64::MAX)),
+                    ScalarValue::Int64(Some(i64::MIN + 1)),
+                ),
+                (ScalarValue::Int64(None), ScalarValue::Int64(None)),
+            ] {
+                let (from_scalar, from_array) = negate_as_scalar_and_array(&input, fail_on_error);
+                assert_eq!(from_scalar, expected, "scalar {input:?}");
+                assert_eq!(from_array, expected, "array {input:?}");
+            }
+        }
     }
 }
