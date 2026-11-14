@@ -339,10 +339,12 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   that checks for a refusal, such as the shuffle repartitioner, fails the task rather than
   spilling, and one that takes any error for a refusal and asks again, such as DataFusion's sort,
   fails when it asks again. The JNI boundary rethrows the exception as itself, unless an operator
-  has wrapped it in `Context` or `Shared`, which turns it into a `CometNativeException`. A failed
-  `grow` with no `try_grow` after it in the task is still only logged, because nothing checks for
-  the failure when a plan's output ends
-  ([issue #7244](https://github.com/apache/datafusion-comet/issues/7244)).
+  has wrapped it in `Context` or `Shared`, which turns it into a `CometNativeException`. Nothing
+  checks for the failure when a plan's output ends, so the exception is still only logged if no
+  operator returns it: if no `try_grow` follows a failed `grow` in the task, or if every `try_grow`
+  that fails comes from DataFusion's sort-merge join, whose `materializing_stream.rs` and
+  `bitwise_stream.rs` take any error for a refusal, spill the batch and carry on
+  ([issue #7615](https://github.com/apache/datafusion-comet/issues/7615)).
 
 `CometFairMemoryPool` exists because Spark cannot ask a native operator to spill. Spark limits each
 task to an even share of its off-heap pool among the tasks that hold memory from it. Once one
