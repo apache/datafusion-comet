@@ -21,6 +21,7 @@
 -- with up to 38 integral digits that does not fit the target type raises
 -- NUMERIC_VALUE_OUT_OF_RANGE instead. With spark.sql.legacy.allowNegativeScaleOfDecimal Spark
 -- skips the limit, and the same strings fail the second way.
+-- cast_string_to_decimal_integral_digits.sql has the results without ANSI mode.
 -- https://github.com/apache/datafusion-comet/issues/7188
 
 -- Config: spark.sql.ansi.enabled=true
@@ -31,6 +32,8 @@ CREATE TABLE test_cast_str_dec_digits_ansi(id int, s string) USING parquet
 -- ids 1 to 7 have more than 38 integral digits: an exponent that adds them, 39 digits that fit an
 -- i128 and 40 that do not, a fraction after 40 digits, and leading zeros that do not count.
 -- ids 10 to 15 are within the limit.
+-- ids 20 to 23 are zeros with a large exponent. Without the setting the result depends on whether
+-- Spark has SPARK-60118, so they are only queried after it.
 statement
 INSERT INTO test_cast_str_dec_digits_ansi VALUES
   (1, '6E+38'),
@@ -47,7 +50,9 @@ INSERT INTO test_cast_str_dec_digits_ansi VALUES
   (14, '1e-50'),
   (15, NULL),
   (20, '0e38'),
-  (21, '0E+73')
+  (21, '0E+73'),
+  (22, '+0e83'),
+  (23, '0e5887677')
 
 query expect_error(NUMERIC_OUT_OF_SUPPORTED_RANGE)
 SELECT cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi WHERE id = 1
@@ -113,8 +118,8 @@ SELECT cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi WHERE id = 10
 
 query
 SELECT id, try_cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
-WHERE id IN (2, 12, 13, 14, 15) ORDER BY id
+WHERE id IN (2, 12, 13, 14, 15, 20, 21, 22, 23) ORDER BY id
 
 query
-SELECT id, cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
-WHERE id IN (12, 13, 14, 15, 20, 21) ORDER BY id
+SELECT id, cast(s as decimal(10,2)), cast(s as decimal(38,10)) FROM test_cast_str_dec_digits_ansi
+WHERE id IN (12, 13, 14, 15, 20, 21, 22, 23) ORDER BY id
