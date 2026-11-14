@@ -53,10 +53,28 @@ public class ArrowImporter {
 
   public FieldVector importVector(
       ArrowArray array, ArrowSchema schema, CDataDictionaryProvider provider) {
-    Field field = null;
-    FieldVector vector = null;
+    Field field;
     try {
       field = importField(schema, provider);
+    } catch (RuntimeException | Error failure) {
+      // No importer has taken the array yet.
+      if (!array.isClosed()) {
+        AutoCloseables.close(failure, array::release, array);
+      }
+      throw failure;
+    }
+    return importVector(array, field, provider);
+  }
+
+  /**
+   * Imports {@code array} into a new vector of {@code field}, which this importer imported from the
+   * schema of {@code array}, or of an earlier array of the same type so that the schema need not
+   * cross the boundary again. A field with a dictionary serves one array only, because the values
+   * of each imported dictionary are kept under the id its schema import assigned.
+   */
+  public FieldVector importVector(ArrowArray array, Field field, CDataDictionaryProvider provider) {
+    FieldVector vector = null;
+    try {
       vector = field.createVector(allocator);
       ArrayImporter importer = new ArrayImporter(allocator, vector, provider);
       importer.importArray(array);
@@ -65,9 +83,7 @@ public class ArrowImporter {
       if (vector != null) {
         AutoCloseables.close(failure, vector);
       }
-      if (field != null) {
-        closeDictionaries(field, provider, failure);
-      }
+      closeDictionaries(field, provider, failure);
       // ArrayImporter.importArray moves the array into a copy it owns and closes the source
       // before doImport can fail, so a closed array means the importer already took it and
       // releasing it again would be a double release.

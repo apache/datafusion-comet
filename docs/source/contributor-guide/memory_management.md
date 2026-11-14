@@ -565,8 +565,8 @@ through a unified pool is charged to Spark. The same batch held by an operator t
 **Native → JVM (`CometExecIterator`).** DataFusion produces the batch in Rust, and whether it is
 still reserved when it reaches the boundary depends on the producing operator. The sort's output is
 wrapped in a `ReservationStream` that shrinks the reservation by the batch's size as each batch is
-emitted, so by the time `prepare_output` sees a sorted batch its bytes are no longer reserved.
-`prepare_output` then calls `move_to_spark`, which writes an `FFI_ArrowArray` whose release callback
+emitted, so by the time `executePlan` exports a sorted batch its bytes are no longer reserved.
+The export writes an `FFI_ArrowArray` whose release callback
 drops the Rust `ArrayData`; no reservation travels with it. The JVM wraps the pointers in
 `ArrowBuf`s and the memory is freed when the JVM calls `close()`. An exported batch is therefore
 usually _not_ pool-charged while the JVM holds it, but it is resident until the JVM releases it. A

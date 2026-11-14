@@ -112,6 +112,7 @@ use jni::{
 use parking_lot::Mutex;
 use prost::Message;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -141,10 +142,11 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
-    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
-    COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_CACHE_OUTPUT_SCHEMA_ENABLED,
+    COMET_EXEC_SPILL_COMPRESSION_CODEC, COMET_EXPLAIN_NATIVE_ENABLED,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::CometParquetScanOptions;
@@ -573,6 +575,8 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// What `executePlan` last exported of the output schema
+    output_schema: OutputSchemaCache,
     /// Rust thread ID, used for aggregating tracing metrics per thread
     pub rust_thread_id: u64,
     /// Pre-computed metric name for tracing memory usage
@@ -729,6 +733,7 @@ struct PlanSettings {
     strict_timestamp_labels: bool,
     explain_native: bool,
     tracing_enabled: bool,
+    cache_output_schema: bool,
     max_temp_directory_size: u64,
     logging_memory_pool: bool,
 }
@@ -750,6 +755,7 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
         strict_timestamp_labels: spark_config.get_bool(COMET_STRICT_TIMESTAMP_LABELS),
         explain_native: spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED),
         tracing_enabled: spark_config.get_bool(COMET_TRACING_ENABLED),
+        cache_output_schema: spark_config.get_bool(COMET_EXEC_CACHE_OUTPUT_SCHEMA_ENABLED),
         max_temp_directory_size: spark_config
             .get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024),
         logging_memory_pool: spark_config.get_bool(COMET_DEBUG_MEMORY),
@@ -904,6 +910,7 @@ fn create_execution_context(
         strict_timestamp_labels: settings.strict_timestamp_labels,
         explain_native: settings.explain_native,
         tracing_enabled: settings.tracing_enabled,
+        output_schema: OutputSchemaCache::new(settings.cache_output_schema),
         rust_thread_id,
         tracing_memory_metric_name: format!("thread_{rust_thread_id}_comet_memory_reserved"),
         tracing_event_name,
@@ -1215,21 +1222,146 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLengthFunc::default()));
 }
 
-/// Prepares arrow arrays for output.
+/// Prepares arrow arrays for output. With `output_schema`, the batch carries its schema only when
+/// the schema changed.
 fn prepare_output(
     env: &mut Env,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     output_batch: RecordBatch,
     validate: bool,
+    output_schema: Option<&mut OutputSchemaCache>,
 ) -> CometResult<jlong> {
     let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-    let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-    unsafe { export_batch(&array_addrs, &schema_addrs, output_batch, validate) }
+    let schema_addrs = || Ok(unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? });
+    match output_schema {
+        Some(cache) => unsafe { cache.export(&array_addrs, schema_addrs, output_batch, validate) },
+        None => unsafe {
+            export_batch(&array_addrs, Some(&schema_addrs()?), output_batch, validate)
+        },
+    }
+}
+
+/// The data type and field metadata of an output column, which together determine the
+/// `FFI_ArrowSchema` that `move_to_spark` exports for it.
+struct ExportedColumn {
+    data_type: ArrowDataType,
+    metadata: HashMap<String, String>,
+}
+
+impl ExportedColumn {
+    fn of(batch: &RecordBatch) -> Vec<Self> {
+        batch
+            .columns()
+            .iter()
+            .zip(batch.schema_ref().fields())
+            .map(|(column, field)| Self {
+                data_type: column.data_type().clone(),
+                metadata: field.metadata().clone(),
+            })
+            .collect()
+    }
+
+    /// Whether every column of `batch` would export the schema that `columns` were exported with.
+    fn all_match(columns: &[Self], batch: &RecordBatch) -> bool {
+        columns.len() == batch.num_columns()
+            && columns
+                .iter()
+                .zip(batch.columns())
+                .zip(batch.schema_ref().fields())
+                .all(|((exported, column), field)| {
+                    exported.data_type == *column.data_type()
+                        && exported.metadata == *field.metadata()
+                })
+    }
+}
+
+/// Set in what `executePlan` returns when it exported the batch's schema, one `FFI_ArrowSchema`
+/// per column, for the JVM to import in place of the fields it holds. The row count is in the low
+/// 32 bits. Matches `NativeUtil.OUTPUT_SCHEMA_EXPORTED`.
+const OUTPUT_SCHEMA_EXPORTED: jlong = 1 << 32;
+
+/// What `executePlan` last exported of its output schema, so that the batches after it can leave
+/// the schema out while it stays the same (`spark.comet.exec.cacheOutputSchema.enabled`).
+struct OutputSchemaCache {
+    enabled: bool,
+    /// The output columns as last exported. `None` before the first batch, after a batch with a
+    /// dictionary, and while the cache is disabled.
+    exported: Option<Vec<ExportedColumn>>,
+}
+
+impl OutputSchemaCache {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            exported: None,
+        }
+    }
+
+    /// Exports `batch` like `export_batch`, but writes its schema only when it differs from the one
+    /// exported last, and records what it writes. `schema_addrs` gives the addresses of the schema
+    /// structs, and is called only when the schema goes too. The row count it returns has
+    /// `OUTPUT_SCHEMA_EXPORTED` set when it wrote the schema.
+    ///
+    /// A batch with a dictionary carries its schema every time, because the JVM gives each
+    /// dictionary it imports a new id and keeps its values under that id.
+    ///
+    /// # Safety
+    /// As for `export_batch`.
+    unsafe fn export<A: Deref<Target = [i64]>>(
+        &mut self,
+        array_addrs: &[i64],
+        schema_addrs: impl FnOnce() -> CometResult<A>,
+        batch: RecordBatch,
+        validate: bool,
+    ) -> CometResult<i64> {
+        // With no addresses, which Spark passes when the results of a query are not used, there is
+        // no schema to export either.
+        let unchanged = self
+            .exported
+            .as_deref()
+            .is_some_and(|columns| ExportedColumn::all_match(columns, &batch));
+        if array_addrs.is_empty() || unchanged {
+            return export_batch(array_addrs, None, batch, validate);
+        }
+
+        let schema_addrs = schema_addrs()?;
+        let cacheable = self.enabled
+            && !batch
+                .columns()
+                .iter()
+                .any(|column| has_dictionary(column.data_type()));
+        let columns = cacheable.then(|| ExportedColumn::of(&batch));
+        let num_rows = export_batch(array_addrs, Some(&schema_addrs), batch, validate)?;
+        self.exported = columns;
+        Ok(num_rows | OUTPUT_SCHEMA_EXPORTED)
+    }
+}
+
+/// Whether `data_type` is a dictionary or has one nested in it.
+fn has_dictionary(data_type: &ArrowDataType) -> bool {
+    match data_type {
+        ArrowDataType::Dictionary(_, _) => true,
+        ArrowDataType::List(field)
+        | ArrowDataType::LargeList(field)
+        | ArrowDataType::ListView(field)
+        | ArrowDataType::LargeListView(field)
+        | ArrowDataType::FixedSizeList(field, _)
+        | ArrowDataType::Map(field, _) => has_dictionary(field.data_type()),
+        ArrowDataType::Struct(fields) => {
+            fields.iter().any(|field| has_dictionary(field.data_type()))
+        }
+        ArrowDataType::Union(fields, _) => fields
+            .iter()
+            .any(|(_, field)| has_dictionary(field.data_type())),
+        ArrowDataType::RunEndEncoded(_, values) => has_dictionary(values.data_type()),
+        _ => false,
+    }
 }
 
 /// Moves the columns of `output_batch` into the Arrow C Data Interface structs at `array_addrs`
-/// and `schema_addrs`, one pair per column, and returns the row count. With no addresses, which
+/// and `schema_addrs`, one pair per column, and returns the row count. Without `schema_addrs`
+/// only the arrays are moved, for a JVM that already holds their schema. With no addresses, which
 /// Spark passes when the results of a query are not used, only the row count is returned.
 ///
 /// # Safety
@@ -1237,7 +1369,7 @@ fn prepare_output(
 /// Whatever the structs hold is overwritten without being released.
 unsafe fn export_batch(
     array_addrs: &[i64],
-    schema_addrs: &[i64],
+    schema_addrs: Option<&[i64]>,
     output_batch: RecordBatch,
     validate: bool,
 ) -> CometResult<i64> {
@@ -1270,11 +1402,13 @@ unsafe fn export_batch(
         let mut i = 0;
         while i < results.len() {
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
-            let field = output_schema.field(i);
-
-            array_ref
-                .to_data()
-                .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
+            let data = array_ref.to_data();
+            match schema_addrs {
+                Some(schema_addrs) => {
+                    data.move_to_spark(output_schema.field(i), array_addrs[i], schema_addrs[i])?
+                }
+                None => data.move_array_to_spark(array_addrs[i])?,
+            }
             i += 1;
         }
     }
@@ -1546,6 +1680,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     schema_addrs,
                     batch,
                     exec_context.debug_native,
+                    Some(&mut exec_context.output_schema),
                 ),
                 None => Ok(-1),
             }
@@ -2355,7 +2490,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_takeShuffleBatch(
             let batch = unsafe { shuffle_batch_coalescer(handle)? }
                 .take_ready()
                 .ok_or_else(|| CometError::Internal("No decoded shuffle batch is ready".into()))?;
-            prepare_output(env, array_addrs, schema_addrs, batch, false)
+            prepare_output(env, array_addrs, schema_addrs, batch, false, None)
         })
     })
 }
@@ -2514,7 +2649,7 @@ unsafe fn decode_shuffle_block(
     } else {
         read_ipc_compressed(block)?
     };
-    export_batch(array_addrs, schema_addrs, batch, false)
+    export_batch(array_addrs, Some(schema_addrs), batch, false)
 }
 
 #[no_mangle]
@@ -3046,6 +3181,126 @@ mod tests {
             !probe.read_under_registry_lock.load(Relaxed),
             "a pool's reservation was read while the registry lock was held"
         );
+    }
+
+    /// `executePlan` skips the output schema while a batch would export the same one, which
+    /// depends on each column's type and field metadata but not on its name or nullability.
+    #[test]
+    fn exported_columns_match_only_the_same_types_and_metadata() {
+        let batch = |field: Field, column: ArrayRef| {
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![column]).unwrap()
+        };
+        let ints = || Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef;
+        let exported = ExportedColumn::of(&batch(Field::new("a", DataType::Int32, true), ints()));
+
+        let renamed = batch(Field::new("b", DataType::Int32, false), ints());
+        assert!(ExportedColumn::all_match(&exported, &renamed));
+
+        let longs = Arc::new(arrow::array::Int64Array::from(vec![1, 2])) as ArrayRef;
+        let retyped = batch(Field::new("a", DataType::Int64, true), longs);
+        assert!(!ExportedColumn::all_match(&exported, &retyped));
+
+        let metadata = HashMap::from([("k".to_string(), "v".to_string())]);
+        let tagged = batch(
+            Field::new("a", DataType::Int32, true).with_metadata(metadata),
+            ints(),
+        );
+        assert!(!ExportedColumn::all_match(&exported, &tagged));
+
+        let no_columns = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        assert!(!ExportedColumn::all_match(&exported, &no_columns));
+    }
+
+    /// Exports `batch` through `cache` into new structs, as the JVM passes them, and returns what it
+    /// returned and whether it wrote each column's schema. The structs, and the buffers they hold,
+    /// are released when they drop at the end.
+    fn export_plan_output(batch: RecordBatch, cache: &mut OutputSchemaCache) -> (i64, Vec<bool>) {
+        use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+        let columns = batch.num_columns();
+        let mut arrays: Vec<_> = (0..columns).map(|_| FFI_ArrowArray::empty()).collect();
+        let mut schemas: Vec<_> = (0..columns).map(|_| FFI_ArrowSchema::empty()).collect();
+        let array_addrs: Vec<i64> = arrays
+            .iter_mut()
+            .map(|array| array as *mut FFI_ArrowArray as i64)
+            .collect();
+        let schema_addrs: Vec<i64> = schemas
+            .iter_mut()
+            .map(|schema| schema as *mut FFI_ArrowSchema as i64)
+            .collect();
+        let schema_addrs = || Ok(schema_addrs.as_slice());
+        let result = unsafe { cache.export(&array_addrs, schema_addrs, batch, false) }.unwrap();
+        assert!(arrays.iter().all(|array| !array.is_released()));
+        let written = schemas
+            .iter()
+            .map(|schema| !schema.format.is_null())
+            .collect();
+        (result, written)
+    }
+
+    #[test]
+    fn output_schema_cache_writes_the_schema_only_when_it_changes() {
+        let batch = |column: ArrayRef| RecordBatch::try_from_iter(vec![("c", column)]).unwrap();
+        let ints = |values: Vec<i32>| batch(Arc::new(Int32Array::from(values)));
+        let mut cache = OutputSchemaCache::new(true);
+
+        let first = export_plan_output(ints(vec![1, 2]), &mut cache);
+        assert_eq!(first, (2 | OUTPUT_SCHEMA_EXPORTED, vec![true]));
+        assert_eq!(
+            export_plan_output(ints(vec![3]), &mut cache),
+            (1, vec![false])
+        );
+
+        // A new type is written, and is what the next batch is compared with.
+        let longs = batch(Arc::new(arrow::array::Int64Array::from(vec![4_i64])));
+        let retyped = export_plan_output(longs.clone(), &mut cache);
+        assert_eq!(retyped, (1 | OUTPUT_SCHEMA_EXPORTED, vec![true]));
+        assert_eq!(export_plan_output(longs, &mut cache), (1, vec![false]));
+
+        // A dictionary carries its schema every time.
+        let keys: arrow::array::DictionaryArray<arrow::datatypes::Int32Type> =
+            vec!["x", "y", "x"].into_iter().collect();
+        let dictionaries = batch(Arc::new(keys));
+        for _ in 0..2 {
+            let result = export_plan_output(dictionaries.clone(), &mut cache);
+            assert_eq!(result, (3 | OUTPUT_SCHEMA_EXPORTED, vec![true]));
+        }
+        assert!(cache.exported.is_none());
+
+        // With no addresses there is nothing to write, so nothing is flagged.
+        let no_schema_addrs = || -> CometResult<&[i64]> { panic!("not needed") };
+        let unused = unsafe { cache.export(&[], no_schema_addrs, ints(vec![5, 6, 7]), false) };
+        assert_eq!(unused.unwrap(), 3);
+    }
+
+    #[test]
+    fn a_disabled_output_schema_cache_writes_the_schema_every_time() {
+        let ints = RecordBatch::try_from_iter(vec![(
+            "c",
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+        )])
+        .unwrap();
+        let mut cache = OutputSchemaCache::new(false);
+        for _ in 0..2 {
+            let result = export_plan_output(ints.clone(), &mut cache);
+            assert_eq!(result, (2 | OUTPUT_SCHEMA_EXPORTED, vec![true]));
+        }
+        assert!(cache.exported.is_none());
+    }
+
+    #[test]
+    fn has_dictionary_finds_nested_dictionaries() {
+        let dictionary = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+        let list_of = |data_type| DataType::List(Arc::new(Field::new("item", data_type, true)));
+        assert!(has_dictionary(&dictionary));
+        assert!(has_dictionary(&list_of(dictionary.clone())));
+        assert!(has_dictionary(&DataType::Struct(
+            vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new("b", dictionary, true)
+            ]
+            .into()
+        )));
+        assert!(!has_dictionary(&list_of(DataType::Utf8)));
     }
 
     #[test]

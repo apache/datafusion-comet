@@ -20,13 +20,19 @@
 package org.apache.comet.vector
 
 import scala.collection.mutable.ArrayBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.FieldVector
 import org.apache.arrow.vector.dictionary.DictionaryEncoder
+import org.apache.arrow.vector.types.pojo.Field
 
 /** Shared logical-vector access for Arrow stream producers. */
 object CometVectorUtils {
+
+  /** Whether `field` or a field nested in it is dictionary-encoded. */
+  def hasDictionary(field: Field): Boolean =
+    field.getDictionary != null || field.getChildren.asScala.exists(hasDictionary)
 
   /**
    * Borrow plain vectors and temporarily decode top-level dictionaries in `allocator`. The
