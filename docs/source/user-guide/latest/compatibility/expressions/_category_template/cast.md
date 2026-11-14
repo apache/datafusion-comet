@@ -207,9 +207,9 @@ as `"1.23E+4"`).
 
 Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
 `LongType` or `TimestampType` has no native implementation, and neither does casting any of the
-integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
-routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
-pipeline, so the results match Spark exactly.
+integer types to a negative-scale `DecimalType`. Comet reports these as unsupported in every eval
+mode, which routes them through the JVM codegen dispatcher (Spark's own generated code) inside the
+Comet pipeline, so the results match Spark exactly.
 
 The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
 overflows when the scale is negative. See
@@ -254,13 +254,6 @@ In Try mode, a cast between maps fails with an error when a key cannot be cast, 
 a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This only affects key
 casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
 `STRING` key cast at analysis.
-
-## Decimal with Negative Scale to Integral Types
-
-Casting a `DecimalType` with a negative scale, which Spark only creates when
-`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, to `ByteType`, `ShortType`, `IntegerType`
-or `LongType` is not supported natively in any eval mode. The native kernels divide by
-`10^scale`, which overflows for a negative scale, so Comet leaves the cast to Spark.
 
 ## Legacy Mode
 

@@ -1153,13 +1153,13 @@ class CometNativeCastSuite
           intTypes.foreach { intType =>
             assert(
               CometCast.isSupported(intType, negScaleType, None, CometEvalMode.LEGACY) ==
-                Unsupported(Some(CometCast.negativeScaleDecimalFromIntegralReason)),
+                Unsupported(Some(DataTypeSupport.negativeScaleDecimalReason)),
               s"expected $intType -> $negScaleType to be Unsupported")
           }
           assert(
             CometCast
               .isSupported(negScaleType, DataTypes.TimestampType, None, CometEvalMode.LEGACY) ==
-              Unsupported(Some(CometCast.negativeScaleDecimalToTimestampReason)))
+              Unsupported(Some(DataTypeSupport.negativeScaleDecimalReason)))
 
           val values = Seq(10L * unit, 20L * unit, 30L * unit)
           assertCodegenRan {
@@ -1202,7 +1202,7 @@ class CometNativeCastSuite
         integralTypes.foreach { toType =>
           assert(
             CometCast.isSupported(negScaleType, toType, None, evalMode) ==
-              Unsupported(Some(CometCast.negativeScaleDecimalToIntegralReason)))
+              Unsupported(Some(DataTypeSupport.negativeScaleDecimalReason)))
         }
       }
 
