@@ -90,8 +90,11 @@ allocator. To build Comet with [jemalloc](https://jemalloc.net/) instead, add th
 make release PROFILES="-Pspark-4.1 -Pjemalloc"
 ```
 
-`make release-nogit` accepts it too. The profile builds the native library with its `jemalloc` Cargo
-feature, which cannot be combined with `mimalloc`.
+`make release-nogit` accepts it too. The profile itself has no settings, because Maven does not
+build the native library. `make` is what adds the `jemalloc` Cargo feature when `PROFILES` names
+the profile. The feature cannot be combined with `mimalloc`. If you build the native library
+yourself with `cargo build`, pass `--features jemalloc` there. Running `./mvnw install -Pjemalloc`
+after a plain `cargo build` packages a library that uses the system allocator, with no warning.
 
 jemalloc replaces the allocator of the Rust code in the native library. C code linked into it, such
 as zstd, the JVM and any other native library in the executor still allocate through glibc. To use
