@@ -109,6 +109,7 @@ Documentation Style Guide <style_guide>
 
 Bug Triage <bug_triage>
 Backporting <backporting>
+Upgrading DataFusion <upgrading_datafusion>
 Release Process <release_process>
 Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
