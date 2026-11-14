@@ -65,7 +65,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType, withSharedSubexpressions}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -2389,10 +2389,14 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       // Per-expression binding: Partial expressions bind to child output,
       // PartialMerge/Final expressions do not (native planner handles their input).
       val output = child.output
-      val aggExprs = aggregateExpressions.map { a =>
-        val exprBinding = a.mode != PartialMerge && a.mode != Final
-        aggExprToProto(a, output, exprBinding, aggregate.conf)
-      }
+      // Spark's generated code shares subexpressions among the aggregate functions' inputs
+      val aggExprs =
+        withSharedSubexpressions(aggregateExpressions, alwaysShared = true, certain = true) {
+          aggregateExpressions.map { a =>
+            val exprBinding = a.mode != PartialMerge && a.mode != Final
+            aggExprToProto(a, output, exprBinding, aggregate.conf)
+          }
+        }
 
       if (aggExprs.exists(_.isEmpty)) {
         withFallbackReason(aggregate, "Unsupported aggregate expression(s)")
@@ -2461,7 +2465,11 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     if (resultExpressions.map(_.toAttribute) == naturalOutput) {
       return Some(builder.setHashAgg(hashAggBuilder).build())
     }
-    val resultExprs = resultExpressions.map(exprToProto(_, naturalOutput))
+    // Spark's generated code evaluates each result expression alone, but without whole-stage
+    // codegen its result projection shares subexpressions when elimination is on
+    val resultExprs = withSharedSubexpressions(resultExpressions, certain = false) {
+      resultExpressions.map(exprToProto(_, naturalOutput))
+    }
     if (resultExprs.exists(_.isEmpty)) {
       withFallbackReason(
         aggregate,

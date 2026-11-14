@@ -34,8 +34,9 @@ SELECT
   map_keys(map_from_entries(array(named_struct('k', -f, 'v', 1), named_struct('k', 2.5F, 'v', 2))))
 FROM float_map_keys_legacy
 
+-- Distinct values arrays: with folding off a repeated `array(1, 2)` is shared and blocks dispatch
 query expect_dispatch(map_from_arrays)
 SELECT
   map_keys(map_from_arrays(array(d, -d), array(1, 2))),
-  map_keys(map_from_arrays(array(f, -f), array(1, 2)))
+  map_keys(map_from_arrays(array(f, -f), array(3, 4)))
 FROM float_map_keys_legacy
