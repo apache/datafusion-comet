@@ -69,7 +69,8 @@ impl SparkMemoryManager for JniMemoryManager {
 /// throws, for instance, when a spill of another consumer fails, or when the task is killed while
 /// it waits for memory, and either way the task has to fail. So once a request for memory has
 /// failed in Spark, in `acquire` or [`Self::try_acquire`], [`Self::check_failure`] fails, and with
-/// it every later `try_acquire`, each time with the exception Spark threw; see [`Failure`]. An
+/// it every later `try_acquire`, each time with the exception Spark threw; see [`Failure`]. Every
+/// later `acquire` carries its whole size as overcommit, so neither asks Spark again. An
 /// operator that takes any error for a refusal and asks again fails again with that exception,
 /// which reaches the JVM as itself if the operator returns the error as it is.
 ///
@@ -203,17 +204,22 @@ impl SparkMemory {
 
     /// Acquires what Spark will grant toward `size` bytes and carries the rest as overcommit.
     /// Never fails; a failed call to Spark counts as a zero grant, and fails every later
-    /// [`Self::try_acquire`].
+    /// [`Self::try_acquire`]. Once a request to Spark has failed, it carries all of `size` without
+    /// asking Spark, which could otherwise spill again the consumer whose spill just failed.
     pub(super) fn acquire(&self, size: usize) {
-        let granted = match self.ask_spark(size) {
-            Ok(acquired) => granted(size, acquired),
-            Err(e) => {
-                warn!(
-                    "Task {} failed to acquire {size} bytes from Spark: {e:?}",
-                    self.task_attempt_id
-                );
-                self.record_failure(size, &e);
-                0
+        let granted = if self.failure.get().is_some() {
+            0
+        } else {
+            match self.ask_spark(size) {
+                Ok(acquired) => granted(size, acquired),
+                Err(e) => {
+                    warn!(
+                        "Task {} failed to acquire {size} bytes from Spark: {e:?}",
+                        self.task_attempt_id
+                    );
+                    self.record_failure(size, &e);
+                    0
+                }
             }
         };
         if granted < size {
@@ -486,17 +492,17 @@ mod tests {
         assert!(fake.released().is_empty());
     }
 
-    /// Once a call to Spark has thrown in `acquire`, every later `try_acquire` fails with that
-    /// exception, the first one if Spark threw more than once, without asking Spark, even once
-    /// Spark could grant the request and the debt.
+    /// Once a call to Spark has thrown in `acquire`, nothing asks Spark again, even once Spark
+    /// could grant the request and the debt: a later `acquire` carries its whole size as
+    /// overcommit, and every later `try_acquire` fails with that exception.
     #[test]
     fn a_failed_acquire_fails_every_later_try_acquire() {
         let fake = FakeSpark::with(200);
         let spark = fake.memory();
         fake.throw_next_acquire();
         spark.acquire(64);
-        fake.throw_next_acquire();
         spark.acquire(32);
+        assert_eq!(spark.overcommit(), 96);
         for _ in 0..3 {
             let error = DataFusionError::from(spark.try_acquire(10).unwrap_err());
             assert!(fake.is_thrown(0, &error), "{error:?}");
