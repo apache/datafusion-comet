@@ -20,10 +20,15 @@
 package org.apache.comet.cloud.s3;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.junit.After;
 import org.junit.Test;
 
 import org.apache.hadoop.conf.Configuration;
@@ -33,6 +38,7 @@ import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
 /**
  * Offline test of the v2 Hadoop adapter: delegating to Hadoop's {@code
@@ -41,6 +47,19 @@ import static org.junit.Assert.assertTrue;
  * bridge suite).
  */
 public class HadoopS3ACredentialProviderAdapterTest {
+
+  private static final String PROFILE_PROVIDER =
+      "org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider";
+
+  private final List<Path> tempFiles = new ArrayList<>();
+
+  @After
+  public void deleteTempFiles() throws Exception {
+    for (Path file : tempFiles) {
+      Files.deleteIfExists(file);
+    }
+    tempFiles.clear();
+  }
 
   private static CometS3Credentials resolve(Map<String, String> props, String bucket)
       throws Exception {
@@ -52,6 +71,34 @@ public class HadoopS3ACredentialProviderAdapterTest {
     } finally {
       adapter.close();
     }
+  }
+
+  private static void assumeProfileProviderAvailable() {
+    boolean available;
+    try {
+      Class.forName(PROFILE_PROVIDER);
+      available = true;
+    } catch (ClassNotFoundException e) {
+      available = false;
+    }
+    assumeTrue("needs hadoop-aws 3.4.2 or later", available);
+  }
+
+  private String writeTempFile(String content) throws Exception {
+    Path file = Files.createTempFile("comet-credentials", ".ini");
+    tempFiles.add(file);
+    Files.write(file, content.getBytes(StandardCharsets.UTF_8));
+    return file.toAbsolutePath().toString();
+  }
+
+  private String writeCredentialsFile() throws Exception {
+    return writeTempFile(
+        "[default]\n"
+            + "aws_access_key_id = AKDEFAULT\n"
+            + "aws_secret_access_key = SKDEFAULT\n"
+            + "[analytics]\n"
+            + "aws_access_key_id = AKPROFILE\n"
+            + "aws_secret_access_key = SKPROFILE\n");
   }
 
   @Test
@@ -168,5 +215,44 @@ public class HadoopS3ACredentialProviderAdapterTest {
         assertThrows(IllegalStateException.class, () -> resolve(props, "public-data"));
     assertTrue(e.getMessage().contains("anonymous"));
     assertTrue(e.getMessage().contains("public-data"));
+  }
+
+  @Test
+  public void resolvesNamedProfileFromConfiguredFile() throws Exception {
+    // The adapter promotes per-bucket keys as S3AFileSystem does, so the per-bucket file must
+    // beat the global one, which holds decoy keys under the same profile name.
+    assumeProfileProviderAvailable();
+    String decoyFile =
+        writeTempFile(
+            "[analytics]\n"
+                + "aws_access_key_id = AKDECOY\n"
+                + "aws_secret_access_key = SKDECOY\n");
+    Map<String, String> props = new HashMap<>();
+    props.put("fs.s3a.aws.credentials.provider", PROFILE_PROVIDER);
+    props.put("fs.s3a.auth.profile.file", decoyFile);
+    props.put("fs.s3a.bucket.my-bucket.auth.profile.file", writeCredentialsFile());
+    props.put("fs.s3a.bucket.my-bucket.auth.profile.name", "analytics");
+
+    CometS3Credentials creds = resolve(props, "my-bucket");
+    assertEquals("AKPROFILE", creds.getAccessKeyId());
+    assertEquals("SKPROFILE", creds.getSecretAccessKey());
+    assertEquals(0L, creds.getExpirationEpochMillis());
+  }
+
+  @Test
+  public void profileProviderFallsThroughHadoopList() throws Exception {
+    assumeProfileProviderAvailable();
+    Map<String, String> props = new HashMap<>();
+    props.put(
+        "fs.s3a.aws.credentials.provider",
+        PROFILE_PROVIDER + ",org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider");
+    props.put("fs.s3a.auth.profile.file", writeCredentialsFile());
+    props.put("fs.s3a.auth.profile.name", "missing");
+    props.put("fs.s3a.access.key", "AKSTATIC");
+    props.put("fs.s3a.secret.key", "SKSTATIC");
+
+    CometS3Credentials creds = resolve(props, "my-bucket");
+    assertEquals("AKSTATIC", creds.getAccessKeyId());
+    assertEquals("SKSTATIC", creds.getSecretAccessKey());
   }
 }

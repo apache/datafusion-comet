@@ -109,10 +109,11 @@ under the License.
          version hadoop-aws 3.3.4 bundles. -->
     <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
     <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
-         provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
-         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.5 profile overrides
+         provider factory. The default matches the default build (Spark 4.1, SDK v2): 3.4.2 is
+         Spark 4.1's Hadoop version and the first with S3A's ProfileAWSCredentialsProvider. The
+         spark-4.0 and spark-4.2 profiles pin 3.4.1, and the spark-3.5 profile overrides
          it down to 3.3.x (SDK v1). -->
-    <hadoop-aws.version>3.4.1</hadoop-aws.version>
+    <hadoop-aws.version>3.4.2</hadoop-aws.version>
     <!-- Delta Lake pairing for the contrib/delta-spark module (-Pdelta). Each Spark profile
          in this pom sets delta.spark.version to its matching Delta release. The delta.artifact
          property names the Delta artifact (delta-spark for the 3.x/4.x lines). The defaults
@@ -792,6 +793,7 @@ under the License.
         <spark.version.short>4.0</spark.version.short>
         <hadoop.version>3.4.1</hadoop.version>
         <hadoop-azure.version>3.4.1</hadoop-azure.version>
+        <hadoop-aws.version>3.4.1</hadoop-aws.version>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
@@ -842,6 +844,7 @@ under the License.
         <spark.version.short>4.2</spark.version.short>
         <hadoop.version>3.5.0</hadoop.version>
         <hadoop-azure.version>3.5.0</hadoop-azure.version>
+        <hadoop-aws.version>3.4.1</hadoop-aws.version>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
