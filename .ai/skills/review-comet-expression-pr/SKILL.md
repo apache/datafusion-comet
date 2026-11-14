@@ -155,7 +155,7 @@ query spark_answer_only
 SELECT crc32(cast(a as string)) FROM test_crc32
 
 -- allows numeric variance for floating-point results
-query tolerance=0.0001
+query tolerance=1e-6
 SELECT cos(v) FROM test_trig
 
 -- asserts fallback to Spark occurs
