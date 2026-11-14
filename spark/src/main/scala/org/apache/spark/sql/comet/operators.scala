@@ -2289,17 +2289,9 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
 
-    if (groupingExpressions.exists(expr =>
-        SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
-      withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
-      return None
-    }
-
-    if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
-      // Collation-aware grouping requires collation-aware hashing/equality; Comet only
-      // compares raw bytes, which would put rows that compare equal under the collation
-      // into different groups.
-      withFallbackReason(aggregate, "Grouping on non-default collated strings is not supported")
+    val unsupportedGrouping = CometBaseAggregate.unsupportedGroupingReason(groupingExpressions)
+    if (unsupportedGrouping.isDefined) {
+      withFallbackReason(aggregate, unsupportedGrouping.get)
       return None
     }
 
@@ -2573,6 +2565,29 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     }.flatten
   }
 
+}
+
+object CometBaseAggregate {
+
+  /**
+   * The reason Comet cannot group on `groupingExpressions` because of their data types, or `None`
+   * if their types are supported. Both `CometBaseAggregate.doConvert` and
+   * `CometExecRule.canAggregateBeConverted` call this, so the grouping key checks cannot drift
+   * between the two.
+   */
+  def unsupportedGroupingReason(groupingExpressions: Seq[Expression]): Option[String] = {
+    if (groupingExpressions.exists(expr =>
+        SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
+      Some("Grouping on map-containing types is not supported")
+    } else if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
+      // Collation-aware grouping requires collation-aware hashing/equality; Comet only
+      // compares raw bytes, which would put rows that compare equal under the collation
+      // into different groups.
+      Some("Grouping on non-default collated strings is not supported")
+    } else {
+      None
+    }
+  }
 }
 
 object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
