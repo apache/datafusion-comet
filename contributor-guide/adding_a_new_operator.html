@@ -896,9 +896,11 @@ projection do. The planner declares the order through an operator only when the 
 keeps it. An operator that cannot keep the order natively must not report it, or has to be added to
 <code class="docutils literal notranslate"><span class="pre">mayReportFalseOrder</span></code> in <code class="docutils literal notranslate"><span class="pre">operators.scala</span></code>. The hash join and window serdes then send no order over
 it, an outer hash join above it that has to keep that order falls back to Spark, and a window that
-runs in Spark above it gets its input sorted again. Comet’s hash joins are the exception within one
-native plan: an outer hash join over one of them stays native, even over one that declared no order,
-since DataFusion keeps the order it can see there.</p>
+runs in Spark above it gets its input sorted again, by the whole order the input reports, since the
+operators above the window may rely on more of it than the window needs. When that order does not
+cover the window’s keys, the sort is by those keys instead. Comet’s hash joins are the exception
+within one native plan: an outer hash join over one of them stays native, even over one that
+declared no order, since DataFusion keeps the order it can see there.</p>
 <p>A leaf that reports an ordering is where the order starts, so the planner has to know that the
 native operator produces its rows in that order. It knows that of an input from the JVM and of a
 scan of files, which reads the files of each partition one after the other, and the native range
