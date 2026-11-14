@@ -500,6 +500,10 @@ object CometMetricNode {
         SQLMetrics.createMetric(
           sc,
           "Metadata loads read from storage ahead of the file's open and used by it"),
+      "scan_io_unreserved_bytes" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Scan bytes read without a memory reservation because the pool refused it"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->

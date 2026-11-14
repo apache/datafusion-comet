@@ -231,6 +231,7 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
 | `scan_io_metadata_prefetches`              | Opens that used a load which read storage ahead of them, started when the previous file opened (`spark.comet.parquet.prefetchNextFileMetadata.enabled`). Each also counts as a cache miss.                                   |
+| `scan_io_unreserved_bytes`                 | Bytes the scan held without a memory reservation because the pool refused it: fetched data pages, plus the per-reader decode-buffer estimate. The scan cannot spill, so it keeps reading instead of failing.                 |
 | `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.                                                                                                              |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
