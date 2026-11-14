@@ -26,6 +26,9 @@ import scala.reflect.runtime.universe.runtimeMirror
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.execution.FileSourceScanExec
+import org.apache.spark.sql.types.IntegerType
 import org.apache.xbean.asm9.{ClassReader, Opcodes}
 import org.apache.xbean.asm9.tree.{ClassNode, FieldInsnNode, MethodInsnNode}
 
@@ -35,6 +38,56 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.util.ClassLoaders
 
 class CometPlanEqualitySuite extends AnyFunSuite {
+
+  test("native scan fallback preserves additional runtime constructor fields") {
+    val output = Seq(AttributeReference("id", IntegerType)())
+    val partitionFilters = Seq(GreaterThan(output.head, Literal(1)))
+    val dataFilters = Seq(LessThan(output.head, Literal(10)))
+    val scan = ExtendedFileSourceScanExec(output)
+
+    val nativeScan = CometNativeScanExec(
+      nativeOp = null,
+      relation = scan.relation,
+      output = scan.output,
+      requiredSchema = scan.requiredSchema,
+      partitionFilters = partitionFilters,
+      optionalBucketSet = scan.optionalBucketSet,
+      optionalNumCoalescedBuckets = scan.optionalNumCoalescedBuckets,
+      dataFilters = dataFilters,
+      tableIdentifier = scan.tableIdentifier,
+      disableBucketedScan = scan.disableBucketedScan,
+      originalPlan = scan,
+      serializedPlanOpt = SerializedPlan(None),
+      scan = null,
+      sourceKey = "")
+    val copied = nativeScan
+      .sparkFallback(Nil)
+      .asInstanceOf[FileSourceScanExec]
+
+    assert(copied.getClass == scan.getClass)
+    assert(copied.partitionFilters == partitionFilters)
+    assert(copied.dataFilters == dataFilters)
+    assert(copied.output == output)
+    assert(copied.tableIdentifier == scan.tableIdentifier)
+    assert(copied.disableBucketedScan)
+    assert(copied.productIterator.toSeq.takeRight(2) == Seq(true, output))
+    assert(scan.partitionFilters.isEmpty && scan.dataFilters.isEmpty)
+  }
+
+  test("scan canonicalization retains Spark normalization and removes original DPP filters") {
+    val output = Seq(AttributeReference("id", IntegerType)())
+    val staticFilter = GreaterThan(output.head, Literal(1))
+    val scan = ExtendedFileSourceScanExec(
+      output,
+      partitionFilters =
+        Seq(staticFilter, DynamicPruningExpression(EqualTo(output.head, Literal(2)))),
+      dataFilters = Seq(LessThan(output.head, Literal(10))))
+
+    assert(
+      CometScanUtils.canonicalizeOriginalPlan(scan) ==
+        scan.copy(partitionFilters = Seq(staticFilter)).doCanonicalize())
+    assert(CometScanUtils.canonicalizeOriginalPlan(null) == null)
+  }
 
   // Native serialization state and the source plan are deliberately not the identity of a
   // converted operator. Some operators do compare these; exclusion does not forbid comparison.

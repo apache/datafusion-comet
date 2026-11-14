@@ -32,6 +32,21 @@ import org.apache.comet.objectstore.NativeConfig
 
 object CometScanUtils {
 
+  private[apache] def copyScanWithFilters(
+      scan: FileSourceScanExec,
+      partitionFilters: Seq[Expression],
+      dataFilters: Seq[Expression]): FileSourceScanExec = {
+    // Keep the runtime's full constructor, including fields added by Spark distributions.
+    val args = scan.productIterator.map(_.asInstanceOf[AnyRef]).toArray
+    // Spark 4 adds a stream argument before the schema; the filters keep the same offsets
+    // after it. Locate the existing schema rather than assuming a Spark-specific arity.
+    val schemaIndex = args.indexWhere(_ eq scan.requiredSchema)
+    require(schemaIndex >= 0, "FileSourceScanExec is missing its required schema")
+    args(schemaIndex + 1) = partitionFilters
+    args(schemaIndex + 4) = dataFilters
+    scan.makeCopy(args).asInstanceOf[FileSourceScanExec]
+  }
+
   /**
    * Filters unused DynamicPruningExpression expressions - one which has been replaced with
    * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
@@ -54,9 +69,10 @@ object CometScanUtils {
     if (originalPlan == null) {
       null
     } else {
-      originalPlan
-        .copy(partitionFilters =
-          originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]))
+      copyScanWithFilters(
+        originalPlan,
+        originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]),
+        originalPlan.dataFilters)
         .doCanonicalize()
     }
   }
