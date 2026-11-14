@@ -62,11 +62,13 @@ least one result is `null`, `exists` returns `null` when the config is `true` an
 is `false`. A matching element still returns `true`, while a null input array still returns
 `null`, under either value.
 
-**Comet status.** `CometArrayExists` routes Spark's `ArrayExists` expression through the JVM
-codegen dispatcher. The dispatcher evaluates the Spark expression carrying the captured
-`followThreeValuedLogic` value inside the Comet pipeline, so both config values preserve Spark's
-semantics. If the dispatcher is disabled, the affected Comet operator falls back to Spark rather
-than executing with different semantics.
+**Comet status.** With the setting `true` (the default), `CometArrayExists` runs a lambda whose body Comet
+supports natively under DataFusion's `array_any_match`, which has the same three-valued result: NULL when no
+element matches but the predicate was NULL for some. With the setting `false`, and for every other lambda,
+`CometArrayExists` routes Spark's `ArrayExists` expression through the JVM codegen dispatcher. The dispatcher
+evaluates the Spark expression carrying the captured `followThreeValuedLogic` value inside the Comet pipeline, so
+both config values preserve Spark's semantics. If the dispatcher is disabled, the affected Comet operator falls
+back to Spark rather than executing with different semantics.
 
 **Test coverage.** `spark/src/test/resources/sql-tests/expressions/array/exists.sql` uses a
 `ConfigMatrix` to run both values and covers null arrays, empty arrays, matching predicates,
