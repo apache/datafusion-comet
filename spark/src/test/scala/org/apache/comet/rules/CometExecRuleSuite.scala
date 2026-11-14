@@ -29,7 +29,7 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Cast, CreateArray, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Length, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder, Upper}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Count, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
@@ -48,7 +48,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
+import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StringType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
@@ -2227,6 +2227,59 @@ class CometExecRuleSuite extends CometTestBase {
       previous match {
         case Some(reasons) => literal.setTagValue(tag, reasons)
         case None => literal.unsetTagValue(tag)
+      }
+    }
+  }
+
+  test("rolled-up expression reasons name the expression that recorded them") {
+    withTempView("fallback_names") {
+      createTestDataFrame.createOrReplaceTempView("fallback_names")
+      val sparkPlan = createSparkPlan(spark, "SELECT id * 2 FROM fallback_names")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val nativeChild = stripAQEPlan(applyCometExecRule(sparkPlan)).collectFirst {
+          case op: CometNativeExec => op
+        }.get
+        val rule = CometExecRule(spark)
+        // Records `reason` on the expression `mk` builds, then returns what the operator reports.
+        def rolledUp(mk: Attribute => Expression, reason: String): Set[String] =
+          CometExplainInfo.withFallbackReasonScope {
+            val expr = mk(nativeChild.output.head)
+            withFallbackReason(expr, reason)
+            val op = ProjectExec(Seq(Alias(expr, "value")()), nativeChild)
+            rule.rollUpFallbackReasons(op)
+            op.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+          }
+        def upper(attr: Attribute): Expression = Upper(Cast(attr, StringType))
+        val unsupported = "data type not supported: BinaryType"
+
+        // A reason that does not say which function rejected the input gets the function name.
+        assert(rolledUp(upper, unsupported) == Set(s"upper: $unsupported"))
+        // A reason that already names the function is left as is, whatever the case.
+        assert(rolledUp(upper, "UPPER cannot do this") == Set("UPPER cannot do this"))
+        // So is one that names the Scala class, which several serdes do, such as `CreateArray`
+        // for `array` and `ArrayInsert` for `array_insert`.
+        assert(
+          rolledUp(a => CreateArray(Seq(a)), "unsupported arguments for CreateArray") ==
+            Set("unsupported arguments for CreateArray"))
+        // A reason that names a config key already says what to enable, so it is left as is.
+        val configReason = "Set spark.comet.expression.Upper.enabled=true to enable it."
+        assert(rolledUp(upper, configReason) == Set(configReason))
+        // An aggregate expression is named after its function, not "aggregateexpression".
+        assert(rolledUp(Min(_).toAggregateExpression(), unsupported) == Set(s"min: $unsupported"))
+        // Leaves keep their reason: "literal" would add nothing.
+        assert(rolledUp(_ => Literal(1), unsupported) == Set(unsupported))
+        // A reason lifted onto another expression keeps the name of the expression that recorded
+        // it. Decimal promotion and IN-list normalization lift reasons from rebuilt copies.
+        assert(
+          rolledUp(
+            attr => {
+              val child = upper(attr)
+              withFallbackReason(child, unsupported)
+              val parent = Length(Cast(attr, StringType))
+              QueryPlanSerde.liftFallbackReasons(child, parent)
+              parent
+            },
+            "parent failed") == Set("length: parent failed", s"upper: $unsupported"))
       }
     }
   }

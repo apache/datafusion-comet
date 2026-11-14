@@ -172,7 +172,7 @@ The tables below list every Spark built-in expression with its current status.
 | `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |
-| `flatten` | ✅ | Native | Binary/struct/map elements fall back |
+| `flatten` | ✅ | Native | Struct/map elements fall back |
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
