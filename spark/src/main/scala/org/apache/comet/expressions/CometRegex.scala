@@ -94,6 +94,8 @@ object CometRegex {
   // capture slots, but cannot drop the capture cost itself. `(?:...)` does
   // not add capture states. MaxExpansion is still a structural heuristic,
   // not a compiled-byte proof.
+  // When admitting constructs or changing these caps, extend dev/GenerateRegexFixtures.java
+  // to cover the new boundaries; see docs/source/contributor-guide/regex-fixtures.md.
   private val MaxGroupDepth = 32
   private val MaxCountedBound = 256
   private val MaxExpansion = 4096L
