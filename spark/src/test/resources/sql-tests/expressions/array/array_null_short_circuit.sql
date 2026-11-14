@@ -108,10 +108,17 @@ SELECT array_contains(ai, CAST(s AS INT))
 FROM (SELECT * FROM array_null_short_circuit ORDER BY i LIMIT 10)
 
 -- A TakeOrderedAndProject compares rows one sort key at a time and evaluates its projection apart
--- from the keys, so a cast in two sort keys, or in a sort key and the projection, is skipped too
+-- from the keys, so a cast in two sort keys, or in a sort key and the projection, is skipped too.
+-- A later sort key that can fail runs the top-K on Spark (#7246), so allow it here.
+statement
+SET spark.comet.operator.TakeOrderedAndProjectExec.allowIncompatible=true
+
 query expect_native(array_contains, array_position)
 SELECT i FROM (SELECT * FROM array_null_short_circuit
   ORDER BY array_contains(ai, CAST(s AS INT)), array_position(ai, CAST(s AS INT)), i LIMIT 10)
+
+statement
+RESET spark.comet.operator.TakeOrderedAndProjectExec.allowIncompatible
 
 query expect_native(array_contains, array_position)
 SELECT array_contains(ai, CAST(s AS INT))

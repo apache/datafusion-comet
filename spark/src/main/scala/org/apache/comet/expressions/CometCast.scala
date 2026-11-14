@@ -24,7 +24,7 @@ import scala.util.Try
 import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DateType, DecimalType, MapType, NullType, NumericType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
@@ -577,6 +577,39 @@ object CometCast
    */
   private[comet] def canProduceNullMapKey(cast: Cast): Boolean =
     evalMode(cast) == CometEvalMode.TRY && mayNullMapKey(cast.child.dataType, cast.dataType)
+
+  /**
+   * Whether `cast` cannot raise an error for any value. A TRY cast returns NULL for a value it
+   * cannot convert, and so does a LEGACY cast between the atomic types listed here. An ANSI cast
+   * cannot fail only where the conversion is always exact, such as a widening one or a string to
+   * its bytes. A cast to or from a timestamp is excluded in every mode: the native kernels go
+   * through chrono, which rejects years Spark accepts, and raise even for TRY. So is a cast from
+   * a date to a string, whose native formatting raises in every mode for such a year. Both are
+   * checked at any depth, since a nested cast applies the same kernels to each element, field,
+   * key and value (https://github.com/apache/datafusion-comet/issues/7471).
+   */
+  private[comet] def cannotFail(cast: Cast): Boolean = {
+    val from = cast.child.dataType
+    val to = cast.dataType
+    val hasTimestamp = Seq(from, to).exists(
+      SupportLevel.containsType(_, classOf[TimestampType], classOf[TimestampNTZType]))
+    val dateToString = SupportLevel.containsType(from, classOf[DateType]) &&
+      SupportLevel.containsType(to, classOf[StringType])
+    !hasTimestamp && !dateToString && (evalMode(cast) match {
+      case CometEvalMode.TRY => true
+      case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
+      case _ if from.isInstanceOf[StringType] && to == DataTypes.BinaryType => true
+      case _ => keyCastCannotFail(from, to)
+    })
+  }
+
+  // Timestamps are left out because `cannotFail` rejects them before reaching this check.
+  private def isAtomicCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | DataTypes.BooleanType | DataTypes.BinaryType |
+        DataTypes.DateType =>
+      true
+    case _ => false
+  }
 
   private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
