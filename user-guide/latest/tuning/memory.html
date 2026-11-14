@@ -959,6 +959,23 @@ room, but nothing in the container’s size accounts for the memory that no pool
 <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a>). That memory has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>, which the
 JVM’s own non-heap memory, such as metaspace, code cache, thread stacks and GC structures, is
 already drawing on.</p>
+<p>On Kubernetes and YARN, with <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>, Spark requests the following
+memory for each executor using the default resource profile:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>executor container memory = spark.executor.memory
+                          + spark.executor.memoryOverhead
+                          + spark.memory.offHeap.size
+                          + spark.executor.pyspark.memory (when applicable)
+</pre></div>
+</div>
+<p>The overhead term is the configured value or the derived value described below. The PySpark term
+is included only when configured for a Python application: on YARN, and on Kubernetes in cluster
+mode. Without a separate PySpark allowance, Python workers share the overhead. A non-default
+resource profile can override the memory amounts, and YARN may round up the requested allocation.</p>
+<p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> is therefore part of the container budget, not headroom outside it.
+Increasing it increases both the requested container memory and the shared reservation budget.
+Increasing <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> increases the container memory without enlarging that
+budget. Overhead is an allowance for memory outside the JVM heap and the off-heap pool, not a pool
+consumers can reserve from or a separately enforced limit.</p>
 <p>Work out what the executor already gets before choosing a value. When
 <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is unset, Spark derives the overhead as
 <code class="docutils literal notranslate"><span class="pre">max(spark.executor.memoryOverheadFactor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory,</span> <span class="pre">384</span> <span class="pre">MiB)</span></code>. The factor defaults to
@@ -980,8 +997,9 @@ size:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">memoryOverheadFactor</span><span class="o">=</span><span class="mf">0.2</span>
 </pre></div>
 </div>
-<p>Raise the value further if executors are killed by the cluster manager (on Kubernetes,
-<code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137) rather than failing with a task-level out-of-memory error.
+<p>Raise the value further if cluster-manager diagnostics confirm that executors exceeded their
+container memory limit. First distinguish that from heap exhaustion or a refused pool reservation;
+see <a class="reference internal" href="#diagnosing-memory-failures">Diagnosing Memory Failures</a>.
 To measure how much Comet needs rather than guessing, see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.
 If executors are killed while the memory usage log stays well inside the limits, raising the
 overhead may only delay it; see <a class="reference internal" href="#returning-freed-native-memory-to-the-operating-system">Returning Freed Native Memory to the Operating System</a>.</p>
@@ -989,6 +1007,40 @@ overhead may only delay it; see <a class="reference internal" href="#returning-f
 how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
 executors without a memory limit and count only <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code> against the memory they
 offer.</p>
+</section>
+<section id="diagnosing-memory-failures">
+<h2>Diagnosing Memory Failures<a class="headerlink" href="#diagnosing-memory-failures" title="Link to this heading">#</a></h2>
+<p>Check the executor log and the cluster manager’s diagnostics together. An executor loss or an
+exception class alone does not identify which memory limit was reached.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Limit</p></th>
+<th class="head"><p>Typical symptoms</p></th>
+<th class="head"><p>What to check or tune</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Container memory</p></td>
+<td><p>Kubernetes reports <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code>, often with <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> and exit code 137; YARN reports that the container exceeded its memory limit. All tasks on that executor are lost.</p></td>
+<td><p>Confirm the termination reason: exit 137 alone means the process was killed, not necessarily because of memory. Follow <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a> to size <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>. A pool can stay within its budget while the container exceeds its limit. If the log stays well inside the limits, see <a class="reference internal" href="#returning-freed-native-memory-to-the-operating-system">Returning Freed Native Memory to the Operating System</a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>JVM heap</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">java.lang.OutOfMemoryError</span></code> with a heap-specific message such as <code class="docutils literal notranslate"><span class="pre">Java</span> <span class="pre">heap</span> <span class="pre">space</span></code> or <code class="docutils literal notranslate"><span class="pre">GC</span> <span class="pre">overhead</span> <span class="pre">limit</span> <span class="pre">exceeded</span></code>. Spark’s uncaught-error handler exits with code 52, but a JVM OOM handler can terminate the process first.</p></td>
+<td><p>Investigate heap usage and <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>. Increasing overhead does not enlarge the JVM heap. Other <code class="docutils literal notranslate"><span class="pre">OutOfMemoryError</span></code> messages, such as <code class="docutils literal notranslate"><span class="pre">Metaspace</span></code>, concern different memory limits; exit 52 alone does not establish heap exhaustion.</p></td>
+</tr>
+<tr class="row-even"><td><p>Managed memory pool</p></td>
+<td><p>Operators spill, or a task fails when memory cannot be reserved. Spark consumers can report <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code>; Comet operators can report a <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> with a message such as <code class="docutils literal notranslate"><span class="pre">Additional</span> <span class="pre">allocation</span> <span class="pre">failed</span> <span class="pre">for</span></code> or <code class="docutils literal notranslate"><span class="pre">Not</span> <span class="pre">enough</span> <span class="pre">memory</span> <span class="pre">to</span> <span class="pre">continue</span> <span class="pre">external</span> <span class="pre">sort</span></code>. These reservation failures normally leave the executor running.</p></td>
+<td><p>Identify the consumer and its pool. For Comet’s shared off-heap pool, consider increasing <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, running fewer tasks per executor, or reducing <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>; see <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a>. Increasing overhead does not enlarge this pool. <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code> can also come from Spark’s on-heap consumers, and <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> can report unrelated errors, so check the message and failing operator first.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>For example, on non-Windows YARN executors Spark adds <code class="docutils literal notranslate"><span class="pre">-XX:OnOutOfMemoryError='kill</span> <span class="pre">%p'</span></code> unless
+the executor’s Java options already set <code class="docutils literal notranslate"><span class="pre">-XX:OnOutOfMemoryError</span></code>. The JVM can therefore terminate
+on a heap OOM with SIGTERM (exit 143) rather than reaching Spark’s exit-52 handler. Use the
+heap-specific log message to diagnose this case.</p>
+<p>For the full accounting model and allocation paths, see the contributor guide’s
+<a class="reference internal" href="../../../contributor-guide/memory_management.html"><span class="std std-doc">Memory Management</span></a> page.</p>
 </section>
 <section id="sizing-the-overhead-from-the-memory-usage-log">
 <h2>Sizing the Overhead from the Memory Usage Log<a class="headerlink" href="#sizing-the-overhead-from-the-memory-usage-log" title="Link to this heading">#</a></h2>
@@ -1242,6 +1294,7 @@ compress and decompress them. <code class="docutils literal notranslate"><span c
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-comet-memory">Configuring Comet Memory</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#diagnosing-memory-failures">Diagnosing Memory Failures</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-the-memory-usage-log-from-the-event-log">Reading the Memory Usage Log from the Event Log</a></li>
 </ul>

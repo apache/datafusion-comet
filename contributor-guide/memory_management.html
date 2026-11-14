@@ -607,7 +607,11 @@ for, so that failure is confined to the task and the executor keeps running. An 
 <code class="docutils literal notranslate"><span class="pre">OutOfMemoryError</span></code> is not exempt: the executor hands it to <code class="docutils literal notranslate"><span class="pre">SparkUncaughtExceptionHandler</span></code>, which
 calls <code class="docutils literal notranslate"><span class="pre">System.exit(SparkExitCode.OOM)</span></code> (exit code 52). Real heap exhaustion therefore usually costs
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
-exceeded; the exit code does.</p>
+exceeded, and neither does the exit code alone. Exit 137 means the process was sent <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code>, for
+memory or not. On non-Windows YARN executors, Spark adds <code class="docutils literal notranslate"><span class="pre">-XX:OnOutOfMemoryError='kill</span> <span class="pre">%p'</span></code> unless
+their Java options already set <code class="docutils literal notranslate"><span class="pre">-XX:OnOutOfMemoryError</span></code>, so a heap OOM there usually ends with
+<code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> (143) before the handler exits with 52. The cluster manager’s diagnostics and the executor
+log say which budget it was.</p>
 <p>Comet’s difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
 its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
@@ -1317,11 +1321,13 @@ reservations are released only when a native operator decides to spill on its ow
 </div>
 <p>A checklist for triaging an executor OOM kill:</p>
 <ol class="arabic simple">
-<li><p>Confirm which budget was exceeded. Exit code 137 / <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code> on the pod is the cgroup. Exit
-code 52 with <code class="docutils literal notranslate"><span class="pre">java.lang.OutOfMemoryError</span></code> in the executor log is JVM heap exhaustion; Spark
-treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
-them. A failed task with <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code> and a surviving executor is Spark’s managed
-memory pool, which is the only one of the three that is recoverable at task level.</p></li>
+<li><p>Confirm which budget was exceeded, from the cluster manager’s diagnostics and the executor log
+rather than the exit code alone. <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code> on the pod, or YARN reporting that the container
+exceeded its memory limit, is the cgroup. A <code class="docutils literal notranslate"><span class="pre">java.lang.OutOfMemoryError</span></code> with a heap message
+such as <code class="docutils literal notranslate"><span class="pre">Java</span> <span class="pre">heap</span> <span class="pre">space</span></code> in the executor log is JVM heap exhaustion. Spark treats it as fatal,
+so the executor is lost either way, usually with exit code 52, or 143 on non-Windows YARN. A
+failed task with <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code> and a surviving executor is Spark’s managed memory pool,
+which is the only one of the three that is recoverable at task level.</p></li>
 <li><p>Compare <code class="docutils literal notranslate"><span class="pre">allocated</span></code> against <code class="docutils literal notranslate"><span class="pre">reserved</span></code> in the executor’s <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">native</span> <span class="pre">memory</span> <span class="pre">usage</span></code> log lines
 leading up to the kill, or <code class="docutils literal notranslate"><span class="pre">nativeAllocated</span></code> against <code class="docutils literal notranslate"><span class="pre">poolsReserved</span></code> in its
 <code class="docutils literal notranslate"><span class="pre">CometExecutorMemoryUsage</span></code> events when the event log records them, or <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code>
