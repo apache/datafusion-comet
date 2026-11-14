@@ -1272,7 +1272,7 @@ pub(crate) fn prepare_output(
 /// # Safety
 /// Each address must point to a writable `FFI_ArrowArray` / `FFI_ArrowSchema` the caller owns.
 /// Whatever the structs hold is overwritten without being released.
-pub(crate) unsafe fn export_batch(
+unsafe fn export_batch(
     array_addrs: &[i64],
     schema_addrs: &[i64],
     output_batch: RecordBatch,

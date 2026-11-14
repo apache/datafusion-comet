@@ -25,10 +25,11 @@ import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.Try
 
-import org.apache.spark.{Partition, SparkContext, TaskContext}
+import org.apache.spark.{InterruptibleIterator, Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruning, DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, DeserializeToObjectExec, LeafExecNode, ScalarSubquery, SparkPlan}
@@ -85,10 +86,10 @@ case class CometNativeExecutorsExec(
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     NativeExecutorsClient.requireNativeSupport()
     val request = CometNativeExecutors.withSubqueryResults(
-      CometNativeExecutors.buildQuery(nativePlan).toByteArray,
+      CometNativeExecutors.buildQuery(nativePlan),
       subqueryResults.collect { case sub: ScalarSubquery => sub })
-    val endpoints =
-      ResultEndpoints.parseFrom(new NativeExecutorsClient().submit(schedulerUrl, request))
+    val endpoints = ResultEndpoints.parseFrom(
+      new NativeExecutorsClient().submit(schedulerUrl, request.toByteArray))
     new CometNativeExecutorsRDD(
       sparkContext,
       endpoints.getEndpointsList.asScala.toSeq,
@@ -97,6 +98,10 @@ case class CometNativeExecutorsExec(
 
   override def stringArgs: Iterator[Any] =
     Iterator(output, schedulerUrl)
+
+  // Explain prints the plan the cluster runs under this leaf, as `InMemoryTableScanExec` prints
+  // its cached plan.
+  override def innerChildren: Seq[QueryPlan[_]] = Seq(nativePlan) ++ super.innerChildren
 }
 
 private class CometNativeExecutorsPartition(override val index: Int, val endpoint: ResultEndpoint)
@@ -128,7 +133,8 @@ private class CometNativeExecutorsRDD(
       try {
         client.openPartition(
           partition.endpoint.getLocation,
-          partition.endpoint.getTicket.toByteArray)
+          partition.endpoint.getTicket.toByteArray,
+          partition.endpoint.getExpirationTimeMillis)
       } catch {
         case t: Throwable =>
           nativeUtil.close()
@@ -178,7 +184,8 @@ private class CometNativeExecutorsRDD(
       }
     }
     context.addTaskCompletionListener[Unit](_ => batches.close())
-    batches
+    // A killed task stops at the next batch, as Spark's own source RDDs do.
+    new InterruptibleIterator(context, batches)
   }
 }
 
@@ -244,7 +251,10 @@ object CometNativeExecutors {
    * @throws CometRuntimeException
    *   naming the first operator that cannot run on a cluster
    */
-  def validate(plan: SparkPlan): Unit = stageGraph(plan, withFiles = false)
+  def validate(plan: SparkPlan): Unit = {
+    stageGraph(plan, withFiles = false)
+    ()
+  }
 
   /**
    * The query a Comet Native Executor cluster runs for `plan`, the plan Comet would execute: one
@@ -298,7 +308,7 @@ object CometNativeExecutors {
    * result. The subqueries must have run. Sending the results alongside the plan would spare
    * rewriting it (https://github.com/apache/datafusion-comet/issues/7374).
    */
-  def withSubqueryResults(query: Array[Byte], subqueries: Seq[ScalarSubquery]): Array[Byte] = {
+  def withSubqueryResults(query: QueryRequest, subqueries: Seq[ScalarSubquery]): QueryRequest = {
     if (subqueries.isEmpty) {
       return query
     }
@@ -318,7 +328,7 @@ object CometNativeExecutors {
           throw new CometRuntimeException(
             s"Comet Native Executors found no result for subquery ${expr.getSubquery.getId}"))
     }
-    val request = QueryRequest.parseFrom(query).toBuilder
+    val request = query.toBuilder
     (0 until request.getStagesCount).foreach { i =>
       val stage = request.getStages(i)
       val plan = transformMessages(stage.getPlan)(replace)
@@ -333,7 +343,7 @@ object CometNativeExecutors {
         request.setStages(i, replaced)
       }
     }
-    request.build().toByteArray
+    request.build()
   }
 
   /**
