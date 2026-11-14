@@ -59,7 +59,7 @@ Read the source. Note `inputTypes`, `dataType`, `eval` / `nullSafeEval`, ANSI mo
 
 ### 2. Check for an upstream `datafusion-spark` implementation
 
-Before writing a Comet-specific native function, check whether the expression is already available in the upstream `datafusion-spark` crate. It is a Spark-compatible function library maintained alongside DataFusion, so its semantics are usually a closer match to Spark than a generic `datafusion-functions` built-in.
+Before writing a Comet-specific native function, check whether the expression is already available in the upstream `datafusion-spark` crate. It is a Spark-compatible function library that the DataFusion project maintains in [apache/datafusion-spark](https://github.com/apache/datafusion-spark), so its semantics are usually a closer match to Spark than a generic `datafusion-functions` built-in.
 
 ```bash
 grep -rn "fn name\|SparkFunctionName" ~/.cargo/registry/src/*/datafusion-spark-*/src/function/ 2>/dev/null | grep -i "$ARGUMENTS"
