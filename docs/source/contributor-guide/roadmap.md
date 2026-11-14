@@ -91,12 +91,14 @@ the speedup further and closing the remaining per-query gaps is an ongoing focus
 
 ## Upstream Work in DataFusion
 
-A growing number of Spark-compatible expressions live in the `datafusion-spark` crate in the core DataFusion
-repository. Comet is migrating its expression implementations to that crate so that they can be shared by other
-DataFusion-based projects, and has wired up nearly every function that crate provides ([#4150]). Improvements to
-core DataFusion operators (joins, aggregates, window) made in support of Comet also benefit the wider ecosystem.
+A growing number of Spark-compatible expressions live in the `datafusion-spark` crate, which the DataFusion project
+maintains in its own repository, [apache/datafusion-spark]. Comet is migrating its expression implementations to that
+crate so that they can be shared by other DataFusion-based projects, and has wired up nearly every function that crate
+provides ([#4150]). Improvements to core DataFusion operators (joins, aggregates, window) made in support of Comet also
+benefit the wider ecosystem.
 
 [#4150]: https://github.com/apache/datafusion-comet/issues/4150
+[apache/datafusion-spark]: https://github.com/apache/datafusion-spark
 
 ## Spillable Hash Join
 

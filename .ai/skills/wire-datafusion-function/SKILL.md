@@ -77,6 +77,14 @@ git -C "$DF_CLONE" grep -in "fn name" "$DF_SPARK_VER" -- 'datafusion/spark/src/f
 git -C "$DF_CLONE" grep -in "fn name" "$DF_FUNCS_VER" -- 'datafusion/functions/src/'      | grep -i "$EXPR"
 ```
 
+The `datafusion/spark/` lookup works only for `datafusion-spark` 56.x and earlier. From 57.0.0 the crate is released from [apache/datafusion-spark](https://github.com/apache/datafusion-spark), with its sources under `crates/spark/`. At a DataFusion 57 or later tag the path is missing, so the grep above finds nothing. Search a clone of the new repository instead:
+
+```bash
+DF_SPARK_CLONE=<path from memory>
+[ -z "$(git -C "$DF_SPARK_CLONE" tag -l "$DF_SPARK_VER")" ] && echo "WARNING: tag missing, run git fetch --tags or use Option A"
+git -C "$DF_SPARK_CLONE" grep -in "fn name" "$DF_SPARK_VER" -- 'crates/spark/src/function/' | grep -i "$EXPR"
+```
+
 Never grep the clone's working tree directly — it may be on `main`.
 
 ### 2a. Decision gate — confirm the source crate
