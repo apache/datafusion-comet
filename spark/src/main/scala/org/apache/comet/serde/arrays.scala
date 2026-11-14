@@ -31,6 +31,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -840,7 +841,14 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding)
+    // Spark narrows any integral ordinal to an int; ListExtract reads an Int32 ordinal.
+    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding).flatMap { ordinal =>
+      if (expr.ordinal.dataType == IntegerType) {
+        Some(ordinal)
+      } else {
+        CometCast.castToProto(expr, None, IntegerType, ordinal, CometEvalMode.LEGACY)
+      }
+    }
 
     if (childExpr.isDefined && ordinalExpr.isDefined) {
       val listExtractBuilder = ExprOuterClass.ListExtract
