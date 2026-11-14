@@ -43,6 +43,7 @@ import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, Optimize
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -305,6 +306,173 @@ abstract class ParquetReadSuite extends CometTestBase {
     withParquetDataFrame(data) { df =>
       assertResult(data.map(_._1.mkString(",")).sorted) {
         df.collect().map(_.getAs[Array[Byte]](0).mkString(",")).sorted
+      }
+    }
+  }
+
+  test("spark.sql.parquet.binaryAsString uses native scan") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional binary value;
+          |  optional int32 id;
+          |}
+          |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      Seq(Binary.fromString("one"), Binary.fromConstantByteArray(Array(0xff.toByte))).zipWithIndex
+        .foreach { case (value, id) =>
+          val record = new SimpleGroup(schema)
+          record.add(0, value)
+          record.add(1, id)
+          writer.write(record)
+        }
+      writer.close()
+
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "false") {
+        val df = spark.read.parquet(path.toString)
+        assert(
+          df.schema === StructType(
+            Seq(StructField("value", BinaryType, true), StructField("id", IntegerType, true))))
+        val (_, cometPlan) = checkSparkAnswer(df)
+        assert(
+          collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected native scan with binaryAsString disabled:\n${cometPlan.treeString}")
+      }
+
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "true") {
+        val df = spark.read.parquet(path.toString)
+        assert(
+          df.schema === StructType(
+            Seq(StructField("value", StringType, true), StructField("id", IntegerType, true))))
+        val (_, cometPlan) = checkSparkAnswer(df)
+        assert(
+          collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected native scan with binaryAsString enabled:\n${cometPlan.treeString}")
+
+        val projected = spark.read.parquet(path.toString).select("id")
+        val (_, projectedCometPlan) = checkSparkAnswer(projected)
+        assert(
+          collect(projectedCometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected native scan when no string columns are read:\n${projectedCometPlan.treeString}")
+      }
+    }
+  }
+
+  test("binaryAsString preserves fixed-length binary conversion errors") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "fixed.parquet")
+      val schema = MessageTypeParser.parseMessageType(
+        "message root { optional fixed_len_byte_array(3) value; }")
+      val writer = createParquetWriter(schema, path)
+      val record = new SimpleGroup(schema)
+      record.add(0, Binary.fromString("one"))
+      writer.write(record)
+      writer.close()
+      Seq("false", "true").foreach { rowFilter =>
+        withSQLConf(
+          SQLConf.PARQUET_BINARY_AS_STRING.key -> "true",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilter) {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            intercept[SparkException] {
+              spark.read.schema("value string").parquet(path.toString).collect()
+            }
+          }
+          val df = spark.read.schema("value string").parquet(path.toString)
+          assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+            true
+          }.nonEmpty)
+          val error = intercept[SparkException](df.collect())
+          assert(
+            causeChain(error).exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]))
+          checkSparkAnswerAndOperator(spark.read.schema("value binary").parquet(path.toString))
+        }
+      }
+    }
+  }
+
+  // With binaryAsString, the native scan compares `=`, `IN` and `IS [NOT] NULL` on the raw bytes
+  // and other string filters on the decoded values. Spark compares raw bytes, and these queries
+  // match it. A query that tells a malformed value apart from U+FFFD doesn't, as the
+  // compatibility guide describes.
+  test("spark.sql.parquet.binaryAsString filters, joins and top-k") {
+    withTempDir { dir =>
+      val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional binary value;
+          |  optional int32 id;
+          |}
+          |""".stripMargin)
+      // Two partition directories, each holding a valid value, the malformed byte 0xff and a null.
+      val partitioned = new File(dir, "partitioned").getCanonicalPath
+      Seq(1 -> "one", 2 -> "two").foreach { case (p, valid) =>
+        val writer = createParquetWriter(schema, new Path(s"$partitioned/p=$p/part-r-0.parquet"))
+        Seq(
+          Some(Binary.fromString(valid)),
+          Some(Binary.fromConstantByteArray(Array(0xff.toByte))),
+          None).zipWithIndex.foreach { case (value, id) =>
+          val record = new SimpleGroup(schema)
+          value.foreach(record.add(0, _))
+          record.add(1, p * 10 + id)
+          writer.write(record)
+        }
+        writer.close()
+      }
+      val annotated = new File(dir, "annotated").getCanonicalPath
+      Seq(Some("one"), Some("two"), None).toDF("value").write.parquet(annotated)
+
+      def assertNativeScan(plan: SparkPlan): Unit =
+        assert(
+          collect(plan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected a native scan:\n${plan.treeString}")
+
+      Seq("false", "true").foreach { rowFilter =>
+        withSQLConf(
+          SQLConf.PARQUET_BINARY_AS_STRING.key -> "true",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilter) {
+          spark.read.parquet(partitioned).createOrReplaceTempView("t")
+          spark.read.parquet(annotated).createOrReplaceTempView("annotated")
+          Seq(
+            "SELECT * FROM t WHERE value = 'one'",
+            "SELECT * FROM t WHERE value IN ('one', 'two')",
+            "SELECT * FROM t WHERE value NOT IN ('one', 'two')",
+            "SELECT * FROM t WHERE value IS NULL",
+            "SELECT * FROM t WHERE value IS NOT NULL",
+            "SELECT * FROM t WHERE value > 'o'",
+            "SELECT * FROM t WHERE value LIKE 'o%'",
+            "SELECT * FROM t WHERE value = 'one' OR id = 21",
+            "SELECT * FROM annotated WHERE value = 'one'",
+            "SELECT * FROM annotated WHERE value < 'two'",
+            "SELECT * FROM annotated WHERE value LIKE 't%'",
+            "SELECT * FROM annotated WHERE value NOT IN ('one')",
+            "SELECT * FROM annotated WHERE value IS NULL").foreach { query =>
+            val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+            assertNativeScan(plan)
+          }
+          Seq(
+            "SELECT a.id, b.id FROM t a JOIN t b ON a.value = b.value",
+            "SELECT value, id FROM t ORDER BY value, id LIMIT 3").foreach { query =>
+            val (_, plan) = checkSparkAnswer(sql(query))
+            assertNativeScan(plan)
+          }
+          if (rowFilter == "true") {
+            // Spark also pushes `isnotnull(value)`, which on its own would let the other non-null
+            // values through. Only the pushed `value = 'one'` leaves a single row.
+            Seq("t", "annotated").foreach { table =>
+              val (_, plan) = checkSparkAnswer(sql(s"SELECT * FROM $table WHERE value = 'one'"))
+              val matched = collect(plan) { case scan: CometNativeScanExec =>
+                scan.metrics("pushdown_rows_matched").value
+              }.sum
+              assert(matched == 1, s"Expected the $table scan to filter on `value = 'one'`")
+            }
+            // A range reaches the row filter too. The annotated file compares the column itself.
+            val (_, plan) = checkSparkAnswer(sql("SELECT * FROM annotated WHERE value < 'two'"))
+            val matched = collect(plan) { case scan: CometNativeScanExec =>
+              scan.metrics("pushdown_rows_matched").value
+            }.sum
+            assert(matched == 1, "Expected the annotated scan to filter on `value < 'two'`")
+          }
+        }
       }
     }
   }

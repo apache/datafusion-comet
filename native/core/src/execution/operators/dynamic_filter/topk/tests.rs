@@ -192,6 +192,7 @@ fn parquet_scan(
         false,
         allow_type_promotion,
         false,
+        false,
         session,
         false,
         false,
