@@ -31,7 +31,7 @@ use arrow::datatypes::{
     Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
     TimestampMicrosecondType,
 };
-use num::{cast::AsPrimitive, Float, ToPrimitive};
+use num::{cast::AsPrimitive, Bounded, Float, ToPrimitive};
 use std::fmt::{self, Write};
 use std::sync::Arc;
 
@@ -769,7 +769,7 @@ fn cast_int_to_decimal128_internal<T>(
 ) -> SparkResult<ArrayRef>
 where
     T: ArrowPrimitiveType,
-    T::Native: Into<i128>,
+    T::Native: Into<i128> + Bounded,
 {
     let multiplier = 10_i128.pow(scale as u32);
 
@@ -779,6 +779,17 @@ where
         v.checked_mul(multiplier)
             .filter(|scaled| is_validate_decimal_precision(*scaled, precision))
     };
+
+    // When both ends of the input type fit, no value can overflow in any eval mode, so one
+    // branch-free `unary` pass replaces the per-row check. It also scales the slots under nulls,
+    // which is safe because they hold values of the same type, and keeps the input null buffer.
+    if fits(T::Native::min_value().into()).is_some()
+        && fits(T::Native::max_value().into()).is_some()
+    {
+        let result: Decimal128Array =
+            array.unary::<_, Decimal128Type>(|v| Into::<i128>::into(v) * multiplier);
+        return Ok(Arc::new(result.with_precision_and_scale(precision, scale)?));
+    }
 
     // Single vectorized pass: a value that overflows the multiply or does not fit the output
     // precision maps to null. `unary_opt` only applies the closure to non-null slots and carries
@@ -2003,6 +2014,92 @@ mod tests {
                     precision: 3,
                     scale: 2
                 } if value == "1000"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_whole_range_fits_in_every_mode() {
+        // DECIMAL(3, 0) holds every TINYINT and DECIMAL(19, 0) every BIGINT, so the batch takes
+        // the branch-free path: the extremes scale exactly, nulls stay null and ANSI never raises.
+        for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            let array: ArrayRef = Arc::new(Int8Array::from(vec![
+                Some(i8::MIN),
+                None,
+                Some(0),
+                Some(i8::MAX),
+            ]));
+            let result = cast_int_to_decimal128(
+                &array,
+                eval_mode,
+                &DataType::Int8,
+                &DataType::Decimal128(3, 0),
+                3,
+                0,
+            )
+            .unwrap();
+            let d = result.as_primitive::<Decimal128Type>();
+            assert_eq!(d.value(0), -128, "{eval_mode:?}");
+            assert!(d.is_null(1), "{eval_mode:?}");
+            assert_eq!(d.value(2), 0, "{eval_mode:?}");
+            assert_eq!(d.value(3), 127, "{eval_mode:?}");
+            assert_eq!(d.data_type(), &DataType::Decimal128(3, 0));
+
+            let array: ArrayRef = Arc::new(Int64Array::from(vec![Some(i64::MIN), Some(i64::MAX)]));
+            let result = cast_int_to_decimal128(
+                &array,
+                eval_mode,
+                &DataType::Int64,
+                &DataType::Decimal128(23, 4),
+                23,
+                4,
+            )
+            .unwrap();
+            let d = result.as_primitive::<Decimal128Type>();
+            assert_eq!(d.value(0), i64::MIN as i128 * 10_000, "{eval_mode:?}");
+            assert_eq!(d.value(1), i64::MAX as i128 * 10_000, "{eval_mode:?}");
+        }
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_one_digit_short_keeps_per_row_check() {
+        // DECIMAL(2, 0) cannot hold -128 or 127, so the per-row check still runs: values that fit
+        // convert, the ones that don't become null (LEGACY, TRY) or raise (ANSI).
+        let array: ArrayRef = Arc::new(Int8Array::from(vec![Some(99), Some(127), None, Some(-99)]));
+        for eval_mode in [EvalMode::Legacy, EvalMode::Try] {
+            let result = cast_int_to_decimal128(
+                &array,
+                eval_mode,
+                &DataType::Int8,
+                &DataType::Decimal128(2, 0),
+                2,
+                0,
+            )
+            .unwrap();
+            let d = result.as_primitive::<Decimal128Type>();
+            assert_eq!(d.value(0), 99, "{eval_mode:?}");
+            assert!(d.is_null(1), "{eval_mode:?}");
+            assert!(d.is_null(2), "{eval_mode:?}");
+            assert_eq!(d.value(3), -99, "{eval_mode:?}");
+        }
+        let err = cast_int_to_decimal128(
+            &array,
+            EvalMode::Ansi,
+            &DataType::Int8,
+            &DataType::Decimal128(2, 0),
+            2,
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SparkError::NumericValueOutOfRange {
+                    ref value,
+                    precision: 2,
+                    scale: 0
+                } if value == "127"
             ),
             "unexpected error: {err:?}"
         );

@@ -689,7 +689,6 @@ fn cast_array_to_string(
     spark_cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
-    let mut str = String::with_capacity(array.len() * 16);
 
     let casted_values = cast_array(
         Arc::clone(array.values()),
@@ -706,25 +705,26 @@ fn cast_array_to_string(
         if array.is_null(row_index) {
             builder.append_null();
         } else {
-            str.clear();
             let start = offsets[row_index] as usize;
             let end = offsets[row_index + 1] as usize;
 
-            str.push('[');
-            let mut first = true;
-            for idx in start..end {
-                if !first {
-                    str.push_str(", ");
+            // Write the row straight into the builder's value buffer, then end it with an empty
+            // `append_value`, instead of assembling it in a scratch `String` and copying it again.
+            let written = builder.write_char('[').and_then(|()| {
+                for idx in start..end {
+                    if idx > start {
+                        builder.write_str(", ")?;
+                    }
+                    if string_values.is_null(idx) {
+                        builder.write_str(&spark_cast_options.null_string)?;
+                    } else {
+                        builder.write_str(string_values.value(idx))?;
+                    }
                 }
-                if string_values.is_null(idx) {
-                    str.push_str(&spark_cast_options.null_string);
-                } else {
-                    str.push_str(string_values.value(idx));
-                }
-                first = false;
-            }
-            str.push(']');
-            builder.append_value(&str);
+                builder.write_char(']')
+            });
+            written.expect("writing to a string builder cannot fail");
+            builder.append_value("");
         }
     }
     Ok(Arc::new(builder.finish()))
@@ -862,7 +862,25 @@ fn write_upper_hex<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
 /// Writes `byte` reinterpreted as a signed decimal, as Spark does when printing a byte array.
 #[inline]
 fn write_i8<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
-    write!(out, "{}", byte as i8)
+    let value = byte as i8;
+    let mut magnitude = value.unsigned_abs();
+    // At most "-128": a sign and three digits, filled from the end.
+    let mut buf = [0u8; 4];
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        buf[start] = b'0' + magnitude % 10;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if value < 0 {
+        start -= 1;
+        buf[start] = b'-';
+    }
+    // SAFETY: `buf[start..]` holds only ASCII digits and an optional '-', so it is valid UTF-8.
+    out.write_str(unsafe { std::str::from_utf8_unchecked(&buf[start..]) })
 }
 
 /// Writes the bytes of `value` between square brackets, encoded with `encode` and joined by
@@ -1930,6 +1948,39 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_sliced_array_with_null_rows_to_string() {
+        // A null row writes no bytes, so the rows after it must still start at the right offset,
+        // and a sliced list reads its values from a non-zero offset into the child array.
+        let list_array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(0)]),
+            Some(vec![Some(1), None]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![Some(-2), Some(3)]),
+        ]);
+        let sliced = list_array.slice(1, 5);
+        let string_array =
+            cast_array_to_string(&sliced, &SparkCastOptions::new(EvalMode::Legacy, "UTC")).unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(string_array.len(), 5);
+        assert_eq!(string_array.value(0), "[1, null]");
+        assert!(string_array.is_null(1));
+        assert_eq!(string_array.value(2), "[]");
+        assert!(string_array.is_null(3));
+        assert_eq!(string_array.value(4), "[-2, 3]");
+    }
+
+    #[test]
+    fn test_write_i8_matches_signed_display_for_every_byte() {
+        for byte in 0..=u8::MAX {
+            let mut out = String::new();
+            write_i8(&mut out, byte).unwrap();
+            assert_eq!(out, (byte as i8).to_string(), "byte {byte}");
+        }
     }
 
     #[test]
