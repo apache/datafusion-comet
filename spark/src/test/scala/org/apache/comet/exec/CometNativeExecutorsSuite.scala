@@ -39,12 +39,13 @@ import org.apache.comet.CometConf
  * Runs queries on a Comet Native Executor cluster (see
  * https://github.com/apache/datafusion-comet/issues/7288): a comet-scheduler and a comet-executor
  * started from the binaries in the directory `COMET_NATIVE_EXECUTORS_BIN_DIR` names. The tests
- * are skipped when it isn't set. To run them:
+ * are skipped when it isn't set. Give an absolute path: Maven runs the suite from the `spark`
+ * directory, so a relative one doesn't find the binaries. To run them from the repository root:
  *
  * {{{
  * cargo build --manifest-path native/Cargo.toml -p datafusion-comet --features native-executors
  * CARGO_TARGET_DIR=native/target cargo build --manifest-path native/native-executors/Cargo.toml
- * COMET_NATIVE_EXECUTORS_BIN_DIR=native/target/debug ./mvnw test -Dtest=none \
+ * COMET_NATIVE_EXECUTORS_BIN_DIR=$PWD/native/target/debug ./mvnw test -Dtest=none \
  *   -Dsuites=org.apache.comet.exec.CometNativeExecutorsSuite
  * }}}
  */
