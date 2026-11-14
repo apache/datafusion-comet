@@ -88,13 +88,18 @@ runs:
         # then resolves Spark's deps, Coursier sees the POM in mavenLocal,
         # declares the artifact "found locally", and fails on the missing JAR
         # without falling back to Maven Central. Delete those partial entries
-        # so sbt re-fetches the full artifact remotely.
+        # so sbt re-fetches the full artifact remotely. A POM with no
+        # <packaging> element is a jar, Maven's default. Arrow's POMs leave it
+        # out, and Spark 3.5's sql/api does not compile without the
+        # arrow-memory-core and arrow-memory-netty JARs.
         for repo in "$HOME/.m2/repository" /root/.m2/repository; do
           [ -d "$repo" ] || continue
           find "$repo" -name '*.pom' | while read -r pom; do
             jar="${pom%.pom}.jar"
             [ -f "$jar" ] && continue
-            grep -q '<packaging>jar</packaging>\|<packaging>bundle</packaging>' "$pom" 2>/dev/null || continue
+            if grep -q '<packaging>' "$pom" 2>/dev/null; then
+              grep -q '<packaging>jar</packaging>\|<packaging>bundle</packaging>' "$pom" 2>/dev/null || continue
+            fi
             rm -f "$pom" "${pom}.sha1" "${pom%.pom}.pom.lastUpdated" \
               "$(dirname "$pom")/_remote.repositories"
           done
