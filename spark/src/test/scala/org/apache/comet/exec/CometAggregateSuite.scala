@@ -40,13 +40,13 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, expr, sort_array, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataTypes, DoubleType, FloatType, IntegerType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, SparkFixes}
+import org.apache.comet.serde.{CometCorr, CometMode, CometRegrR2, ExprOuterClass, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -4799,6 +4799,17 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(
         collect(cometPlan) { case agg: HashAggregateExec => agg }.nonEmpty,
         s"Expected a Spark partial aggregate; plan:\n$cometPlan")
+    }
+  }
+
+  // Before SPARK-45599 (fixed in 3.5.2 and 4.0.0), mode's frequency map hashes a float by its bits
+  // but matches keys with ==, so every NaN is a key of its own (#6738).
+  test("mode float keys by Spark patch version") {
+    Seq("3.4.3", "3.5.0", "3.5.1", "3.5.1-SNAPSHOT").foreach { version =>
+      assert(!CometMode.keysNaNsTogether(version), version)
+    }
+    Seq("3.5.2", "3.5.9", "3.6.0", "4.0.0", "4.1.3", "4.2.0-SNAPSHOT").foreach { version =>
+      assert(CometMode.keysNaNsTogether(version), version)
     }
   }
 

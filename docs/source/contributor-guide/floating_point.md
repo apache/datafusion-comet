@@ -57,7 +57,8 @@ it runs against:
   `OpenHashMap`. `array_distinct`, `array_union`, `array_intersect` and `array_except` look up the
   elements of a flat array in an `OpenHashSet`, but treat all NaNs as one value.
 - `mode` follows `Double.equals` from Spark 3.5.2 and 4.0.0 until Spark 4.2, which folds `-0.0`
-  into `0.0` first (SPARK-57329).
+  into `0.0` first (SPARK-57329). Before 3.5.2 every NaN is a value of its own, so Comet does not
+  run `mode` on `FLOAT` or `DOUBLE` input there (#6738).
 - `array_distinct` and `array_union` keep signed zeros apart in a flat array before Spark 4.2.0
   (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
   (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
