@@ -174,6 +174,34 @@ SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_cons
 query
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_y
 
+-- Nullable aggregate FILTERs must preserve group positions and combine with
+-- each function's pair-null rules. Group 1 exists but has no qualifying rows;
+-- group 2 exercises the historical slope/intercept variance rule for null y.
+statement
+CREATE TABLE test_regr_filtered(g int, y double, x double, keep boolean) USING parquet
+
+statement
+INSERT INTO test_regr_filtered VALUES
+  (0, 3.0, 1.0, true), (0, 9.0, 4.0, true), (0, 8.0, NULL, true),
+  (0, NULL, 20.0, true), (0, 90.0, 8.0, false), (0, 70.0, 9.0, NULL),
+  (1, 2.0, 5.0, false), (1, 8.0, 9.0, NULL),
+  (2, NULL, 1.0, true), (2, NULL, 4.0, true),
+  (3, 7.0, 1.0, true), (3, 7.0, 4.0, true)
+
+query
+SELECT g,
+  regr_sxx(y, x) FILTER (WHERE keep), regr_syy(y, x) FILTER (WHERE keep),
+  regr_sxy(y, x) FILTER (WHERE keep), regr_slope(y, x) FILTER (WHERE keep),
+  regr_intercept(y, x) FILTER (WHERE keep), regr_r2(y, x) FILTER (WHERE keep)
+FROM test_regr_filtered GROUP BY g ORDER BY g
+
+query
+SELECT g,
+  regr_sxx(x, y) FILTER (WHERE keep), regr_syy(x, y) FILTER (WHERE keep),
+  regr_sxy(x, y) FILTER (WHERE keep), regr_slope(x, y) FILTER (WHERE keep),
+  regr_intercept(x, y) FILTER (WHERE keep), regr_r2(x, y) FILTER (WHERE keep)
+FROM test_regr_filtered GROUP BY g ORDER BY g
+
 -- Both moments are nonzero, but their product underflows to zero.
 statement
 CREATE TABLE test_regr_underflow(v double, grp int) USING parquet
@@ -202,3 +230,9 @@ SELECT regr_r2(y, x) FROM test_regr_const_x
 
 query
 SELECT regr_r2(y, x) FROM test_regr_const_y
+
+query
+SELECT x, regr_r2(y, x) FROM test_regr_const_x GROUP BY x
+
+query
+SELECT y, regr_r2(y, x) FROM test_regr_const_y GROUP BY y
