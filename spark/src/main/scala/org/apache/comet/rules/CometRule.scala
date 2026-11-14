@@ -25,6 +25,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+import org.apache.spark.sql.comet.CometNativeExecutors
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, InsertAdaptiveSparkPlan, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange}
@@ -52,15 +53,27 @@ object CometRule {
       CometCacheColumnarRule(preview))
 
   /**
-   * Whether plan-only mode applies to `plan`, so that Comet only reports the plan it would
-   * execute and Spark executes `plan` unchanged. Mirrors the conversion rules' own guards;
-   * plan-only is scoped to exec being enabled.
+   * Whether the conversion rules convert `plan`: they mirror these guards. Plan-only mode and
+   * Comet Native Executors, which each rely on the conversion, are scoped to it.
    */
-  private[comet] def planOnlyApplies(conf: SQLConf, plan: SparkPlan): Boolean =
-    CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf) &&
-      isCometLoaded(conf) &&
+  private def conversionApplies(conf: SQLConf, plan: SparkPlan): Boolean =
+    isCometLoaded(conf) &&
       !ShimCometStreaming.isStreamingPlan(plan) &&
       CometConf.COMET_EXEC_ENABLED.get(conf)
+
+  /**
+   * Whether plan-only mode applies to `plan`, so that Comet only reports the plan it would
+   * execute and Spark executes `plan` unchanged.
+   */
+  private[comet] def planOnlyApplies(conf: SQLConf, plan: SparkPlan): Boolean =
+    CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf) && conversionApplies(conf, plan)
+
+  /** Whether `plan` runs on a Comet Native Executor cluster instead of Spark's executors. */
+  private def nativeExecutorsApply(
+      conf: SQLConf,
+      plan: SparkPlan,
+      queryStagePrep: Boolean): Boolean =
+    conversionApplies(conf, plan) && CometNativeExecutors.applies(conf, plan, queryStagePrep)
 
   /**
    * Canonical hashes of the subquery plans reported for the query this thread is preparing. Spark
@@ -163,6 +176,10 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     if (CometRule.planOnlyApplies(conf, plan)) {
       reportPlanOnlyCoverage(plan)
       plan
+    } else if (CometRule.nativeExecutorsApply(conf, plan, queryStagePrep)) {
+      // The whole query runs on a Comet Native Executor cluster. The conversion alone leaves
+      // every native block serialized, and nothing reverts a stage to Spark.
+      CometNativeExecutors.offload(plan, convert(plan))
     } else {
       convert(plan)
     }

@@ -24,6 +24,8 @@
 //! partition of a stage, reading its inputs from other DataFusion plans, such as a distributed
 //! engine's shuffle readers, instead of from the JVM.
 
+#[cfg(feature = "native-executors")]
+mod client;
 mod fragment;
 
 pub use fragment::{block_schema, partition_descriptor, CometFragmentExec};

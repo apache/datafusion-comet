@@ -363,7 +363,8 @@ public abstract class NativeBase {
   /**
    * Check if a specific feature is enabled in the native library.
    *
-   * @param featureName The name of the feature to check (e.g., "jemalloc", "hdfs-opendal")
+   * @param featureName The name of the feature to check (e.g., "jemalloc", "hdfs-opendal",
+   *     "native-executors")
    * @return true if the feature is enabled, false otherwise
    */
   public static native boolean isFeatureEnabled(String featureName);
