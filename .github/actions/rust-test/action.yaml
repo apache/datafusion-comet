@@ -101,19 +101,14 @@ runs:
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
         RUST_BACKTRACE=1 cargo nextest run
 
-    - name: Run native Python UDF tests
+    - name: Run native Python UDF and native executors client tests
       shell: bash
       run: |
         cd native
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
-        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features python-udf python_udf
-
-    - name: Run native executors client tests
-      shell: bash
-      run: |
-        cd native
-        export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
-        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features native-executors native_executors
+        # One build for both features.
+        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib \
+          --features python-udf,native-executors python_udf native_executors
 
     # The steps above lint and test the accounting allocator over the system allocator. Lint and
     # test it over jemalloc too, since that is a different allocator backend and nothing else in CI

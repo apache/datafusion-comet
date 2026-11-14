@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.execution.{InputAdapter, ScalarSubquery, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.functions.{col, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -37,7 +37,7 @@ import org.apache.comet.serde.NativeExecutors.{QueryRequest, Stage}
  * a libcomet built with the `native-executors` feature nor the cluster binaries.
  * `CometNativeExecutorsSuite` runs the queries on a cluster.
  */
-class CometNativeExecutorsPlanSuite extends CometTestBase {
+class CometNativeExecutorsPlanSuite extends CometNativeExecutorsTestBase {
 
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
@@ -46,18 +46,6 @@ class CometNativeExecutorsPlanSuite extends CometTestBase {
     // Without AQE, the plan is final once it is planned.
     conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")
     conf
-  }
-
-  /** A Parquet table with several files, read as several partitions. */
-  private def withTable(body: String => Unit): Unit = withTempPath { dir =>
-    spark
-      .range(0, 10000, 1, 8)
-      .selectExpr("id", "id % 7 AS k", "CAST(id AS DOUBLE) * 1.5 AS v")
-      .write
-      .parquet(dir.getCanonicalPath)
-    withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "16384") {
-      body(dir.getCanonicalPath)
-    }
   }
 
   /**
@@ -150,9 +138,9 @@ class CometNativeExecutorsPlanSuite extends CometTestBase {
         case sub: ScalarSubquery => sub
       }
       assert(subqueries.size == 1)
-      def plans(query: Array[Byte]): String =
-        QueryRequest.parseFrom(query).getStagesList.asScala.map(_.getPlan.toString).mkString
-      val query = CometNativeExecutors.buildQuery(plan).toByteArray
+      def plans(query: QueryRequest): String =
+        query.getStagesList.asScala.map(_.getPlan.toString).mkString
+      val query = CometNativeExecutors.buildQuery(plan)
       assert(plans(query).contains("subquery"))
       val rewritten = CometNativeExecutors.withSubqueryResults(query, subqueries)
       assert(!plans(rewritten).contains("subquery"))
@@ -192,6 +180,60 @@ class CometNativeExecutorsPlanSuite extends CometTestBase {
         assert(message.contains("Exchange"), message)
         assert(message.contains("is not a column"), message)
       }
+    }
+  }
+
+  test("a scan that stays on the JVM is refused, naming the operator that reads from it") {
+    withTable { path =>
+      // The scan stays in Spark, and Comet converts its columnar batches to Arrow batches for the
+      // operators above it.
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val message = refusal(spark.read.parquet(path).selectExpr("id + 1 AS i"))
+        assert(message.contains("CometSparkColumnarToColumnar"), message)
+        assert(message.contains("do not support it yet"), message)
+      }
+    }
+  }
+
+  test("a scan with dynamic partition pruning is refused, naming the scan") {
+    withTempDir { dir =>
+      val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${dir.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(0, 100)
+          .selectExpr("id AS fact_id", "date_add(date'2020-01-01', cast(id % 10 AS int)) AS d")
+          .write
+          .partitionBy("d")
+          .parquet(factPath)
+        spark
+          .range(0, 10)
+          .selectExpr("id AS dim_id", "date_add(date'2020-01-01', cast(id AS int)) AS dim_d")
+          .write
+          .parquet(dimPath)
+      }
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
+        val message =
+          refusal(sql("select * from dpp_fact join dpp_dim on d = dim_d where dim_id > 7"))
+        assert(message.contains("CometNativeScan"), message)
+        assert(message.contains("dynamic partition pruning"), message)
+      }
+    }
+  }
+
+  test("explain shows the plan the cluster runs under the leaf") {
+    withTable { path =>
+      val plan = cometPlan(spark.read.parquet(path).groupBy("k").agg(sum("v")))
+      val exec = CometNativeExecutorsExec(plan.output, plan, "http://localhost:1")
+      val explained = exec.treeString
+      assert(explained.contains("CometNativeExecutors"), explained)
+      assert(explained.contains("CometHashAggregate"), explained)
+      assert(explained.contains("CometNativeScan"), explained)
     }
   }
 }

@@ -100,7 +100,8 @@ Comet Native Executors are a first version. The sub-issues of
 - Cancellation: [#7372](https://github.com/apache/datafusion-comet/issues/7372). The driver thread
   waits for the cluster in native code until the query finishes, so cancelling the Spark job or
   interrupting the thread does not stop the wait, and a killed Spark job leaves its query running
-  on the cluster.
+  on the cluster. A killed Spark task that reads a result partition stops at the next batch; a
+  read blocked waiting for a batch still waits for it.
 - Errors. A failure on the cluster reaches Spark as a `CometNativeException` with the cluster's
   message, not as the exception Spark would raise. For example, a division by zero with ANSI mode on
   is not a `SparkArithmeticException` with the `DIVIDE_BY_ZERO` error class.
@@ -109,8 +110,8 @@ Comet Native Executors are a first version. The sub-issues of
   the files and object stores the executors read. Run a cluster only on a trusted network.
 - Result expiry. A query's results stay on the cluster for
   `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` after it ends (five minutes by default), whether or
-  not Spark has read them. A Spark task that reads a partition after that fails with a message that
-  names the setting.
+  not Spark has read them. The scheduler gives each result partition its expiration time, and a
+  Spark task that reads a partition after that fails with a message that names the setting.
 
 ### Whole queries only
 

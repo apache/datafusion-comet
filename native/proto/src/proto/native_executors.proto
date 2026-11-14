@@ -93,4 +93,7 @@ message ResultEndpoint {
   string location = 1;
   // Opaque ticket to pass to DoGet.
   bytes ticket = 2;
+  // When the cluster deletes the partition, in milliseconds since the epoch, from the Flight
+  // endpoint's expiration_time. 0 if the cluster keeps it.
+  int64 expiration_time_millis = 3;
 }

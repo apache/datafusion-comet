@@ -43,10 +43,16 @@ class NativeExecutorsClient extends NativeBase {
   /**
    * Starts reading a result partition.
    *
+   * @param expirationTimeMillis
+   *   when the cluster deletes the partition, in milliseconds since the epoch, or 0 if it keeps
+   *   it
    * @return
    *   a handle for [[nextBatch]] and [[closePartition]]
    */
-  @native def openPartition(location: String, ticket: Array[Byte]): Long
+  @native def openPartition(
+      location: String,
+      ticket: Array[Byte],
+      expirationTimeMillis: Long): Long
 
   /**
    * Moves the partition's next batch into the Arrow C Data Interface structs at `arrayAddrs` and
