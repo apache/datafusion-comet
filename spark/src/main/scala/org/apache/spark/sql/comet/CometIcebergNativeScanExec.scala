@@ -120,7 +120,14 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
+  // Like BatchScanExec on Spark 3.5 and later without a key-grouped partitioning, the scan does
+  // not know its partition count while planning, because dynamic partition pruning decides which
+  // tasks survive and its subqueries resolve at execution. AQE reads outputPartitioning while it
+  // optimizes a stage (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
+  // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
+  // RDD from perPartitionData instead.
+  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
