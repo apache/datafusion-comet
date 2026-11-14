@@ -1375,6 +1375,15 @@ struct BatchProducer {
     task: JoinHandle<()>,
 }
 
+/// Wakes the thread waiting in [`BatchProducer::next_batch_until`].
+struct Unparker(std::thread::Thread);
+
+impl Wake for Unparker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark()
+    }
+}
+
 impl BatchProducer {
     fn spawn(runtime: &Handle, stream: SendableRecordBatchStream) -> Self {
         // Channel capacity of 2 allows the producer to work one batch
@@ -1435,7 +1444,37 @@ impl BatchProducer {
     /// plan's output is incomplete. That is an error, or the Spark task would end successfully
     /// with only the batches it has read so far.
     fn next_batch(&mut self) -> CometResult<Option<RecordBatch>> {
-        match self.batches.blocking_recv() {
+        let item = self.batches.blocking_recv();
+        self.received(item)
+    }
+
+    /// Like [`Self::next_batch`], but waits no later than `deadline`, and is `Pending` if neither
+    /// a batch nor the end of the stream arrived by then.
+    ///
+    /// It parks the thread rather than using a Tokio timer, which fires only once a runtime
+    /// worker is free. Every worker can be busy for a long time, such as with a shuffle writer
+    /// spilling or writing its output.
+    fn next_batch_until(&mut self, deadline: Instant) -> CometResult<Poll<Option<RecordBatch>>> {
+        let waker = Waker::from(Arc::new(Unparker(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(item) = self.batches.poll_recv(&mut cx) {
+                return self.received(item).map(Poll::Ready);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(Poll::Pending);
+            }
+            std::thread::park_timeout(deadline - now);
+        }
+    }
+
+    /// What an item taken from the channel, or its closing, means for the plan's output.
+    fn received(
+        &self,
+        item: Option<DataFusionResult<RecordBatch>>,
+    ) -> CometResult<Option<RecordBatch>> {
+        match item {
             Some(batch) => Ok(Some(batch?)),
             None if self.stream_ended.load(Ordering::Acquire) => Ok(None),
             None => Err(CometError::Internal(
@@ -1598,20 +1637,33 @@ fn execute_plan(
         pull_input_batches(exec_context)?;
     }
 
-    if let Some(producer) = &mut exec_context.batch_producer {
-        return match producer.next_batch()? {
-            Some(batch) => {
+    // Wait no later than when metrics are due, so a plan that runs long before its first batch,
+    // such as a native shuffle write, still publishes on the interval. A publish while waiting
+    // does not restart the interval, so the batch that ends the wait is published too.
+    let interval = exec_context.metrics_update_interval;
+    let mut wait_until = interval.map(|interval| exec_context.metrics_last_update_time + interval);
+    while let Some(producer) = exec_context.batch_producer.as_mut() {
+        let next = match wait_until {
+            Some(deadline) => producer.next_batch_until(deadline)?,
+            None => Poll::Ready(producer.next_batch()?),
+        };
+        match next {
+            Poll::Ready(Some(batch)) => {
                 // Publish on the configured interval, as the ScanExec path below does,
                 // since each publish walks the whole metric tree and calls into the JVM.
                 // `releasePlan` publishes the final values.
                 update_metrics_on_interval(exec_context, publish_metrics)?;
-                Ok(Some(batch))
+                return Ok(Some(batch));
             }
-            None => {
+            Poll::Ready(None) => {
                 log_plan_metrics(exec_context, stage_id, partition);
-                Ok(None)
+                return Ok(None);
             }
-        };
+            Poll::Pending => {
+                publish_and_sample_memory(exec_context, publish_metrics)?;
+                wait_until = interval.map(|interval| Instant::now() + interval);
+            }
+        }
     }
 
     // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
@@ -1724,8 +1776,17 @@ fn update_metrics_on_interval(
     if now - exec_context.metrics_last_update_time < interval {
         return Ok(());
     }
-    publish_metrics(exec_context)?;
+    publish_and_sample_memory(exec_context, publish_metrics)?;
     exec_context.metrics_last_update_time = now;
+    Ok(())
+}
+
+/// Runs `publish_metrics` and, with tracing on, samples this thread's pool reservation.
+fn publish_and_sample_memory(
+    exec_context: &ExecutionContext,
+    publish_metrics: &mut PublishMetrics,
+) -> CometResult<()> {
+    publish_metrics(exec_context)?;
     if exec_context.tracing_enabled {
         log_memory_usage(
             &exec_context.tracing_memory_metric_name,
@@ -4274,6 +4335,65 @@ mod tests {
             exec_context.batch_producer.is_some(),
             "a plan without JVM input runs on a Tokio task"
         );
+        release_plan(exec_context, &mut |_| Ok(())).unwrap();
+    }
+
+    /// See issue #7582. A plan ending in a native shuffle write returns nothing until it has
+    /// written all of its input, and its metrics have to reach the JVM while it runs, even with
+    /// every Tokio worker busy, as with the shuffle writers spilling or writing their output.
+    #[test]
+    fn execute_plan_publishes_metrics_while_it_waits_for_a_batch() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(range_plan(1)).unwrap();
+        // Creates the plan's operators, so that only its stream is replaced below.
+        while execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(()))
+            .unwrap()
+            .is_some()
+        {}
+        let handle = get_runtime();
+        let (batches, stream) = futures::channel::mpsc::unbounded();
+        exec_context.batch_producer = Some(BatchProducer::spawn(&handle, plan_stream(stream)));
+        exec_context.metrics_update_interval = Some(Duration::from_millis(1));
+
+        // Holds every worker until two publishes have happened. It gives up eventually so a
+        // failure cannot hang the suite.
+        let publishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers = handle.metrics().num_workers();
+        let (holding_tx, holding_rx) = std::sync::mpsc::channel();
+        let (released_tx, released_rx) = std::sync::mpsc::channel();
+        for _ in 0..workers {
+            let (holding, released) = (holding_tx.clone(), released_tx.clone());
+            let seen = Arc::clone(&publishes);
+            handle.spawn(async move {
+                holding.send(()).unwrap();
+                let give_up = Instant::now() + Duration::from_secs(10);
+                while seen.load(Ordering::Relaxed) < 2 && Instant::now() < give_up {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                released.send(seen.load(Ordering::Relaxed)).unwrap();
+            });
+        }
+        for _ in 0..workers {
+            holding_rx.recv().unwrap();
+        }
+        // The producer cannot take the batch until a worker is free.
+        batches.unbounded_send(Ok(empty_batch())).unwrap();
+
+        let batch = execute_plan(&mut exec_context, 0, 0, &mut |_| {
+            publishes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+        .unwrap();
+        assert!(batch.is_some());
+        for _ in 0..workers {
+            // The first deadline has passed when the wait starts. Publishing only once the batch
+            // arrives would make this 0, and waiting on a Tokio timer would make it 1.
+            let while_held = released_rx.recv().unwrap();
+            assert!(
+                while_held >= 2,
+                "{while_held} publishes while every worker was busy"
+            );
+        }
         release_plan(exec_context, &mut |_| Ok(())).unwrap();
     }
 
