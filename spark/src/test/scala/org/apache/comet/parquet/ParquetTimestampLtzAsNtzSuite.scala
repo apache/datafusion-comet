@@ -27,6 +27,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * Tests for reading Parquet TimestampLTZ columns as TimestampNTZ.
@@ -37,6 +38,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
  *
  * See https://github.com/apache/datafusion-comet/issues/4219
  */
+@ScansTestGroup
 class ParquetTimestampLtzAsNtzSuite extends CometTestBase {
   import testImplicits._
 

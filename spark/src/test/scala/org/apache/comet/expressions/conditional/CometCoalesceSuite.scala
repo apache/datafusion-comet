@@ -24,6 +24,9 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.tags.ExpressionsTestGroup
+
+@ExpressionsTestGroup
 class CometCoalesceSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("coalesce should return correct datatype") {

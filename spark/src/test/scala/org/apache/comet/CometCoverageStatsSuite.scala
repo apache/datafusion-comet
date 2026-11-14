@@ -26,10 +26,13 @@ import org.apache.spark.sql.execution.{ReusedSubqueryExec, SparkPlan, SubqueryEx
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.tags.ExpressionsTestGroup
+
 /**
  * Tests for how [[CometCoverageStats]] categorizes plan nodes into accelerated operators,
  * un-accelerated Spark operators, and transitions.
  */
+@ExpressionsTestGroup
 class CometCoverageStatsSuite extends CometTestBase {
 
   private def somePlan: SparkPlan =

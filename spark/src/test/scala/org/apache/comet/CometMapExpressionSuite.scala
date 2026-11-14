@@ -29,8 +29,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
+@ExpressionsTestGroup
 class CometMapExpressionSuite extends CometTestBase {
 
   test("read map[int, int] from parquet") {

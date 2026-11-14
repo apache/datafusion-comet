@@ -42,7 +42,9 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometConf, CometRuntimeException}
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class NativeUtilSuite extends CometTestBase {
 
   private def withIsolatedStructAllocator(

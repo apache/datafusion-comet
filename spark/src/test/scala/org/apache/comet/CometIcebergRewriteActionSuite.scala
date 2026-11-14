@@ -34,6 +34,7 @@ import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * Verifies that Comet engages on the per-group reads issued by Iceberg's
@@ -41,6 +42,7 @@ import org.apache.comet.iceberg.IcebergReflection
  * via ScanTaskSetManager and then reads them back through SparkStagedScan, which Comet's
  * CometScanRule recognises alongside SparkBatchQueryScan.
  */
+@ScansTestGroup
 class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTestBase {
 
   private val catalog = "test_cat"

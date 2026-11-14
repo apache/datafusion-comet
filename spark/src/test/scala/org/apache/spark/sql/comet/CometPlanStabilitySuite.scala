@@ -36,6 +36,7 @@ import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -282,6 +283,7 @@ private object CometPlanStabilitySuite {
   }
 }
 
+@ExecTestGroup
 class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   private val planNames: Seq[String] = CometPlanStabilitySuite.planNameChain("v1_4")
   override val goldenFilePath: String =
@@ -296,6 +298,7 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   }
 }
 
+@ExecTestGroup
 class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   private val planNames: Seq[String] = CometPlanStabilitySuite.planNameChain("v2_7")
   override val goldenFilePath: String =

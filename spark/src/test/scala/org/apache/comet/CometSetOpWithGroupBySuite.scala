@@ -24,6 +24,8 @@ import org.apache.spark.sql.comet.CometUnionExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.tags.ExecTestGroup
+
 /**
  * Regression test for issue #4122: on Spark 4.1 (SPARK-52921), EXCEPT ALL / INTERSECT ALL whose
  * sides are themselves GROUP BY aggregates are lowered to a plan where the union inherits a hash
@@ -31,6 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
  * If Comet's columnar Union concatenates partitions it breaks that partitioning invariant and the
  * resulting sums/counts collapse two sides into the wrong partitions.
  */
+@ExecTestGroup
 class CometSetOpWithGroupBySuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("issue #4122: EXCEPT ALL with GROUP BY under both sides") {

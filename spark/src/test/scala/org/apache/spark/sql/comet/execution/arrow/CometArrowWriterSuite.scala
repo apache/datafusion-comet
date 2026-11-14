@@ -43,12 +43,14 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * The columnar paths of [[ArrowWriter]] copy Spark's vectors in bulk where they can. Whatever
  * they take, they must produce what the row path writes for the same rows, which reads every
  * value through Spark's getters one at a time.
  */
+@ExecTestGroup
 class CometArrowWriterSuite extends AnyFunSuite with Matchers {
 
   private val numRows = 300

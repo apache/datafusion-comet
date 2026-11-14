@@ -35,12 +35,14 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.vector.{CometDictionary, CometDictionaryVector, CometPlainVector}
 
 /**
  * Verifies that [[DirectColumnarToRowConverter]] produces rows byte-identical to
  * `UnsafeProjection`, which matters because `UnsafeRow` equality and hashing are byte-wise.
  */
+@ExecTestGroup
 class DirectColumnarToRowConverterSuite extends AnyFunSuite {
 
   private def assertMatchesUnsafeProjection(

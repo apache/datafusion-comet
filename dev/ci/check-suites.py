@@ -14,90 +14,172 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""Check that every Comet test suite belongs to exactly one CI test group.
+
+CI runs the Comet test suites in groups, one job per group. Each concrete suite
+carries the ScalaTest tag of its group (see
+spark/src/test/java/org/apache/comet/tags/*TestGroup.java), and the CI workflows
+list it in the group of the same name. This fails on a suite with no group tag,
+which would run in no job, on one with two, and on a suite whose workflow
+listing does not match its tag. Suites deliberately left out of CI are listed
+in IGNORE_LIST and must carry no group tag, so that no group picks them up.
+"""
 
 import re
 import sys
 from pathlib import Path
 
-def file_to_class_name(path: Path) -> str | None:
-    parts = path.parts
-    if "org" not in parts or "apache" not in parts:
-        return None
-    org_index = parts.index("org")
-    package_parts = parts[org_index:]
-    class_name = ".".join(package_parts)
-    class_name = class_name.replace(".scala", "")
-    return class_name
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# One ScalaTest tag annotation per group, such as ExecTestGroup for the `exec` group.
+TAGS_DIR = REPO_ROOT / "spark/src/test/java/org/apache/comet/tags"
+GROUP_TAGS = sorted(path.stem for path in TAGS_DIR.glob("*TestGroup.java"))
+
+# Suites that CI does not run, each with the reason.
+IGNORE_LIST = {
+    "org.apache.comet.parquet.ParquetReadFromS3Suite": "manual test suite",
+    "org.apache.comet.parquet.ParquetWriteWithMagicCommitterSuite": "manual test suite",
+    "org.apache.comet.csv.CsvReadFromS3Suite": "manual test suite",
+    "org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite": "manual test suite (loads libhdfs, see #5023)",
+    "org.apache.comet.IcebergReadFromS3Suite": "manual test suite",
+    "org.apache.comet.CometIcebergSchedulerFailureSuite": "manual, multiple hosts + SIGKILL",
+    "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite": "manual test suite",
+    "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapterBridgeSuite": "manual test suite",
+    "org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite": "dedicated version matrix",
+}
+
+CLASS_DECL = re.compile(
+    r"^(?P<mods>(?:(?:final|sealed|abstract|private(?:\[\w+\])?|case)\s+)*)"
+    r"(?P<kind>class|trait|object)\s+(?P<name>\w+)"
+)
+ANNOTATION = re.compile(r"^@(\w+)")
+
+
+def test_sources():
+    """Every Scala test source outside contrib, in all source sets (scala, spark-3.4, spark-4.x, ...).
+
+    The contrib modules run their suites from their own workflows, such as delta_contrib_test.yml.
+    """
+    for path in sorted(REPO_ROOT.rglob("*.scala")):
+        parts = path.relative_to(REPO_ROOT).parts
+        if parts[0] != "contrib" and "target" not in parts and "test" in parts:
+            yield path
+
+
+def declarations(text):
+    """Yield (name, concrete, annotations, line) for each top-level type in a source file.
+
+    `concrete` is true for a class that is neither abstract nor a trait or object.
+    """
+    lines = text.splitlines()
+    for number, line in enumerate(lines):
+        match = CLASS_DECL.match(line)
+        if not match:
+            continue
+        annotations = []
+        above = number - 1
+        while above >= 0 and (annotation := ANNOTATION.match(lines[above])):
+            annotations.append(annotation.group(1))
+            above -= 1
+        concrete = match.group("kind") == "class" and "abstract" not in match.group("mods")
+        yield match.group("name"), concrete, annotations, number + 1
+
+
+# The linux-test and macOS test matrices list each group's suites by name.
+WORKFLOWS = [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]
+MATRIX_GROUP = re.compile(r'^\s+- name: "(\w+)"\n\s+value: \|\n((?:\s+[\w.]+\n)+)', re.M)
+
+
+def workflow_groups(workflow):
+    """Map each suite a workflow's test matrix lists to the group it is listed in."""
+    text = (REPO_ROOT / workflow).read_text(encoding="utf-8")
+    return {
+        suite: group
+        for group, suites in MATRIX_GROUP.findall(text)
+        for suite in suites.split()
+    }
+
+
+def group_name(tag):
+    """ExecTestGroup -> exec"""
+    return tag[: -len("TestGroup")].lower()
+
+
+def main():
+    failures = []
+    members = {tag: set() for tag in GROUP_TAGS}
+    # Where each tag was found for each suite. A suite can be declared in several source sets
+    # (for one Spark version each), and every copy has to carry the same tag.
+    declared = {}
+    seen_ignored = set()
+    for path in test_sources():
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        package = re.search(r"^package\s+([\w.]+)", text, re.M)
+        prefix = package.group(1) + "." if package else ""
+        for name, concrete, annotations, line in declarations(text):
+            fqn = prefix + name
+            where = f"{path.relative_to(REPO_ROOT)}:{line}"
+            tags = [a for a in annotations if a in members]
+            if not (concrete and re.search(r"(Suite|ITCase)$", name)):
+                if tags:
+                    failures.append(
+                        f"{where}: {fqn} is not a concrete suite, so its @{tags[0]} does not reach "
+                        "the suites that extend it. Tag each concrete suite instead."
+                    )
+                continue
+            if fqn in IGNORE_LIST:
+                seen_ignored.add(fqn)
+                if tags:
+                    failures.append(
+                        f"{where}: {fqn} is in IGNORE_LIST ({IGNORE_LIST[fqn]}) but carries @{tags[0]}"
+                    )
+                continue
+            if len(tags) != 1:
+                found = ", ".join("@" + t for t in tags) if tags else "none"
+                failures.append(
+                    f"{where}: {fqn} needs exactly one group tag ({', '.join('@' + t for t in GROUP_TAGS)}); "
+                    f"found {found}"
+                )
+                continue
+            members[tags[0]].add(fqn)
+            declared.setdefault(fqn, {}).setdefault(tags[0], []).append(where)
+
+    for fqn, by_tag in sorted(declared.items()):
+        if len(by_tag) > 1:
+            detail = "; ".join(
+                f"@{tag} at {', '.join(wheres)}" for tag, wheres in sorted(by_tag.items())
+            )
+            failures.append(f"{fqn} is declared with different group tags: {detail}")
+
+    for fqn in sorted(set(IGNORE_LIST) - seen_ignored):
+        failures.append(f"IGNORE_LIST names {fqn}, which no longer exists")
+
+    tagged = {
+        fqn: group_name(tag)
+        for tag, suites in members.items()
+        for fqn in suites
+        if len(declared[fqn]) == 1
+    }
+    # A suite whose copies disagree is already reported, so it is left out of the comparison with
+    # the workflows, but it is still a tagged suite.
+    all_tagged = {fqn for suites in members.values() for fqn in suites}
+    for workflow in WORKFLOWS:
+        listed = workflow_groups(workflow)
+        for fqn, group in sorted(tagged.items()):
+            if fqn not in listed:
+                failures.append(f"{workflow} does not list {fqn}, which its tag puts in {group}")
+            elif listed[fqn] != group:
+                failures.append(f"{workflow} lists {fqn} in {listed[fqn]}, but its tag puts it in {group}")
+        for fqn in sorted(set(listed) - all_tagged):
+            failures.append(f"{workflow} lists {fqn}, which is not a tagged concrete suite")
+
+    if failures:
+        for failure in failures:
+            print(failure)
+        sys.exit(1)
+    summary = ", ".join(f"{tag} {len(suites)}" for tag, suites in members.items())
+    print(f"Every suite has one group tag: {summary}")
+
 
 if __name__ == "__main__":
-
-    # ignore traits, abstract classes, and intentionally skipped test suites
-    ignore_list = [
-        "org.apache.comet.parquet.ParquetReadSuite", # abstract
-        "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
-        "org.apache.comet.parquet.ParquetWriteWithMagicCommitterSuite", # manual test suite
-        "org.apache.comet.csv.CsvReadFromS3Suite", # manual test suite
-        "org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite", # manual test suite (loads libhdfs, see #5023)
-        "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
-        "org.apache.comet.CometIcebergSchedulerFailureSuite", # manual, multiple hosts + SIGKILL
-        "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
-        "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapterBridgeSuite", # manual test suite
-        "org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite", # dedicated version matrix
-        "org.apache.spark.sql.comet.CometPlanStabilitySuite", # abstract
-        "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite", # abstract
-        "org.apache.comet.exec.CometColumnarShuffleSuite" # abstract
-    ]
-
-    for workflow_filename in [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]:
-        workflow = open(workflow_filename, encoding="utf-8").read()
-
-        root = Path(".")
-        for path in root.rglob("*Suite.scala"):
-            # contrib suites run via their own module-level workflows
-            # (e.g. delta_contrib_test.yml), not the main PR build matrix
-            if path.parts[0] == "contrib":
-                continue
-            class_name = file_to_class_name(path)
-            if class_name:
-                if "Shim" in class_name:
-                    continue
-                if class_name in ignore_list:
-                    continue
-                if class_name not in workflow:
-                    print(f"Suite not found in workflow {workflow_filename}: {class_name}")
-                    sys.exit(-1)
-                print(f"Found {class_name} in {workflow_filename}")
-
-    # Forward check: every suite named in a workflow must be declared in a source file.
-    # Filename-based discovery is not enough here, because several suites are declared
-    # inside a file named after a different class (e.g. CometShuffleSuite is declared in
-    # CometColumnarShuffleSuite.scala), and version-specific suites such as
-    # CometStringDecodeSuite live only in the spark-3.x sourceset.
-    declared = set()
-    suite_declaration = re.compile(
-        r"^\s*(?:(?:final|sealed|abstract|private|case)\s+)*(?:class|trait|object)\s+(\w*Suite)\b"
-    )
-    for path in Path(".").rglob("*.scala"):
-        if "target" in path.parts:
-            continue
-        class_name = file_to_class_name(path)
-        if class_name:
-            declared.add(class_name.rsplit(".", 1)[-1])
-        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            match = suite_declaration.match(line)
-            if match:
-                declared.add(match.group(1))
-
-    listed_suite = re.compile(r"\borg\.apache\.[A-Za-z0-9_.]*Suite\b")
-    undeclared = []
-    for workflow_filename in [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]:
-        workflow = open(workflow_filename, encoding="utf-8").read()
-        for name in sorted(set(listed_suite.findall(workflow))):
-            if name.rsplit(".", 1)[-1] not in declared:
-                undeclared.append((workflow_filename, name))
-
-    if undeclared:
-        for workflow_filename, name in undeclared:
-            print(f"Workflow lists an undeclared suite {name} in {workflow_filename}")
-        sys.exit(-1)
-    print("All workflow-listed suites are declared")
+    main()

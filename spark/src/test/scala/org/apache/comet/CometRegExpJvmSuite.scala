@@ -23,9 +23,11 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.functions.col
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.tags.ExpressionsTestGroup
 
 // Regex expressions other than in-subset `rlike` run through the codegen dispatcher by default
 // (Spark's own code, enabled by default) rather than the native rust path.
+@ExpressionsTestGroup
 class CometRegExpJvmSuite extends CometTestBase {
 
   // A Java-only pattern used to check the opt-in behavior when Rust rejects it.

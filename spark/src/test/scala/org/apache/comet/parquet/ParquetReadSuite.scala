@@ -54,6 +54,7 @@ import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.tags.ScansTestGroup
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -3111,6 +3112,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 }
 
+@ScansTestGroup
 class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {

@@ -25,11 +25,14 @@ import java.nio.file.Files
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.comet.tags.ExpressionsTestGroup
+
 /**
  * Unit tests for [[SqlFileTestParser]]. Pure text parsing, so no Spark session is needed. The
  * end-to-end behaviour of each query mode is covered by `CometSqlFileTestSuite` running the
  * fixtures themselves.
  */
+@ExpressionsTestGroup
 class SqlFileTestParserSuite extends AnyFunSuite {
 
   private def parseQueries(lines: String*): Seq[SqlQuery] =

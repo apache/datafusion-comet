@@ -58,8 +58,10 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
 import org.apache.comet.hadoop.fs.RecordingFileSystem
 import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
 import org.apache.comet.serde.operator.NativeWriteUtils
+import org.apache.comet.tags.ScansTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
+@ScansTestGroup
 class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
   import testImplicits._

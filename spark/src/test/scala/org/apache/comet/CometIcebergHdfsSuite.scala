@@ -45,6 +45,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * End-to-end coverage of the native Iceberg scan against an `hdfs://` warehouse, backed by
@@ -85,6 +86,7 @@ import org.apache.comet.iceberg.IcebergReflection
  *     the fix once an Iceberg runtime exists. Until then this suite skips there and starts
  *     nothing.
  */
+@ScansTestGroup
 class CometIcebergHdfsSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper

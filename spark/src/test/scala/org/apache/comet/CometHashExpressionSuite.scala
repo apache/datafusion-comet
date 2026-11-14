@@ -24,6 +24,7 @@ import scala.util.Random
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
@@ -33,6 +34,7 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * These tests verify that Comet's native implementations produce identical results to Spark for
  * all supported data types.
  */
+@ExpressionsTestGroup
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def checkNativeHashes(query: String): Unit = {

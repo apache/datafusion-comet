@@ -58,10 +58,12 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.rules.{CometCacheBuildRule, CometCacheColumnarRule}
+import org.apache.comet.tags.ExecTestGroup
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 import net.jpountz.lz4.LZ4FrameInputStream
 
+@ExecTestGroup
 class CometInMemoryCacheSuite extends CometTestBase {
 
   import testImplicits._

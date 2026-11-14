@@ -21,6 +21,9 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.comet.tags.ExpressionsTestGroup
+
+@ExpressionsTestGroup
 class SerdeRegistrationSuite extends AnyFunSuite {
 
   // A version shim only adds serdes for classes the shared map cannot name on every Spark

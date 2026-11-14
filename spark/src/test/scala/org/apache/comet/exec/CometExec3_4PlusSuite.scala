@@ -35,10 +35,12 @@ import org.apache.spark.util.sketch.BloomFilter
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * This test suite contains tests for only Spark 3.4+.
  */
+@ExecTestGroup
 class CometExec3_4PlusSuite extends CometTestBase {
   import testImplicits._
 

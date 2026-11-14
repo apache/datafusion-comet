@@ -28,7 +28,9 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.tags.ScansTestGroup
 
+@ScansTestGroup
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
   test("select *") {

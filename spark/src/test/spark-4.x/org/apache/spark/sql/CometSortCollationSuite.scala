@@ -28,7 +28,9 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.serde.QueryPlanSerde
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometSortCollationSuite extends CometTestBase {
 
   private val sortCollationReason = "Sort does not support non-default string collation"

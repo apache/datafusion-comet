@@ -36,7 +36,9 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.{CometConf, CometExplainInfo, NativeBase, SparkErrorConverter}
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.exceptions.CometQueryExecutionException
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometArrowPythonUdfSuite extends CometTestBase {
 
   private def python: String = sys.env.getOrElse("PYSPARK_PYTHON", "python3")

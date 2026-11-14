@@ -23,7 +23,9 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ExpressionsTestGroup
 
+@ExpressionsTestGroup
 class CometStringDecodeSuite extends CometTestBase {
 
   private def countSparkProjectExec(plan: SparkPlan): Int =

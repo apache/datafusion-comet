@@ -37,12 +37,14 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
 import org.apache.comet.{CometConf, IntegrationTestSuite}
+import org.apache.comet.tags.ScansTestGroup
 
 /**
  * A integration test suite that tests parquet modular encryption usage.
  */
 @RunWith(classOf[JUnitRunner])
 @IntegrationTestSuite
+@ScansTestGroup
 class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
   private val encoder = Base64.getEncoder
   private val footerKey =

@@ -24,7 +24,9 @@ import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_
 import org.apache.spark.sql.comet.shims.ShimCometTPCDSQuerySuite
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometTPCDSQuerySuite
     extends {
       val tpcdsAllQueries: Seq[String] = Seq(

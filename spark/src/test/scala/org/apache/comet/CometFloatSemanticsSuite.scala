@@ -23,6 +23,8 @@ import org.scalatest.exceptions.TestFailedException
 
 import org.apache.spark.sql.CometTestBase
 
+import org.apache.comet.tags.ExpressionsTestGroup
+
 /**
  * Sweeps Spark's `-0.0` and NaN semantics across operator contexts and the expressions that
  * accept `FLOAT` or `DOUBLE` input (#6385).
@@ -36,6 +38,7 @@ import org.apache.spark.sql.CometTestBase
  * answer from Spark. The case fails once it matches, so that a fix, or a DataFusion upgrade that
  * changes float behavior, removes its entry from the list instead of leaving it stale.
  */
+@ExpressionsTestGroup
 class CometFloatSemanticsSuite extends CometTestBase {
 
   import CometFloatSemanticsSuite._

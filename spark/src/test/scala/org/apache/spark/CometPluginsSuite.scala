@@ -34,7 +34,9 @@ import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
 import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -175,6 +177,7 @@ class CometPluginsSuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsDefaultSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -193,6 +196,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
 
   private val warning =
@@ -276,6 +280,7 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsDeprecatedConfigWarningSuite extends CometTestBase {
 
   private def warningsFor(conf: SparkConf): Seq[String] = {
@@ -302,6 +307,7 @@ class CometPluginsDeprecatedConfigWarningSuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsUnifiedModeSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -330,6 +336,7 @@ class CometPluginsUnifiedModeSuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsExtensionOnlySuite extends CometTestBase {
   // No plugin and no off-heap memory. CometTestBase registers CometSparkSessionExtensions
   // directly, as an application can with spark.sql.extensions.
@@ -391,6 +398,7 @@ class CometPluginsExtensionOnlySuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
   // The application runs Spark's own shuffle manager.
   override protected def sparkConf: SparkConf = {
@@ -432,6 +440,7 @@ class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
   }
 }
 
+@ExecTestGroup
 class CometPluginsEventLogSuite extends SparkFunSuite {
 
   import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}

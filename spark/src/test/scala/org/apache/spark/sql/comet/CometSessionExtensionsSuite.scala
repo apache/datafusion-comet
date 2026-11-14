@@ -25,7 +25,9 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometSparkSessionExtensions
 import org.apache.comet.rules.CometRule
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometSessionExtensionsSuite extends CometTestBase {
 
   test("captured configs do not override a SQL execution after a setting is unset") {

@@ -35,11 +35,13 @@ import org.apache.spark.sql.util.QueryExecutionListener
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.shims.{MergeRowsMetricsShim, ShimCometMergeRows}
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Spark 4.1+ stock V2 writers build MergeSummary by locating the concrete Spark MergeRowsExec.
  * Native MergeRows is therefore kept on Spark when the enclosing writer remains on Spark.
  */
+@ExecTestGroup
 class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val catalog = "generic_rowlevel"

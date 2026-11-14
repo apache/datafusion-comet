@@ -29,7 +29,9 @@ import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometRangeExecSuite extends CometTestBase {
 
   // CometTestBase enables the Spark-to-Arrow conversions, including the one for Range. Use their
