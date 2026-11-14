@@ -68,6 +68,45 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   setupTestData()
 
+  test("JVM shuffle writers see session configs outside SQL execution") {
+    withParquetTable((0 until 100).map(i => (i % 10, i)), "writer_conf") {
+      Seq("0", "10000").foreach { maxWriters =>
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR.key -> maxWriters,
+          CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "bogus") {
+          val df = spark.table("writer_conf").repartition(2, col("_1"))
+          val exchange = checkCometExchange(df, 1, false).head
+          val expectedHandle = if (maxWriters == "0") {
+            "CometSerializedShuffleHandle"
+          } else {
+            "CometBypassMergeSortShuffleHandle"
+          }
+          assert(
+            exchange.shuffleDependency.shuffleHandle.getClass.getName.endsWith(expectedHandle))
+          val error = intercept[Exception] {
+            df.queryExecution.toRdd.count()
+          }
+          assert(error.toString.contains("spark.comet.shuffle.compression.codec"), error)
+          val sqlError = intercept[Exception] {
+            df.collect()
+          }
+          assert(sqlError.toString.contains("spark.comet.shuffle.compression.codec"), sqlError)
+        }
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR.key -> maxWriters,
+          CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd") {
+          assert(
+            spark
+              .table("writer_conf")
+              .repartition(2, col("_1"))
+              .queryExecution
+              .toRdd
+              .count() == 100)
+        }
+      }
+    }
+  }
+
   test("Fallback to Spark when shuffling on struct with duplicate field name") {
     val df = sql("""
         | SELECT max(struct(a, record.*, b)) as r FROM
