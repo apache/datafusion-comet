@@ -102,9 +102,10 @@ Comet Native Executors are a first version. The sub-issues of
   interrupting the thread does not stop the wait, and a killed Spark job leaves its query running
   on the cluster. A killed Spark task that reads a result partition stops at the next batch; a
   read blocked waiting for a batch still waits for it.
-- Errors. A failure on the cluster reaches Spark as a `CometNativeException` with the cluster's
-  message, not as the exception Spark would raise. For example, a division by zero with ANSI mode on
-  is not a `SparkArithmeticException` with the `DIVIDE_BY_ZERO` error class.
+- Errors: [#7621](https://github.com/apache/datafusion-comet/issues/7621). A failure on the
+  cluster reaches Spark as a `CometNativeException` with the cluster's message, not as the exception
+  Spark would raise. For example, a division by zero with ANSI mode on is not a
+  `SparkArithmeticException` with the `DIVIDE_BY_ZERO` error class.
 - Spark UI metrics: [#7373](https://github.com/apache/datafusion-comet/issues/7373).
 - Security. The scheduler and the executors have no authentication and no TLS, and a query names
   the files and object stores the executors read. Run a cluster only on a trusted network.
