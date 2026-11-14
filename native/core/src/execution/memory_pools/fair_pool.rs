@@ -45,12 +45,19 @@ use parking_lot::Mutex;
 /// ```
 ///
 /// `running_tasks` counts the tasks running native plans, this one included, `unspillable` is the
-/// bytes held by consumers that cannot spill and `num_spill` is the number of registered
-/// consumers that can. A request from a consumer that can spill is refused when what the consumer
-/// holds plus the request passes `limit`, or when the task's total plus the request passes
-/// `task_share`. That keeps the memory that Spark grants the task for the consumers that cannot
-/// spill, which take what Spark grants. A request from one of them is refused only when the task's
-/// total would pass `pool_size`.
+/// bytes held by consumers that cannot spill and `num_spill` is the number of active consumers that
+/// can spill, counting the one asking. A consumer is active while it holds more than its low-water
+/// mark (see [`ConsumerUsage::active`]). Unlike `FairSpillPool`, this leaves out the consumers that
+/// have not started work. DataFusion registers each operator's consumer when it
+/// builds the stream tree, before any batch flows, so the operators above a blocking one, such as a
+/// sort, are registered while it reads its input, and would otherwise hold it to a fraction of the
+/// task's share while their own shares stay unused (#7628).
+///
+/// A request from a consumer that can spill is refused when what the consumer holds plus the
+/// request passes `limit`, or when the task's total plus the request passes `task_share`. That
+/// keeps the memory that Spark grants the task for the consumers that cannot spill, which take
+/// what Spark grants. A request from one of them is refused only when the task's total would pass
+/// `pool_size`.
 pub struct CometFairMemoryPool {
     spark: SparkMemory,
     /// The most that the task may reserve.
@@ -66,22 +73,69 @@ struct CometFairPoolState {
     used: usize,
     /// Bytes held by consumers that cannot spill.
     unspillable: usize,
-    /// Registered consumers that can spill.
+    /// Consumers that can spill and are active; see [`ConsumerUsage::active`].
     num_spill: usize,
-    /// Bytes held by each registered consumer, keyed by [`MemoryConsumer::id`]. The sibling
+    /// What each registered consumer holds, keyed by [`MemoryConsumer::id`]. The sibling
     /// reservations that `new_empty()`, `split()` and `take()` create belong to the same consumer,
     /// so they count against one share. The pool keeps these totals itself because
     /// `reservation.size()` covers only one reservation, and DataFusion updates it after calling
     /// `try_grow` but before calling `shrink`.
-    consumers: HashMap<usize, usize>,
+    consumers: HashMap<usize, ConsumerUsage>,
+}
+
+/// What a registered consumer holds across all of its reservations.
+#[derive(Default)]
+struct ConsumerUsage {
+    used: usize,
+    /// The least the consumer has held since its first reservation, or `None` before it made one.
+    low_water: Option<usize>,
+}
+
+impl ConsumerUsage {
+    /// Whether the consumer holds more than its low-water mark. DataFusion 56's aggregates reserve
+    /// their initial table when the plan starts, before any batch flows (apache/datafusion#25900),
+    /// so a first reservation does not show that an operator has started work. A consumer that has
+    /// emptied, such as an aggregate that emitted early, is active again once it holds memory, and
+    /// one that only gives memory back, such as a sort emitting what it buffered, is not.
+    fn active(&self) -> bool {
+        self.low_water
+            .is_some_and(|low_water| self.used > low_water)
+    }
 }
 
 impl CometFairPoolState {
-    /// The bytes held by `reservation`'s consumer across all of its reservations.
-    fn consumer_used(&mut self, reservation: &MemoryReservation) -> &mut usize {
+    /// What `reservation`'s consumer holds across all of its reservations.
+    fn consumer(&mut self, reservation: &MemoryReservation) -> &mut ConsumerUsage {
         self.consumers
             .get_mut(&reservation.consumer().id())
             .expect("reservation's consumer is not registered with the pool")
+    }
+
+    /// Adds `additional` bytes to what `reservation`'s consumer holds, counting a consumer that
+    /// can spill in `num_spill` once it becomes active.
+    fn add_to_consumer(&mut self, reservation: &MemoryReservation, additional: usize) {
+        let consumer = self.consumer(reservation);
+        let was_active = consumer.active();
+        consumer.used = consumer.used.saturating_add(additional);
+        consumer.low_water.get_or_insert(consumer.used);
+        if !was_active && consumer.active() && reservation.consumer().can_spill() {
+            self.num_spill += 1;
+        }
+    }
+
+    /// Takes `subtractive` bytes off what `reservation`'s consumer holds, which must be at least
+    /// that much, and stops counting a consumer that can spill in `num_spill` once it is no
+    /// longer active.
+    fn subtract_from_consumer(&mut self, reservation: &MemoryReservation, subtractive: usize) {
+        let consumer = self.consumer(reservation);
+        let was_active = consumer.active();
+        consumer.used -= subtractive;
+        consumer.low_water = consumer
+            .low_water
+            .map(|low_water| low_water.min(consumer.used));
+        if was_active && !consumer.active() && reservation.consumer().can_spill() {
+            self.num_spill = self.num_spill.saturating_sub(1);
+        }
     }
 }
 
@@ -167,11 +221,16 @@ impl Display for CometFairMemoryPool {
 /// pure `PartialMerge` that the planner runs as `Final` over input sorted on some of its keys
 /// (#6880). That one is not a `CometSortAggregateExec` and its input is only partially sorted, but
 /// it is checked only against the pool as well. The planner does not switch a `PartialMerge` over
-/// fully sorted input, which would gain no spill path and only halve the limit of a sort below it.
+/// fully sorted input, where the final aggregate would have no spill path.
 ///
 /// Only the check differs. The aggregate still counts as a consumer that can spill everywhere
-/// else, so it is one of `num_spill` and its bytes are not `unspillable`. A sort below it then
-/// stays limited to its fair share and leaves the aggregate the rest.
+/// else, so it is one of `num_spill` once it is active, and its bytes are not `unspillable`.
+/// A sort below it reads all of its input before the aggregate asks for any, so the sort can take
+/// the task's whole share. It gives part of that back before the aggregate's first request, all of
+/// it if it spilled. Otherwise `ExternalSorter`, which reserves about twice the bytes of each batch
+/// it buffers, resizes each sorted run to its own size before it emits the first batch, and a
+/// merge of the runs reserves only the batches it holds and their sort keys.
+/// `a_sort_that_fills_the_share_leaves_room_for_the_final_aggregate_above_it` checks both.
 fn limited_to_its_share(consumer: &MemoryConsumer) -> bool {
     consumer.can_spill() && !consumer.name().starts_with(ORDERED_FINAL_AGGREGATE)
 }
@@ -182,18 +241,21 @@ impl MemoryPool for CometFairMemoryPool {
     }
 
     fn register(&self, consumer: &MemoryConsumer) {
-        let mut state = self.state.lock();
-        state.consumers.insert(consumer.id(), 0);
-        if consumer.can_spill() {
-            state.num_spill += 1;
-        }
+        self.state
+            .lock()
+            .consumers
+            .insert(consumer.id(), ConsumerUsage::default());
     }
 
     fn unregister(&self, consumer: &MemoryConsumer) {
         // DataFusion unregisters a consumer after its last reservation has dropped and released
         // its bytes. If a release panicked, this runs while unwinding, so it must not panic too.
         let mut state = self.state.lock();
-        if state.consumers.remove(&consumer.id()).is_some() && consumer.can_spill() {
+        let active = state
+            .consumers
+            .remove(&consumer.id())
+            .is_some_and(|usage| usage.active());
+        if active && consumer.can_spill() {
             state.num_spill = state.num_spill.saturating_sub(1);
         }
     }
@@ -211,14 +273,13 @@ impl MemoryPool for CometFairMemoryPool {
         if !reservation.consumer().can_spill() {
             state.unspillable = state.unspillable.saturating_add(additional);
         }
-        let consumer_used = state.consumer_used(reservation);
-        *consumer_used = consumer_used.saturating_add(additional);
+        state.add_to_consumer(reservation, additional);
     }
 
     fn shrink(&self, reservation: &MemoryReservation, subtractive: usize) {
         if subtractive > 0 {
             let mut state = self.state.lock();
-            let consumer_used = *state.consumer_used(reservation);
+            let consumer_used = state.consumer(reservation).used;
             if consumer_used < subtractive {
                 panic!(
                     "Failed to release {subtractive} bytes where only {consumer_used} bytes tracked for the consumer"
@@ -231,7 +292,7 @@ impl MemoryPool for CometFairMemoryPool {
             if !reservation.consumer().can_spill() {
                 state.unspillable = state.unspillable.saturating_sub(subtractive);
             }
-            *state.consumer_used(reservation) -= subtractive;
+            state.subtract_from_consumer(reservation, subtractive);
         }
     }
 
@@ -246,19 +307,20 @@ impl MemoryPool for CometFairMemoryPool {
             let used = state.used;
             if limited_to_its_share(reservation.consumer()) {
                 let (task_share, tasks) = self.task_share();
-                // `num_spill` counts this consumer.
-                let limit = task_share.saturating_sub(state.unspillable) / state.num_spill.max(1);
-                let consumer_used = *state.consumer_used(reservation);
+                let consumer = state.consumer(reservation);
+                let (consumer_used, active) = (consumer.used, consumer.active());
+                // `num_spill` counts this consumer only if it is already active.
+                let num_spill = (state.num_spill + usize::from(!active)).max(1);
+                let limit = task_share.saturating_sub(state.unspillable) / num_spill;
                 if limit < consumer_used.saturating_add(additional) {
                     return resources_err!(
-                        "Failed to acquire {additional} bytes where this consumer already holds {consumer_used} bytes and the fair limit is {limit} bytes: the task's share of {task_share} bytes with {tasks} tasks running, less {} bytes held by consumers that cannot spill, divided among {} consumers that can ({} bytes overcommitted)",
+                        "Failed to acquire {additional} bytes where this consumer already holds {consumer_used} bytes and the fair limit is {limit} bytes: the task's share of {task_share} bytes with {tasks} tasks running, less {} bytes held by consumers that cannot spill, divided among {num_spill} consumers that can and are doing work, this one included ({} bytes overcommitted)",
                         state.unspillable,
-                        state.num_spill,
                         self.spark.overcommit()
                     );
                 }
                 // The shares alone do not bound the task's total, because a consumer keeps what
-                // it reserved before another consumer registered or another task started.
+                // it reserved before another consumer became active or another task started.
                 if task_share < used.saturating_add(additional) {
                     return resources_err!(
                         "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the task's share is {task_share} bytes with {tasks} tasks running",
@@ -292,7 +354,7 @@ impl MemoryPool for CometFairMemoryPool {
             if !can_spill {
                 state.unspillable += additional;
             }
-            *state.consumer_used(reservation) += additional;
+            state.add_to_consumer(reservation, additional);
         }
         Ok(())
     }
@@ -306,8 +368,23 @@ impl MemoryPool for CometFairMemoryPool {
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::super::task_shared::RunningTask;
-    use super::super::testing::spillable;
+    use super::super::testing::{hold, spillable, PeakMemoryPool};
     use super::*;
+    use arrow::array::{ArrayRef, Int64Array};
+    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::common::Result as DFResult;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::execution::TaskContext;
+    use datafusion::functions_aggregate::count::count_udaf;
+    use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
+    use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion::physical_plan::{collect, ExecutionPlan, InputOrderMode};
+    use datafusion::prelude::SessionConfig;
     use std::sync::Arc;
 
     /// A pool of `pool_size` bytes, all of the off-heap pool as with the default fraction, which
@@ -343,14 +420,17 @@ mod tests {
         let _running = start(&tasks, 8);
         let pool = shared_pool(&fake, 1040, &tasks);
         let sort = spillable("ExternalSorter[0]", &pool);
-        let _other_sort = spillable("ExternalSorter[1]", &pool);
+        let other_sort = spillable("ExternalSorter[1]", &pool);
         let other_merge = MemoryConsumer::new("ExternalSorterMerge[1]").register(&pool);
+        hold(&other_sort, 10);
 
-        // The two sorts share the task's 130 bytes, so the first is refused, and spills, at 65.
+        // Both sorts are active, so they share the task's 130 bytes, and the first is refused,
+        // and spills, at 65.
         sort.try_grow(65).unwrap();
         assert!(sort.try_grow(1).is_err());
-        // That leaves the rest of what Spark grants the task for the other sort's merge, which
-        // cannot spill.
+        // The other sort spills before it merges. That leaves the rest of what Spark grants the
+        // task for its merge, which cannot spill.
+        other_sort.free();
         other_merge.try_grow(65).unwrap();
         assert_eq!(fake.held(), 130);
     }
@@ -382,7 +462,8 @@ mod tests {
         let merge = MemoryConsumer::new("ExternalSorterMerge[0]").register(&pool);
         merge.try_grow(40).unwrap();
 
-        // The two sorts share the 60 bytes that the merge leaves.
+        // Both sorts are active, so they share the 60 bytes that the merge leaves.
+        hold(&second, 10);
         first.try_grow(30).unwrap();
         assert!(first.try_grow(1).is_err());
 
@@ -390,7 +471,7 @@ mod tests {
         merge.shrink(40);
         first.try_grow(20).unwrap();
         assert!(first.try_grow(1).is_err());
-        second.try_grow(50).unwrap();
+        second.try_grow(40).unwrap();
         assert!(second.try_grow(1).is_err());
         assert_eq!(pool.reserved(), 100);
     }
@@ -400,7 +481,8 @@ mod tests {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 100);
         let sort = spillable("ExternalSorter[0]", &pool);
-        let _other_sort = spillable("ExternalSorter[1]", &pool);
+        let other_sort = spillable("ExternalSorter[1]", &pool);
+        hold(&other_sort, 10);
         // Like a batch read back from a spill file, which already exists.
         let reader = MemoryConsumer::new("spill reader").register(&pool);
         reader.grow(40);
@@ -443,7 +525,7 @@ mod tests {
         let _running = tasks.start();
         let pool = shared_pool(&fake, 200, &tasks);
         let first = spillable("ExternalSorter[0]", &pool);
-        first.try_grow(100).unwrap();
+        hold(&first, 100);
 
         // Another task starts, which halves the task's share to the 100 bytes that the sort holds.
         // A second sort is under its own limit of 50 bytes, but the task's total is at its share.
@@ -490,28 +572,14 @@ mod tests {
         let pool = pool(&fake, 100);
         let sort = spillable("ExternalSorter[0]", &pool);
         let aggregate = spillable("OrderedFinalAggregateStream[0]", &pool);
+        hold(&sort, 10);
 
-        // Not held to half of the task's 100 bytes, as a second consumer that can spill would be.
+        // Not held to half of the task's 100 bytes, as a second consumer that can spill would be
+        // while the sort is active.
         aggregate.try_grow(60).unwrap();
         // Its bytes come out of the sort's share instead.
-        assert!(sort.try_grow(41).is_err());
-        sort.try_grow(40).unwrap();
-    }
-
-    #[test]
-    fn a_sort_below_an_ordered_final_aggregate_leaves_it_a_share() {
-        // In a `CometSortAggregateExec` over a native sort, the sort reads all of its input before
-        // the aggregate asks for anything, and keeps what it holds while it emits.
-        let fake = FakeSpark::with(usize::MAX);
-        let pool = pool(&fake, 100);
-        let sort = spillable("ExternalSorter[0]", &pool);
-        let aggregate = spillable("OrderedFinalAggregateStream[0]", &pool);
-
-        // The aggregate counts as a consumer that can spill, so the sort gets half.
-        assert!(sort.try_grow(51).is_err());
-        sort.try_grow(50).unwrap();
-        // And the aggregate has the other half.
-        aggregate.try_grow(50).unwrap();
+        assert!(sort.try_grow(31).is_err());
+        sort.try_grow(30).unwrap();
     }
 
     #[test]
@@ -540,9 +608,9 @@ mod tests {
         let first = spillable("first", &pool);
         let second = spillable("second", &pool);
 
-        // Each consumer's share is 50 bytes, whatever the other one holds.
-        first.try_grow(40).unwrap();
-        second.try_grow(20).unwrap();
+        // Once both are active, each consumer's share is 50 bytes, whatever the other one holds.
+        hold(&first, 40);
+        hold(&second, 20);
         first.try_grow(10).unwrap();
         assert!(first.try_grow(1).is_err());
         second.try_grow(30).unwrap();
@@ -552,17 +620,18 @@ mod tests {
     }
 
     #[test]
-    fn a_consumer_registered_late_is_limited_by_the_tasks_share() {
+    fn a_consumer_that_starts_late_is_limited_by_the_tasks_share() {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 90);
         let first = spillable("first", &pool);
-        // Alone, the first consumer's share is the whole task's.
-        first.try_grow(60).unwrap();
-
-        // A second consumer halves both shares, but the first keeps the 60 bytes it holds.
         let second = spillable("second", &pool);
+        // While the second consumer is not active, the first consumer's share is the whole task's.
+        hold(&first, 60);
+
+        // Once the second consumer is active, it halves both shares, but the first keeps the 60
+        // bytes it holds.
+        hold(&second, 30);
         assert!(first.try_grow(1).is_err());
-        second.try_grow(30).unwrap();
         // The second consumer is 15 bytes under its share, but the task's share is full.
         assert!(second.try_grow(1).is_err());
         assert_eq!(pool.reserved(), 90);
@@ -572,11 +641,40 @@ mod tests {
         second.try_grow(15).unwrap();
         assert!(second.try_grow(1).is_err());
 
-        // Unregistering the second consumer gives the first the whole share again.
-        drop(second);
+        // Once the second consumer holds nothing, it is no longer active, and the first has the
+        // whole share again.
+        second.free();
         first.try_grow(60).unwrap();
         assert_eq!(pool.reserved(), 90);
         assert_eq!(fake.held(), 90);
+    }
+
+    /// DataFusion 56's aggregates reserve their initial table when the plan starts, before any
+    /// batch flows (apache/datafusion#25900), so a consumer takes a share only while it holds more
+    /// than the least it has held since its first reservation.
+    #[test]
+    fn a_consumer_takes_a_share_while_it_holds_more_than_its_low_water_mark() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool = pool(&fake, 100);
+        let sort = spillable("ExternalSorter[0]", &pool);
+        let aggregate = spillable("SingleHashAggregateStream[0]", &pool);
+        aggregate.try_grow(10).unwrap();
+
+        // So the sort can use what the aggregate leaves of the task's share.
+        sort.try_grow(90).unwrap();
+
+        // Once the aggregate holds more than its initial table, it takes a share.
+        sort.shrink(40);
+        aggregate.try_grow(1).unwrap();
+        assert!(sort.try_grow(1).is_err());
+
+        // An aggregate that emptied, as one that emitted early does, takes a share again as soon
+        // as it holds memory, even less than its initial table.
+        aggregate.free();
+        sort.try_grow(1).unwrap();
+        aggregate.try_grow(5).unwrap();
+        assert!(sort.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 56);
     }
 
     #[test]
@@ -587,6 +685,7 @@ mod tests {
         // Like the reservation that a sort's streaming merge creates for each batch it reads.
         let sibling = first.new_empty();
         let second = spillable("second", &pool);
+        hold(&second, 10);
 
         // Both of the first consumer's reservations draw on its one 50-byte share.
         first.try_grow(40).unwrap();
@@ -595,8 +694,8 @@ mod tests {
         assert!(first.try_grow(1).is_err());
         assert!(sibling.try_grow(1).is_err());
 
-        // So the second consumer can still reserve its whole share.
-        second.try_grow(50).unwrap();
+        // So the second consumer can still reserve the rest of its share.
+        second.try_grow(40).unwrap();
         assert_eq!(pool.reserved(), 100);
 
         // Dropping a reservation returns its bytes to the consumer's share. The consumer stays
@@ -613,7 +712,8 @@ mod tests {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 100);
         let mut first = spillable("first", &pool);
-        let _second = spillable("second", &pool);
+        let second = spillable("second", &pool);
+        hold(&second, 10);
 
         first.try_grow(50).unwrap();
         let split = first.split(20);
@@ -628,7 +728,168 @@ mod tests {
         split.shrink(10);
         first.try_grow(10).unwrap();
         assert!(taken.try_grow(1).is_err());
-        assert_eq!(pool.reserved(), 50);
-        assert_eq!(fake.held(), 50);
+        assert_eq!(pool.reserved(), 60);
+        assert_eq!(fake.held(), 60);
+    }
+
+    /// 16 batches of 1024 rows of `schema`'s two `Int64` columns, which `row` computes from a
+    /// distinct key in `0..16384`, in no particular order.
+    fn batches(schema: &SchemaRef, row: impl Fn(i64) -> (i64, i64)) -> Vec<RecordBatch> {
+        (0..16)
+            .map(|batch| {
+                let (first, second): (Vec<i64>, Vec<i64>) = (batch * 1024..(batch + 1) * 1024)
+                    .map(|i| row(i * 7919 % 16384))
+                    .unzip();
+                let columns: Vec<ArrayRef> = vec![
+                    Arc::new(Int64Array::from(first)),
+                    Arc::new(Int64Array::from(second)),
+                ];
+                RecordBatch::try_new(Arc::clone(schema), columns).unwrap()
+            })
+            .collect()
+    }
+
+    /// Batches of 1024 rows, without the sort's merge reservation, which cannot spill and so would
+    /// take its bytes out of the shares.
+    fn session_config() -> SessionConfig {
+        SessionConfig::new()
+            .with_batch_size(1024)
+            .with_sort_spill_reservation_bytes(0)
+    }
+
+    async fn collect_with(
+        plan: Arc<dyn ExecutionPlan>,
+        pool: Arc<dyn MemoryPool>,
+        config: SessionConfig,
+    ) -> Vec<RecordBatch> {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()
+            .unwrap();
+        let context = TaskContext::default()
+            .with_session_config(config)
+            .with_runtime(runtime);
+        collect(plan, Arc::new(context)).await.unwrap()
+    }
+
+    fn sort_on(column: &str, input: Arc<dyn ExecutionPlan>) -> Arc<SortExec> {
+        let expr = col(column, &input.schema()).unwrap();
+        let ordering = LexOrdering::new([PhysicalSortExpr::new_default(expr)]).unwrap();
+        Arc::new(SortExec::new(ordering, input))
+    }
+
+    /// Sorts on `a` in a task whose share holds what the sort reserves for all of its input, under
+    /// the plan that `above` builds on the sort, and returns how many times the sort spilled.
+    async fn spills_of_a_sort_below(
+        above: impl FnOnce(Arc<dyn ExecutionPlan>) -> DFResult<Arc<dyn ExecutionPlan>>,
+    ) -> usize {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]));
+        let batches = batches(&schema, |key| (key, key % 16));
+        // `ExternalSorter` reserves about twice the bytes of each batch it buffers, so three times
+        // the input holds all of it, and half of that does not.
+        let input_bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
+        let fake = FakeSpark::with(usize::MAX);
+
+        let input = MemorySourceConfig::try_new_exec(&[batches], schema, None).unwrap();
+        let sort = sort_on("a", input);
+        let plan = above(Arc::clone(&sort) as Arc<dyn ExecutionPlan>).unwrap();
+        let output = collect_with(plan, pool(&fake, 3 * input_bytes), session_config()).await;
+        assert!(output.iter().any(|batch| batch.num_rows() > 0));
+        sort.metrics().unwrap().spill_count().unwrap()
+    }
+
+    fn sorted_on_b(input: Arc<dyn ExecutionPlan>) -> DFResult<Arc<dyn ExecutionPlan>> {
+        Ok(sort_on("b", input))
+    }
+
+    fn counted_by_b(input: Arc<dyn ExecutionPlan>) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let schema = input.schema();
+        let count = AggregateExprBuilder::new(count_udaf(), vec![col("a", &schema)?])
+            .schema(Arc::clone(&schema))
+            .alias("count(a)")
+            .build()?;
+        let group_by = PhysicalGroupBy::new_single(vec![(col("b", &schema)?, "b".to_string())]);
+        Ok(Arc::new(AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(count)],
+            vec![None],
+            input,
+            schema,
+        )?))
+    }
+
+    /// DataFusion registers each operator's consumer when it builds the stream tree, before any
+    /// batch flows, so the consumers above a blocking operator are registered while it reads its
+    /// input, although they hold nothing until it emits (#7628). The pool asks Spark for memory in
+    /// `block_in_place`, which needs the multi-threaded runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_operators_above_a_sort_take_no_share_until_they_are_active() {
+        let spills = [
+            spills_of_a_sort_below(Ok).await,
+            spills_of_a_sort_below(sorted_on_b).await,
+            spills_of_a_sort_below(counted_by_b).await,
+        ];
+        // Alone, below a sort, and below an aggregate.
+        assert_eq!(spills, [0, 0, 0]);
+    }
+
+    /// In a `CometSortAggregateExec` over a native sort, the final aggregate's input is sorted on
+    /// every grouping key, so DataFusion runs it as an `OrderedFinalAggregateStream` with no spill
+    /// path, and a refused request fails the query. The aggregate holds nothing while the sort
+    /// reads its input, so the sort can fill the task's share. It must give part of it back before
+    /// the aggregate's first request, which it does whether it emits from one sorted batch or
+    /// merges sorted runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sort_that_fills_the_share_leaves_room_for_the_final_aggregate_above_it() {
+        // The partial counts that a final aggregate reads: 4096 values of `b`, each in 4 rows.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("b", DataType::Int64, false),
+            Field::new("count(a)[count]", DataType::Int64, false),
+        ]));
+        let batches = batches(&schema, |key| (key / 4, 1));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None).unwrap();
+        // The schema that the partial aggregate read, which the final aggregate is built against.
+        let partial_input = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let a = col("a", &partial_input).unwrap();
+        let count = AggregateExprBuilder::new(count_udaf(), vec![a])
+            .schema(Arc::clone(&partial_input))
+            .alias("count(a)")
+            .build()
+            .unwrap();
+        let group_by = PhysicalGroupBy::new_single(vec![(col("b", &schema).unwrap(), "b".into())]);
+
+        for in_place_bytes in [usize::MAX, 0] {
+            // Emits from one sorted batch, then merges sorted runs.
+            let config = session_config().with_sort_in_place_threshold_bytes(in_place_bytes);
+            // The most that the sort reserves on its own.
+            let alone = Arc::new(PeakMemoryPool::new(usize::MAX));
+            let sort = sort_on("b", Arc::clone(&input));
+            collect_with(sort, Arc::clone(&alone) as _, config.clone()).await;
+
+            // A task share of exactly that.
+            let fake = FakeSpark::with(usize::MAX);
+            let sort = sort_on("b", Arc::clone(&input));
+            let aggregate = AggregateExec::try_new(
+                AggregateMode::Final,
+                group_by.clone(),
+                vec![Arc::new(count.clone())],
+                vec![None],
+                Arc::clone(&sort) as _,
+                Arc::clone(&partial_input),
+            )
+            .unwrap();
+            // Sorted on every grouping key, so an `OrderedFinalAggregateStream` with no spill path.
+            assert_eq!(aggregate.input_order_mode(), &InputOrderMode::Sorted);
+            let output = collect_with(Arc::new(aggregate), pool(&fake, alone.peak()), config).await;
+            let groups: usize = output.iter().map(RecordBatch::num_rows).sum();
+            let path = format!("sort_in_place_threshold_bytes = {in_place_bytes}");
+            assert_eq!(groups, 4096, "{path}");
+            assert_eq!(sort.metrics().unwrap().spill_count(), Some(0), "{path}");
+        }
     }
 }
