@@ -237,6 +237,48 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  test("stack with an argument Comet cannot run natively falls back") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      spark.udf.register("plus_one", (i: Int) => i + 1)
+      val df = Seq((1, 10), (2, 20))
+        .toDF("id", "v")
+        .selectExpr("id", "stack(2, v, plus_one(v))")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+    }
+  }
+
+  test("stack with more than 50 rows falls back") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val values = (1 to 51).map(i => s"v + $i").mkString(", ")
+      val df = Seq((1, 10), (2, 20)).toDF("id", "v").selectExpr("id", s"stack(51, $values)")
+      checkSparkAnswerAndFallbackReason(df, "stack with more than 50 rows is not supported")
+    }
+  }
+
+  test("stack with 50 rows runs natively") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val values = (1 to 50).map(i => s"v + $i").mkString(", ")
+      val df = Seq((1, 10), (2, 20)).toDF("id", "v").selectExpr("id", s"stack(50, $values)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("inline over an array of structs with no fields falls back") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      Seq("inline", "inline_outer").foreach { fn =>
+        val df =
+          Seq((1, 10), (2, 20)).toDF("id", "v").selectExpr(s"$fn(array(struct(), struct()))")
+        checkSparkAnswerAndFallbackReason(
+          df,
+          "inline over an array of structs with no fields is not supported")
+      }
+    }
+  }
+
   test("explode with nullable projected column") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
