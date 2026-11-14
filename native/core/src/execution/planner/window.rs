@@ -33,11 +33,13 @@ use datafusion::{
         window::WindowExpr,
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
     },
+    physical_expr_common::physical_expr::format_physical_expr_list,
     physical_plan::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
+        sorts::sort::SortExec,
         windows::{BoundedWindowAggExec, WindowAggExec},
-        ExecutionPlan, InputOrderMode,
+        ExecutionPlan, ExecutionPlanProperties, InputOrderMode,
     },
 };
 use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
@@ -65,6 +67,17 @@ use crate::{
 };
 
 use ExecutionError::GeneralError;
+
+/// Whether `plan` is ordered on every one of `keys`, in any order of them.
+fn orders_every_key(
+    plan: &Arc<dyn ExecutionPlan>,
+    keys: &[Arc<dyn PhysicalExpr>],
+) -> Result<bool, ExecutionError> {
+    let (_, ordered) = plan
+        .equivalence_properties()
+        .find_longest_permutation(keys)?;
+    Ok(ordered.len() == keys.len())
+}
 
 /// Builder for `Window`.
 pub struct WindowBuilder;
@@ -97,6 +110,70 @@ impl OperatorBuilder for WindowBuilder {
 
         let sort_exprs = &sort_exprs?;
         let partition_exprs = &partition_exprs?;
+
+        // Declare the order Spark sent for the input; rows from the JVM declare no order unless
+        // Spark sent one. A declared input is sorted unless it is ordered on every PARTITION BY
+        // key. Any other input with PARTITION BY keys is sorted unless it is already in the
+        // order to restore: the unverified order Spark relies on when sent, otherwise the
+        // PARTITION BY keys ascending with nulls first, then the ORDER BY keys.
+        if !wnd.input_sort_orders.is_empty() && !wnd.unverified_input_sort_orders.is_empty() {
+            return Err(GeneralError(format!(
+                "Window: input_sort_orders ({}) and unverified_input_sort_orders ({}) \
+                 are both set",
+                wnd.input_sort_orders.len(),
+                wnd.unverified_input_sort_orders.len()
+            )));
+        }
+        let declared =
+            planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
+        let restore: Vec<PhysicalSortExpr> = if wnd.unverified_input_sort_orders.is_empty() {
+            partition_exprs
+                .iter()
+                .map(|e| {
+                    PhysicalSortExpr::new(
+                        Arc::clone(e),
+                        SortOptions {
+                            descending: false,
+                            nulls_first: true,
+                        },
+                    )
+                })
+                .chain(sort_exprs.iter().cloned())
+                .collect()
+        } else {
+            wnd.unverified_input_sort_orders
+                .iter()
+                .map(|expr| planner.create_sort_expr(expr, Arc::clone(&input_schema)))
+                .collect::<Result<_, _>>()?
+        };
+        let needs_sort = if partition_exprs.is_empty() {
+            false
+        } else if !wnd.input_sort_orders.is_empty() {
+            !orders_every_key(&declared, partition_exprs)?
+        } else {
+            !declared
+                .equivalence_properties()
+                .ordering_satisfy(restore.iter().cloned())?
+        };
+        let input_sort: Option<Arc<dyn ExecutionPlan>> = match LexOrdering::new(restore) {
+            Some(ordering) if needs_sort => {
+                Some(Arc::new(SortExec::new(ordering, Arc::clone(&declared))))
+            }
+            _ => None,
+        };
+        let window_input = input_sort.as_ref().map_or(declared, Arc::clone);
+        // The window finds its partitions by its own keys, so an input that is not ordered on
+        // all of them would be read as fewer partitions than it holds.
+        if !orders_every_key(&window_input, partition_exprs)? {
+            let ordering = window_input
+                .output_ordering()
+                .map_or_else(|| "none".to_string(), |o| format!("[{o}]"));
+            return Err(GeneralError(format!(
+                "Window: the input is not ordered on every PARTITION BY key {}, input ordering {}",
+                format_physical_expr_list(partition_exprs.iter()),
+                ordering
+            )));
+        }
 
         let window_expr: Result<Vec<Arc<dyn WindowExpr>>, ExecutionError> = wnd
             .window_expr
@@ -132,20 +209,17 @@ impl OperatorBuilder for WindowBuilder {
         let window_expr = window_expr?;
         let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
 
-        // Both window operators reject an input that does not declare its partition keys' order.
-        let input =
-            planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
         let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
             Arc::new(BoundedWindowAggExec::try_new(
                 window_expr,
-                input,
+                window_input,
                 InputOrderMode::Sorted,
                 !partition_exprs.is_empty(),
             )?)
         } else {
             Arc::new(WindowAggExec::try_new(
                 window_expr,
-                input,
+                window_input,
                 !partition_exprs.is_empty(),
             )?)
         };
@@ -187,16 +261,21 @@ impl OperatorBuilder for WindowBuilder {
                     proj_exprs,
                     Arc::clone(&window_agg),
                 )?);
-                // The window is an additional plan so that its time is reported with the
-                // projection's rather than left out.
+                // The window and any input sort are additional plans so that their time is
+                // reported with the projection's rather than left out.
                 SparkPlan::new_with_additional(
                     spark_plan.plan_id,
                     projection,
                     vec![child],
-                    vec![window_agg],
+                    std::iter::once(window_agg).chain(input_sort).collect(),
                 )
             } else {
-                SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])
+                SparkPlan::new_with_additional(
+                    spark_plan.plan_id,
+                    window_agg,
+                    vec![child],
+                    input_sort.into_iter().collect(),
+                )
             }
         };
 

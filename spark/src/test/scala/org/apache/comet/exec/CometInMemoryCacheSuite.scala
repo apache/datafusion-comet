@@ -43,11 +43,11 @@ import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometBroadcastNes
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FileSourceScanExec, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FileSourceScanExec, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.functions.{col, count, lit, max, min, sum}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
@@ -3918,12 +3918,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("a window that stays in Spark over a nested loop join sorts the join's rows again") {
-    // A native nested loop join emits its rows build row by build row, out of the streamed side's
-    // order that it reports (#6898), and Spark plans no sort above it. A window that runs in Spark
-    // there, one without partition keys or one with a collated key, gets its input sorted again.
-    // One partition, so no exchange comes between the join and the window, with or without AQE.
-    // With AQE, the stage's own pass can make the added sort native and then the window above it.
+  test("a window over a nested loop join over a sorted cache keeps the join in Spark") {
+    // Spark plans no sort above a nested loop join that reports its streamed side's order, but
+    // the native join emits its rows build row by build row (#6898), so the join stays in Spark.
+    // A window above it, one without partition keys or one with a collated key, then sees the
+    // rows in order, with no sort of its own. It runs in Spark as well, since the join's rows
+    // have no way into a native plan. One partition, so no exchange comes between the join and
+    // the window, with or without AQE.
     Seq(false, true).foreach { aqe =>
       withConversions(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
         try {
@@ -3961,16 +3962,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
             withClue(s"$plan\n") {
               assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == aqe)
               val finalPlan = stripAQEPlan(plan)
-              val joins = collect(finalPlan) { case j: CometBroadcastNestedLoopJoinExec => j }
-              assert(joins.nonEmpty)
-              val windowInputs = collect(finalPlan) {
-                case w: WindowExec => w.child
-                case w: CometWindowExec => w.child
-              }
-              assert(windowInputs.nonEmpty && windowInputs.forall {
-                case _: SortExec | _: CometSortExec | WholeStageCodegenExec(_: SortExec) => true
-                case _ => false
-              })
+              assert(collect(finalPlan) { case j: BroadcastNestedLoopJoinExec => j }.nonEmpty)
+              assert(collect(finalPlan) { case j: CometBroadcastNestedLoopJoinExec => j }.isEmpty)
+              assert(collect(finalPlan) { case w: WindowExec => w }.size == 1)
+              assert(collect(finalPlan) { case w: CometWindowExec => w }.isEmpty)
+              val sorts = collect(finalPlan) { case s @ (_: CometSortExec | _: SortExec) => s }
+              assert(sorts.isEmpty)
             }
           }
         } finally {
