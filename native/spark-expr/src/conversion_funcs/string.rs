@@ -329,6 +329,7 @@ fn is_false_string(trimmed: &str) -> bool {
         .any(|v| trimmed.eq_ignore_ascii_case(v))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cast_string_to_decimal(
     array: &ArrayRef,
     to_type: &DataType,
@@ -336,6 +337,7 @@ pub(crate) fn cast_string_to_decimal(
     scale: &i8,
     eval_mode: EvalMode,
     zero_any_exponent: bool,
+    tiny_to_zero: bool,
     skip_integral_digit_limit: bool,
 ) -> SparkResult<ArrayRef> {
     match to_type {
@@ -345,6 +347,7 @@ pub(crate) fn cast_string_to_decimal(
             *precision,
             *scale,
             zero_any_exponent,
+            tiny_to_zero,
             skip_integral_digit_limit,
         ),
         DataType::Decimal256(_, _) => cast_string_to_decimal256_impl(
@@ -353,6 +356,7 @@ pub(crate) fn cast_string_to_decimal(
             *precision,
             *scale,
             zero_any_exponent,
+            tiny_to_zero,
             skip_integral_digit_limit,
         ),
         _ => Err(SparkError::Internal(format!(
@@ -368,6 +372,7 @@ fn cast_string_to_decimal128_impl(
     precision: u8,
     scale: i8,
     zero_any_exponent: bool,
+    tiny_to_zero: bool,
     skip_integral_digit_limit: bool,
 ) -> SparkResult<ArrayRef> {
     let string_array = array
@@ -387,6 +392,7 @@ fn cast_string_to_decimal128_impl(
                 precision,
                 scale,
                 zero_any_exponent,
+                tiny_to_zero,
                 skip_integral_digit_limit,
             ) {
                 Ok(Some(decimal_value)) => {
@@ -439,6 +445,7 @@ fn cast_string_to_decimal256_impl(
     precision: u8,
     scale: i8,
     zero_any_exponent: bool,
+    tiny_to_zero: bool,
     skip_integral_digit_limit: bool,
 ) -> SparkResult<ArrayRef> {
     let string_array = array
@@ -458,6 +465,7 @@ fn cast_string_to_decimal256_impl(
                 precision,
                 scale,
                 zero_any_exponent,
+                tiny_to_zero,
                 skip_integral_digit_limit,
             ) {
                 Ok(Some(decimal_value)) => {
@@ -701,6 +709,12 @@ fn is_special_value(trimmed: &str) -> bool {
 /// NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI). Since SPARK-60118 Spark skips that limit for zero,
 /// which fits any decimal type, and casts it to 0.
 ///
+/// `tiny_to_zero` selects how a value far below the target scale's ulp is cast when the difference
+/// to the target scale does not fit in an int ("1e-2147483647" to a negative target scale). Spark
+/// used to rescale with `BigDecimal.setScale`, which throws a raw `ArithmeticException` there in
+/// every eval mode, so such a string is an error here too. Since SPARK-60119 Spark skips
+/// `setScale` when the magnitude already decides the result, and casts the value to 0.
+///
 /// Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed it,
 /// with NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI, whatever the target type. It does not with
 /// `spark.sql.legacy.allowNegativeScaleOfDecimal`, and `skip_integral_digit_limit` is set then.
@@ -715,6 +729,7 @@ fn parse_string_to_decimal(
     precision: u8,
     scale: i8,
     zero_any_exponent: bool,
+    tiny_to_zero: bool,
     skip_integral_digit_limit: bool,
 ) -> SparkResult<Option<i128>> {
     // Spark parses via `new java.math.BigDecimal(str.toString.trim)`, so the trim set is
@@ -762,8 +777,15 @@ fn parse_string_to_decimal(
     // fit in an int (e.g. "1e-2147483647" to a negative target scale), so do not round to zero.
     // Spark raises a raw `ArithmeticException` there in every eval mode. Spark 4.0.5, 4.1.4 and
     // 4.2.1 skip `setScale` when the value is far below the target scale's ulp (SPARK-60119) and
-    // return 0 for that example; see https://github.com/apache/datafusion-comet/issues/6966.
+    // return 0 for that example; see https://github.com/apache/datafusion-comet/issues/6966 and
+    // https://github.com/apache/datafusion-comet/issues/7187. A difference below the int range
+    // puts a value of at most 38 digits more than 2^31 places below the target scale, so it
+    // rounds to 0 whatever its sign. A difference above the int range is a value too large for
+    // any precision, which stays an error.
     if i32::try_from(scale_adjustment).is_err() {
+        if tiny_to_zero && scale_adjustment < 0 {
+            return Ok(Some(0));
+        }
         return Err(invalid_decimal_cast(input_str, precision, scale));
     }
 
@@ -2645,16 +2667,16 @@ mod tests {
     fn test_parse_string_to_decimal_boundary() {
         // 38-digit integral parses (fits i128).
         let s38 = "9".repeat(38);
-        assert!(parse_string_to_decimal(&s38, 38, 0, false, false)
+        assert!(parse_string_to_decimal(&s38, 38, 0, false, false, false)
             .unwrap()
             .is_some());
         // 39-digit integral overflows i128, so returns the invalid_decimal_cast error.
         let s39 = "9".repeat(39);
-        assert!(parse_string_to_decimal(&s39, 38, 0, false, false).is_err());
+        assert!(parse_string_to_decimal(&s39, 38, 0, false, false, false).is_err());
         // Very long fractional part now returns Err via the invalid_decimal_cast path instead
         // of panicking on 10_i128.pow(fractional_scale).
         let over_long = format!("0.{}", "0".repeat(40));
-        assert!(parse_string_to_decimal(&over_long, 38, 10, false, false).is_err());
+        assert!(parse_string_to_decimal(&over_long, 38, 10, false, false, false).is_err());
     }
 
     #[test]
@@ -2691,7 +2713,7 @@ mod tests {
         // Expected values come from `new java.math.BigDecimal(s)` on JDK 17, which is what
         // Spark's Decimal.fromString / fromStringANSI call.
         let ok = |s: &str, precision: u8, scale: i8| {
-            parse_string_to_decimal(s, precision, scale, false, false)
+            parse_string_to_decimal(s, precision, scale, false, false, false)
                 .unwrap()
                 .unwrap()
         };
@@ -2726,14 +2748,14 @@ mod tests {
             "\u{00A0}٣",  // non-ASCII whitespace is not trimmed
         ] {
             // The error reports the original string, not the normalized one.
-            match parse_string_to_decimal(s, 10, 2, false, false) {
+            match parse_string_to_decimal(s, 10, 2, false, false, false) {
                 Err(SparkError::CastInvalidValue { value, .. }) => assert_eq!(value, s),
                 other => panic!("{s:?}: {other:?}"),
             }
         }
 
         // Overflow is reported as such, not as an invalid input.
-        let err = parse_string_to_decimal("٣٣٣٣٣٣٣٣٣", 10, 2, false, false).unwrap_err();
+        let err = parse_string_to_decimal("٣٣٣٣٣٣٣٣٣", 10, 2, false, false, false).unwrap_err();
         assert!(
             matches!(err, SparkError::NumericValueOutOfRange { .. }),
             "{err}"
@@ -2957,20 +2979,139 @@ mod tests {
             "1e2147483649",
             "1e-9999999999",
         ] {
-            let err = parse_string_to_decimal(s, 10, 2, false, false).unwrap_err();
+            let err = parse_string_to_decimal(s, 10, 2, false, false, false).unwrap_err();
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
         }
         // The parsed scale fits in an int, but rescaling it to a negative target scale does not.
-        let err = parse_string_to_decimal("1e-2147483647", 10, -2, false, false).unwrap_err();
+        // `test_parse_string_to_decimal_tiny_value_to_negative_scale` covers it from here.
+        let err =
+            parse_string_to_decimal("1e-2147483647", 10, -2, false, false, false).unwrap_err();
         assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
         assert_eq!(
-            parse_string_to_decimal("1.5e-3", 10, 2, false, false).unwrap(),
+            parse_string_to_decimal("1.5e-3", 10, 2, false, false, false).unwrap(),
             Some(0)
         );
         assert_eq!(
-            parse_string_to_decimal("12.345e1", 10, 2, false, false).unwrap(),
+            parse_string_to_decimal("12.345e1", 10, 2, false, false, false).unwrap(),
             Some(12345)
         );
+    }
+
+    /// `BigDecimal.setScale` fails when the difference to the target scale does not fit in an int,
+    /// so Spark used to raise a raw `ArithmeticException` for a string such as "1e-2147483647" cast
+    /// to a negative-scale decimal, in every eval mode. Since SPARK-60119 Spark skips `setScale`
+    /// for a value far below the target scale's ulp and casts it to 0, whatever its sign.
+    #[test]
+    fn test_parse_string_to_decimal_tiny_value_to_negative_scale() {
+        // A target with a negative scale exists only with
+        // `spark.sql.legacy.allowNegativeScaleOfDecimal`, which also lifts the limit on integral
+        // digits, so both settings of the limit are checked.
+        for skip_integral_digit_limit in [false, true] {
+            for s in [
+                "1e-2147483647",
+                "-1e-2147483647",
+                "12e-2147483647",
+                "99999999999999999999999999999999999999e-2147483647",
+            ] {
+                let err =
+                    parse_string_to_decimal(s, 10, -2, false, false, skip_integral_digit_limit)
+                        .unwrap_err();
+                assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
+                for zero_any_exponent in [false, true] {
+                    assert_eq!(
+                        parse_string_to_decimal(
+                            s,
+                            10,
+                            -2,
+                            zero_any_exponent,
+                            true,
+                            skip_integral_digit_limit
+                        )
+                        .unwrap(),
+                        Some(0),
+                        "{s} zero_any_exponent={zero_any_exponent} \
+                         skip_integral_digit_limit={skip_integral_digit_limit}"
+                    );
+                }
+            }
+        }
+        // The option only changes a difference below the int range. One above it is a value too
+        // large for any precision, so it stays an error once the limit on integral digits is
+        // skipped (without that, the limit rejects the string first), and a difference that fits
+        // in an int gives the same result either way.
+        for tiny_to_zero in [false, true] {
+            let err = parse_string_to_decimal("1e2147483647", 10, 2, true, tiny_to_zero, true)
+                .unwrap_err();
+            assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
+            for (s, scale) in [
+                ("1e-2147483646", -1),
+                ("1e-100000000", 2),
+                ("-1e-100000000", -2),
+                ("123", -2),
+            ] {
+                let expected = if s == "123" { Some(1) } else { Some(0) };
+                assert_eq!(
+                    parse_string_to_decimal(s, 10, scale, true, tiny_to_zero, false).unwrap(),
+                    expected,
+                    "{s} to scale {scale} tiny_to_zero={tiny_to_zero}"
+                );
+            }
+        }
+    }
+
+    /// The option reaches both decimal widths from `SparkCastOptions`, and the result is the same
+    /// in every eval mode once Spark returns 0 instead of failing.
+    #[test]
+    fn test_cast_tiny_string_to_negative_scale_decimal() -> DataFusionResult<()> {
+        use arrow::array::AsArray;
+        use arrow::datatypes::Decimal128Type;
+
+        let strings: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("1e-2147483647"),
+            Some("-1e-2147483647"),
+            Some("123"),
+            None,
+        ]));
+        for to_type in [DataType::Decimal128(10, -2), DataType::Decimal256(10, -2)] {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                let values = |array: &ArrayRef| -> Vec<Option<i128>> {
+                    match array.data_type() {
+                        DataType::Decimal128(_, _) => {
+                            array.as_primitive::<Decimal128Type>().iter().collect()
+                        }
+                        _ => array
+                            .as_primitive::<Decimal256Type>()
+                            .iter()
+                            .map(|v| v.and_then(|v| v.to_i128()))
+                            .collect(),
+                    }
+                };
+
+                let mut options = SparkCastOptions::new(eval_mode, "UTC");
+                options.decimal_tiny_to_zero = true;
+                let result = cast_array(Arc::clone(&strings), &to_type, &options)?;
+                assert_eq!(
+                    values(&result),
+                    vec![Some(0), Some(0), Some(1), None],
+                    "{to_type:?} {eval_mode:?}"
+                );
+
+                // Without the option the value is rejected: NULL, or an error under ANSI.
+                let options = SparkCastOptions::new(eval_mode, "UTC");
+                let result = cast_array(Arc::clone(&strings), &to_type, &options);
+                if eval_mode == EvalMode::Ansi {
+                    let err = result.unwrap_err().to_string();
+                    assert!(err.contains("CAST_INVALID_INPUT"), "{to_type:?}: {err}");
+                } else {
+                    assert_eq!(
+                        values(&result?),
+                        vec![None, None, Some(1), None],
+                        "{to_type:?} {eval_mode:?}"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Spark used to count integral digits for zero, so a zero with an exponent above 37 was out
@@ -2987,7 +3128,8 @@ mod tests {
         ] {
             for zero_any_exponent in [false, true] {
                 assert_eq!(
-                    parse_string_to_decimal(s, precision, scale, zero_any_exponent, false).unwrap(),
+                    parse_string_to_decimal(s, precision, scale, zero_any_exponent, false, false)
+                        .unwrap(),
                     Some(0),
                     "{s} zero_any_exponent={zero_any_exponent}"
                 );
@@ -3003,13 +3145,14 @@ mod tests {
             ("0e2147483646", 10, 2),
             ("0.0e2147483647", 10, 2),
         ] {
-            let err = parse_string_to_decimal(s, precision, scale, false, false).unwrap_err();
+            let err =
+                parse_string_to_decimal(s, precision, scale, false, false, false).unwrap_err();
             assert!(
                 err.to_string().contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
                 "{s}: {err}"
             );
             assert_eq!(
-                parse_string_to_decimal(s, precision, scale, true, false).unwrap(),
+                parse_string_to_decimal(s, precision, scale, true, false, false).unwrap(),
                 Some(0),
                 "{s}"
             );
@@ -3054,9 +3197,15 @@ mod tests {
         for s in over_integral_digit_limit() {
             for (precision, scale) in [(10, 2), (38, 10), (38, 0), (38, 38), (1, 0)] {
                 for zero_any_exponent in [false, true] {
-                    let err =
-                        parse_string_to_decimal(&s, precision, scale, zero_any_exponent, false)
-                            .unwrap_err();
+                    let err = parse_string_to_decimal(
+                        &s,
+                        precision,
+                        scale,
+                        zero_any_exponent,
+                        false,
+                        false,
+                    )
+                    .unwrap_err();
                     assert!(
                         err.to_string().contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
                         "{s} to DECIMAL({precision},{scale}): {err}"
@@ -3084,7 +3233,7 @@ mod tests {
             ("1e-50", 10, 2, Some(0)),
         ] {
             assert_eq!(
-                parse_string_to_decimal(s, precision, scale, false, false).unwrap(),
+                parse_string_to_decimal(s, precision, scale, false, false, false).unwrap(),
                 expected,
                 "{s} to DECIMAL({precision},{scale})"
             );
@@ -3096,7 +3245,8 @@ mod tests {
             (one_and_37_zeros.as_str(), 10, 2),
             ("1e30", 10, 2),
         ] {
-            let err = parse_string_to_decimal(s, precision, scale, false, false).unwrap_err();
+            let err =
+                parse_string_to_decimal(s, precision, scale, false, false, false).unwrap_err();
             assert!(
                 err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
                 "{s} to DECIMAL({precision},{scale}): {err}"
@@ -3106,7 +3256,7 @@ mod tests {
         // An exponent or scale outside the int range is not a number to `BigDecimal`, so it is
         // an invalid input and not a value with too many digits.
         for s in ["1e2147483648", "1e-2147483649", "1.5e-2147483648"] {
-            let err = parse_string_to_decimal(s, 10, 2, false, false).unwrap_err();
+            let err = parse_string_to_decimal(s, 10, 2, false, false, false).unwrap_err();
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
         }
     }
@@ -3121,7 +3271,7 @@ mod tests {
             (one_and_38_zeros.as_str(), 10, 2),
             (one_and_38_zeros.as_str(), 38, 0),
         ] {
-            let err = parse_string_to_decimal(s, precision, scale, false, true).unwrap_err();
+            let err = parse_string_to_decimal(s, precision, scale, false, false, true).unwrap_err();
             assert!(
                 err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
                 "{s} to DECIMAL({precision},{scale}): {err}"
@@ -3130,7 +3280,7 @@ mod tests {
         for s in ["0e38", "0E73", "+0e83", "0e5887677", "0.0e2147483647"] {
             for zero_any_exponent in [false, true] {
                 assert_eq!(
-                    parse_string_to_decimal(s, 10, 2, zero_any_exponent, true).unwrap(),
+                    parse_string_to_decimal(s, 10, 2, zero_any_exponent, false, true).unwrap(),
                     Some(0),
                     "{s} zero_any_exponent={zero_any_exponent}"
                 );
@@ -3141,22 +3291,23 @@ mod tests {
         // which the cast reports as CAST_INVALID_INPUT under ANSI (#7576), and more digits than
         // an i128 holds are rejected as an invalid input (#7581).
         assert_eq!(
-            parse_string_to_decimal("6E+38", 10, 2, false, true).unwrap(),
+            parse_string_to_decimal("6E+38", 10, 2, false, false, true).unwrap(),
             None
         );
         let forty_digits = format!("1{}", "0".repeat(39));
-        let err = parse_string_to_decimal(&forty_digits, 10, 2, false, true).unwrap_err();
+        let err = parse_string_to_decimal(&forty_digits, 10, 2, false, false, true).unwrap_err();
         assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
         // The scale adjustment of "6E+38" to a negative-scale target is 8, so it is a value.
         assert_eq!(
-            parse_string_to_decimal("6E+38", 10, -30, false, true).unwrap(),
+            parse_string_to_decimal("6E+38", 10, -30, false, false, true).unwrap(),
             Some(600_000_000)
         );
         // The setting changes nothing for a value within the limit.
         for s in ["123", "-1.005", "1e-50", "12345678901", "1e30"] {
             for zero_any_exponent in [false, true] {
-                let with_setting = parse_string_to_decimal(s, 10, 2, zero_any_exponent, true);
-                let without = parse_string_to_decimal(s, 10, 2, zero_any_exponent, false);
+                let with_setting =
+                    parse_string_to_decimal(s, 10, 2, zero_any_exponent, false, true);
+                let without = parse_string_to_decimal(s, 10, 2, zero_any_exponent, false, false);
                 assert_eq!(
                     with_setting.map_err(|e| e.to_string()),
                     without.map_err(|e| e.to_string()),

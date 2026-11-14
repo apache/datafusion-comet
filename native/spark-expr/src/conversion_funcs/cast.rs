@@ -172,6 +172,10 @@ pub struct SparkCastOptions {
     /// True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
     /// 0 instead of applying the integral-digit limit to it (SPARK-60118).
     pub decimal_zero_any_exponent: bool,
+    /// True when the running Spark casts a string far below the target scale's ulp to decimal as 0
+    /// even when the difference to the target scale does not fit in an int, instead of failing
+    /// in `BigDecimal.setScale` (SPARK-60119).
+    pub decimal_tiny_to_zero: bool,
     /// True when Spark does not apply the 38 integral-digit limit when it casts a string to
     /// decimal, as it does not with `spark.sql.legacy.allowNegativeScaleOfDecimal`.
     pub decimal_skip_integral_digit_limit: bool,
@@ -194,6 +198,7 @@ impl SparkCastOptions {
             timezone: timezone.to_string(),
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
+            decimal_tiny_to_zero: false,
             decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
@@ -208,6 +213,7 @@ impl SparkCastOptions {
             timezone: "".to_string(),
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
+            decimal_tiny_to_zero: false,
             decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
@@ -321,6 +327,7 @@ pub(crate) fn cast_array(
             scale,
             eval_mode,
             cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_tiny_to_zero,
             cast_options.decimal_skip_integral_digit_limit,
         ),
         (Utf8 | LargeUtf8, Decimal256(precision, scale)) => cast_string_to_decimal(
@@ -330,6 +337,7 @@ pub(crate) fn cast_array(
             scale,
             eval_mode,
             cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_tiny_to_zero,
             cast_options.decimal_skip_integral_digit_limit,
         ),
         (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
