@@ -1865,8 +1865,7 @@ object IcebergReflection extends Logging {
           genericManifestFile.getDeclaredConstructor(inputFileClass, classOf[Int])
       }
       val fileIOClass = loadClass(ClassNames.FILE_IO)
-      val manifestReadMethod = loadClass(ClassNames.MANIFEST_FILES)
-        .getMethod("read", loadClass(ClassNames.MANIFEST_FILE), fileIOClass)
+      val manifestReadMethod = manifestFilesReadMethod()
       manifestReadMethod.getReturnType.getMethod("iterator")
       manifestReadMethod.getReturnType.getMethod("close")
       val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
@@ -2027,15 +2026,32 @@ object IcebergReflection extends Logging {
     manifest
   }
 
+  /**
+   * `ManifestFiles.read(ManifestFile, FileIO, Map<Integer, PartitionSpec>)`, the overload every
+   * supported Iceberg release has. Iceberg 1.12 removed the 2-arg `read(ManifestFile, FileIO)`,
+   * which only delegated to this one with a `null` map.
+   *
+   * Callers pass a `null` map, so the reader uses the partition spec embedded in the manifest
+   * itself, exactly as the 2-arg overload did. That embedded spec is the one
+   * `manifest_partition_spec` in `iceberg_write.rs` writes, which for a void-only V1 spec has no
+   * fields and so differs from the table's spec of the same id.
+   *
+   * Iceberg deprecates reading with a `null` map (1.11 and 1.12 log a warning for it) and plans
+   * to remove it in 2.0. Before that, the decode needs a specs map that agrees with the spec the
+   * native writer embeds.
+   */
+  private def manifestFilesReadMethod(): java.lang.reflect.Method =
+    loadClass(ClassNames.MANIFEST_FILES).getMethod(
+      "read",
+      loadClass(ClassNames.MANIFEST_FILE),
+      loadClass(ClassNames.FILE_IO),
+      classOf[java.util.Map[_, _]])
+
   private def readDataFilesFromManifest(
       manifestFile: AnyRef,
       fileIO: AnyRef): java.util.List[AnyRef] = {
-    val manifestFileClass = loadClass(ClassNames.MANIFEST_FILE)
-    val fileIOClass = loadClass(ClassNames.FILE_IO)
     val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-    val readMethod = loadClass(ClassNames.MANIFEST_FILES)
-      .getMethod("read", manifestFileClass, fileIOClass)
-    val reader = readMethod.invoke(null, manifestFile, fileIO)
+    val reader = manifestFilesReadMethod().invoke(null, manifestFile, fileIO, null)
     try {
       val iterator = reader.getClass
         .getMethod("iterator")
