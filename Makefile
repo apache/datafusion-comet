@@ -23,13 +23,13 @@ endef
 
 # Build optional Comet native features (like hdfs-opendal e.g)
 comma := ,
-# The jemalloc Maven profile also builds the native library with the jemalloc allocator. With
-# mimalloc as well, native/core/src/lib.rs would quietly select the system allocator instead.
+# The jemalloc Maven profile also builds the native library with the jemalloc allocator.
 ifneq (,$(findstring jemalloc,$(PROFILES)))
-ifneq (,$(findstring mimalloc,$(COMET_FEATURES)))
-$(error The jemalloc profile cannot be combined with the mimalloc feature)
-endif
 override COMET_FEATURES := $(if $(COMET_FEATURES),$(COMET_FEATURES)$(comma))jemalloc
+endif
+# With both allocator features, native/core/src/lib.rs quietly selects the system allocator.
+ifneq (,$(and $(findstring jemalloc,$(COMET_FEATURES)),$(findstring mimalloc,$(COMET_FEATURES))))
+$(error The jemalloc and mimalloc features cannot be combined)
 endif
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
 
