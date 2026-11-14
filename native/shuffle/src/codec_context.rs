@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::lz4_frame::Lz4FrameEncoder;
 use arrow::ipc::writer::IpcWriteContext;
 use std::io;
 use zstd::zstd_safe::{CCtx, CParameter, ResetDirective};
@@ -45,18 +46,21 @@ const MAX_RETAINED_ZSTD_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
 /// Reusable compression state for encoding shuffle blocks.
 ///
 /// A zstd context costs about a megabyte and real setup time, so a task shares one across all
-/// the blocks it encodes instead of paying per block. Keep ownership task-scoped, never
-/// per-output-partition -- a shuffle can have thousands of partitions. Local shuffle reuses
-/// the zstd context between blocks but bounds what it retains
-/// ([`Self::release_zstd_if_oversized`]) and drops it at spill/finish boundaries; the remote
-/// (RSS) path frees it after each admitted encode via [`Self::release_zstd`], since its
-/// memory accounting only reserves the workspace per invocation.
+/// the blocks it encodes instead of paying per block; the LZ4 frame encoder's buffers and hash
+/// table are shared the same way. Keep ownership task-scoped, never per-output-partition -- a
+/// shuffle can have thousands of partitions. Local shuffle reuses both between blocks, bounds
+/// what the zstd context retains ([`Self::release_zstd_if_oversized`]), and drops both at
+/// spill/finish boundaries; the remote (RSS) path frees them after each admitted encode via
+/// [`Self::release_workspaces`], since its memory accounting only reserves the workspace per
+/// invocation.
 #[derive(Default)]
 pub struct ShuffleCodecContext {
     /// Arrow's per-message IPC compression scratch, reused across encodes.
     pub(crate) arrow_ipc: IpcWriteContext,
     /// Lazily created, reused across blocks.
     zstd: Option<CCtx<'static>>,
+    /// Lazily created, reused across blocks.
+    lz4: Option<Lz4FrameEncoder>,
     /// How many zstd contexts this value has created, so tests can assert that N blocks
     /// cost fewer than N creations instead of only observing retained/released state.
     #[cfg(test)]
@@ -92,11 +96,20 @@ impl ShuffleCodecContext {
         Ok((cctx, &mut self.arrow_ipc))
     }
 
-    /// Drops the cached zstd context, freeing its native workspace. The remote encode path
-    /// calls this after every admitted encode so the memory lives and dies inside that
-    /// invocation's reservation; the next zstd encode re-creates it lazily.
-    pub(crate) fn release_zstd(&mut self) {
+    /// The shared LZ4 frame encoder, plus the Arrow IPC scratch.
+    pub(crate) fn lz4(&mut self) -> (&mut Lz4FrameEncoder, &mut IpcWriteContext) {
+        (
+            self.lz4.get_or_insert_with(Lz4FrameEncoder::default),
+            &mut self.arrow_ipc,
+        )
+    }
+
+    /// Drops the cached zstd context and LZ4 frame encoder, freeing their memory. The remote
+    /// encode path calls this after every admitted encode so the memory lives and dies inside
+    /// that invocation's reservation; the next encode re-creates them lazily.
+    pub(crate) fn release_workspaces(&mut self) {
         self.zstd = None;
+        self.lz4 = None;
     }
 
     /// Drops the cached zstd context when its workspace outgrew
@@ -112,10 +125,11 @@ impl ShuffleCodecContext {
         }
     }
 
-    /// Test hook for the release-vs-retain contract of the two encode paths.
+    /// Test hook for the release-vs-retain contract of the two encode paths: whether a zstd
+    /// context or an LZ4 frame encoder is cached.
     #[cfg(test)]
-    pub(crate) fn holds_zstd_cctx(&self) -> bool {
-        self.zstd.is_some()
+    pub(crate) fn holds_workspaces(&self) -> bool {
+        self.zstd.is_some() || self.lz4.is_some()
     }
 
     /// Test hook: zstd contexts created so far, for pinning reuse across blocks.

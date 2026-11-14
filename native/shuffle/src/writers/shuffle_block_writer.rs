@@ -322,8 +322,8 @@ impl ShuffleBlockWriter {
         self.write_batch_with_codec_limits(batch, output, codec_context, ipc_time, false)
     }
 
-    /// Encode with the codec settings covered by [`Self::rss_codec_workspace`]. Local shuffle
-    /// retains its existing adaptive LZ4 block sizing through [`Self::write_batch`].
+    /// Encode within the workspace [`Self::rss_codec_workspace`] charges, which is released when
+    /// the encode ends rather than kept for the next block as [`Self::write_batch`] keeps it.
     pub(crate) fn write_rss_batch<W: Write + Seek>(
         &self,
         batch: &RecordBatch,
@@ -352,14 +352,13 @@ impl ShuffleBlockWriter {
         // write header
         output.write_all(&self.header_bytes)?;
 
-        let encode_result =
-            self.compress_ipc_stream(batch, output, codec_context, bounded_rss_codec);
+        let encode_result = self.compress_ipc_stream(batch, output, codec_context);
         if bounded_rss_codec {
-            // RSS charges the zstd workspace (rss_codec_workspace) to each admitted encode
+            // RSS charges the codec workspace (rss_codec_workspace) to each admitted encode
             // and releases the charge when it ends, success or not. Free the workspace inside
             // that window -- kept alive it would be native memory the reservation system no
             // longer tracks.
-            codec_context.release_zstd();
+            codec_context.release_workspaces();
         } else {
             // Local shuffle reuses the context across blocks, but nothing reserves its
             // memory: a high-level workspace (hundreds of MiB) must not outlive the block.
@@ -393,25 +392,16 @@ impl ShuffleBlockWriter {
         batch: &RecordBatch,
         output: &mut W,
         codec_context: &mut ShuffleCodecContext,
-        bounded_rss_codec: bool,
     ) -> Result<()> {
         match &self.codec {
             CompressionCodec::None => {
                 self.encode_ipc_stream(batch, output, &mut codec_context.arrow_ipc)?;
             }
             CompressionCodec::Lz4Frame => {
-                let frame_info = if bounded_rss_codec {
-                    lz4_flex::frame::FrameInfo::new()
-                        .block_size(lz4_flex::frame::BlockSize::Max64KB)
-                } else {
-                    lz4_flex::frame::FrameInfo::default()
-                };
-                let mut wtr =
-                    lz4_flex::frame::FrameEncoder::with_frame_info(frame_info, &mut *output);
-                self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
-                wtr.finish().map_err(|e| {
-                    DataFusionError::Execution(format!("lz4 compression error: {e}"))
-                })?;
+                let (encoder, arrow_ipc) = codec_context.lz4();
+                let mut frame = encoder.begin(&mut *output)?;
+                self.encode_ipc_stream(batch, &mut frame, arrow_ipc)?;
+                frame.finish()?;
             }
             CompressionCodec::Snappy => {
                 let mut wtr = snap::write::FrameEncoder::new(&mut *output);
@@ -553,7 +543,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            ctx.holds_zstd_cctx(),
+            ctx.holds_workspaces(),
             "a common-level workspace must stay cached for reuse"
         );
 
@@ -567,7 +557,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !ctx.holds_zstd_cctx(),
+            !ctx.holds_workspaces(),
             "a level-22 workspace must not stay cached past its block"
         );
 
@@ -601,7 +591,7 @@ mod tests {
             1,
             "the second block must reuse the first block's context"
         );
-        assert!(ctx.holds_zstd_cctx());
+        assert!(ctx.holds_workspaces());
     }
 
     /// Level 9's workspace measures 15,459,857 bytes (zstd-sys 2.1.0+zstd.1.5.7), past the
@@ -625,7 +615,7 @@ mod tests {
                 .unwrap();
             assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
             assert!(
-                !ctx.holds_zstd_cctx(),
+                !ctx.holds_workspaces(),
                 "a level-9 workspace must be released after every block"
             );
         }
@@ -659,7 +649,7 @@ mod tests {
             1,
             "level 8 must stay under the retention cap and keep reusing one context"
         );
-        assert!(ctx.holds_zstd_cctx());
+        assert!(ctx.holds_workspaces());
     }
 
     /// Accepts a fixed number of bytes, then fails every write.
@@ -694,58 +684,102 @@ mod tests {
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn codec_context_usable_after_write_error() {
         let batch = test_batch(1, 100);
-        let writer =
-            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut ctx = ShuffleCodecContext::default();
+        for codec in [CompressionCodec::Zstd(1), CompressionCodec::Lz4Frame] {
+            let writer = ShuffleBlockWriter::try_new(&test_schema(), codec.clone()).unwrap();
+            let mut ctx = ShuffleCodecContext::default();
 
-        // Fits the 20-byte header but not the body: the encoder dies mid-frame.
-        let mut failing = FailingSink {
-            inner: Cursor::new(vec![]),
-            remaining: 64,
-        };
-        assert!(writer
-            .write_batch(&batch, &mut failing, &mut ctx, &Time::default())
-            .is_err());
+            // Fits the 20-byte header but not the body: the encoder dies mid-frame.
+            let mut failing = FailingSink {
+                inner: Cursor::new(vec![]),
+                remaining: 64,
+            };
+            assert!(writer
+                .write_batch(&batch, &mut failing, &mut ctx, &Time::default())
+                .is_err());
+            // a local write keeps its workspace, so the next block reuses the failed one's
+            assert!(ctx.holds_workspaces(), "{codec:?}");
 
-        let mut out = vec![];
-        let mut cursor = Cursor::new(&mut out);
-        writer
-            .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
-            .unwrap();
-        assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+            let mut out = vec![];
+            let mut cursor = Cursor::new(&mut out);
+            writer
+                .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch, "{codec:?}");
+        }
     }
 
-    /// RSS encodes free the zstd context each time (its memory is only reserved per
-    /// invocation); local encodes keep it.
+    /// RSS encodes free the codec workspaces each time (their memory is only reserved per
+    /// invocation), also when the encode fails part way; local encodes keep them. Both write the
+    /// same block.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn rss_write_releases_zstd_context_local_write_retains_it() {
+    fn rss_write_releases_workspaces_local_write_retains_them() {
         let batch = test_batch(2, 100);
-        let writer =
-            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut ctx = ShuffleCodecContext::default();
+        for codec in [CompressionCodec::Zstd(1), CompressionCodec::Lz4Frame] {
+            let writer = ShuffleBlockWriter::try_new(&test_schema(), codec.clone()).unwrap();
+            let mut ctx = ShuffleCodecContext::default();
 
-        let mut rss_out = vec![];
-        let mut cursor = Cursor::new(&mut rss_out);
-        writer
-            .write_rss_batch(&batch, &mut cursor, &mut ctx, &Time::default())
-            .unwrap();
-        assert!(
-            !ctx.holds_zstd_cctx(),
-            "remote write must not retain the zstd context past its admitted invocation"
-        );
-        assert_eq!(read_ipc_compressed(&rss_out[16..]).unwrap(), batch);
+            // Fits the 20-byte header but not the body: the encoder dies mid-frame.
+            let mut failing = FailingSink {
+                inner: Cursor::new(vec![]),
+                remaining: 64,
+            };
+            assert!(writer
+                .write_rss_batch(&batch, &mut failing, &mut ctx, &Time::default())
+                .is_err());
+            assert!(
+                !ctx.holds_workspaces(),
+                "{codec:?}: a failed remote write must release its workspace"
+            );
 
-        let mut local_out = vec![];
-        let mut cursor = Cursor::new(&mut local_out);
-        writer
-            .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
-            .unwrap();
-        assert!(
-            ctx.holds_zstd_cctx(),
-            "local write must keep the zstd context for reuse"
-        );
-        assert_eq!(read_ipc_compressed(&local_out[16..]).unwrap(), batch);
+            let mut rss_out = vec![];
+            writer
+                .write_rss_batch(
+                    &batch,
+                    &mut Cursor::new(&mut rss_out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert!(
+                !ctx.holds_workspaces(),
+                "{codec:?}: remote write must not keep its workspace past the invocation"
+            );
+
+            let mut local_out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut local_out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert!(
+                ctx.holds_workspaces(),
+                "{codec:?}: local write must keep its workspace for reuse"
+            );
+            assert_eq!(local_out, rss_out, "{codec:?}");
+            assert_eq!(read_ipc_compressed(&local_out[16..]).unwrap(), batch);
+        }
+    }
+
+    /// LZ4 frames use 64 KiB blocks for every batch, whatever the size of its schema message.
+    #[test]
+    fn lz4_frames_use_64_kib_blocks() {
+        let wide = RecordBatch::try_from_iter(
+            (0..3000).map(|i| (format!("c{i}"), Arc::new(Int32Array::from(vec![i; 3])) as _)),
+        )
+        .unwrap();
+        // a 175 KiB IPC stream, and a schema message over 64 KiB
+        for batch in [test_batch(7, 8192), wide] {
+            let writer =
+                ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Lz4Frame).unwrap();
+            let block = write_block(&writer, &batch);
+            // magic number, FLG: independent blocks, BD: 64 KiB blocks, header checksum
+            assert_eq!(block[20..27], [0x04, 0x22, 0x4d, 0x18, 0x60, 0x40, 0x82]);
+            assert_eq!(read_ipc_compressed(&block[16..]).unwrap(), batch);
+        }
     }
 
     #[test]
