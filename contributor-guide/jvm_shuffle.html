@@ -592,7 +592,20 @@ array keys, and map keys on Spark 4.0 and later, with native shuffle. The config
 <code class="docutils literal notranslate"><span class="pre">false</span></code>, so a complex hash key falls back to JVM columnar shuffle unless it is enabled. See
 <a class="reference internal" href="native_shuffle.html#when-native-shuffle-is-used"><span class="std std-ref">Supported partition key types</span></a> for the exact
 rules. Complex types are fully supported as data columns in both implementations.</p></li>
+<li><p><strong>Partition keys native shuffle cannot serialize</strong>: native shuffle serializes the
+partitioning expressions to protobuf, so a key expression Comet has no serde for, or whose
+serde reports it incompatible, keeps the exchange off the native path. JVM shuffle has no
+such requirement, because it evaluates the key on the JVM through <code class="docutils literal notranslate"><span class="pre">UnsafeProjection</span></code> and
+<code class="docutils literal notranslate"><span class="pre">LazilyGeneratedOrdering</span></code>, so these exchanges land here rather than on Spark’s shuffle. One
+example is the <code class="docutils literal notranslate"><span class="pre">mapsort(...)</span></code> wrapper Spark 4.0 and later adds around a map used as a
+shuffle key: Comet cannot serialize it for array or struct map keys, so such an exchange
+becomes <code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>.</p></li>
 </ol>
+<p>Collated strings are the exception. A hash or range key whose type is a non-<code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code>
+collated string is declined by both Comet paths, so the exchange stays a plain Spark
+<code class="docutils literal notranslate"><span class="pre">Exchange</span></code>. <code class="docutils literal notranslate"><span class="pre">CometCollationSuite</span></code> treats that fallback as the primary line of defense for
+collated keys and pins the reasons it emits. The operators above the exchange decline collated
+keys independently, so this is one guard among several rather than the only one.</p>
 </section>
 <section id="input-handling">
 <h2>Input Handling<a class="headerlink" href="#input-handling" title="Link to this heading">#</a></h2>

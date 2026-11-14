@@ -1348,12 +1348,14 @@ themselves can include <code class="docutils literal notranslate"><span class="p
 batches are serialized via the Arrow IPC writer.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code></strong> is the <strong>JVM columnar shuffle</strong> path. It accepts
 either Spark row-based input or Comet columnar input, which makes it the
-fallback when the child is not a Comet operator or when a hash/range key
+fallback when the child is not a Comet operator, when a hash/range key
 type is not supported by native shuffle (for example, a struct or array
-hash key while nested hash keys are disabled). It is still preferred over
-Spark’s built-in shuffle when Comet shuffle is enabled. Keys with a
-non-default string collation are supported by neither path and use Spark’s
-shuffle.</p></li>
+hash key while nested hash keys are disabled), or when native shuffle
+cannot serialize the key expression (for example the <code class="docutils literal notranslate"><span class="pre">mapsort</span></code> wrapper
+Spark 4.0 and later adds around an array or struct map key). It is still
+preferred over Spark’s built-in shuffle when Comet shuffle is enabled. Keys
+with a non-default string collation are supported by neither path and use
+Spark’s shuffle.</p></li>
 </ul>
 <p>Both paths support the same set of partitioning schemes
 (<code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>,

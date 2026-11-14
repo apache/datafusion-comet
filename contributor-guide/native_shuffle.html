@@ -626,6 +626,15 @@ depth still disqualifies the key. The config defaults to <code class="docutils l
 nested hashing paths, so by default a complex hash key falls back to JVM shuffle.</p></li>
 </ul>
 </li>
+<li><p><strong>Partition key expressions convert to protobuf</strong>: native shuffle serializes the partitioning
+into its protobuf plan, so every <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> expression and every <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>
+sort order has to convert through <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde.exprToProto</span></code>. An expression Comet has no
+serde for, or whose serde reports it incompatible, disqualifies native shuffle even when the
+key’s type is supported. One example is the <code class="docutils literal notranslate"><span class="pre">mapsort(...)</span></code> wrapper Spark 4.0 and later adds
+around a map used as a shuffle key: <code class="docutils literal notranslate"><span class="pre">CometMapSort</span></code> supports scalar map keys only, so a map with
+array or struct keys fails this check and the exchange falls back to JVM shuffle even with
+nested hash keys enabled. JVM shuffle has no such requirement because it evaluates the key on
+the JVM; see <a class="reference internal" href="jvm_shuffle.html#when-jvm-shuffle-is-used"><span class="std std-ref">When JVM Shuffle is Used</span></a>.</p></li>
 </ol>
 </section>
 <section id="architecture">
