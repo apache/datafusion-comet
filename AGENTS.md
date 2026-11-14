@@ -46,6 +46,23 @@ another maintainer's commits. If the lease check rejects the push, inspect and i
 remote changes before retrying; do not bypass it with `--force`. See
 [Submitting a Pull Request](docs/source/contributor-guide/development.md#submitting-a-pull-request).
 
+## Code guidelines
+
+- A PR merges as one squashed commit titled with the PR title, so it should do only what that title says. Put unrelated renames, reformatting, refactors, and drive-by fixes in a
+  separate PR.
+- Default to no comment. Comment only what the code cannot say: invariants, non-obvious constraints, and
+  why a choice that looks wrong is right. Do not restate the code or describe how it changed.
+- A panic that escapes a JNI or `extern "C"` entry point is undefined behavior. Return an error instead,
+  and see the `review-comet-ffi-pr` skill for the checklist.
+- Config keys, their defaults, and user-visible behavior are public API. Follow
+  [Config Conventions](docs/source/contributor-guide/config_conventions.md) for renames and removals,
+  which need a deprecated alias and a major release. In a review, name every new or changed config and
+  public class.
+- A performance PR shows which change produces the gain and covers both well-predicted input (constant
+  lengths, all valid) and poorly predicted input (random). A shape may get slower when the common case
+  gets faster and the PR names its cost and how often real workloads reach it. See
+  [Optimizing Expressions](docs/source/contributor-guide/optimizing_expressions.md).
+
 ## Checking a change against CI
 
 A green pull request does not mean a change is safe to queue. The pull request tier runs the Comet

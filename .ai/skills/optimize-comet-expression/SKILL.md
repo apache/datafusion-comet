@@ -1,6 +1,6 @@
 ---
 name: optimize-comet-expression
-description: Use when optimizing the performance of an existing native scalar expression in the datafusion-comet-spark-expr crate (native/spark-expr/) — casts, string/JSON/array/math kernels that run per-row or per-batch. Covers benchmarking, keeping output bit-identical, and the no-regression gate. Not for adding new expressions (use implement-comet-expression) or wiring upstream functions (use wire-datafusion-function).
+description: Use when optimizing the performance of an existing native scalar expression in the datafusion-comet-spark-expr crate (native/spark-expr/) — casts, string/JSON/array/math kernels that run per-row or per-batch. Covers benchmarking, keeping output bit-identical, and the slower-shape gate. Not for adding new expressions (use implement-comet-expression) or wiring upstream functions (use wire-datafusion-function).
 argument-hint: <expression-name>
 ---
 
@@ -60,7 +60,7 @@ being a no-op or a regression.**
    **second independent sample** (`--baseline main` again) — real changes reproduce, noise does
    not. A shape whose code path you did not touch cannot truly regress: if it flags, it is noise,
    and the fix is another sample, not abandoning the change.
-7. **Apply the no-regression gate** (below) before writing any PR.
+7. **Apply the gate** (below) before writing any PR.
 8. **Finish:** `make format`, build, `cargo clippy --all-targets --workspace -- -D warnings`.
    PR title ``perf: optimize `$ARGUMENTS` (Nx faster)``, paste the criterion output for every
    shape.
@@ -72,15 +72,19 @@ being a no-op or a regression.**
 
 ## The gate: what blocks a submission
 
-- **A shape got meaningfully and reproducibly slower.** Do NOT submit. Even a 90%-faster-no-nulls
-  win does not justify a 30%-slower-dense-nulls loss. Either gate the fast path behind a per-batch
-  runtime check that picks the right path, or abandon the change. A Comet PR was closed for exactly
-  this. "Reproducibly" matters: confirm a flagged regression on a second sample first (step 6) —
-  a ~2% flag on a code path you did not touch is noise, not a blocker.
+- **A shape that real workloads reach often got meaningfully and reproducibly slower.** Do NOT
+  submit. A 90%-faster-no-nulls win does not justify a 30%-slower-dense-nulls loss, because real
+  columns have dense nulls. Either gate the fast path behind a per-batch runtime check that picks the
+  right path, or abandon the change. A Comet PR was closed for exactly this. "Reproducibly" matters:
+  confirm a flagged regression on a second sample first (step 6) — a ~2% flag on a code path you did
+  not touch is noise, not a blocker.
+- **A slower shape is not named in the PR.** A shape may be slower when it is rare or bounded and the
+  common case gains. The PR description must give its measured cost, how often real workloads reach
+  it and why, and the common-case gain.
 - **No meaningful speedup on any shape.** There is nothing to submit. A change inside criterion's
   noise threshold is not an improvement.
 - **Output differs from `main`** on any input, including null placement or error behavior.
-- **You only benchmarked one shape.** You have not shown the absence of a regression.
+- **You only benchmarked one shape.** You have not shown which shapes got slower.
 
 ## Red flags — STOP
 
@@ -90,17 +94,17 @@ being a no-op or a regression.**
   correctness failure. Diff the null buffer.
 - "I'll apply the fallible conversion to every slot" → a garbage value under a null must not raise
   an error Spark does not. Use `try_unary` or skip null slots.
-- "One benchmark improved, ship it" → re-read the gate. One improvement plus one regression is not
-  a win.
+- "One benchmark improved, ship it" → re-read the gate. A regression on a common shape is not a
+  win, and a regression on a rare shape still has to be named in the PR.
 
 ## Rationalization table
 
 | Excuse                                                               | Reality                                                                                                                                                                                              |
 | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | "Measuring the baseline is overhead, I'll benchmark once at the end" | Without a `main` baseline you cannot report a change %, and you cannot tell a win from noise. Baseline first.                                                                                        |
-| "Dense-null regression is an edge case"                              | Real columns have dense nulls. A regression there is a regression. Gate the path or drop it.                                                                                                         |
+| "Dense-null regression is an edge case"                              | Real columns have dense nulls. Gate the path or drop it. A rare shape needs evidence, not an assertion.                                                                                              |
 | "Existing tests are enough proof, no need to check the null buffer"  | Tests may not assert null placement. Confirm bit-identical output explicitly.                                                                                                                        |
-| "This trades a bit of the null case for a big win elsewhere"         | That is a trade-off, not an optimization. Only submit a strict improvement (or a correctly-gated per-batch path).                                                                                    |
+| "This trades a bit of the null case for a big win elsewhere"         | Acceptable only if the slower shape is rare or bounded, the PR names its cost and how often real workloads reach it, and the common case gains. Otherwise gate the path.                             |
 | "I'll edit the code, then run the baseline"                          | `cargo bench` compiles from disk. A baseline built with your change already applied measures the optimized code and hides the real speedup. Baseline on unmodified source; stash the edit if needed. |
 | "One shape flagged a 2% regression, abandon it"                      | Criterion compares separate runs; small flags on an untouched code path are cross-run noise. Take a second sample before deciding — real regressions reproduce.                                      |
 

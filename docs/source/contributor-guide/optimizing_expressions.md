@@ -50,8 +50,9 @@ improvement, there is nothing to submit.
 3. **Apply the optimization**, preserving exact semantics (see [Correctness](#correctness-is-non-negotiable)).
 4. **Run the existing unit tests** for the function. They must pass unchanged. Output must be
    bit-identical to `main`, including null placement and error behavior.
-5. **Re-run the benchmark** against the baseline. Confirm a meaningful speedup on at least one
-   shape **and no meaningful regression on any shape**.
+5. **Re-run the benchmark** against the baseline. Confirm a meaningful speedup on the common
+   shapes, and account for every shape that got slower (see
+   [Slower shapes need a justification](#slower-shapes-need-a-justification)).
 6. **Submit** with the criterion output pasted into the PR description.
 
 ## Writing a benchmark
@@ -97,6 +98,9 @@ looked at and loses on one you did not. Always include:
 - **Short vs. long values.** Allocation savings shrink and copy costs grow as values get longer.
 - **Valid vs. invalid inputs.** Error and fallback paths have different costs.
 - **ASCII vs. non-ASCII** for string functions with an ASCII fast path.
+- **Well-predicted vs. poorly predicted branches.** Constant lengths or all-valid input against
+  random lengths or values. Branchless code wins on the second and can lose on the first, and
+  branchy code does the reverse.
 
 ### Running benchmarks
 
@@ -166,13 +170,19 @@ Cross-cutting principles behind the table:
 - **Watch capacity hints.** A `rows * rows` capacity hint (instead of `rows`) silently
   over-allocates; fix these when you find them.
 
-## The no-regression rule
+## Slower shapes need a justification
 
-**Do not submit an optimization if any benchmark shape is meaningfully slower**, even if another
-shape is dramatically faster. A change that is 90% faster with no nulls but 30% slower with dense
-nulls is a trade-off, not a win, and should either be gated behind a runtime check that picks the
-right path per batch or not submitted at all. A Comet optimization PR was closed for exactly this
-reason (a 30% dense-null regression alongside a 90% no-null win).
+Optimize for the common case. A shape may get slower when the common case gets faster and the PR
+justifies it. For each shape that is meaningfully and reproducibly slower, the PR description gives
+the measured cost, how often real workloads reach that shape and why, and the gain on the common
+case. For example, an error path that fails the query runs at most once per partition, so a slower
+error path can be acceptable.
+
+A shape that real workloads reach often is not an exception. A change that is 90% faster with no
+nulls but 30% slower with dense nulls costs the many real columns that have dense nulls, so either
+gate the fast path behind a runtime check that picks the right path per batch, or do not submit it.
+A Comet optimization PR was closed for exactly this reason. A claim that a shape is rare needs
+evidence about real workloads, not an assertion.
 
 ## Record the performance audit
 
