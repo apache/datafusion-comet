@@ -37,6 +37,22 @@
 
 - Resolved to a literal by the analyzer; same as `user`.
 
+## hll_sketch_estimate
+
+- Spark 3.5.9 (audited 2026-11-06): `HllSketchEstimate(child)` wraps the binary sketch with `HllSketch.heapify` and returns `Math.round(getEstimate)` as a long. An invalid buffer raises `HLL_INVALID_INPUT_SKETCH_BUFFER` (SQLSTATE 22546). Spark 3.5 always falls back in Comet.
+- Spark 4.0.4 (audited 2026-11-06): catches more DataSketches exceptions as `HLL_INVALID_INPUT_SKETCH_BUFFER`. Bundles DataSketches-Java 6.1.1.
+- Spark 4.1.3 (audited 2026-11-06): identical to 4.0.4 apart from DataSketches-Java 6.2.0.
+- Spark 4.2.0 (audited 2026-11-06): only the expression group moves from `misc_funcs` to `sketch_funcs`.
+- Comet (datasketches crate 0.6.0): estimates are bit-identical to Spark for 954 cases covering `HLL_4`, `HLL_6` and `HLL_8`, updatable and compact images, and `lgConfigK` 4-21, so the expression is `Compatible` ([#7396](https://github.com/apache/datafusion-comet/issues/7396)). Invalid buffers fail in both engines, but Comet raises a Comet error instead of `HLL_INVALID_INPUT_SKETCH_BUFFER` ([#7549](https://github.com/apache/datafusion-comet/issues/7549)).
+
+## hll_union
+
+- Spark 3.5.9 (audited 2026-11-06): `HllUnion(first, second, allowDifferentLgConfigK)` unions two binary sketches and returns the updatable bytes. Different `lgConfigK` values raise `HLL_UNION_DIFFERENT_LG_K` unless `allowDifferentLgConfigK` is true. Spark 3.5 always falls back in Comet.
+- Spark 4.0.4 (audited 2026-11-06): catches more DataSketches exceptions as `HLL_INVALID_INPUT_SKETCH_BUFFER`. Bundles DataSketches-Java 6.1.1.
+- Spark 4.1.3 (audited 2026-11-06): identical to 4.0.4 apart from DataSketches-Java 6.2.0.
+- Spark 4.2.0 (audited 2026-11-06): only the expression group changes.
+- Comet: the result bytes differ for LIST and SET sketches ([#7548](https://github.com/apache/datafusion-comet/issues/7548)), and with different `lgConfigK` values the estimate of the result can differ by up to about 1.6%, so the expression stays `Incompatible`. Errors fail on the same inputs as Spark but with a Comet error class ([#7549](https://github.com/apache/datafusion-comet/issues/7549)).
+
 ## monotonically_increasing_id
 
 - Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. `MonotonicallyIncreasingID() extends LeafExpression with Stateful`; produces a Long that encodes the partition id in the upper 31 bits and a per-partition row counter in the lower 33 bits. Comet emits an empty `MonotonicallyIncreasingId` proto and the native side produces the same encoding.
