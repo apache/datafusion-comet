@@ -44,7 +44,8 @@ limit, or to a non-positive value to convert every eligible join regardless of s
 A left-semi join returns each left row if any right row matches. For an unfiltered batch join
 on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
 to keep one copy of each repeated key per batch before the native sort. The option is off by
-default. The right sort must read the key column directly from a Comet shuffle. With the
+default. The right sort must read from a Comet shuffle. Its key can be a single shuffled integer column
+or a `coalesce` of same-type integer columns and literals, such as `coalesce(r.primary_id, r.backup_id)`. With the
 `fair_unified` memory pool, the native planner checks at first execution for memory held by another
 Spark consumer in the task and skips reduction if it finds any, logging the reason at
 debug level. This best-effort check does not cover consumers that allocate memory later.
