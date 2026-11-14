@@ -1314,9 +1314,20 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`). Spark's
       // generated code for an aggregate shares them whatever
       // spark.sql.subexpressionElimination.enabled says, and other operators only when it is on.
+      // A projection shares in generated code. The prefix Spark computes for a sort's first key
+      // is one projection, so it shares within that key as a project does, and later keys are
+      // compared one by one and never share. Spark moves complex grouping keys into a project
+      // below an aggregate, so a key has nothing to skip, and the aggregate's serde opens nested
+      // scopes for its functions' inputs and its results that supersede this one.
+      val (scope, certain) = op match {
+        case s: SortExec => (s.sortOrder.take(1).map(_.child), true)
+        case _: ProjectExec | _: BaseAggregateExec => (op.expressions, true)
+        case _ => (op.expressions, false)
+      }
       val nativeOp = QueryPlanSerde.withSharedSubexpressions(
-        op.expressions,
-        alwaysShared = op.isInstanceOf[BaseAggregateExec]) {
+        scope,
+        alwaysShared = op.isInstanceOf[BaseAggregateExec],
+        certain = certain) {
         if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
           val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
           childOp.foreach(builder.addChildren)

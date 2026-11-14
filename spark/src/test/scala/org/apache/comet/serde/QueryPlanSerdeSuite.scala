@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, Expression, In, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, Concat, CreateNamedStruct, Divide, EqualTo, EvalMode, Expression, If, In, Literal, Lower, MakeDate, Not, Slice, Substring, UnaryMinus, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -32,7 +32,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -208,7 +208,7 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
   test("canShortCircuitNulls skips an argument only where the shared subexpressions are known") {
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val value = AttributeReference("i", IntegerType)()
-    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType, None, ansiEnabled = true)
     val contains = ArrayContains(array, cast)
     val position = ArrayPosition(array, cast)
 
@@ -216,17 +216,117 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     assert(canShortCircuitNulls(ArrayContains(array, value)))
     // Something serialized outside an operator's conversion might share the cast
     assert(!canShortCircuitNulls(contains))
-    withSharedSubexpressions(Seq(contains)) {
+    withSharedSubexpressions(Seq(contains), certain = true) {
       assert(canShortCircuitNulls(contains))
     }
-    withSharedSubexpressions(Seq(contains, position)) {
+    withSharedSubexpressions(Seq(contains, position), certain = true) {
       assert(!canShortCircuitNulls(contains))
       assert(!canShortCircuitNulls(position))
     }
   }
 
+  test("an uncertain scope sends a function that skips a shared subexpression to Spark") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType, None, ansiEnabled = true)
+    val contains = ArrayContains(array, cast)
+    val position = ArrayPosition(array, cast)
+    def uncertain: Boolean = skipsUncertainSharedSubexpression(canShortCircuitNulls(contains))
+    val proto =
+      scalarFunctionExprToProto("array_contains", Some(ExprOuterClass.Expr.newBuilder().build()))
+    def shortCircuit: Option[Boolean] =
+      withNullShortCircuit(contains, proto).map(_.getScalarFunc.getNullShortCircuit)
+
+    withSharedSubexpressions(Seq(contains, position), certain = false) {
+      assert(uncertain)
+      assert(shortCircuit.isEmpty)
+    }
+    // Nothing shared, so the call still skips the cast
+    withSharedSubexpressions(Seq(contains), certain = false) {
+      assert(!uncertain)
+      assert(shortCircuit.contains(true))
+    }
+    // Where Spark shares the cast for every row, so does native execution
+    withSharedSubexpressions(Seq(contains, position), certain = true) {
+      assert(!uncertain)
+      assert(shortCircuit.contains(false))
+    }
+    assert(!uncertain)
+    assert(shortCircuit.contains(false))
+  }
+
+  test("canShortCircuitNulls counts only shared subexpressions that can fail") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val value = AttributeReference("i", IntegerType)()
+    val isZero = EqualTo(value, Literal(0))
+    val failing = Cast(Cast(value, StringType), IntegerType, None, ansiEnabled = true)
+    // The shared `i = 0` cannot fail, so skipping it on a NULL array changes nothing
+    val safeKey = If(isZero, failing, Literal(1))
+    val safeContains = ArrayContains(If(isZero, Literal(null, array.dataType), array), safeKey)
+    withSharedSubexpressions(Seq(safeContains), certain = true) {
+      assert(canShortCircuitNulls(safeContains))
+    }
+    // A shared ANSI cast can fail, so it must be evaluated for every row
+    val contains = ArrayContains(array, failing)
+    val position = ArrayPosition(array, failing)
+    withSharedSubexpressions(Seq(contains, position), certain = true) {
+      assert(!canShortCircuitNulls(contains))
+    }
+    // Outside an operator's conversion an argument that cannot fail can still be skipped
+    assert(canShortCircuitNulls(ArrayContains(array, Not(isZero))))
+    assert(!canShortCircuitNulls(contains))
+    // A non-nullable first argument never makes Spark skip the others
+    val literalArray = Literal.create(Seq(1), ArrayType(IntegerType))
+    assert(canShortCircuitNulls(ArrayContains(literalArray, failing)))
+    // After a non-nullable array and a nullable start, Spark skips only the length
+    val sliceStart = Slice(literalArray, failing, value)
+    val sliceLength = Slice(literalArray, value, failing)
+    withSharedSubexpressions(Seq(sliceStart, sliceLength), certain = true) {
+      assert(canShortCircuitNulls(sliceStart))
+      assert(!canShortCircuitNulls(sliceLength))
+    }
+  }
+
+  test("canFail follows eval mode and the allowlist") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val value = AttributeReference("i", IntegerType)()
+    val decimal = AttributeReference("d", DecimalType(10, 2))()
+    for (ansi <- Seq(false, true)) {
+      // Outside ANSI mode a cast between numbers and strings returns NULL instead of failing
+      assert(canSkipEvaluation(Seq(Cast(text, IntegerType, None, ansiEnabled = ansi))) == !ansi)
+      assert(canSkipEvaluation(Seq(UnaryMinus(value, failOnError = ansi))) == !ansi)
+      // A widening cast, such as the one comparing a decimal with an integer column adds, never
+      // fails
+      val widened = Cast(decimal, DecimalType(12, 2), None, ansiEnabled = ansi)
+      assert(canSkipEvaluation(Seq(EqualTo(widened, Literal(Decimal(0), DecimalType(12, 2))))))
+    }
+    // String functions that cannot fail, but not a concat, which can exceed the size limit
+    assert(canSkipEvaluation(Seq(Lower(Substring(text, Literal(1), Literal(2))))))
+    assert(!canSkipEvaluation(Seq(Concat(Seq(text, text)))))
+    // Outside ANSI mode a cast to an ANSI interval can still fail
+    val interval = Cast(text, DayTimeIntervalType(), None, ansiEnabled = false)
+    assert(!canSkipEvaluation(Seq(interval)))
+    assert(!canShortCircuitNulls(ArrayContains(array, Cast(interval, IntegerType))))
+    // Widening a date to a timestamp overflows on extreme dates in any mode
+    val date = AttributeReference("dt", DateType)()
+    val dates = AttributeReference("dts", ArrayType(DateType))()
+    for (ansi <- Seq(false, true); target <- Seq(TimestampType, TimestampNTZType)) {
+      assert(!canSkipEvaluation(Seq(Cast(date, target, Some("UTC"), ansiEnabled = ansi))))
+      val widened = Cast(dates, ArrayType(target), Some("UTC"), ansiEnabled = ansi)
+      assert(!canSkipEvaluation(Seq(widened)))
+    }
+    // A legacy decimal sum returns NULL on overflow, also once promotion wraps it
+    val left = AttributeReference("a", DecimalType(38, 0))()
+    val legacySum = DecimalPrecision.promote(Add(left, decimal, EvalMode.LEGACY))
+    assert(canSkipEvaluation(Seq(legacySum)))
+    assert(!canSkipEvaluation(Seq(DecimalPrecision.promote(Add(left, decimal, EvalMode.ANSI)))))
+    // A literal cast fails only if evaluating it fails
+    assert(canSkipEvaluation(Seq(Cast(Literal(0), DecimalType(1, 0), None, ansiEnabled = true))))
+    assert(!canSkipEvaluation(Seq(Cast(Literal("x"), IntegerType, None, ansiEnabled = true))))
+  }
+
   test("canShortCircuitNulls follows subexpression elimination except in aggregates") {
-    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType, None, ansiEnabled = true)
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val contains = ArrayContains(array, cast)
     val shared = Seq(contains, ArrayPosition(array, cast))
@@ -241,10 +341,10 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     }
 
     withSubexpressionElimination(enabled = false) {
-      withSharedSubexpressions(shared) {
+      withSharedSubexpressions(shared, certain = true) {
         assert(canShortCircuitNulls(contains))
       }
-      withSharedSubexpressions(shared, alwaysShared = true) {
+      withSharedSubexpressions(shared, alwaysShared = true, certain = true) {
         assert(!canShortCircuitNulls(contains))
       }
       // Outside an operator's conversion what they share is still unknown
@@ -255,7 +355,7 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
   test("canSkipEvaluation recognizes shared subexpressions across decimal promotion") {
     val left = AttributeReference("a", DecimalType(10, 0))()
     val right = AttributeReference("b", DecimalType(10, 0))()
-    val cast = Cast(Divide(left, right), IntegerType)
+    val cast = Cast(Divide(left, right), IntegerType, None, ansiEnabled = true)
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val contains = ArrayContains(array, cast)
     val position = ArrayPosition(array, cast)
@@ -266,14 +366,14 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
       val conf = new SQLConf
       conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
       SQLConf.withExistingConf(conf) {
-        withSharedSubexpressions(Seq(contains, position), alwaysShared) {
+        withSharedSubexpressions(Seq(contains, position), alwaysShared, certain = true) {
           val canSkip = !(enabled || alwaysShared)
           assert(canSkipEvaluation(Seq(cast)) == canSkip)
           assert(canSkipEvaluation(Seq(promoted)) == canSkip)
           assert(canShortCircuitNulls(contains) == canSkip)
           assert(canShortCircuitNulls(DecimalPrecision.promote(contains)) == canSkip)
         }
-        withSharedSubexpressions(Seq(contains), alwaysShared) {
+        withSharedSubexpressions(Seq(contains), alwaysShared, certain = true) {
           assert(canSkipEvaluation(Seq(cast)))
           assert(canSkipEvaluation(Seq(promoted)))
         }

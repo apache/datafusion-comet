@@ -57,6 +57,13 @@ SELECT slice(ai, CAST(s AS INT), 1), slice(ai, 1, CAST(i AS INT)) FROM array_nul
 query expect_native(getarrayitem)
 SELECT ai[CAST(i AS INT)] FROM array_null_short_circuit_non_ansi
 
+-- Both calls share the cast, which cannot fail without ANSI, so array_union still skips its second
+-- argument, whose slice raises on the rows whose array is NULL
+query expect_native(array_contains, array_union)
+SELECT array_contains(ai, CAST(s AS INT)),
+  array_union(ai, slice(array(CAST(s AS INT)), IF(ai IS NULL, 0, 1), 1))
+FROM array_null_short_circuit_non_ansi
+
 -- A start of 0 makes slice raise in any mode, and only rows whose array is NULL have one
 query expect_native(array_union)
 SELECT array_union(ai, slice(array(1), IF(ai IS NULL, 0, 1), 1)) FROM array_null_short_circuit_non_ansi
@@ -64,3 +71,24 @@ SELECT array_union(ai, slice(array(1), IF(ai IS NULL, 0, 1), 1)) FROM array_null
 -- A nondeterministic argument sees the same rows as in Spark, so it returns the same values
 query expect_native(array_position)
 SELECT array_position(ai, CAST(rand(7L) * 3 AS INT)) FROM array_null_short_circuit_non_ansi
+
+statement
+CREATE TABLE array_short_circuit_tags(tags array<string>, other array<string>, c string)
+USING parquet
+
+statement
+INSERT INTO array_short_circuit_tags SELECT /*+ COALESCE(1) */ * FROM VALUES
+  (NULL, NULL, 'A'),
+  (array('a', 'b'), array('c'), 'A'),
+  (array('x'), NULL, 'C')
+  AS v(tags, other, c)
+
+-- A filter whose calls share `lower(c)`, which cannot fail, still skips it natively
+query expect_native(array_contains)
+SELECT c FROM array_short_circuit_tags
+WHERE array_contains(tags, lower(c)) OR array_contains(other, lower(c))
+
+-- The shared `lower(c)` sits under `upper`, which cannot fail either
+query expect_native(array_contains)
+SELECT c FROM array_short_circuit_tags
+WHERE (array_contains(tags, lower(c)) = array_contains(other, upper(lower(c)))) IS NULL

@@ -25,6 +25,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.DynamicVariable
+import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -1334,25 +1335,39 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * The subexpressions that occur more than once in the expressions of the operator being
    * serialized, as Spark's subexpression elimination finds them. Where Spark eliminates them, it
    * evaluates each for every row, before the expressions that use them: in the generated code of
-   * an aggregation always, and in a projection, such as a project or a shuffle's partitioning
-   * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
-   * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
-   * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
-   * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * an aggregation always, and in a projection, such as a project, a shuffle's partitioning keys
+   * or the prefix Spark computes for a sort's first key, only when
+   * `spark.sql.subexpressionElimination.enabled` is on. A sort compares its later keys one by one
+   * and never shares among them. In a filter's or a join's condition, a join's keys or an
+   * aggregation's results, whether Spark shares depends on how it runs the operator (see
+   * `certain`), so a function that would skip a shared subexpression there falls back rather than
+   * guess. They are found on the first `canShortCircuitNulls` call for the operator (or
+   * `skipsSharedSubexpression`), so an operator without an argument to skip never runs
+   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
-  private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
+  private final class SharedSubexpressions(
+      expressions: Seq[Expression],
+      alwaysShared: Boolean,
+      val certain: Boolean) {
     // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
     lazy val common: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
-        val equivalence = new EquivalentExpressions
-        expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
+        commonSubexpressions(expressions)
       } else {
         Nil
       }
+  }
+
+  /**
+   * The subexpressions that occur more than once in `expressions`, decimal-promoted so they
+   * compare equal to the promoted trees the serde converts.
+   */
+  private def commonSubexpressions(expressions: Seq[Expression]): Seq[Expression] = {
+    val equivalence = new EquivalentExpressions
+    expressions.foreach(equivalence.addExprTree(_))
+    equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
   }
 
   /**
@@ -1361,38 +1376,188 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * with the expressions Spark evaluates together, or no argument is skipped. `alwaysShared` is
    * for an aggregation, whose shared subexpressions Spark's generated code evaluates for every
    * row whatever `spark.sql.subexpressionElimination.enabled` says. An aggregation that Spark
-   * runs without generated code shares none when it is off, and stays eager in Comet.
+   * runs without generated code shares none when it is off, and stays eager in Comet. `certain`
+   * says whether Spark shares among `expressions` however it runs the operator. It does for a
+   * projection in generated code (its interpreted fallback evaluates them lazily, as before), an
+   * aggregation's function inputs, a shuffle's keys, a TakeOrderedAndProject's list and a sort's
+   * first key, whose prefix is one projection that shares within that key as a project does. A
+   * sort's later keys are compared one by one and never share. A filter's or a join's condition,
+   * a join's keys and an aggregation's results are uncertain: their sharing depends on the Spark
+   * version, whole-stage codegen or the join side. Other operators, such as an expand, a generate
+   * or a window, are uncertain as a conservative default.
    */
-  def withSharedSubexpressions[T](expressions: Seq[Expression], alwaysShared: Boolean = false)(
-      f: => T): T =
-    sharedSubexpressions.withValue(Some(new SharedSubexpressions(expressions, alwaysShared)))(f)
+  def withSharedSubexpressions[T](
+      expressions: Seq[Expression],
+      alwaysShared: Boolean = false,
+      certain: Boolean)(f: => T): T =
+    sharedSubexpressions.withValue(
+      Some(new SharedSubexpressions(expressions, alwaysShared, certain)))(f)
 
   /**
-   * Whether native execution may skip the arguments of `expr` after the first on the rows where
-   * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
-   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
-   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
-   * share is unknown.
+   * Whether an expression whose `canShortCircuitNulls` is `shortCircuit` must fall back to Spark:
+   * it would skip an argument holding a subexpression the operator's expressions share, in an
+   * operator where Spark may or may not evaluate that subexpression for every row, so neither
+   * skipping it nor evaluating it is sure to match Spark.
    */
-  def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
+  def skipsUncertainSharedSubexpression(shortCircuit: Boolean): Boolean =
+    !shortCircuit && sharedSubexpressions.value.exists(!_.certain)
+
+  /** Why an expression falls back where `skipsUncertainSharedSubexpression` holds. */
+  val uncertainSharedSubexpressionReason: String =
+    "An argument this expression skips after a NULL argument holds a subexpression that the " +
+      "operator's other expressions share, and whether Spark evaluates it for every row " +
+      "depends on how Spark runs this operator"
+
+  /**
+   * The arguments of `expr` that Spark's evaluation of a null-intolerant `BinaryExpression` or
+   * `TernaryExpression` skips on a row where an earlier one is NULL: those after the first
+   * nullable argument other than the last.
+   */
+  private def skippableArguments(expr: Expression): Seq[Expression] = {
+    val firstNullable = expr.children.init.indexWhere(_.nullable)
+    if (firstNullable < 0) Nil else expr.children.drop(firstNullable + 1)
+  }
+
+  /**
+   * Whether native execution may skip the arguments of `expr` that Spark skips after a NULL one.
+   * Not if one of them holds a subexpression that can fail and that the operator's expressions
+   * share and Spark eliminates: Spark evaluates that for every row, and raises if it fails on a
+   * row whose array is NULL. Nor, unless they cannot fail, outside `withSharedSubexpressions`,
+   * where what they share is unknown.
+   */
+  def canShortCircuitNulls(expr: Expression): Boolean =
+    canSkipEvaluation(skippableArguments(expr))
 
   /**
    * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
    * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
-   * the operator's expressions share and Spark eliminates, nor outside
-   * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
-   * promotion so callers may pass either original or already-promoted trees.
+   * can fail and that the operator's expressions share and Spark eliminates, nor outside
+   * `withSharedSubexpressions` unless none of them can fail; see `canShortCircuitNulls`.
+   * Normalize both sides with decimal promotion so callers may pass either original or
+   * already-promoted trees.
    */
   def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
-    // Subexpression elimination never shares a leaf, such as a column or a literal
-    skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      // Avoid decimal promotion when Spark shares nothing.
-      s.common.isEmpty || !skippable.exists { expr =>
-        DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
-      }
+    // Skipping what cannot fail is unobservable, and subexpression elimination never shares a
+    // leaf, such as a column or a literal
+    skippable.forall(e => e.isInstanceOf[LeafExpression] || !canFail(e)) ||
+    sharedSubexpressions.value.exists { s =>
+      !holdsSharedSubexpression(skippable, s, canFail)
     }
   }
+
+  private def canFail(expr: Expression): Boolean = expr.exists(canFailNode)
+
+  /**
+   * Whether evaluating the node `expr`, apart from its children, may raise an error.
+   * Conservative: only columns, literals, comparisons, NULL checks, boolean logic, conditionals,
+   * array and struct constructors, struct field access, hashes, case conversion, trim, substring
+   * and length of a string, the year, month and day of a date, widening casts other than to a
+   * timestamp, casts of a literal that evaluate, decimal overflow checks that return NULL, and
+   * casts and numeric arithmetic that return NULL instead of failing cannot. A string `concat`
+   * can exceed the size limit, so it is not on the list.
+   */
+  private def canFailNode(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal => false
+    case _: CreateArray | _: CreateNamedStruct => false
+    case _: EqualTo | _: EqualNullSafe | _: LessThan | _: LessThanOrEqual | _: GreaterThan |
+        _: GreaterThanOrEqual =>
+      false
+    case _: IsNull | _: IsNotNull | _: And | _: Or | _: Not => false
+    case _: Coalesce | _: If | _: CaseWhen | _: GetStructField | _: Murmur3Hash | _: XxHash64 =>
+      false
+    case _: Lower | _: Upper | _: Substring | _: StringTrim | _: StringTrimLeft |
+        _: StringTrimRight | _: Length | _: Year | _: Month | _: DayOfMonth =>
+      false
+    case c: Cast if c.child.isInstanceOf[Literal] => !evaluates(c)
+    // Widening a date or timestamp to a timestamp overflows on extreme values in any mode
+    case c: Cast if Cast.canUpCast(c.child.dataType, c.dataType) => holdsTimestamp(c.dataType)
+    case c: Cast =>
+      c.evalMode == EvalMode.ANSI || !castsWithoutFailing(c.child.dataType) ||
+      !castsWithoutFailing(c.dataType)
+    case c: CheckOverflow => !c.nullOnOverflow
+    // Each class's own `evalMode`, as `BinaryArithmetic.evalMode` is protected before Spark 4.1
+    case a: Add => arithmeticCanFail(a, a.evalMode)
+    case a: Subtract => arithmeticCanFail(a, a.evalMode)
+    case a: Multiply => arithmeticCanFail(a, a.evalMode)
+    case a: Divide => arithmeticCanFail(a, a.evalMode)
+    case a: IntegralDivide => arithmeticCanFail(a, a.evalMode)
+    case a: Remainder => arithmeticCanFail(a, a.evalMode)
+    case a: Pmod => arithmeticCanFail(a, a.evalMode)
+    case u: UnaryMinus => u.failOnError || !u.dataType.isInstanceOf[NumericType]
+    case a: Abs => a.failOnError || !a.dataType.isInstanceOf[NumericType]
+    case _ => true
+  }
+
+  private def arithmeticCanFail(expr: Expression, evalMode: EvalMode.Value): Boolean =
+    evalMode == EvalMode.ANSI || !expr.dataType.isInstanceOf[NumericType]
+
+  private def holdsTimestamp(dataType: DataType): Boolean = dataType match {
+    case TimestampType | TimestampNTZType => true
+    case a: ArrayType => holdsTimestamp(a.elementType)
+    case m: MapType => holdsTimestamp(m.keyType) || holdsTimestamp(m.valueType)
+    case s: StructType => s.fields.exists(f => holdsTimestamp(f.dataType))
+    case _ => false
+  }
+
+  /** Whether evaluating `expr`, which has no input, succeeds. */
+  private def evaluates(expr: Expression): Boolean =
+    try {
+      expr.eval()
+      true
+    } catch {
+      // Failing here, even for want of a time zone, counts as able to fail
+      case NonFatal(_) => false
+    }
+
+  /** Types a cast outside ANSI mode converts between without failing, returning NULL instead. */
+  private def castsWithoutFailing(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType => true
+    case _ => false
+  }
+
+  /**
+   * Whether a node of `expr` can skip a child holding a subexpression the operator's expressions
+   * share. Spark evaluates that subexpression for every row, but the dispatcher, compiling `expr`
+   * alone, can skip it and so miss an ANSI error. While subexpression elimination is on, a
+   * subexpression `expr` itself repeats does not count, as the dispatcher eliminates it too.
+   * False outside `withSharedSubexpressions`.
+   */
+  def skipsSharedSubexpression(expr: Expression): Boolean =
+    sharedSubexpressions.value.exists { s =>
+      lazy val repeated =
+        if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
+        else Nil
+      expr.exists { node =>
+        val skippable = node match {
+          // the divisor is evaluated first, so only the dividend (`left`) can be skipped
+          case _: DivModLike | _: Pmod => node.children.take(1)
+          // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
+          case _: StringLocate => node.children.init
+          // `ArrayJoin` evaluates a nullable replacement first and skips the rest when it is NULL
+          case j: ArrayJoin if j.nullReplacement.exists(_.nullable) => node.children.init
+          // Spark 3.x codegen evaluates both children first; 4.0 rewrites it to `ArrayInsert`
+          case _: ArrayAppend => Nil
+          // Spark's codegen evaluates children in order and skips the rest after a NULL one
+          case _ => node.children.drop(1)
+        }
+        !skippable.forall(_.isInstanceOf[LeafExpression]) &&
+        holdsSharedSubexpression(
+          skippable,
+          s,
+          e => canFail(e) && !repeated.exists(_.semanticEquals(e)))
+      }
+    }
+
+  private def holdsSharedSubexpression(
+      exprs: Seq[Expression],
+      shared: SharedSubexpressions,
+      counts: Expression => Boolean): Boolean =
+    // Avoid decimal promotion when Spark shares nothing.
+    shared.common.nonEmpty && exprs.exists { expr =>
+      DecimalPrecision
+        .promote(expr)
+        .exists(e => shared.common.exists(_.semanticEquals(e)) && counts(e))
+    }
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
@@ -1400,20 +1565,26 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * argument after the first only for the rows where no earlier argument is NULL, unless
    * `canShortCircuitNulls` rules it out. Otherwise every argument is evaluated over the whole
    * batch, so one that can fail, such as an ANSI cast of a malformed string, fails on a row that
-   * Spark returns NULL for without evaluating it (#6613). The arguments must be in the order
+   * Spark returns NULL for without evaluating it (#6613), except where
+   * `skipsUncertainSharedSubexpression` sends `expr` to Spark. The arguments must be in the order
    * Spark evaluates them, and the function must return NULL wherever an argument other than the
    * last is NULL. The native planner drops the guard when every later argument can be evaluated
    * for any row, such as a column or a literal.
    */
   def withNullShortCircuit(expr: Expression, scalarFunc: Option[Expr]): Option[Expr] =
-    scalarFunc.map { proto =>
+    scalarFunc.flatMap { proto =>
       require(proto.hasScalarFunc, s"not a scalar function: $proto")
-      if (canShortCircuitNulls(expr)) {
-        proto.toBuilder
-          .setScalarFunc(proto.getScalarFunc.toBuilder.setNullShortCircuit(true))
-          .build()
+      val shortCircuit = canShortCircuitNulls(expr)
+      if (shortCircuit) {
+        Some(
+          proto.toBuilder
+            .setScalarFunc(proto.getScalarFunc.toBuilder.setNullShortCircuit(true))
+            .build())
+      } else if (skipsUncertainSharedSubexpression(shortCircuit)) {
+        withFallbackReason(expr, uncertainSharedSubexpressionReason)
+        None
       } else {
-        proto
+        Some(proto)
       }
     }
 
@@ -1430,7 +1601,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean): Option[(CodegenDispatchFallback, Expr)] = handler match {
     case h: CodegenDispatchFallback =>
-      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+      h.dispatchDeclineReason(expr) match {
+        case Some(reason) =>
+          withFallbackReason(
+            expr,
+            s"${CometExplainInfo.exprDisplayName(expr)}: codegen dispatch: $reason")
+          None
+        case None =>
+          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+      }
     case _ => None
   }
 
