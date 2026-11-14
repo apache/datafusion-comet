@@ -28,6 +28,7 @@ use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::{DataFusionError, HashSet};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion_comet_common::is_refusal;
 use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use itertools::Itertools;
@@ -570,11 +571,16 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     }
 
     /// Grows the spill reservation by `mem_growth`, spilling if that is refused or if the fixed
-    /// buffer limit has been reached.
+    /// buffer limit has been reached. Any other error from the pool fails the shuffle; see
+    /// [`is_refusal`].
     fn reserve_and_may_spill(&mut self, mem_growth: usize) -> datafusion::common::Result<()> {
         // A rejected reservation does not include this batch's memory, even though the batch
         // and its partition indices have already been buffered and must be counted as spilled.
-        let reservation_failed = self.reservation.try_grow(mem_growth).is_err();
+        let reservation_failed = match self.reservation.try_grow(mem_growth) {
+            Ok(()) => false,
+            Err(e) if is_refusal(&e) => true,
+            Err(e) => return Err(e),
+        };
         // Checking after buffering lets the writer overshoot the limit by at most one batch,
         // which is how the memory-pressure trigger already behaves.
         if reservation_failed
@@ -1147,6 +1153,129 @@ mod tests {
             }
             assert!(spill_bytes[0] > 0);
             assert_eq!(spill_bytes[0], spill_bytes[1]);
+        }
+    }
+
+    /// Only the pool refusing the spill reservation makes the repartitioner spill.
+    mod pool_errors {
+        use super::*;
+        use datafusion::execution::memory_pool::{MemoryPool, UnboundedMemoryPool};
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        /// A pool with room to spare whose `try_grow` fails with `error()`, the way a pool backed
+        /// by Spark fails when Spark refuses the memory or throws.
+        #[derive(Debug)]
+        struct ErrorPool {
+            inner: UnboundedMemoryPool,
+            error: fn() -> DataFusionError,
+        }
+
+        impl fmt::Display for ErrorPool {
+            fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+                write!(f, "ErrorPool({})", self.inner)
+            }
+        }
+
+        impl MemoryPool for ErrorPool {
+            fn name(&self) -> &str {
+                "ErrorPool"
+            }
+
+            fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+                self.inner.grow(reservation, additional)
+            }
+
+            fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+                self.inner.shrink(reservation, shrink)
+            }
+
+            fn try_grow(&self, _: &MemoryReservation, _: usize) -> datafusion::common::Result<()> {
+                Err((self.error)())
+            }
+
+            fn reserved(&self) -> usize {
+                self.inner.reserved()
+            }
+        }
+
+        /// Inserts one batch into a two-partition repartitioner whose pool fails every
+        /// `try_grow` with `error()`.
+        async fn insert_with(
+            error: fn() -> DataFusionError,
+        ) -> (
+            datafusion::common::Result<()>,
+            MultiPartitionShuffleRepartitioner<FailingPartitionWriter>,
+        ) {
+            let pool = ErrorPool {
+                inner: UnboundedMemoryPool::default(),
+                error,
+            };
+            let runtime = Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_pool(Arc::new(pool))
+                    .build()
+                    .unwrap(),
+            );
+            let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+                0,
+                FailingPartitionWriter::default(),
+                CometPartitioning::RoundRobin(2, RoundRobinStrategy::default()),
+                ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
+                runtime,
+                64,
+                false,
+                None,
+            )
+            .unwrap();
+            let result = repartitioner.insert_batch(int64_batch(0..64)).await;
+            (result, repartitioner)
+        }
+
+        /// An error that is not a refusal, such as an exception Spark threw while spilling another
+        /// consumer, fails the shuffle with that error instead of making it spill and carry on.
+        #[tokio::test]
+        async fn pool_errors_other_than_refusal_fail_the_shuffle() {
+            let errors: [fn() -> DataFusionError; 3] = [
+                // A pool backed by Spark passes on an exception Spark threw like this.
+                || DataFusionError::External(Box::new(std::io::Error::other("a spill failed"))),
+                // And a JNI call that failed like this.
+                || DataFusionError::Execution("a JNI call failed".to_string()),
+                // The same exception, handed to a later request.
+                || {
+                    let error = DataFusionError::Execution("a JNI call failed".to_string());
+                    DataFusionError::Shared(Arc::new(error.context("an earlier request")))
+                },
+            ];
+            for error in errors {
+                let (result, repartitioner) = insert_with(error).await;
+                let failure = result.expect_err("the shuffle went on after the pool failed");
+                assert_eq!(failure.to_string(), error().to_string());
+                assert_eq!(repartitioner.spill_count(), 0);
+                assert_eq!(repartitioner.partition_writer.write_calls, 0);
+            }
+        }
+
+        /// A refusal makes the repartitioner spill, also when it reaches it wrapped, so the check
+        /// looks at the root of the error.
+        #[tokio::test]
+        async fn a_refused_reservation_spills() {
+            let refusals: [fn() -> DataFusionError; 3] = [
+                || DataFusionError::ResourcesExhausted("refused".to_string()),
+                || DataFusionError::ResourcesExhausted("refused".to_string()).context("wrapped"),
+                || {
+                    let refusal = DataFusionError::ResourcesExhausted("refused".to_string());
+                    DataFusionError::Shared(Arc::new(refusal))
+                },
+            ];
+            for refusal in refusals {
+                let (result, repartitioner) = insert_with(refusal).await;
+                result.unwrap();
+                assert_eq!(repartitioner.spill_count(), 1);
+                // The spill wrote both partitions and released the batch it had not reserved.
+                assert_eq!(repartitioner.partition_writer.write_calls, 2);
+                assert!(repartitioner.metrics.memory_spilled_bytes.value() > 0);
+                assert_eq!(repartitioner.reservation.size(), 0);
+            }
         }
     }
 

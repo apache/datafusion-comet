@@ -1054,6 +1054,18 @@ pub fn unwrap_arrow_external_error(error: ArrowError) -> DataFusionError {
     }
 }
 
+/// Whether `e`, from growing or resizing a memory reservation, is the pool refusing the memory.
+///
+/// Every pool reports a refusal as `ResourcesExhausted`, which [`DataFusionError::find_root`]
+/// finds under `Context`, `Shared` and `External`. An operator that can give memory back, by
+/// spilling or by closing files early, answers a refusal that way. A pool backed by Spark can also
+/// fail with an exception Spark threw, such as a failed spill of another consumer or the
+/// `InterruptedException` of a task killed while it waited for memory. That comes back as another
+/// kind of error and has to fail the task: giving memory back and carrying on would hide it.
+pub fn is_refusal(e: &DataFusionError) -> bool {
+    matches!(e.find_root(), DataFusionError::ResourcesExhausted(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

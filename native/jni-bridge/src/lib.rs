@@ -29,6 +29,7 @@ use jni::{
     Env, JavaVM, DEFAULT_LOCAL_FRAME_CAPACITY,
 };
 use once_cell::sync::OnceCell;
+use std::sync::Arc;
 
 use errors::{CometError, CometResult};
 
@@ -482,7 +483,7 @@ pub fn convert_exception(env: &mut Env, throwable: &JThrowable) -> CometResult<C
     Ok(CometError::JavaException {
         class: exception_class_name_str,
         msg: message_str,
-        throwable: env.new_global_ref(throwable)?,
+        throwable: Arc::new(env.new_global_ref(throwable)?),
     })
 }
 

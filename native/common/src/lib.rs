@@ -28,8 +28,8 @@ mod utf8;
 mod utils;
 
 pub use error::{
-    decimal_overflow_error, unwrap_arrow_external_error, SparkError, SparkErrorWithContext,
-    SparkResult,
+    decimal_overflow_error, is_refusal, unwrap_arrow_external_error, SparkError,
+    SparkErrorWithContext, SparkResult,
 };
 pub use ffi_offsets::zero_offsets;
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
