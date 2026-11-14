@@ -67,7 +67,7 @@ admits. The two need different evidence.
   writes it previously refused. "The tests pass" is not evidence here, because the existing tests
   were written against the narrower gate. Ask for a test that writes the newly admitted
   configuration through both writers and compares the result, and for the user guide's eligibility
-  table to change in the same PR.
+  table and its "Plans for each fallback" lists to change in the same PR.
 
 For every gate change:
 
@@ -242,7 +242,7 @@ Ask specifically:
   steps after them, the cleanup ownership table, the test table, and the Iceberg version per Spark
   profile
 - **`user-guide/latest/iceberg.md`, Writes section**: the eligibility table, the "falls back" lists, the
-  failure-handling section, and the accepted-divergences list. A PR that lifts or adds a rule, or
+  "Plans for each fallback" lists, the failure-handling section, and the accepted-divergences list. A PR that lifts or adds a rule, or
   changes a divergence, must update these. A divergence the code has since fixed must be removed.
 - **`user-guide/latest/iceberg.md`, Native Reader section**: its unsupported-features list mentions writes. The
   Known Issues section lists the open write issues
