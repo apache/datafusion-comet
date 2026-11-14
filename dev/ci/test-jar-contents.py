@@ -19,9 +19,10 @@
 
 """Test dev/ensure-jars-have-correct-contents.sh against real ZIP files.
 
-The checker reads native/Cargo.lock and dev/licenses/LICENSE-binary.txt relative to itself.
-Each test runs a copy of it in a temporary tree whose lock file pins the versions that
-LICENSE-binary.txt names, so only test_license_matches_cargo_lock reads the real lock file.
+The checker reads native/Cargo.lock, pom.xml and dev/licenses/LICENSE-binary.txt relative to
+itself. Each test runs a copy of it in a temporary tree whose lock file and pom pin the versions
+that LICENSE-binary.txt names, so only test_license_matches_cargo_lock_and_pom reads the real
+lock file and pom.
 """
 
 from pathlib import Path
@@ -39,13 +40,14 @@ LICENSE = (ROOT / "dev/licenses/LICENSE-binary.txt").read_bytes()
 NATIVE_LIB = "org/apache/comet/linux/amd64/libcomet.so"
 
 
-def licensed_version(name, license_id):
-    line = rb"^The native Comet library bundles %s (\S+) \(%s\)\.$" % (name, license_id)
+def licensed_version(name, license_id, bundler=b"native Comet library"):
+    line = rb"^The %s bundles %s (\S+) \(%s\)\.$" % (bundler, name, license_id)
     return re.search(line, LICENSE, re.M).group(1).decode()
 
 
 LZ4 = licensed_version(b"lz4_flex", b"MIT")
 ZSTD = licensed_version(b"Zstandard", b"BSD-3-Clause")
+PROTOBUF = licensed_version(b"protobuf-java", b"BSD-3-Clause", b"Comet JAR")
 
 
 def cargo_lock(packages):
@@ -54,6 +56,12 @@ def cargo_lock(packages):
 
 
 LOCK = cargo_lock([("lz4_flex", LZ4), ("zstd-sys", f"2.1.2+zstd.{ZSTD}")])
+
+
+def pom(*protobuf_versions):
+    properties = "".join(
+        f"    <protobuf.version>{version}</protobuf.version>\n" for version in protobuf_versions)
+    return f"<project>\n  <properties>\n{properties}  </properties>\n</project>\n"
 
 
 def without_line(text, prefix):
@@ -74,10 +82,14 @@ class JarContents(unittest.TestCase):
         shutil.copy(CHECKER, self.checker)
         (self.root / "dev/licenses/LICENSE-binary.txt").write_bytes(LICENSE)
         self.lock(LOCK)
+        self.pom(pom(PROTOBUF))
         self.main = self.jar("main.jar")
 
     def lock(self, text):
         (self.root / "native/Cargo.lock").write_text(text)
+
+    def pom(self, text):
+        (self.root / "pom.xml").write_text(text)
 
     def jar(self, name, entry=None, native=True, licenses=(LICENSE,)):
         path = self.root / name
@@ -134,11 +146,12 @@ class JarContents(unittest.TestCase):
         self.rejected([artifact], entry)
         self.rejected([self.main, artifact], entry)
 
-    def test_license_matches_cargo_lock(self):
-        """Run the checker in place, so it reads the repository's native/Cargo.lock.
+    def test_license_matches_cargo_lock_and_pom(self):
+        """Run the checker in place, so it reads the repository's native/Cargo.lock and pom.xml.
 
-        A bump of lz4_flex, or of zstd-sys to a new Zstandard release, fails here, ahead of the
-        build's own JAR check, until LICENSE-binary.txt names the new version and its text.
+        A bump of lz4_flex, of zstd-sys to a new Zstandard release, or of protobuf.version fails
+        here, ahead of the build's own JAR check, until LICENSE-binary.txt names the new version
+        and its text.
         """
         self.assertIn("Binary LICENSE matches", self.passed(self.main, checker=CHECKER))
 
@@ -176,6 +189,7 @@ class JarContents(unittest.TestCase):
             "apache only": (ROOT / "LICENSE.txt").read_bytes(),
             "no lz4_flex copyright": without_line(LICENSE, b"Copyright (c) 2020 Pascal Seitz"),
             "no Zstandard copyright": without_line(LICENSE, b"Copyright (c) Meta Platforms"),
+            "no protobuf-java copyright": without_line(LICENSE, b"Copyright 2008 Google Inc."),
         }
         for case, text in cases.items():
             with self.subTest(case):
@@ -204,6 +218,16 @@ class JarContents(unittest.TestCase):
             with self.subTest(case):
                 self.lock(cargo_lock(packages))
                 self.failed([self.main], message)
+
+    def test_bundled_protobuf_version_drift(self):
+        self.pom(pom("3.25.6"))
+        self.failed([self.main], "Update LICENSE-binary.txt for bundled protobuf-java 3.25.6")
+
+    def test_unreadable_protobuf_version(self):
+        for case, versions in {"missing": (), "ambiguous": (PROTOBUF, "3.25.6")}.items():
+            with self.subTest(case):
+                self.pom(pom(*versions))
+                self.failed([self.main], "Expected one protobuf.version property")
 
     def test_missing_sources_jar(self):
         missing = str(self.root / "missing-sources.jar")
