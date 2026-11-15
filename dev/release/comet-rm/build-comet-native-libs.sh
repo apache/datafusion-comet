@@ -50,6 +50,31 @@ git clone "$REPO" comet
 cd comet
 git checkout "$COMMIT"
 
-# build comet binaries
+# Build the native library twice, once with the system allocator and once with the jemalloc
+# allocator, and keep each build in its own directory under /opt/comet-rm/lib. The caller copies
+# them out. Cargo reuses the compiled dependencies, so the second build only compiles jemalloc and
+# the comet crate again.
+LIB_DIR=/opt/comet-rm/lib
+mkdir -p "$LIB_DIR/default" "$LIB_DIR/jemalloc"
 
 make core-${ARCH}-libs
+cp native/target/release/libcomet.so "$LIB_DIR/default/"
+
+# A jemalloc built on a kernel with small memory pages fails every allocation on a kernel with
+# larger pages, and some arm64 distributions use 64 KiB pages. The published arm64 library must
+# load on all of them, so build jemalloc for 64 KiB pages. That also works on kernels with smaller
+# pages, but can raise memory use there. amd64 kernels always use 4 KiB pages.
+if [ "$ARCH" = "arm64" ]
+then
+  export JEMALLOC_SYS_WITH_LG_PAGE=16
+fi
+
+COMET_FEATURES=jemalloc make core-${ARCH}-libs
+cp native/target/release/libcomet.so "$LIB_DIR/jemalloc/"
+
+# The jemalloc library must differ from the default one, otherwise the feature was not applied
+if cmp -s "$LIB_DIR/default/libcomet.so" "$LIB_DIR/jemalloc/libcomet.so"
+then
+  echo "Error: the jemalloc build of libcomet.so is identical to the default build"
+  exit 1
+fi

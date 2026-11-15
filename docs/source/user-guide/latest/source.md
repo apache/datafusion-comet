@@ -84,7 +84,8 @@ make release-nogit PROFILES="-Pspark-4.1"
 The native library allocates its memory with the system allocator, which is glibc malloc on Linux.
 In a long-running executor, glibc can keep several GiB of freed native memory resident (see
 [#7108](https://github.com/apache/datafusion-comet/issues/7108)). The published jars use the system
-allocator. To build Comet with [jemalloc](https://jemalloc.net/) instead, add the `jemalloc` profile:
+allocator, and each release also publishes a jar with the `jemalloc` classifier that uses
+[jemalloc](https://jemalloc.net/). To build Comet with jemalloc yourself, add the `jemalloc` profile:
 
 ```console
 make release PROFILES="-Pspark-4.1 -Pjemalloc"
