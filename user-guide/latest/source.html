@@ -918,6 +918,33 @@ To use this version of Comet, see the following section on building from the Git
 </pre></div>
 </div>
 </section>
+<section id="building-with-the-jemalloc-allocator">
+<h2>Building with the jemalloc allocator<a class="headerlink" href="#building-with-the-jemalloc-allocator" title="Link to this heading">#</a></h2>
+<p>The native library allocates its memory with the system allocator, which is glibc malloc on Linux.
+In a long-running executor, glibc can keep several GiB of freed native memory resident (see
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7108">#7108</a>). The published jars use the system
+allocator. To build Comet with <a class="reference external" href="https://jemalloc.net/">jemalloc</a> instead, add the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> profile:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">make release PROFILES="-Pspark-4.1 -Pjemalloc"</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release-nogit</span></code> accepts it too. The profile itself has no settings, because Maven does not
+build the native library. <code class="docutils literal notranslate"><span class="pre">make</span></code> is what adds the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> Cargo feature when <code class="docutils literal notranslate"><span class="pre">PROFILES</span></code> names
+the profile. The feature cannot be combined with <code class="docutils literal notranslate"><span class="pre">mimalloc</span></code>. If you build the native library
+yourself with <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span></code>, pass <code class="docutils literal notranslate"><span class="pre">--features</span> <span class="pre">jemalloc</span></code> there. Running <code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">install</span> <span class="pre">-Pjemalloc</span></code>
+after a plain <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span></code> packages a library that uses the system allocator, with no warning.</p>
+<p>jemalloc replaces the allocator of the Rust code in the native library. C code linked into it, such
+as zstd, the JVM and any other native library in the executor still allocate through glibc. To use
+jemalloc for the whole executor process instead, preload a jemalloc library installed on the
+executors, for example with <code class="docutils literal notranslate"><span class="pre">spark.executorEnv.LD_PRELOAD</span></code>, which needs no special Comet build.</p>
+<p>jemalloc reads its options from the <code class="docutils literal notranslate"><span class="pre">_RJEM_MALLOC_CONF</span></code> environment variable rather than
+<code class="docutils literal notranslate"><span class="pre">MALLOC_CONF</span></code>, because Comet links a build of jemalloc with prefixed symbols. Set it for executors
+with <code class="docutils literal notranslate"><span class="pre">spark.executorEnv._RJEM_MALLOC_CONF</span></code>, for example
+<code class="docutils literal notranslate"><span class="pre">--conf</span> <span class="pre">spark.executorEnv._RJEM_MALLOC_CONF=background_thread:true</span></code>.</p>
+<p>jemalloc fails every allocation on a kernel whose memory pages are larger than those of the machine
+it was built on. Some arm64 distributions use 64 KiB pages. When the executors may run on one, build
+with <code class="docutils literal notranslate"><span class="pre">JEMALLOC_SYS_WITH_LG_PAGE=16</span></code> set in the environment, which builds jemalloc for 64 KiB pages.
+That also works on kernels with smaller pages, but can raise memory use there.</p>
+</section>
 </section>
 
 
@@ -969,6 +996,7 @@ To use this version of Comet, see the following section on building from the Git
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-a-published-source-release">Using a Published Source Release</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-from-the-github-repository">Building from the GitHub repository</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-with-the-jemalloc-allocator">Building with the jemalloc allocator</a></li>
 </ul>
   </nav></div>
 

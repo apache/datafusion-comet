@@ -1391,10 +1391,10 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p>unset or <code class="docutils literal notranslate"><span class="pre">v1</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.shred-variants</span></code></p></td>
-<td><p>unset or <code class="docutils literal notranslate"><span class="pre">false</span></code> (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)</p></td>
+<td><p>any value (iceberg-java shreds only top-level <code class="docutils literal notranslate"><span class="pre">variant</span></code> columns, and a <code class="docutils literal notranslate"><span class="pre">variant</span></code> column falls back on its type)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.variant-inference-buffer-size</span></code></p></td>
-<td><p>any value (only meaningful when shredding, which is gated)</p></td>
+<td><p>any value (only meaningful when shredding a <code class="docutils literal notranslate"><span class="pre">variant</span></code> column, which falls back)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.bloom-filter-enabled.column.&lt;col&gt;</span></code></p></td>
 <td><p>unset or <code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
@@ -1415,7 +1415,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p>Iceberg’s built-in <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>Hadoop S3A settings for an <code class="docutils literal notranslate"><span class="pre">s3</span></code> / <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data location</p></td>
-<td><p>only <code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">secret.key</span></code>, <code class="docutils literal notranslate"><span class="pre">session.token</span></code>, <code class="docutils literal notranslate"><span class="pre">endpoint</span></code>, <code class="docutils literal notranslate"><span class="pre">endpoint.region</span></code>, and <code class="docutils literal notranslate"><span class="pre">path.style.access</span></code>, including their <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;data-bucket&gt;.*</span></code> forms; any other effective <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> setting falls back, apart from the ignored settings listed below</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">secret.key</span></code>, <code class="docutils literal notranslate"><span class="pre">session.token</span></code>, <code class="docutils literal notranslate"><span class="pre">endpoint</span></code>, <code class="docutils literal notranslate"><span class="pre">endpoint.region</span></code>, and <code class="docutils literal notranslate"><span class="pre">path.style.access</span></code>, plus the ignored, encryption and credential settings described below, including their <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;data-bucket&gt;.*</span></code> forms; any other effective <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> setting falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p>Iceberg <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> S3 settings for an <code class="docutils literal notranslate"><span class="pre">s3</span></code> / <code class="docutils literal notranslate"><span class="pre">s3a</span></code> data location</p></td>
 <td><p>the S3 endpoint, region, static/session credentials, path-style, SSE (<code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">kms</span></code>, or <code class="docutils literal notranslate"><span class="pre">custom</span></code>; not <code class="docutils literal notranslate"><span class="pre">dsse-kms</span></code>), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet’s credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back</p></td>
@@ -1429,14 +1429,20 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 </tbody>
 </table>
 </div>
-<p>Within the namespaces that shape data-file bytes — <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> and <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> —
-everything not listed above must be absent: unvetted <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys (e.g.
-<code class="docutils literal notranslate"><span class="pre">bloom-filter-max-bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">stats-enabled.column.*</span></code>, keys added by future Iceberg versions),
-any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> table property (including <code class="docutils literal notranslate"><span class="pre">parquet.enable.dictionary</span></code>), and any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code>
-key in the session Hadoop configuration other than the reader-only
-<code class="docutils literal notranslate"><span class="pre">parquet.hadoop.vectored.io.enabled</span></code> (with <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-backed output those reach
-iceberg-java’s writer but not the native one). Also gated explicitly: any <code class="docutils literal notranslate"><span class="pre">encryption.*</span></code> key,
-<code class="docutils literal notranslate"><span class="pre">write.object-storage.enabled=true</span></code>, <code class="docutils literal notranslate"><span class="pre">write.location-provider.impl</span></code>, and <code class="docutils literal notranslate"><span class="pre">io-impl</span></code>.</p>
+<p>Within <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code>, everything not listed above must be absent: unvetted keys (e.g.
+<code class="docutils literal notranslate"><span class="pre">bloom-filter-max-bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">stats-enabled.column.*</span></code>, keys added by future Iceberg versions) fall
+back. iceberg-java builds its Parquet writer’s settings from <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys. Of the
+<code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> keys, only <code class="docutils literal notranslate"><span class="pre">parquet.columnindex.truncate.length</span></code> changes its data files beyond their
+compressed bytes, whether it is set as a table or write property or in the Hadoop configuration
+that reaches the writer. That key falls back, and so does <code class="docutils literal notranslate"><span class="pre">parquet.enable.dictionary</span></code> as a table
+or write property. The zstd level and worker count (<code class="docutils literal notranslate"><span class="pre">parquet.compression.codec.zstd.level</span></code> and
+<code class="docutils literal notranslate"><span class="pre">.workers</span></code>) are codec-level side channels, which the accepted divergences below cover. Every other
+<code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> key, such as <code class="docutils literal notranslate"><span class="pre">parquet.block.size</span></code> or the reader-only
+<code class="docutils literal notranslate"><span class="pre">parquet.hadoop.vectored.io.enabled</span></code>, is ignored, because iceberg-java’s writer ignores it too. The
+Hadoop configuration checked is the session’s and, for a <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>, the FileIO’s own, which
+carries the catalog’s <code class="docutils literal notranslate"><span class="pre">hadoop.*</span></code> overrides. Also gated explicitly: any <code class="docutils literal notranslate"><span class="pre">encryption.*</span></code> key,
+<code class="docutils literal notranslate"><span class="pre">write.object-storage.enabled=true</span></code>, and <code class="docutils literal notranslate"><span class="pre">write.location-provider.impl</span></code>. An <code class="docutils literal notranslate"><span class="pre">io-impl</span></code> table
+property is ignored, because iceberg-java reads <code class="docutils literal notranslate"><span class="pre">io-impl</span></code> from catalog properties only.</p>
 <p>Three checks look past properties at the table’s instantiated state, because they can be
 configured at the catalog level (or by a custom <code class="docutils literal notranslate"><span class="pre">TableOperations</span></code>) without any table or write
 property changing: <code class="docutils literal notranslate"><span class="pre">table.locationProvider()</span></code> must be Iceberg’s <code class="docutils literal notranslate"><span class="pre">DefaultLocationProvider</span></code>;
@@ -1460,14 +1466,52 @@ gate and native translation, including after session or catalog options change. 
 implementations without a Hadoop configuration, such as <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code>, use only their initialized
 properties; session and catalog Hadoop options are neither checked nor forwarded. Hadoop’s built-in
 <code class="docutils literal notranslate"><span class="pre">core-default.xml</span></code> values are not treated as explicit settings, but
-programmatic settings and values from site or custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> resources are. Spark’s
-session-wide S3A vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code> compatibility settings are also
-ignored, as are the S3A committer (<code class="docutils literal notranslate"><span class="pre">committer.name</span></code>, <code class="docutils literal notranslate"><span class="pre">committer.magic.enabled</span></code>,
-<code class="docutils literal notranslate"><span class="pre">committer.threads</span></code>), <code class="docutils literal notranslate"><span class="pre">bulk.delete.page.size</span></code> and <code class="docutils literal notranslate"><span class="pre">experimental.input.fadvise</span></code> settings, because
-none of them can alter an Iceberg data-file write request. Spark 4.1 sets <code class="docutils literal notranslate"><span class="pre">committer.name</span></code> and
-<code class="docutils literal notranslate"><span class="pre">committer.magic.enabled</span></code> itself when <code class="docutils literal notranslate"><span class="pre">spark-hadoop-cloud</span></code> is on the classpath. Ignored settings are
-matched by their plain <code class="docutils literal notranslate"><span class="pre">fs.s3a.&lt;name&gt;</span></code> keys, so a per-bucket <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;data-bucket&gt;.&lt;name&gt;</span></code>
-form still falls back. Unknown explicit
+programmatic settings and values from site or custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> resources are. S3A settings
+that cannot change the written object, where it is written or who writes it are ignored, because
+the native writer has its own connection pool, timeouts, retries and upload buffering and does not
+go through S3A. They are the connection pool, thread, timeout and retry settings (such as
+<code class="docutils literal notranslate"><span class="pre">connection.maximum</span></code>, <code class="docutils literal notranslate"><span class="pre">threads.max</span></code>, <code class="docutils literal notranslate"><span class="pre">connection.timeout</span></code>, <code class="docutils literal notranslate"><span class="pre">attempts.maximum</span></code> and <code class="docutils literal notranslate"><span class="pre">retry.limit</span></code>),
+upload buffering and multipart sizing (such as <code class="docutils literal notranslate"><span class="pre">fast.upload.buffer</span></code>, <code class="docutils literal notranslate"><span class="pre">multipart.size</span></code>,
+<code class="docutils literal notranslate"><span class="pre">multipart.threshold</span></code>, <code class="docutils literal notranslate"><span class="pre">buffer.dir</span></code> and <code class="docutils literal notranslate"><span class="pre">block.size</span></code>), read, listing and delete settings (such as
+Spark’s session-wide vectored-read settings, <code class="docutils literal notranslate"><span class="pre">readahead.range</span></code>, <code class="docutils literal notranslate"><span class="pre">experimental.input.fadvise</span></code> and
+<code class="docutils literal notranslate"><span class="pre">bulk.delete.page.size</span></code>), <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code>, the S3A committer settings
+(<code class="docutils literal notranslate"><span class="pre">committer.name</span></code>, <code class="docutils literal notranslate"><span class="pre">committer.magic.enabled</span></code>, <code class="docutils literal notranslate"><span class="pre">committer.threads</span></code>), <code class="docutils literal notranslate"><span class="pre">impl</span></code> when it names
+<code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.S3AFileSystem</span></code>, and <code class="docutils literal notranslate"><span class="pre">fs.s3a.region</span></code>, which S3A does not read. Spark 4.1
+sets <code class="docutils literal notranslate"><span class="pre">committer.name</span></code> and <code class="docutils literal notranslate"><span class="pre">committer.magic.enabled</span></code> itself when <code class="docutils literal notranslate"><span class="pre">spark-hadoop-cloud</span></code> is on the
+classpath. The data bucket’s per-bucket <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;data-bucket&gt;.&lt;name&gt;</span></code> forms of these
+settings are ignored too. The native writer applies none of these values. It bounds each storage
+call, which can upload a whole row group, by <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.ioTimeout</span></code> (30 seconds by
+default), so on a slow endpoint raise that rather than the S3A timeouts. It never sends
+<code class="docutils literal notranslate"><span class="pre">Expect:</span> <span class="pre">100-continue</span></code>, which is what <code class="docutils literal notranslate"><span class="pre">connection.expect.continue=false</span></code> turns off.
+<code class="docutils literal notranslate"><span class="pre">multipart.uploads.enabled</span></code> is ignored only when it is <code class="docutils literal notranslate"><span class="pre">true</span></code>. A store without multipart uploads
+needs <code class="docutils literal notranslate"><span class="pre">false</span></code>, which makes S3A send each file in one PUT, but the native writer uses a multipart
+upload for any file over 5 MiB, so a write with <code class="docutils literal notranslate"><span class="pre">false</span></code> falls back. Settings that can change a
+request still fall back: endpoint and region
+selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers and
+access points.</p>
+<p>S3A server-side encryption is translated into iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">s3.sse.*</span></code> settings, with S3A’s own
+precedence: the data bucket’s <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;data-bucket&gt;.*</span></code> setting wins over the global one,
+even when it is empty, which is how a bucket turns a global setting off, and
+<code class="docutils literal notranslate"><span class="pre">encryption.algorithm</span></code> and <code class="docutils literal notranslate"><span class="pre">encryption.key</span></code> win over the older <code class="docutils literal notranslate"><span class="pre">server-side-encryption-algorithm</span></code>
+and <code class="docutils literal notranslate"><span class="pre">server-side-encryption.key</span></code>. SSE-S3 (<code class="docutils literal notranslate"><span class="pre">AES256</span></code>), SSE-KMS (with or without a key) and SSE-C are
+supported. The translated settings replace the catalog’s own <code class="docutils literal notranslate"><span class="pre">s3.sse.*</span></code> properties, which
+<code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> ignores. DSSE-KMS and client-side encryption fall back, and so do encryption
+settings when a Hadoop credential store (<code class="docutils literal notranslate"><span class="pre">hadoop.security.credential.provider.path</span></code> or
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.security.credential.provider.path</span></code>) is configured, because the store can supply the values
+instead of the configuration.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">aws.credentials.provider</span></code> names the S3A credential providers explicitly, iceberg-java’s
+writer signs with exactly that list, so the native writer takes its credentials from the same list
+through <code class="docutils literal notranslate"><span class="pre">HadoopS3ACredentialProviderAdapter</span></code>, which runs S3A’s own provider factory on the
+executor (see <a class="reference internal" href="s3-credential-providers.html"><span class="std std-doc">S3 credential providers</span></a>). The provider list and the
+assumed-role and credential-store settings it reads are then admitted. This applies only when the
+catalog names no <code class="docutils literal notranslate"><span class="pre">s3.comet.credential.provider.class</span></code> of its own. A list that names an anonymous
+provider, directly or through <code class="docutils literal notranslate"><span class="pre">aws.credentials.provider.mapping</span></code>, and S3A delegation tokens,
+still fall back. Without an explicit list, the native writer
+uses its own credential chain, as for a read.</p>
+<p>On the <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> side, the multipart, staging-directory,
+retry, delete-batching and client-preload settings are ignored, and so is <code class="docutils literal notranslate"><span class="pre">s3.delete-enabled=true</span></code>.
+<code class="docutils literal notranslate"><span class="pre">s3.delete-enabled=false</span></code> falls back, because a failed native write task deletes the files it
+wrote, which <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code> keeps when deletes are disabled. Unknown explicit
 <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code>, <code class="docutils literal notranslate"><span class="pre">s3.*</span></code>, or <code class="docutils literal notranslate"><span class="pre">client.*</span></code> settings therefore fall back at planning time instead of being
 silently ignored by the native storage backend. The exception is a vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> /
 <code class="docutils literal notranslate"><span class="pre">client.*</span></code> property when
@@ -1663,6 +1707,7 @@ parquet-rs and parquet-mr embed different encoder implementations (LZ4 framing, 
 their pages and row groups end at different rows, so byte-identical output is not achievable even
 for a default <code class="docutils literal notranslate"><span class="pre">zstd</span></code> table. The decompressed data is identical. For the same reason,
 codec-level side channels (<code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code>, <code class="docutils literal notranslate"><span class="pre">compression.brotli.quality</span></code>,
+<code class="docutils literal notranslate"><span class="pre">parquet.compression.codec.zstd.level</span></code>, <code class="docutils literal notranslate"><span class="pre">parquet.compression.codec.zstd.workers</span></code> and
 <code class="docutils literal notranslate"><span class="pre">io.compression.codec.zstd.level</span></code> — the last is present in every Hadoop configuration by
 default) are not gated: the native writer does not read them, and they can only shift
 compressed bytes, which are already accepted as divergent. A numeric gzip level is the one

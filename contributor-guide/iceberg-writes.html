@@ -716,9 +716,17 @@ the context to <code class="docutils literal notranslate"><span class="pre">Opti
 <p>The gate has these properties, and a new rule has to keep them:</p>
 <ul class="simple">
 <li><p><strong>It is an allow list.</strong> It accepts only configurations shown to produce iceberg-java’s output.
-Unknown <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys, any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> table property, and any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> key in the
-session Hadoop configuration are declined, including keys a future Iceberg version adds. When you
-support a new setting, add it to the vetted set and translate it; do not widen a prefix.</p></li>
+Unknown <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys are declined, including keys a future Iceberg version adds. When you
+support a new setting, add it to the vetted set and translate it; do not widen a prefix. The one
+exception is <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code>: iceberg-java’s writer builds its Parquet settings from <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code>
+keys, so <code class="docutils literal notranslate"><span class="pre">UnsupportedParquetMrKeys</span></code> lists the few <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> keys it reads, from table
+properties or its Hadoop configuration, that change more than compressed bytes, and every other
+<code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> key is ignored. A test in <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code> classifies every key that
+<code class="docutils literal notranslate"><span class="pre">ParquetOutputFormat</span></code> and <code class="docutils literal notranslate"><span class="pre">ZstandardCodec</span></code> declare in the parquet-mr iceberg-java runs
+(iceberg-spark-runtime relocates its own copy), fails on a key it has not classified, and checks
+that iceberg-java writes the same bytes with the inert ones set. So a bump that adds a key to
+those classes, or makes iceberg-java read an inert one, fails it. A key declared elsewhere, or
+read only by Iceberg’s own code, is not covered.</p></li>
 <li><p><strong>It reads the effective configuration.</strong> <code class="docutils literal notranslate"><span class="pre">TriggerContext.properties</span></code> is the table’s properties
 overlaid with <code class="docutils literal notranslate"><span class="pre">SparkWrite.writeProperties</span></code>, which is where iceberg-java resolves per-write options
 and <code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.*</span></code> session overrides. Reading table properties alone misses those.</p></li>
@@ -899,13 +907,34 @@ Per-bucket <code class="docutils literal notranslate"><span class="pre">fs.s3a.b
 suffix. <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.target.other.endpoint</span></code> belongs to bucket <code class="docutils literal notranslate"><span class="pre">target.other</span></code>, so it does not
 make a write to <code class="docutils literal notranslate"><span class="pre">target</span></code> ineligible.
 The Hadoop check excludes keys whose only source is Hadoop’s built-in <code class="docutils literal notranslate"><span class="pre">core-default.xml</span></code>, while
-retaining programmatic, site-XML, and custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> settings. It also ignores the keys in
-<code class="docutils literal notranslate"><span class="pre">IgnoredHadoopS3Keys</span></code>: Spark’s session-wide S3A vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code>
-settings, plus the committer, <code class="docutils literal notranslate"><span class="pre">bulk.delete.page.size</span></code> and <code class="docutils literal notranslate"><span class="pre">experimental.input.fadvise</span></code> settings that
-deployments set cluster-wide (Spark 4.1 sets two of the committer keys itself). A key belongs on
-that list only if S3A would not apply it to a data-file write request. Settings that S3A does apply,
-such as encryption, ACLs, storage class, signing and the credentials provider, must keep falling
-back. The list matches the exact key, so a per-bucket spelling is not ignored. Keep those
+retaining programmatic, site-XML, and custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> settings. It also ignores the suffixes
+in <code class="docutils literal notranslate"><span class="pre">IgnoredHadoopS3Suffixes</span></code>, in both their global and their data-bucket forms: the connection pool,
+thread, timeout, retry, upload-buffering, read, listing, delete and committer settings that
+deployments set cluster-wide (Spark seeds the vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code>
+settings into every session, and Spark 4.1 sets two of the committer keys itself), plus
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.region</span></code>, which no hadoop-aws release reads. <code class="docutils literal notranslate"><span class="pre">fs.s3a.impl</span></code> is ignored only when it names
+<code class="docutils literal notranslate"><span class="pre">S3AFileSystem</span></code>, and <code class="docutils literal notranslate"><span class="pre">multipart.uploads.enabled</span></code> only when it is <code class="docutils literal notranslate"><span class="pre">true</span></code>. With <code class="docutils literal notranslate"><span class="pre">false</span></code>, S3A sends each
+file in one PUT, which a store without multipart uploads needs and the native writer cannot do. A
+suffix belongs on that list only if it cannot change the written object, where it is written or who
+writes it, and the native writer either does not need it or has its own setting for it, such as
+<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.ioTimeout</span></code> for the timeouts. Settings that can change the object, such as
+ACLs, storage class and signing, must keep falling back. Encryption and the credential settings
+are admitted only where the write proto reproduces them. <code class="docutils literal notranslate"><span class="pre">hadoopS3EncryptionProperties</span></code>
+translates S3A’s server-side encryption into
+<code class="docutils literal notranslate"><span class="pre">s3.sse.*</span></code> with S3A’s precedence, where the first key that is set wins even when it is empty, and
+returns <code class="docutils literal notranslate"><span class="pre">None</span></code>, which keeps the encryption keys unsupported, for anything iceberg-rust cannot
+apply. <code class="docutils literal notranslate"><span class="pre">buildIcebergWriteProto</span></code> lets that translation replace the FileIO’s own <code class="docutils literal notranslate"><span class="pre">s3.sse.*</span></code>
+properties, which <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code> ignores. <code class="docutils literal notranslate"><span class="pre">usesS3ACredentialAdapter</span></code> decides when the proto names
+<code class="docutils literal notranslate"><span class="pre">HadoopS3ACredentialProviderAdapter</span></code> as <code class="docutils literal notranslate"><span class="pre">s3.comet.credential.provider.class</span></code>: when the FileIO’s
+Hadoop configuration sets <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> explicitly and the FileIO properties
+name no provider class of their own. The adapter then runs that same S3A list on the executor, and
+<code class="docutils literal notranslate"><span class="pre">s3aCredentialAdapterProperties</span></code> forwards the explicit <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings and the
+<code class="docutils literal notranslate"><span class="pre">hadoop.security.credential.*</span></code> and <code class="docutils literal notranslate"><span class="pre">hadoop.security.credstore.*</span></code> settings its providers read. The gate and
+<code class="docutils literal notranslate"><span class="pre">buildIcebergWriteProto</span></code> call the same functions on the same configuration, so they cannot
+disagree. On the FileIO side, <code class="docutils literal notranslate"><span class="pre">IgnoredS3FileIOProperties</span></code> ignores
+<code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code>’s multipart, staging-directory, retry, delete-batching and client-preload settings.
+<code class="docutils literal notranslate"><span class="pre">s3.delete-enabled</span></code> is admitted only when it is <code class="docutils literal notranslate"><span class="pre">true</span></code>, because a failed native write task deletes
+its files, which <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code> keeps when deletes are disabled. Keep those
 allowlists aligned when adding storage support. Reaching
 <code class="docutils literal notranslate"><span class="pre">FileIOBuilder.with_prop</span></code> is not proof of support: the builder accepts unknown properties and the
 backend ignores them. A fallback reason must contain property names only, never values.</p>
@@ -1076,7 +1105,9 @@ for Spark 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is publish
 for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg suites skip there
 (<code class="docutils literal notranslate"><span class="pre">icebergAvailable</span></code> is false on Spark 4.2). Only the default profile runs on every pull request.
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
-and partition path spelling, needs a test that runs on each.</p>
+and partition path spelling, needs a test that runs on each. When you bump one of these pins, also
+re-read how Iceberg’s <code class="docutils literal notranslate"><span class="pre">ParquetWriter</span></code> and <code class="docutils literal notranslate"><span class="pre">Parquet.WriteBuilder</span></code> read their Hadoop <code class="docutils literal notranslate"><span class="pre">Configuration</span></code>,
+which the <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> classification test does not cover.</p>
 <p>When writing a native-write test:</p>
 <ul class="simple">
 <li><p><strong>Assert that the native writer ran.</strong> Every fallback is silent to the query, so a passing
