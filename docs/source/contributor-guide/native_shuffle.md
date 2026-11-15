@@ -446,11 +446,12 @@ one `(batch, row)` pair per row, so the index list charged against the spill res
 smaller, and `RunIterator` builds each output chunk by slicing and concatenating runs. A run that
 covers an entire `batch_size` buffered batch is passed through without copying.
 
-One schema-level restriction is applied in `create_repartitioner`: positional placement is the only
-strategy that hands a sliced array to the IPC writer, and while the writer truncates a slice's
-buffers for every other type, for `Utf8View` and `BinaryView` it serializes every shared data
-buffer in full. A schema containing a view type anywhere therefore falls back to `HashAll`, with
-the same `maxHashColumns`.
+One schema-level restriction is applied in `create_repartitioner`. The IPC writer truncates a
+slice's buffers for every type except `Utf8View` and `BinaryView`, where it serializes every shared
+data buffer in full. Positional placement always hands the writer slices, so a schema containing a
+view type anywhere falls back to `HashAll`, with the same `maxHashColumns`. The other strategies
+also slice when a chunk of a partition's rows sits in long contiguous runs, and on a schema with a
+view type they gather those rows instead.
 
 #### Retry safety under `RowGroups`
 

@@ -415,11 +415,12 @@ async fn external_shuffle(
 /// the views buffer but serializes every shared data buffer in full, since proving that no
 /// surviving view references a buffer is not cheap.
 ///
-/// [`RoundRobinStrategy::RowGroups`] is the only placement that can hand the writer a sliced
-/// array; everything else materializes a fresh batch through `interleave_record_batch`. So a view
-/// column anywhere in the schema would let a short run drag a whole batch's data buffers into the
-/// shuffle output, which is the opposite of what the strategy is for.
-fn contains_view_type(data_type: &DataType) -> bool {
+/// [`RoundRobinStrategy::RowGroups`], which records runs, hands the writer sliced arrays, and so
+/// does a row-indexed gather whose rows already sit in long runs. So a view column anywhere in the
+/// schema would let a run drag a whole batch's data buffers into the shuffle output. Positional
+/// placement falls back to hashing for such a schema (see `partitioning_for_schema`), and the row
+/// gather interleaves rather than slices (see `PartitionedBatchesProducer`).
+pub(crate) fn contains_view_type(data_type: &DataType) -> bool {
     match data_type {
         DataType::Utf8View | DataType::BinaryView => true,
         DataType::List(field)
