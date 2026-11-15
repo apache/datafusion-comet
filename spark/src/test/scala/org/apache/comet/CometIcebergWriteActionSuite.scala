@@ -47,7 +47,7 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -4022,7 +4022,8 @@ class CometIcebergWriteActionSuite
   }
 
   for (mode <- Seq("unpartitioned", "clustered", "fanout"); aqe <- Seq("false", "true")) {
-    test(s"native acceleration: uuid rows, nested fields, metrics and footer ($mode, AQE=$aqe)") {
+    test(
+      s"native acceleration: uuid rows, native readback, metrics and footer ($mode, AQE=$aqe)") {
       assumeNativeAcceleration()
       withIcebergCatalog { _ =>
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
@@ -4073,8 +4074,30 @@ class CometIcebergWriteActionSuite
           }
           assertNativeWriteEngages(native, Seq(1, 2, 3, 4))(insert(native))
           insert(jvm)
+          // Use iceberg-java's reader and writer as the baseline, including UUID normalization,
+          // nested UUIDs, nulls and empty collections. Spark 3.x's withSQLConf returns Unit.
+          var expectedRows = Seq.empty[Row]
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            checkAnswer(spark.table(s"$catalog.$ns.$native"), spark.table(s"$catalog.$ns.$jvm"))
+            expectedRows = spark.table(s"$catalog.$ns.$jvm").collect().toSeq
+            checkAnswer(spark.table(s"$catalog.$ns.$native"), expectedRows)
+          }
+          // Native-written UUID leaves lack the UUID logical annotation at the current pin.
+          // Prove the native reader uses the Iceberg schema for those files, and also reads the
+          // annotated leaves written by iceberg-java, without silently falling back.
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+            Seq(native, jvm).foreach { name =>
+              val readback = spark.table(s"$catalog.$ns.$name")
+              checkAnswer(readback, expectedRows)
+              val plan = readback.queryExecution.executedPlan
+              val scans = collectWithSubqueries(plan) { case scan: CometIcebergNativeScanExec =>
+                scan
+              }
+              assert(
+                scans.size == 1,
+                s"expected one native Iceberg scan for $name, found ${scans.size}. Plan:\n$plan")
+            }
           }
           def metrics(name: String): Seq[Row] = spark
             .sql(s"""
