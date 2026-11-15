@@ -676,6 +676,14 @@ under the License.
       </properties>
     </profile>
 
+    <!-- Builds Comet with the jemalloc allocator instead of the system one, which is glibc malloc
+         on Linux. Maven does not build the native library, so the profile has no settings of its
+         own: make builds the native library with the jemalloc Cargo feature whenever PROFILES
+         names it, for example `make release PROFILES="-Pspark-4.1 -Pjemalloc"`. -->
+    <profile>
+      <id>jemalloc</id>
+    </profile>
+
     <profile>
       <id>Win-x86</id>
       <activation>
