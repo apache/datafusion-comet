@@ -2088,8 +2088,7 @@ expressions. The following function families are <strong>not currently planned</
 <section id="generator-funcs">
 <h2>generator_funcs<a class="headerlink" href="#generator-funcs" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">explode</span></code>, <code class="docutils literal notranslate"><span class="pre">explode_outer</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, and <code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code> are supported via
-<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> (operator-level, not expression-level) for array input; map input falls back
-to Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>). Enabled by default via
+<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> for array and map inputs (operator-level, not expression-level). Enabled by default via
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.explode.enabled</span></code>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>

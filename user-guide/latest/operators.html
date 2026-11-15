@@ -1164,7 +1164,7 @@ combined with <code class="docutils literal notranslate"><span class="pre">OR</s
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Supports <code class="docutils literal notranslate"><span class="pre">explode</span></code>, <code class="docutils literal notranslate"><span class="pre">explode_outer</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code> over arrays. <code class="docutils literal notranslate"><span class="pre">inline</span></code> / <code class="docutils literal notranslate"><span class="pre">stack</span></code> fall back.</p></td>
+<td><p>Supports <code class="docutils literal notranslate"><span class="pre">explode</span></code>, <code class="docutils literal notranslate"><span class="pre">explode_outer</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code> over arrays and maps. <code class="docutils literal notranslate"><span class="pre">inline</span></code> / <code class="docutils literal notranslate"><span class="pre">stack</span></code> fall back.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ExpandExec</span></code></p></td>
 <td><p>✅</p></td>
@@ -1181,6 +1181,8 @@ combined with <code class="docutils literal notranslate"><span class="pre">OR</s
 </tbody>
 </table>
 </div>
+<p>Chained array and map generators run natively. They materialize carried columns between generators,
+so their latency can exceed Spark’s fused generators on a single task with idle cores.</p>
 </section>
 <section id="writes">
 <h2>Writes<a class="headerlink" href="#writes" title="Link to this heading">#</a></h2>

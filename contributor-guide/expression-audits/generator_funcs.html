@@ -568,25 +568,25 @@ under the License.
 <section id="explode">
 <h2>explode<a class="headerlink" href="#explode" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>).</p></li>
+<li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array and map inputs. Maps emit key/value columns, with a position column for <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>.</p></li>
 </ul>
 </section>
 <section id="explode-outer">
 <h2>explode_outer<a class="headerlink" href="#explode-outer" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array inputs; empty and NULL arrays both emit one null-valued row per Spark’s <code class="docutils literal notranslate"><span class="pre">outer</span></code> semantics, which the planner requests as DataFusion’s <code class="docutils literal notranslate"><span class="pre">NullHandling::PreserveAndExpandEmpty</span></code>. Map inputs fall back.</p></li>
+<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array and map inputs; empty and NULL collections both emit one null-valued row per Spark’s <code class="docutils literal notranslate"><span class="pre">outer</span></code> semantics, which the planner requests as DataFusion’s <code class="docutils literal notranslate"><span class="pre">NullHandling::PreserveAndExpandEmpty</span></code>. Map entries reuse the list unnest path and expand into key/value columns.</p></li>
 </ul>
 </section>
 <section id="posexplode">
 <h2>posexplode<a class="headerlink" href="#posexplode" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), like <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array inputs; map inputs fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>).</p></li>
+<li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), like <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array and map inputs. Maps emit key/value columns, with a position column for <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>.</p></li>
 </ul>
 </section>
 <section id="posexplode-outer">
 <h2>posexplode_outer<a class="headerlink" href="#posexplode-outer" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>. Compatible for array inputs; empty and NULL arrays both emit one row with null <code class="docutils literal notranslate"><span class="pre">pos</span></code> and null <code class="docutils literal notranslate"><span class="pre">value</span></code> per Spark’s <code class="docutils literal notranslate"><span class="pre">outer</span></code> semantics, which the planner requests as DataFusion’s <code class="docutils literal notranslate"><span class="pre">NullHandling::PreserveAndExpandEmpty</span></code>.</p></li>
+<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>. Compatible for array and map inputs; empty and NULL collections both emit one row with null <code class="docutils literal notranslate"><span class="pre">pos</span></code> and null generated columns per Spark’s <code class="docutils literal notranslate"><span class="pre">outer</span></code> semantics, which the planner requests as DataFusion’s <code class="docutils literal notranslate"><span class="pre">NullHandling::PreserveAndExpandEmpty</span></code>.</p></li>
 </ul>
 </section>
 </section>
