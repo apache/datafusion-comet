@@ -417,8 +417,8 @@ artifact, for example `comet-spark-spark4.1_2.13-0.13.0.jar`. The jar with the
 `comet-spark-spark4.1_2.13-0.13.0-jemalloc.jar`, and has no pom of its own. The two jars differ only in the native
 libraries they contain, and the script checks that each jar holds the libraries built for it. The script builds
 each native library for both allocators in the same container, so a build takes longer than it did with one
-allocator. The arm64 jemalloc library is built for 64 KiB memory pages, so that it loads on the arm64 kernels that
-use them. The build script will print the name of the
+allocator. The jemalloc libraries are built for 4 KiB memory pages, so they do not load on kernels with larger pages. The
+user guide tells those users to build from source. The build script will print the name of the
 repository location at the end. This location will be required at the time of deploying the artifacts to a staging
 repository. The script also prints the commit that the artifacts were built from, which should be the commit that the
 release candidate tag points to.

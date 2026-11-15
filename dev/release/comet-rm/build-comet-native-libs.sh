@@ -60,14 +60,11 @@ mkdir -p "$LIB_DIR/default" "$LIB_DIR/jemalloc"
 make core-${ARCH}-libs
 cp native/target/release/libcomet.so "$LIB_DIR/default/"
 
-# A jemalloc built on a kernel with small memory pages fails every allocation on a kernel with
-# larger pages, and some arm64 distributions use 64 KiB pages. The published arm64 library must
-# load on all of them, so build jemalloc for 64 KiB pages. That also works on kernels with smaller
-# pages, but can raise memory use there. amd64 kernels always use 4 KiB pages.
-if [ "$ARCH" = "arm64" ]
-then
-  export JEMALLOC_SYS_WITH_LG_PAGE=16
-fi
+# jemalloc takes the page size of the machine it is built on, and fails every allocation on a
+# kernel whose pages are larger. Fix it at 4 KiB so that the published library does not depend on the
+# machine that built it. Kernels with 64 KiB pages, which some arm64 distributions use, need a
+# library built from source with JEMALLOC_SYS_WITH_LG_PAGE=16. The user guide says so.
+export JEMALLOC_SYS_WITH_LG_PAGE=12
 
 COMET_FEATURES=jemalloc make core-${ARCH}-libs
 cp native/target/release/libcomet.so "$LIB_DIR/jemalloc/"
