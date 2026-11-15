@@ -773,7 +773,9 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
         // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
         // falls back to generic handling.
         CometError::DataFusion { msg: _, source } => {
-            if let Some(spark_error) = parquet_external_spark_error(source) {
+            if let Some(exception) = wrapped_external_spark_exception(source) {
+                exception
+            } else if let Some(spark_error) = parquet_external_spark_error(source) {
                 spark_exception(spark_error)
             } else if let Some(spark_error) = try_classify_file_read_error(source) {
                 spark_exception(&spark_error)
@@ -856,6 +858,36 @@ fn with_spill_limit_hint(message: String) -> String {
 fn spark_exception(spark_error: &SparkError) -> JvmException<'static> {
     JvmException::Spark {
         json: spark_error.to_json(),
+    }
+}
+
+/// A `SparkError` (or `SparkErrorWithContext`) attached as `DataFusionError::External` keeps its
+/// structured exception when DataFusion wraps it further. A hash join build side returns its input
+/// error as `Shared`, and a repartition wraps it in `Context` before fanning it out, so a scan error
+/// such as `CannotReadFile` can reach the JNI boundary below either wrapper. A bare `External` is
+/// handled by `jvm_exception` directly.
+fn wrapped_external_spark_exception(error: &DataFusionError) -> Option<JvmException<'static>> {
+    use datafusion::common::DataFusionError as DFE;
+    match error {
+        DFE::Context(_, inner) => external_spark_exception(inner),
+        DFE::Shared(inner) => external_spark_exception(inner),
+        _ => None,
+    }
+}
+
+fn external_spark_exception(error: &DataFusionError) -> Option<JvmException<'static>> {
+    use datafusion::common::DataFusionError as DFE;
+    match error {
+        DFE::External(e) => {
+            if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
+                Some(JvmException::Spark {
+                    json: spark_error_with_ctx.to_json(),
+                })
+            } else {
+                e.downcast_ref::<SparkError>().map(spark_exception)
+            }
+        }
+        _ => wrapped_external_spark_exception(error),
     }
 }
 
@@ -1909,6 +1941,43 @@ mod tests {
             "corrupt footer".to_string(),
         )));
         assert!(parquet_external_spark_error(&corrupt).is_none());
+    }
+
+    /// A `CannotReadFile` the scan attached as `External` keeps its structured exception under the
+    /// `Context` and `Shared` wrappers a repartition or a hash join build side adds, as it does bare.
+    #[test]
+    fn external_cannot_read_file_survives_context_and_shared() {
+        let external = || {
+            DataFusionError::External(Box::new(SparkError::CannotReadFile {
+                file_path: "file:/tmp/part-0.parquet".to_string(),
+                message: "corrupt footer".to_string(),
+            }))
+        };
+        let cases = [
+            ("bare", external()),
+            (
+                "context",
+                DataFusionError::Context("repartition".to_string(), Box::new(external())),
+            ),
+            ("shared", DataFusionError::Shared(Arc::new(external()))),
+            (
+                "shared context",
+                DataFusionError::Shared(Arc::new(DataFusionError::Context(
+                    "repartition".to_string(),
+                    Box::new(external()),
+                ))),
+            ),
+        ];
+        for (label, source) in cases {
+            let error = CometError::from(source);
+            match jvm_exception(&error) {
+                JvmException::Spark { json } => {
+                    assert!(json.contains("CannotReadFile"), "{label}: {json}");
+                    assert!(json.contains("part-0.parquet"), "{label}: {json}");
+                }
+                other => panic!("{label}: expected a Spark exception, got {other:?}"),
+            }
+        }
     }
 
     #[test]
