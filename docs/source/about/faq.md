@@ -83,8 +83,8 @@ includes AVX2, on amd64, and Arm Neoverse N1 or newer cores on arm64. If Comet c
 (illegal instruction), the CPU is older than that. Build Comet from source for it, and please
 [open an issue](https://github.com/apache/datafusion-comet/issues) describing your environment.
 
-The jars with the `jemalloc` classifier are built for 4 KiB memory pages and fail on arm64 kernels with
-larger pages, such as the 64 KiB kernel of RHEL 8. On those machines, use the jar with the system allocator or
+The jars with the `jemalloc` classifier are built for 4 KiB memory pages and fail on arm64 kernels that use
+64 KiB pages, such as the kernel of RHEL 8. On those machines, use the jar with the system allocator or
 [build Comet from source](../user-guide/latest/source.md#building-with-the-jemalloc-allocator).
 
 A jar you build yourself is smaller than the published one because it contains the native library
