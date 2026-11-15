@@ -108,10 +108,16 @@ with `spark.executorEnv._RJEM_MALLOC_CONF`, for example
 `--conf spark.executorEnv._RJEM_MALLOC_CONF=background_thread:true`.
 
 jemalloc fails every allocation on a kernel whose memory pages are larger than those of the machine
-it was built on. The jemalloc jars that Comet publishes are built for 4 KiB pages, which is what most
-Linux kernels use. Some arm64 kernels use 64 KiB pages, for example the default kernels of Red Hat
-Enterprise Linux and its rebuilds on arm64, and some kernels for NVIDIA Grace. On those executors, use
-the jar with the system allocator, or build Comet from source with `JEMALLOC_SYS_WITH_LG_PAGE=16` set in
-the environment, which builds jemalloc for 64 KiB pages. `getconf PAGESIZE` prints the page size of a
-machine. A build for 64 KiB pages also works on kernels with smaller pages, but can raise memory use
-there.
+it was built on. The jemalloc jars that Comet publishes are built for 4 KiB pages, which is what
+x86_64 always uses and what the default arm64 kernels of Ubuntu, Debian, Fedora, RHEL 9 and 10 and
+Oracle Linux use. Some arm64 kernels use larger pages:
+
+- 64 KiB: RHEL 8 and its rebuilds, RHEL 9 and 10 when the optional `kernel-64k` is installed, and
+  NVIDIA Grace systems running the 64 KiB kernel that NVIDIA recommends, for example Ubuntu's
+  `linux-nvidia-64k`.
+- 16 KiB: Raspberry Pi 5 with the stock Raspberry Pi OS kernel and Asahi Linux on Apple Silicon.
+
+`getconf PAGESIZE` prints the page size of a machine. On executors with larger pages, use the jar with
+the system allocator, or build Comet from source with `JEMALLOC_SYS_WITH_LG_PAGE=16` set in the
+environment, which builds jemalloc for 64 KiB pages. That library works on kernels with 4, 16 and
+64 KiB pages, but can raise memory use on the smaller ones.
