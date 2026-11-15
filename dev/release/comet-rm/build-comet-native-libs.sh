@@ -62,7 +62,7 @@ cp native/target/release/libcomet.so "$LIB_DIR/default/"
 
 # jemalloc takes the page size of the machine it is built on, and fails every allocation on a
 # kernel whose pages are larger. Fix it at 4 KiB so that the published library does not depend on the
-# machine that built it. Kernels with 64 KiB pages, which some arm64 distributions use, need a
+# machine that built it. Kernels with larger pages, which some arm64 distributions use, need a
 # library built from source with JEMALLOC_SYS_WITH_LG_PAGE=16. The user guide says so.
 export JEMALLOC_SYS_WITH_LG_PAGE=12
 
