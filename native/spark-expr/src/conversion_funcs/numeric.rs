@@ -1067,6 +1067,9 @@ where
     // digits are. The slack generously covers the same scaling error that TIE_GUARD below
     // bounds, so borderline values still take the exact path.
     let overflow_bound = 10_f64.powi(precision as i32) * (1.0 + 1e-12);
+    // Up to precision 18 the bound above keeps a rounded value below 2^63, so it converts
+    // through `i64`, one instruction, instead of the library call `to_i128` makes.
+    let fits_i64 = precision <= 18;
 
     // A value with no decimal form (NaN / infinity) or that does not fit the output
     // precision maps to null. `unary_opt` only applies the closure to non-null slots and
@@ -1091,9 +1094,13 @@ where
         const TIE_GUARD: f64 = 3.552713678800501e-15; // 2^-48
         let r = x.round();
         if (x - r).abs() + x.abs() * TIE_GUARD < 0.5 {
-            return r
-                .to_i128()
-                .filter(|u| is_validate_decimal_precision(*u, precision));
+            // `r` is finite here: NaN fails the comparison above.
+            let unscaled = if fits_i64 {
+                Some(r as i64 as i128)
+            } else {
+                r.to_i128()
+            };
+            return unscaled.filter(|u| is_validate_decimal_precision(*u, precision));
         }
         float_to_decimal128(f, precision, scale)
     });
@@ -3073,5 +3080,44 @@ mod tests {
         let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.5e-6), Some(-1.5e-6)]));
         let out = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap();
         assert_ts(&out, &[Some(1), Some(-1)], Some("UTC"));
+    }
+
+    #[test]
+    fn test_cast_float_to_decimal_i64_path_matches_i128_path() {
+        // Precision 18 rounds through `i64` and precision 19 still through `to_i128`; wherever the
+        // value fits both, the unscaled results must agree, up to the edge of precision 18.
+        let mut inputs = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -2.5,
+            99_999_999_999_999.99,
+            -99_999_999_999_999.99,
+            1e14,
+            999_999_999_999_999.9,
+        ];
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..10_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            inputs.push((x as i64 as f64) / 1e5);
+        }
+        for scale in [0i8, 4] {
+            let array: ArrayRef = Arc::new(Float64Array::from(inputs.clone()));
+            let narrow = cast_float64_to_decimal128(&array, 18, scale, EvalMode::Legacy).unwrap();
+            let wide = cast_float64_to_decimal128(&array, 19, scale, EvalMode::Legacy).unwrap();
+            let (narrow, wide) = (
+                narrow.as_primitive::<Decimal128Type>(),
+                wide.as_primitive::<Decimal128Type>(),
+            );
+            for (i, input) in inputs.iter().enumerate() {
+                if !narrow.is_null(i) {
+                    assert_eq!(narrow.value(i), wide.value(i), "{input} at scale {scale}");
+                }
+            }
+        }
     }
 }

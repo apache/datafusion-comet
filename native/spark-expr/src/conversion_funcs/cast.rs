@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_numeric, cast_boolean_to_timestamp, cast_boolean_to_utf8,
+    is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_float32, cast_decimal128_to_float64, cast_decimal128_to_utf8,
@@ -47,7 +48,10 @@ use arrow::array::{
     StringArray, StructArray,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
-use arrow::datatypes::{format_decimal_str, DataType, GenericBinaryType, Schema};
+use arrow::datatypes::{
+    format_decimal_str, DataType, Float32Type, Float64Type, GenericBinaryType, Int16Type,
+    Int32Type, Int64Type, Int8Type, Schema,
+};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
@@ -471,6 +475,13 @@ pub(crate) fn cast_array(
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
         (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
+        (Boolean, Int8) => Ok(cast_boolean_to_numeric::<Int8Type>(&array)),
+        (Boolean, Int16) => Ok(cast_boolean_to_numeric::<Int16Type>(&array)),
+        (Boolean, Int32) => Ok(cast_boolean_to_numeric::<Int32Type>(&array)),
+        (Boolean, Int64) => Ok(cast_boolean_to_numeric::<Int64Type>(&array)),
+        (Boolean, Float32) => Ok(cast_boolean_to_numeric::<Float32Type>(&array)),
+        (Boolean, Float64) => Ok(cast_boolean_to_numeric::<Float64Type>(&array)),
+        (Boolean, Utf8) => Ok(cast_boolean_to_utf8(&array)),
         (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
         // NTZ → TIMESTAMP: interpret NTZ local-epoch value as session-TZ local time, convert to UTC.
         // Must come before the is_datafusion_spark_compatible fallthrough which would
