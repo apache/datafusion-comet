@@ -704,10 +704,9 @@ Planned to be lifted:
 
 - `write.object-storage.enabled=true`
   ([#6956](https://github.com/apache/datafusion-comet/issues/6956))
-- S3 settings that cannot change the written object or where it is written, such as `fs.s3a.impl`,
-  connection pool sizes, timeouts, retries and multipart sizes; S3A and `FileIO` credential
-  providers and S3A server-side encryption settings that have a native equivalent; and ACL,
-  storage class, requester-pays and `dsse-kms` settings
+- S3 credential providers other than an explicit S3A provider list, among them anonymous
+  providers and S3A delegation tokens; S3A server-side encryption settings when a Hadoop
+  credential store is configured; and ACL, storage class, requester-pays and `dsse-kms` settings
   ([#6957](https://github.com/apache/datafusion-comet/issues/6957))
 - Merge-on-read `DELETE`, `UPDATE` and `MERGE` on a format version 2 table
   ([#6240](https://github.com/apache/datafusion-comet/issues/6240))
@@ -719,21 +718,20 @@ Planned to be lifted:
 - Azure (`abfs`, `abfss`, `wasb`, `wasbs`) and `oss` data locations, S3-compatible scheme
   aliases, and a `gs` data location opened through `HadoopFileIO`
   ([#6958](https://github.com/apache/datafusion-comet/issues/6958))
-- `parquet.*` table properties and session Hadoop settings that iceberg-java's writer never reads,
-  `write.parquet.shred-variants=true`, and an `io-impl` table property
-  ([#6955](https://github.com/apache/datafusion-comet/issues/6955))
 - `parquet.enable.dictionary`, `parquet.columnindex.truncate.length`,
   `write.parquet.page-version=v2`, `write.parquet.stats-enabled.column.*`, non-default
   `row-group-check-*` counts, and a zstd level of `0`
   ([#6954](https://github.com/apache/datafusion-comet/issues/6954))
 - `uuid` and `unknown` columns
   ([#6959](https://github.com/apache/datafusion-comet/issues/6959))
+- `hdfs` data locations on a cluster without Kerberos. iceberg-rust's `hdfs-native` backend
+  ([apache/iceberg-rust#3111](https://github.com/apache/iceberg-rust/pull/3111)) already serves
+  the native scan ([#5894](https://github.com/apache/datafusion-comet/issues/5894)), so the work is
+  on Comet's side ([#7637](https://github.com/apache/datafusion-comet/issues/7637)). On a cluster
+  with Kerberos the write waits on the same delegation token support as the native scan.
 
 Waiting on work in another project:
 
-- `hdfs` data locations wait on an HDFS backend in iceberg-rust
-  ([apache/iceberg-rust#3111](https://github.com/apache/iceberg-rust/pull/3111)).
-  [#5894](https://github.com/apache/datafusion-comet/issues/5894) tracks Comet's side.
 - Merge-on-read on a format version 3 table, which writes deletion vectors, waits on a deletion
   vector writer in iceberg-rust
   ([apache/iceberg-rust#2580](https://github.com/apache/iceberg-rust/issues/2580)).
@@ -767,6 +765,9 @@ Not planned:
   Hadoop, so falling back keeps its behavior and its error.
 - A gzip level outside 0 to 9 or a brotli level outside 0 to 11. parquet-rs rejects them, and
   translating each one is not planned.
+- `brotli` compression when Hadoop's `BrotliCodec` class cannot be loaded. iceberg-java fails the
+  write and no JVM reader could read the files, so falling back keeps iceberg-java's error
+  ([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 ### Failure handling
 
