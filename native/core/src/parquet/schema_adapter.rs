@@ -656,6 +656,9 @@ fn spark_has_updater(
     //     `ARROW:schema` hint can restore Timestamp; Spark still reads INT64 and
     //     accepts `decimal(20,0)`. The INT64 `canReadAsDecimal` rule above covers
     //     that case. See #7227.
+    //   - `Timestamp(Second, _) -> Timestamp`: the same unannotated INT64 leaf,
+    //     so it follows the `INT64 -> Timestamp` rule above. The footer check
+    //     sees it as `Int64` (see `mark_parquet_leaves`), so both paths agree.
     //   - `Date32 -> Float32, Decimal*`: the INT32 case has no FloatType
     //     branch, and `isDecimalTypeMatched` refuses a date annotation.
     //
@@ -672,6 +675,8 @@ fn spark_has_updater(
         // Long -> date / timestamp (raw INT64; annotated columns surface as Date32/Timestamp).
         | (DataType::Int64, DataType::Date32)
         | (DataType::Int64, DataType::Timestamp(_, _))
+        // Unannotated INT64 that an `ARROW:schema` hint restored as a second timestamp.
+        | (DataType::Timestamp(TimeUnit::Second, _), DataType::Timestamp(_, _))
         // Int -> float (DoubleType is allowed via IntegerToDoubleUpdater; FloatType is not).
         | (
             DataType::Int8 | DataType::Int16 | DataType::Int32,
@@ -2898,7 +2903,8 @@ pub(crate) mod test {
     /// unit). An `ARROW:schema` hint restores Timestamp, but Spark still reads INT64 and accepts
     /// `decimal(20,0)`. The conversion check and the runtime adapter must match that. See #7227.
     #[test]
-    fn unannotated_int64_timestamp_second_as_decimal_follows_int64_rules() -> Result<(), DataFusionError> {
+    fn unannotated_int64_timestamp_second_as_decimal_follows_int64_rules(
+    ) -> Result<(), DataFusionError> {
         let options = default_options();
         for tz in [None, Some("UTC")] {
             let seconds = Field::new(
@@ -2959,10 +2965,67 @@ pub(crate) mod test {
         )]));
         let read = roundtrip(&batch, required).await?;
         assert_eq!(read.column(0).data_type(), &DataType::Decimal128(20, 0));
-        let decimals = read.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+        let decimals = read
+            .column(0)
+            .as_primitive::<arrow::datatypes::Decimal128Type>();
         assert_eq!(decimals.value(0), 1_577_840_523i128);
         assert_eq!(decimals.value(1), 0i128);
         assert!(decimals.is_null(2));
+        Ok(())
+    }
+
+    /// An ArrowWriter `Timestamp(Second, UTC)` column is unannotated INT64 in the file, so read as
+    /// `timestamp` it is rejected like any INT64 column, with and without row filters. The footer
+    /// check (row filters) sees `Int64` and the runtime check sees the restored second timestamp;
+    /// both must give the same answer. See #7227.
+    #[tokio::test]
+    async fn parquet_arrow_writer_timestamp_second_read_as_timestamp_errors(
+    ) -> Result<(), DataFusionError> {
+        let values = Arc::new(
+            TimestampSecondArray::from(vec![Some(1_577_840_523i64), None]).with_timezone("UTC"),
+        ) as Arc<dyn arrow::array::Array>;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "t",
+            DataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename)?;
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&file_schema), None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+
+        for read_type in [
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ] {
+            let required = Arc::new(Schema::new(vec![Field::new("t", read_type.clone(), true)]));
+            for row_filters in [false, true] {
+                let mut stream = scan_parquet_file(
+                    filename.clone(),
+                    Arc::clone(&required),
+                    default_options(),
+                    None,
+                    row_filters,
+                )?;
+                let mut error = None;
+                while let Some(batch) = stream.next().await {
+                    if let Err(e) = batch {
+                        error = Some(e.to_string());
+                        break;
+                    }
+                }
+                let msg = error.unwrap_or_else(|| {
+                    panic!("read as {read_type}, row filters {row_filters}: read succeeded")
+                });
+                assert!(
+                    msg.contains("Column: [[t]]"),
+                    "read as {read_type}, row filters {row_filters}: unexpected error: {msg}"
+                );
+            }
+        }
         Ok(())
     }
 

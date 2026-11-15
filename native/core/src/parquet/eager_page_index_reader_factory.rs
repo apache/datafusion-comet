@@ -548,13 +548,11 @@ fn is_int96(column: &ColumnDescPtr) -> bool {
 /// INT64 leaf with a timestamp logical / converted annotation (millis, micros, or nanos).
 fn is_annotated_int64_timestamp(column: &ColumnDescPtr) -> bool {
     column.physical_type() == parquet::basic::Type::INT64
-        && (matches!(
-            column.logical_type_ref(),
-            Some(LogicalType::Timestamp(_))
-        ) || matches!(
-            column.converted_type(),
-            ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS
-        ))
+        && (matches!(column.logical_type_ref(), Some(LogicalType::Timestamp(_)))
+            || matches!(
+                column.converted_type(),
+                ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS
+            ))
 }
 
 /// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
