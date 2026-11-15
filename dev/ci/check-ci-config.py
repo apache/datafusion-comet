@@ -1606,9 +1606,12 @@ TPCDS_KIT_CHECKOUT = re.compile(
 )
 TPCH_CACHE_KEY = re.compile(
     r"key:\s*tpch-sf.*-\$\{\{\s*hashFiles\("
-    r"'spark/src/test/scala/org/apache/spark/sql/GenTPCHData\.scala'\)\s*\}\}"
+    r"'spark/src/test/scala/org/apache/spark/sql/GenTPCHData\.scala',\s*"
+    r"'spark/src/test/scala/org/apache/spark/sql/TPCH\.scala'\)\s*\}\}"
 )
-TPCDS_CACHE_KEY = re.compile(r"key:\s*tpcds-sf.*-([0-9a-f]{12})\b")
+TPCDS_CACHE_KEY = re.compile(
+    r"key:\s*tpcds-sf.*-([0-9a-f]{12})-\$\{\{\s*hashFiles\('pom\.xml'\)\s*\}\}"
+)
 GIT_COMMIT = re.compile(r"\b[0-9a-f]{40}\b")
 GIT_CHECKOUT = re.compile(r"git checkout")
 
@@ -1638,7 +1641,7 @@ def check_tpc_dataset_caches():
     if not TPCH_CACHE_KEY.search(text):
         failures.append(
             f"{TPC_WORKFLOW}: the TPC-H dataset cache key is not keyed on "
-            f"`GenTPCHData.scala`, so a generator change would not rotate it"
+            f"`GenTPCHData.scala` and `TPCH.scala`, so a generator change would not rotate it"
         )
     kit = TPCDS_KIT_CHECKOUT.search(text)
     if not kit:
@@ -1651,8 +1654,8 @@ def check_tpc_dataset_caches():
         if not key or key.group(1) != kit.group(1)[:12]:
             failures.append(
                 f"{TPC_WORKFLOW}: the TPC-DS dataset cache key does not embed the "
-                f"`tpcds-kit` revision `{kit.group(1)[:12]}`, so a generator bump "
-                f"would not rotate it"
+                f"`tpcds-kit` revision `{kit.group(1)[:12]}` and the root `pom.xml` "
+                f"hash, so a native or Spark generator bump would not rotate it"
             )
     for line_no, uses, step in _cache_steps(text.splitlines()):
         if not CACHE_RW_USES.match(uses):

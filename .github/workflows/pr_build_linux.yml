@@ -802,7 +802,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ./tpch
-          key: tpch-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala') }}
+          key: tpch-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala', 'spark/src/test/scala/org/apache/spark/sql/TPCH.scala') }}
 
       - name: Build project
         run: |
@@ -827,7 +827,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ./tpch
-          key: tpch-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala') }}
+          key: tpch-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala', 'spark/src/test/scala/org/apache/spark/sql/TPCH.scala') }}
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -884,12 +884,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      # The root POM selects Spark's GenTPCDSData/TPCDSTables tests jar.
+      # Hashing it also invalidates the dataset on unrelated POM edits.
       - name: Restore TPC-DS data
         id: cache-tpcds
         uses: actions/cache/restore@v6
         with:
           path: ./tpcds-sf-${{ env.TPC_SCALE_FACTOR }}
-          key: tpcds-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-1b7fb7529eda
+          key: tpcds-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-1b7fb7529eda-${{ hashFiles('pom.xml') }}
 
       - name: Build project
         run: |
@@ -950,7 +952,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ./tpcds-sf-${{ env.TPC_SCALE_FACTOR }}
-          key: tpcds-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-1b7fb7529eda
+          key: tpcds-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-1b7fb7529eda-${{ hashFiles('pom.xml') }}
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and

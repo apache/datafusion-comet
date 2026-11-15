@@ -514,8 +514,11 @@ guard. `publish_snapshot.yml` is exempt in `CACHE_SAVE_SCOPE_EXEMPT`, because
 it runs from main on a schedule already.
 
 The TPC-H and TPC-DS dataset caches also use separate restore and main-only
-save steps. Their keys include the generator (`GenTPCHData.scala` for TPC-H,
-the pinned `tpcds-kit` commit for TPC-DS), scale factor and partition count.
+save steps. Their keys include the generator (`GenTPCHData.scala` and `TPCH.scala`
+for TPC-H, the pinned `tpcds-kit` commit and root `pom.xml` hash for TPC-DS),
+scale factor and partition count. The root POM selects the Spark tests jar
+providing `GenTPCDSData` and `TPCDSTables`; hashing it conservatively invalidates
+TPC-DS on unrelated POM edits too.
 The generation arguments, keys and dataset paths use the same job environment
 values, so changing an input invalidates the dataset without unrelated workflow
 edits rotating its key. `dev/ci/check-ci-config.py` guards this coupling.
