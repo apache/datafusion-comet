@@ -290,29 +290,6 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  test("columnar shuffle on array/struct map key with MapSort codegen enabled") {
-    assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
-    withSQLConf(CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> "true") {
-      withParquetTable((0 until 50).map(i => (Map(Seq(i, i + 1) -> i), i + 1)), "tbl") {
-        val df = sql("SELECT * FROM tbl")
-          .filter($"_2" > 10)
-          .repartition(10, $"_1", $"_2")
-          .sortWithinPartitions($"_2")
-
-        checkShuffleAnswer(df, 1)
-      }
-
-      withParquetTable((0 until 50).map(i => (Map((i, i.toString) -> i), i + 1)), "tbl") {
-        val df = sql("SELECT * FROM tbl")
-          .filter($"_2" > 10)
-          .repartition(10, $"_1", $"_2")
-          .sortWithinPartitions($"_2")
-
-        checkShuffleAnswer(df, 1)
-      }
-    }
-  }
-
   test("columnar shuffle on map array element") {
     Seq("false", "true").foreach { execEnabled =>
       Seq(10, 201).foreach { numPartitions =>

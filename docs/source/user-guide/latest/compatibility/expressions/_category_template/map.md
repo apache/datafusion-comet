@@ -27,13 +27,14 @@ shuffle hash partitioning keys. Comet runs `MapSort` in Rust for supported scala
 Other orderable key types have no native implementation. By default those cases fall the
 enclosing projection or native shuffle back to Spark. Set
 `spark.comet.expression.MapSort.codegen.enabled=true` to run Spark's own generated JVM code through
-the codegen dispatcher instead, so the enclosing
-operator can stay in the Comet pipeline. That dispatcher route is not a native `MapSort`
-implementation, and a matched microbenchmark of these shapes is slower than the Spark fallback.
+the codegen dispatcher instead, so the enclosing operator can stay in the Comet pipeline. That
+dispatcher route is not a native `MapSort` implementation. A matched microbenchmark of projections
+and forced native shuffle is slower than Spark fallback for most measured shapes; it does not
+compare JVM columnar shuffle with native shuffle in `auto` mode.
 
 When `spark.comet.exec.strictFloatingPoint=true`, maps whose keys contain `Float` or `Double`
-follow the same default: the enclosing operator falls back to Spark. The codegen setting above
-routes those keys through the dispatcher instead (consistent with `SortOrder` and `SortArray`).
+follow the same default for projections and native shuffle. The codegen setting above routes
+those keys through the dispatcher instead.
 Arrow's sort uses IEEE total ordering for floating-point, which differs from Spark's
 `Double.compare` semantics for `NaN` and `-0.0`. If the dispatcher is disabled or cannot handle
 an expression, Comet safely falls back to Spark.

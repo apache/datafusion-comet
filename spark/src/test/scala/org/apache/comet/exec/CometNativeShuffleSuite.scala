@@ -1314,6 +1314,58 @@ class CometNativeShuffleSuite
     }
   }
 
+  test("auto shuffle chooses JVM or native shuffle for complex map keys with MapSort opt-in") {
+    assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+    withNestedHashPartitioning {
+      withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+        def checkRoutes(): Unit = {
+          val query =
+            "SELECT _1, spark_partition_id() AS pid FROM (" +
+              "SELECT /*+ REPARTITION(10, _2) */ * FROM tbl)"
+          var sparkRows: Array[(Int, Int)] = Array.empty
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+          }
+          assert(sparkRows.nonEmpty, "Spark produced no rows")
+          Seq(false, true).foreach { dispatch =>
+            withSQLConf(
+              CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> dispatch.toString) {
+              val df = sql(query)
+              val rows = if (dispatch) {
+                assertCodegenRan {
+                  df.collect()
+                }
+              } else {
+                df.collect()
+              }
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              val exchanges = collect(plan) { case e: CometShuffleExchangeExec => e }
+              assert(exchanges.size == 1, plan.treeString)
+              val expectedType = if (dispatch) CometNativeShuffle else CometColumnarShuffle
+              assert(exchanges.head.shuffleType == expectedType, plan.treeString)
+              assert(
+                new ExtendedExplainInfo()
+                  .getCodegenDispatchExpressions(plan)
+                  .contains("mapsort") ==
+                  dispatch,
+                plan.treeString)
+              assert(rows.map(r => (r.getInt(0), r.getInt(1))).sorted === sparkRows)
+            }
+          }
+        }
+
+        withParquetTable((0 until 50).map(i => (i, Map(Seq(i % 7) -> (i % 5)))), "tbl") {
+          checkRoutes()
+        }
+        withParquetTable(
+          (0 until 50).map(i => (i, Map((i % 7, (i % 5).toString) -> (i % 3)))),
+          "tbl") {
+          checkRoutes()
+        }
+      }
+    }
+  }
+
   test("native shuffle on struct hash partitioning key with collated string falls back") {
     // The top-level gate rejects collated strings because Comet hashes raw bytes, which would
     // misroute rows that are equal under the collation. Recursing through the nested cases must

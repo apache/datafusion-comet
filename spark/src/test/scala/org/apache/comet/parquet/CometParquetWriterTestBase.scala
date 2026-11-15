@@ -25,13 +25,11 @@ import java.util.concurrent.atomic.AtomicReference
 
 import scala.util.control.NonFatal
 
-import org.apache.hadoop.fs.Path
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
-import org.apache.spark.sql.execution.datasources.InsertIntoHadoopFsRelationCommand
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometExplainInfo}
@@ -127,17 +125,7 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
    *   The captured execution plan
    */
   protected def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan =
-    captureWritePlan(new Path(outputPath))(writeOp(outputPath))
-
-  /**
-   * Captures only the write to `expectedOutputPath`, comparing qualified Hadoop paths so a
-   * delayed event for another insert cannot be mistaken for the target write.
-   */
-  protected def captureWritePlan(expectedOutputPath: Path)(writeOp: => Unit): SparkPlan = {
-    val (plan, failure) = captureWriteOutcome(writeOp, Some(expectedOutputPath))
-    failure.foreach(throw _)
-    plan.getOrElse(fail(s"No write to $expectedOutputPath was captured"))
-  }
+    captureWritePlan(writeOp(outputPath))
 
   /** As above, for a write that names its own target (an `INSERT INTO`, for example). */
   protected def captureWritePlan(writeOp: => Unit): SparkPlan = {
@@ -156,24 +144,19 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
     (plan.getOrElse(fail("Listener was not called - no execution plan captured")), error)
   }
 
-  private def captureWriteOutcome(
-      writeOp: => Unit,
-      expectedOutputPath: Option[Path] = None): (Option[SparkPlan], Option[Throwable]) = {
+  private def captureWriteOutcome(writeOp: => Unit): (Option[SparkPlan], Option[Throwable]) = {
     val capturedPlan = new AtomicReference[QueryExecution]()
 
-    def isWrite(funcName: String, qe: QueryExecution): Boolean = expectedOutputPath match {
-      case Some(path) => writesTo(qe, path)
-      case None => funcName == "save" || funcName.contains("command")
-    }
+    def isWrite(funcName: String): Boolean = funcName == "save" || funcName.contains("command")
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
       override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        if (isWrite(funcName, qe)) {
+        if (isWrite(funcName)) {
           capturedPlan.set(qe)
         }
       }
 
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
-        if (isWrite(funcName, qe)) {
+        if (isWrite(funcName)) {
           capturedPlan.set(qe)
         }
       }
@@ -197,42 +180,6 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
     } finally {
       spark.listenerManager.unregister(listener)
     }
-  }
-
-  /** Whether `qe` is an insert into `expectedOutputPath`. */
-  private def writesTo(qe: QueryExecution, expectedOutputPath: Path): Boolean =
-    insertOutputPath(qe).exists(actual => sameOutputPath(actual, expectedOutputPath))
-
-  /**
-   * Output path of the insert command, from the optimized logical plan. On Spark 3.x the physical
-   * plan may already be a [[CometNativeWriteExec]], so the command is read from the logical plan
-   * first and from [[DataWritingCommandExec]] only as a fallback.
-   */
-  private def insertOutputPath(qe: QueryExecution): Option[Path] = {
-    val fromOptimized = qe.optimizedPlan.collectFirst {
-      case cmd: InsertIntoHadoopFsRelationCommand => cmd.outputPath
-    }
-    fromOptimized.orElse {
-      qe.executedPlan.collectFirst { case exec: DataWritingCommandExec =>
-        exec.cmd
-      } match {
-        case Some(cmd: InsertIntoHadoopFsRelationCommand) => Some(cmd.outputPath)
-        case _ => None
-      }
-    }
-  }
-
-  /**
-   * Spark qualifies file-format write paths when building [[InsertIntoHadoopFsRelationCommand]],
-   * while the helper may receive an unqualified temporary path. Re-parsing `Path.toString` does
-   * not drop a `file:` scheme, so both sides are qualified through Hadoop `FileSystem` before
-   * comparison.
-   */
-  private def sameOutputPath(actual: Path, expected: Path): Boolean = {
-    val conf = spark.sessionState.newHadoopConf()
-    val actualFs = actual.getFileSystem(conf)
-    val expectedFs = expected.getFileSystem(conf)
-    actualFs.makeQualified(actual) == expectedFs.makeQualified(expected)
   }
 
   /**

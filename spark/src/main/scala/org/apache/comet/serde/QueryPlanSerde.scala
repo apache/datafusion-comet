@@ -1420,10 +1420,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * If `handler` is a `CodegenDispatchFallback` whose dispatcher is enabled, run `expr` through
    * the JVM codegen dispatcher and return `Some((handler, proto))` on success; otherwise return
-   * `None`. Shared by the
-   * `Unsupported` and (non-opt-in) `Incompatible` arms of `exprToProtoInternal` so they don't
-   * each inline the same pattern match. Returning the matched handler lets the `Incompatible` arm
-   * reach `nativeOptInConfigKeyOverride` without re-pattern-matching the same value.
+   * `None`. Shared by the `Unsupported` and (non-opt-in) `Incompatible` arms of
+   * `exprToProtoInternal` so they don't each inline the same pattern match. Returning the matched
+   * handler lets the `Incompatible` arm reach `nativeOptInConfigKeyOverride` without
+   * re-pattern-matching the same value.
    */
   private def dispatchIfFallback(
       handler: CometExpressionSerde[_],

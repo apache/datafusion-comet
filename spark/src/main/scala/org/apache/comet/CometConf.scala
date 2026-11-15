@@ -852,13 +852,16 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to route `MapSort` cases that have no native implementation through Comet's " +
-          "JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet pipeline). When " +
-          "enabled, array, struct, interval, and non-default-collated string map keys, and " +
-          "floating-point keys under `spark.comet.exec.strictFloatingPoint=true`, keep their " +
-          "enclosing projection or shuffle in Comet. Disabled by default because a matched " +
-          "microbenchmark of those shapes is slower than falling the enclosing operator back " +
-          "to Spark. Scalar map keys continue to use native `map_sort` regardless of this " +
-          "setting. This flag does not change codegen dispatch for any other expression.")
+          "JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet pipeline). This " +
+          "includes array, struct, interval, and non-default-collated string map keys, and " +
+          "floating-point keys under `spark.comet.exec.strictFloatingPoint=true`. Enabling it " +
+          "can keep projections and eligible native shuffles in Comet. JVM columnar shuffle " +
+          "computes partition IDs with Spark expressions independently of this setting. " +
+          "Disabled by default because a matched benchmark of projections and forced native " +
+          "shuffle is slower than Spark fallback for most measured shapes. Those results do " +
+          "not compare JVM columnar shuffle with native shuffle in `auto` mode. Supported " +
+          "scalar keys continue to use Rust `map_sort`. This flag does not change codegen " +
+          "dispatch for any other expression.")
       .booleanConf
       .createWithDefault(false)
 

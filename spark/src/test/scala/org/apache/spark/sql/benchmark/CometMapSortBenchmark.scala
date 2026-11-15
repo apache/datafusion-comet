@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.functions.{col, spark_partition_id}
@@ -36,11 +36,15 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Matched benchmark for the two routes Spark 4.x can take for `MapSort` shapes that Comet cannot
- * sort natively:
+ * sort in Rust:
  *
  *   - with `spark.comet.expression.MapSort.codegen.enabled=false` (the default), the enclosing
- *     projection or shuffle falls back to Spark; and
+ *     projection or forced native shuffle falls back to Spark; and
  *   - with that setting true, Spark's `MapSort.doGenCode` executes inside the Comet pipeline.
+ *
+ * Shuffle cases force `spark.comet.shuffle.mode=native`: they compare Spark shuffle with Comet
+ * native shuffle plus MapSort codegen dispatch. They do not compare JVM columnar shuffle with
+ * native shuffle in `auto` mode.
  *
  * Every pair keeps `spark.comet.expression.MapSort.enabled=true` and the global codegen
  * dispatcher enabled, and differs only in `spark.comet.expression.MapSort.codegen.enabled`. Array
@@ -373,7 +377,10 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
 
       case "shuffle" =>
         assert(
-          dispatcher.plan.exists(_.isInstanceOf[CometShuffleExchangeExec]),
+          dispatcher.plan.exists {
+            case e: CometShuffleExchangeExec => e.shuffleType == CometNativeShuffle
+            case _ => false
+          },
           s"dispatcher route did not retain Comet native shuffle:\n${dispatcher.plan.treeString}")
         assert(
           !fallback.plan.exists(_.isInstanceOf[CometShuffleExchangeExec]) &&
@@ -423,7 +430,10 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
           s"fallback route did not contain a Spark ProjectExec:\n${plan.treeString}")
       case ("shuffle", true) =>
         assert(
-          plan.exists(_.isInstanceOf[CometShuffleExchangeExec]),
+          plan.exists {
+            case e: CometShuffleExchangeExec => e.shuffleType == CometNativeShuffle
+            case _ => false
+          },
           s"dispatcher route did not retain Comet native shuffle:\n${plan.treeString}")
       case ("shuffle", false) =>
         assert(
