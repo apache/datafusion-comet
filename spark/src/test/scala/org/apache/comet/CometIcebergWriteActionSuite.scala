@@ -20,9 +20,10 @@
 package org.apache.comet
 
 import java.io.File
+import java.lang.reflect.Modifier
 import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable
@@ -37,6 +38,7 @@ import org.json4s.jackson.JsonMethods.parse
 
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.metadata.ParquetMetadata
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
@@ -47,11 +49,11 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometExec, CometIcebergNativeScanExec, CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.Trigger
@@ -1131,6 +1133,182 @@ class CometIcebergWriteActionSuite
           "INSERT INTO cat.db.native_append_values VALUES " +
             "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
       }
+    }
+  }
+
+  // A Comet shuffle directly under the native write is decoded inside the write's native plan by
+  // a `ShuffleScan`, rather than decoded in the JVM and imported again over FFI. Under AQE the
+  // write's child is the shuffle stage or a coalesced read of it. Without AQE, Comet reads no
+  // shuffle directly, so the write keeps its FFI `Scan`. Each case is written twice, with direct
+  // read on and off, so the two input paths are checked against each other as well as the source.
+  test("native acceleration: a write over a shuffle decodes the shuffle blocks natively") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val columns = "id BIGINT, s STRING, d DOUBLE, st STRUCT<a: INT, b: STRING>, " +
+        "arr ARRAY<INT>, m MAP<STRING, INT>, dt DATE, ts TIMESTAMP, ntz TIMESTAMP_NTZ, " +
+        "dec DECIMAL(12, 3), bin BINARY, b BOOLEAN, f FLOAT, " +
+        "nested ARRAY<STRUCT<x: INT, y: STRING>>, " +
+        "deep STRUCT<k: MAP<STRING, ARRAY<INT>>, v: INT>"
+      spark.sql(s"CREATE TABLE $catalog.$ns.shuffle_src ($columns) USING iceberg")
+      spark.sql(s"""
+        INSERT INTO $catalog.$ns.shuffle_src
+        SELECT id,
+          CASE WHEN id % 7 = 0 THEN NULL
+            WHEN id % 5 = 0 THEN CONCAT('日本語-', CAST(id AS STRING))
+            WHEN id % 3 = 0 THEN CONCAT('é😀-', CAST(id AS STRING))
+            ELSE CONCAT('s', CAST(id AS STRING)) END,
+          CASE id % 11 WHEN 0 THEN NULL WHEN 1 THEN CAST('NaN' AS DOUBLE) WHEN 2 THEN -0.0D
+            WHEN 3 THEN CAST('Infinity' AS DOUBLE) WHEN 4 THEN CAST('-Infinity' AS DOUBLE)
+            ELSE id / 3.0 END,
+          IF(id % 13 = 0, NULL,
+            NAMED_STRUCT('a', CAST(id AS INT), 'b', IF(id % 2 = 0, NULL, CAST(id AS STRING)))),
+          IF(id % 17 = 0, NULL, ARRAY(CAST(id AS INT), NULL)),
+          IF(id % 19 = 0, NULL, MAP(CAST(id AS STRING), CAST(id AS INT))),
+          CASE WHEN id % 23 = 0 THEN NULL
+            WHEN id % 23 = 1 THEN DATE '1900-01-01'
+            WHEN id % 23 = 2 THEN DATE '1969-12-31'
+            WHEN id % 23 = 3 THEN DATE '9999-12-31'
+            ELSE DATE_ADD(DATE '1970-01-01', CAST(id * 7 AS INT)) END,
+          CASE WHEN id % 29 = 0 THEN NULL
+            WHEN id % 29 = 1 THEN TIMESTAMP_MICROS(-2208988800000000)
+            WHEN id % 29 = 2 THEN TIMESTAMP_MICROS(-1)
+            WHEN id % 29 = 3 THEN TIMESTAMP_MICROS(253402300799999999)
+            ELSE TIMESTAMP_MICROS(id * 1000003) END,
+          CASE WHEN id % 31 = 0 THEN NULL
+            WHEN id % 31 = 1 THEN CAST(TIMESTAMP_MICROS(-2208988800000000) AS TIMESTAMP_NTZ)
+            WHEN id % 31 = 2 THEN CAST(TIMESTAMP_MICROS(253402300799999999) AS TIMESTAMP_NTZ)
+            ELSE CAST(TIMESTAMP_MICROS(id * 999983) AS TIMESTAMP_NTZ) END,
+          IF(id % 37 = 0, NULL, CAST(CAST(id AS DECIMAL(12, 3)) / 7 AS DECIMAL(12, 3))),
+          IF(id % 41 = 0, NULL, CAST(CONCAT('b', CAST(id AS STRING)) AS BINARY)),
+          IF(id % 43 = 0, NULL, id % 2 = 0),
+          CASE id % 10 WHEN 0 THEN CAST('NaN' AS FLOAT) WHEN 1 THEN CAST(-0.0D AS FLOAT)
+            WHEN 2 THEN CAST('Infinity' AS FLOAT) WHEN 3 THEN CAST('-Infinity' AS FLOAT)
+            WHEN 4 THEN NULL ELSE CAST(id AS FLOAT) / 3 END,
+          IF(id % 47 = 0, NULL,
+            ARRAY(NAMED_STRUCT('x', CAST(id AS INT), 'y', CONCAT('日', CAST(id AS STRING))),
+              NULL, NAMED_STRUCT('x', CAST(NULL AS INT), 'y', CAST(NULL AS STRING)))),
+          IF(id % 53 = 0, NULL,
+            NAMED_STRUCT('k', IF(id % 2 = 0, MAP('a', ARRAY(CAST(id AS INT), NULL), 'b', ARRAY()),
+              CAST(NULL AS MAP<STRING, ARRAY<INT>>)), 'v', CAST(id AS INT)))
+        FROM range(0, 2000)""")
+
+      // (case, hint, filter, AQE on, the write's leaf when direct read is on, extra confs).
+      // REBALANCE runs on Comet's JVM columnar shuffle, which writes the same block format as
+      // native shuffle. The `empty_partitions` case keeps 64 reducer partitions, of which the
+      // filter leaves at most five with rows, so most `ShuffleScan`s reach the end of their input
+      // without a block while the writer still emits its payload row.
+      val cases = Seq(
+        ("stage", "REPARTITION(8, id)", "", true, "SHUFFLE_SCAN", Seq.empty[(String, String)]),
+        ("coalesced", "REPARTITION(id)", "", true, "SHUFFLE_SCAN", Seq.empty[(String, String)]),
+        ("columnar", "REBALANCE", "", true, "SHUFFLE_SCAN", Seq.empty[(String, String)]),
+        (
+          "empty_partitions",
+          "REPARTITION(64, id)",
+          "WHERE id < 5",
+          true,
+          "SHUFFLE_SCAN",
+          Seq(SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false")),
+        // The timestamp columns hold instants, so a session time zone must not change what the
+        // shuffle blocks decode to.
+        (
+          "non_utc_session",
+          "REPARTITION(8, id)",
+          "",
+          true,
+          "SHUFFLE_SCAN",
+          Seq(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles")),
+        ("no_aqe", "REPARTITION(8, id)", "", false, "SCAN", Seq.empty[(String, String)]))
+      cases.foreach { case (name, hint, filter, adaptive, directReadLeaf, extraConfs) =>
+        val expected =
+          spark.sql(s"SELECT * FROM $catalog.$ns.shuffle_src $filter").collect().toSeq
+        val fileRecordCounts = Seq(true, false).map { directRead =>
+          val table = s"shuffle_${name}_$directRead"
+          spark.sql(s"CREATE TABLE $catalog.$ns.$table ($columns) USING iceberg")
+          // `withSQLConf` returns Unit on Spark 3.x, so it wraps only the statement.
+          val snapshot = withNativeEnabled {
+            captureWrite(table) {
+              withSQLConf(
+                (Seq(
+                  SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+                  CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) ++
+                  extraConfs): _*) {
+                spark.sql(s"INSERT INTO $catalog.$ns.$table " +
+                  s"SELECT /*+ $hint */ * FROM $catalog.$ns.shuffle_src $filter")
+              }
+            }
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"$table: expected 1 commit, got ${snapshot.snapshotDelta}")
+          val leaves = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case write: CometIcebergWriteExec =>
+              CometExec.nativeLeaves(write.nativeOp).map(_.getOpStructCase.name)
+            }
+          }
+          val expectedLeaf = if (directRead) directReadLeaf else "SCAN"
+          assert(
+            leaves == Seq(Seq(expectedLeaf)),
+            s"$table: expected the write to read its input with $expectedLeaf, got $leaves. " +
+              s"Plans:\n${snapshot.plans.mkString("\n--\n")}")
+          // The case is only the coalesced one if AQE coalesced the reducer partitions.
+          if (name == "coalesced") {
+            val coalesced = snapshot.plans.flatMap { plan =>
+              collectWithSubqueries(plan) { case read: AQEShuffleReadExec =>
+                read.hasCoalescedPartition
+              }
+            }
+            assert(
+              coalesced.contains(true),
+              s"$table: expected a coalesced shuffle read. Plans:\n${snapshot.plans.mkString("\n--\n")}")
+          }
+          checkAnswer(spark.table(s"$catalog.$ns.$table"), expected)
+          spark
+            .sql(s"SELECT record_count FROM $catalog.$ns.$table.files ORDER BY record_count")
+            .collect()
+            .map(_.getLong(0))
+            .toSeq
+        }
+        assert(
+          fileRecordCounts.distinct.length == 1,
+          s"$name: data file record counts differ between direct read on and off: " +
+            fileRecordCounts)
+      }
+    }
+  }
+
+  // The scheduler probe's RDD cannot wrap a shuffle that the write reads directly, because the
+  // direct read needs the shuffle RDD itself. The probe still has to run before each task reads
+  // its input, and the shuffle fetch is part of reading it.
+  test(
+    "native acceleration: the scheduler probe runs for a write that reads a shuffle directly") {
+    val table = "scheduler_shuffle_direct"
+    withSchedulerProbeSource(table) { source =>
+      ShuffleReadProbe.reset()
+      val snapshot = IcebergSchedulerTestProbe.withProbe(ShuffleReadProbe) {
+        withNativeEnabled {
+          captureWrite(table) {
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+              SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+              CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true") {
+              spark.read
+                .parquet(source.getAbsolutePath)
+                .repartition(4, org.apache.spark.sql.functions.col("id"))
+                .writeTo(s"$catalog.$ns.$table")
+                .append()
+            }
+          }
+        }
+      }
+      val leaves = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case write: CometIcebergWriteExec =>
+          CometExec.nativeLeaves(write.nativeOp).map(_.getOpStructCase.name)
+        }
+      }
+      assert(leaves == Seq(Seq("SHUFFLE_SCAN")), leaves)
+      assert(ShuffleReadProbe.partitions == Set(0, 1, 2, 3))
+      assert(snapshot.snapshotDelta == 1L)
+      assertRows(table, 0 until 5000)
     }
   }
 
@@ -2994,35 +3172,184 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  /** The footer of every data file of `table`, by path. */
+  private def dataFileFooters(table: String): Map[String, ParquetMetadata] =
+    spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+      .collect()
+      .map { row =>
+        val path = row.getString(0)
+        val reader = ParquetFileReader.open(
+          HadoopInputFile.fromPath(new HadoopPath(path), spark.sessionState.newHadoopConf()))
+        try path -> reader.getFooter
+        finally reader.close()
+      }
+      .toMap
+
   /**
    * For every data file of `table`, by path: whether each of its columns has a dictionary page in
    * any row group, according to the encoding stats in the footer.
    */
-  private def dataFileDictionaryPages(table: String): Map[String, Map[String, Boolean]] = {
-    val paths = spark
-      .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
-      .collect()
-      .map(_.getString(0))
-    paths.map { path =>
-      val reader = ParquetFileReader.open(
-        HadoopInputFile.fromPath(new HadoopPath(path), spark.sessionState.newHadoopConf()))
-      val columns =
-        try {
-          reader.getFooter.getBlocks.asScala
-            .flatMap(_.getColumns.asScala)
-            .groupBy(_.getPath.toDotString)
-            .map { case (column, chunks) =>
-              column -> chunks.exists { chunk =>
-                val stats = chunk.getEncodingStats
-                assert(stats != null, s"$column in $path has no encoding stats")
-                stats.hasDictionaryPages
-              }
-            }
-        } finally {
-          reader.close()
+  private def dataFileDictionaryPages(table: String): Map[String, Map[String, Boolean]] =
+    dataFileFooters(table).map { case (path, footer) =>
+      path -> footer.getBlocks.asScala
+        .flatMap(_.getColumns.asScala)
+        .groupBy(_.getPath.toDotString)
+        .map { case (column, chunks) =>
+          column -> chunks.exists { chunk =>
+            val stats = chunk.getEncodingStats
+            assert(stats != null, s"$column in $path has no encoding stats")
+            stats.hasDictionaryPages
+          }
         }
-      path -> columns
-    }.toMap
+    }
+
+  test(
+    "native acceleration: parquet-mr settings iceberg-java ignores leave its files unchanged") {
+    assumeNativeAcceleration()
+    // Every key the parquet-mr that iceberg-java runs declares for writers, by how its writer
+    // treats the key. iceberg-spark-runtime relocates parquet-mr, so read the copy it links.
+    // An inert key gets a value that would change the file if the writer read it.
+    val inert = Map(
+      "parquet.block.row.count.limit" -> "1000",
+      "parquet.block.size" -> "65536",
+      "parquet.bloom.filter.adaptive.enabled" -> "true",
+      "parquet.bloom.filter.candidates.number" -> "3",
+      "parquet.bloom.filter.enabled" -> "true",
+      "parquet.bloom.filter.expected.ndv" -> "100",
+      "parquet.bloom.filter.fpp" -> "0.5",
+      "parquet.bloom.filter.max.bytes" -> "1024",
+      "parquet.column.statistics.enabled" -> "false",
+      "parquet.compression" -> "GZIP",
+      "parquet.compression.codec.zstd.bufferPool.enabled" -> "false",
+      "parquet.dictionary.page.size" -> "1024",
+      "parquet.enable.bytestreamsplit" -> "true",
+      "parquet.enable.summary-metadata" -> "true",
+      "parquet.memory.min.chunk.size" -> "1024",
+      "parquet.memory.pool.ratio" -> "0.1",
+      "parquet.page.row.count.limit" -> "100",
+      "parquet.page.size" -> "1024",
+      "parquet.page.size.check.estimate" -> "false",
+      "parquet.page.size.row.check.max" -> "2",
+      "parquet.page.size.row.check.min" -> "1",
+      "parquet.page.value.count.threshold" -> "100",
+      "parquet.page.write-checksum.enabled" -> "false",
+      "parquet.size.statistics.enabled" -> "false",
+      "parquet.statistics.truncate.length" -> "2",
+      "parquet.summary.metadata.level" -> "ALL",
+      "parquet.validation" -> "true",
+      "parquet.write.support.class" -> "org.apache.parquet.hadoop.example.GroupWriteSupport",
+      "parquet.writer.max-padding" -> "8388608",
+      "parquet.writer.version" -> "PARQUET_2_0")
+    // UnsupportedParquetMrKeys falls back on the first, and parquet.enable.dictionary is read
+    // from the table properties under its own rule.
+    val gated = Set("parquet.columnindex.truncate.length", "parquet.enable.dictionary")
+    // Codec-level side channels, which change only compressed bytes.
+    val sideChannels =
+      Set("parquet.compression.codec.zstd.level", "parquet.compression.codec.zstd.workers")
+    val parquetHadoop = IcebergReflection
+      .loadClass("org.apache.iceberg.parquet.ParquetCodecFactory")
+      .getSuperclass
+      .getName
+      .stripSuffix(".CodecFactory")
+    val declared = Seq("ParquetOutputFormat", "codec.ZstandardCodec")
+      .flatMap { name =>
+        IcebergReflection.loadClass(s"$parquetHadoop.$name").getFields.toSeq.collect {
+          case f if Modifier.isStatic(f.getModifiers) && f.getType == classOf[String] =>
+            f.get(null).asInstanceOf[String]
+        }
+      }
+      .filter(_.startsWith("parquet."))
+      .toSet
+    val unclassified = declared -- inert.keySet -- gated -- sideChannels
+    assert(
+      unclassified.isEmpty,
+      "classify these parquet-mr keys here, and add any that iceberg-java's writer reads to " +
+        s"UnsupportedParquetMrKeys: ${unclassified.toSeq.sorted.mkString(", ")}")
+
+    withIcebergCatalog { warehouseDir =>
+      // One Parquet file read back as one task, so every write sees the same rows in the same
+      // order. With the small sizes above, a writer that read them would cut more row groups.
+      val source = new File(warehouseDir, "parquet_mr_src").getAbsolutePath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 20000, 1, 1)
+          .selectExpr(
+            "id",
+            "substr(sha2(cast(id AS STRING), 256), 1, 16) AS payload",
+            "concat('c', cast(id % 50 AS STRING)) AS category",
+            "cast(id % 10 AS INT) AS small",
+            "cast(id AS DOUBLE) / 7 AS ratio")
+          .write
+          .parquet(source)
+      }
+      def create(t: String, properties: Map[String, String]): Unit = {
+        val props = properties
+          .map { case (k, v) => s"'$k'='$v'" }
+          .mkString(" TBLPROPERTIES (", ", ", ")")
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$t (
+            id BIGINT, payload STRING, category STRING, small INT, ratio DOUBLE
+          ) USING iceberg${if (properties.isEmpty) "" else props}
+        """)
+      }
+      def insert(t: String): Unit =
+        spark.read.parquet(source).coalesce(1).writeTo(s"$catalog.$ns.$t").append()
+      def footer(t: String): (File, ParquetMetadata) = {
+        val footers = dataFileFooters(t)
+        assert(footers.size == 1, s"expected one data file for $t, got ${footers.keys}")
+        val (path, metadata) = footers.head
+        val uri = new java.net.URI(path)
+        (if (uri.getScheme == null) new File(path) else new File(uri), metadata)
+      }
+      // Row groups and, per column, everything but the sizes and offsets.
+      def shape(metadata: ParquetMetadata) = metadata.getBlocks.asScala.map { block =>
+        block.getRowCount -> block.getColumns.asScala.map { c =>
+          (
+            c.getPath.toDotString,
+            c.getCodec,
+            c.getEncodings.asScala.toSet,
+            c.getValueCount,
+            c.getStatistics.toString)
+        }
+      }
+
+      create("pq_plain", Map.empty)
+      create("pq_inert", inert)
+      create("pq_side", Map("parquet.compression.codec.zstd.level" -> "19"))
+      create("pq_native", inert)
+      Seq("pq_plain", "pq_inert", "pq_side").foreach(insert)
+
+      // iceberg-java ignores every inert key: it writes the same bytes with them as without.
+      val (plainFile, plainFooter) = footer("pq_plain")
+      val (inertFile, inertFooter) = footer("pq_inert")
+      assert(
+        Files.readAllBytes(inertFile.toPath).sameElements(Files.readAllBytes(plainFile.toPath)),
+        s"iceberg-java read an inert key: files of ${inertFile.length} and ${plainFile.length} " +
+          s"bytes, footers ${shape(inertFooter)} and ${shape(plainFooter)}")
+
+      // A side channel changes the compressed bytes and nothing else.
+      val (_, sideFooter) = footer("pq_side")
+      assert(shape(sideFooter) == shape(plainFooter))
+      assert(
+        sideFooter.getBlocks.asScala.map(_.getCompressedSize) !=
+          plainFooter.getBlocks.asScala.map(_.getCompressedSize),
+        "the zstd level did not reach iceberg-java's codec")
+
+      // The native writer takes the same table, and matches iceberg-java's rows and dictionaries.
+      val snapshot = withNativeEnabled { captureWrite("pq_native")(insert("pq_native")) }
+      assert(snapshot.snapshotDelta == 1L)
+      val nativeExecs = snapshot.plans.flatMap { p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+      }
+      assert(nativeExecs.nonEmpty, "expected the write to engage the native path")
+      checkAnswer(
+        spark.table(s"$catalog.$ns.pq_native"),
+        spark.table(s"$catalog.$ns.pq_inert").collect().toSeq)
+      assert(
+        dataFileDictionaryPages("pq_native").values.toSeq ==
+          dataFileDictionaryPages("pq_inert").values.toSeq)
+    }
   }
 
   test("native acceleration: empty append commits exactly once with zero data files") {
@@ -5556,4 +5883,18 @@ private object ConflictGate {
   def awaitScanStarted(timeout: Long, unit: TimeUnit): Boolean = scanStarted.await(timeout, unit)
 
   def releaseWrite(): Unit = writeReleased.countDown()
+}
+
+/** Records the partitions whose input the probe saw, in the one JVM of a local test. */
+private[comet] object ShuffleReadProbe extends IcebergSchedulerTestProbe {
+  private val seen = ConcurrentHashMap.newKeySet[Integer]()
+
+  def reset(): Unit = seen.clear()
+  def partitions: Set[Int] = seen.asScala.map(_.intValue()).toSet
+
+  override def beforeInput(): Unit = seen.add(TaskContext.getPartitionId())
+  override def afterInput(rows: Long, dataLocation: String, operationId: String): Unit = {}
+  override def afterHandoff(locations: Seq[String]): Unit = {}
+  override def accepted(partition: Int, locations: Seq[String]): Unit = {}
+  override def committed(): Unit = {}
 }

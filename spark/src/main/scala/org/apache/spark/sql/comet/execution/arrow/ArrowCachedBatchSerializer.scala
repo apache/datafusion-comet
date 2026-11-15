@@ -39,7 +39,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometDecodedVector, NativeUtil}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -114,9 +114,9 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       if (tracksBounds(attr.dataType)) TypeUtils.getInterpretedOrdering(attr.dataType) else null
     }.toArray
 
-  // Bounds and null counts per column, gathered before the batch is serialized: serializing
-  // clears the batch's vectors, and the per-column byte sizes that complete the statistics row
-  // are only known afterwards. See statsRow.
+  // Bounds and null counts per column of the Arrow batch encodeBatches writes, gathered before
+  // it is serialized: serializing clears the batch's vectors, and the per-column byte sizes that
+  // complete the statistics row are only known afterwards. See statsRow.
   private[sql] def gatherColumnStats(
       batch: ColumnarBatch,
       attrs: Seq[Attribute],
@@ -130,7 +130,10 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     var c = 0
     while (c < numCols) {
       val col = batch.column(c)
+      val knownNulls = arrowNullCount(col)
       val (min, max, nullCount) = attrs(c).dataType match {
+        // Every row is null, so there are no bounds and nothing to read.
+        case _ if knownNulls == numRows => (null, null, numRows)
         case BooleanType => gatherBooleanStats(col, numRows)
         case ByteType => gatherByteStats(col, numRows)
         case ShortType => gatherShortStats(col, numRows)
@@ -144,13 +147,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         case _: StringType => gatherStringStats(col, numRows, orderings(c))
         case other =>
           assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
-          var nullCount = 0
-          var r = 0
-          while (r < numRows) {
-            if (col.isNullAt(r)) nullCount += 1
-            r += 1
-          }
-          (null, null, nullCount)
+          (null, null, knownNulls)
       }
       if (nullCount < numRows) {
         lower(c) = min
@@ -161,6 +158,15 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
 
     (lower, upper, nulls)
+  }
+
+  // Every column of a batch encodeBatches writes is a CometDecodedVector, which takes its null
+  // count from Arrow once, when it is built, and answers isNullAt from the same validity bitmap.
+  private def arrowNullCount(col: ColumnVector): Int = col match {
+    case v: CometDecodedVector => v.numNulls()
+    case other =>
+      throw new IllegalStateException(
+        s"Cache statistics read from ${other.getClass.getName}, not a Comet Arrow vector")
   }
 
   // Keep each loop specialized and box only its final bounds. r == nullCount identifies
@@ -405,9 +411,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     val orderings = boundsOrderings(attrs)
 
     batches.map { batch =>
-      // Bounds and null counts are read from the input batch before it is serialized, and the row
-      // is only assembled once serialize has measured the per-column sizes.
-      val (lower, upper, nulls) = gatherColumnStats(batch, attrs, orderings)
       val numRows = batch.numRows()
 
       // Written as it stands only if its vectors are ones the writer accepts and are already laid
@@ -416,20 +419,31 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       // rather than merely usual.
       val writeDirectly =
         Utils.isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, readerFields)
-
-      val (bytes, columnSizes) = if (writeDirectly) {
-        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator, settings.chunkSize)
-      } else {
-        val arrowBatch =
+      val arrowBatch =
+        if (writeDirectly) {
+          batch
+        } else {
           CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
-        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
-        finally arrowBatch.close()
-      }
+        }
 
-      CometCachedBatch(
-        numRows = numRows,
-        stats = statsRow(lower, upper, nulls, numRows, columnSizes),
-        bytes = bytes)
+      try {
+        // Bounds and null counts are read from the batch that is written, so every null count is
+        // the one Arrow holds. Spark's own numNulls can be wrong: its vectorized Parquet reader
+        // marks a column missing from a file all-null without counting any nulls. The row is
+        // only assembled once serialize has measured the per-column sizes.
+        val (lower, upper, nulls) = gatherColumnStats(arrowBatch, attrs, orderings)
+        val (bytes, columnSizes) =
+          CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
+
+        CometCachedBatch(
+          numRows = numRows,
+          stats = statsRow(lower, upper, nulls, numRows, columnSizes),
+          bytes = bytes)
+      } finally {
+        if (!writeDirectly) {
+          arrowBatch.close()
+        }
+      }
     }
   }
 

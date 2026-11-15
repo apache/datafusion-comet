@@ -72,9 +72,12 @@ admits. The two need different evidence.
 For every gate change:
 
 - [ ] **It stays an allow list.** New support is added by vetting a key or value, not by widening a
-      prefix or turning a deny list around. Unknown keys in `write.parquet.*`, `parquet.*`, the
-      session Hadoop `parquet.*` keys, and any other namespace that reaches the writer must still
-      decline.
+      prefix or turning a deny list around. Unknown keys in `write.parquet.*` and any other
+      namespace that reaches the writer must still decline. `parquet.*` is the one namespace
+      checked the other way round: of the keys iceberg-java's writer reads, from table properties
+      or its Hadoop configuration, only those in `UnsupportedParquetMrKeys` change more than
+      compressed bytes. A change there must keep the classification test in
+      `CometIcebergWriteActionSuite` passing, which fails on a key it has not classified.
 - [ ] **It reads the effective configuration** (`TriggerContext.properties`, table properties
       overlaid with `SparkWrite.writeProperties`), not the table properties alone.
 - [ ] **It fails closed.** A reflection lookup that cannot answer returns a reason. Look for

@@ -1,0 +1,67 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Configuration for `cargo audit`, run from the `native` directory.
+#
+# Every ignore below is an advisory that Comet cannot fix by changing its own manifests, or that
+# does not apply to how Comet uses the crate. Each entry says which, and what unblocks removing
+# it. Entries are listed by advisory ID rather than by crate so that a new advisory against the
+# same crate still fails the audit. When an entry's blocker is resolved, delete the entry.
+
+[advisories]
+ignore = [
+    # quick-xml 0.39.4, reached through object_store 0.13 (S3, GCS and Azure XML responses).
+    # Exploiting these needs a malicious or compromised object-store endpoint. Fixed in
+    # quick-xml 0.41, which object_store 0.14 requires. Blocked on DataFusion moving to
+    # object_store 0.14.
+    #
+    # The same two advisories also match quick-xml 0.26.0, which comes from `pprof` -> `inferno`,
+    # a dev-dependency used only by benchmarks and never linked into libcomet.
+    "RUSTSEC-2026-0194", # quadratic run time checking duplicate attribute names
+    "RUSTSEC-2026-0195", # unbounded namespace-declaration allocation in NsReader
+
+    # rsa 0.9.10 (Marvin attack, timing side channel). No fixed release exists. It is reached
+    # only through reqsign (opendal GCS and Azure credential signing), which signs with a key
+    # the process already holds. Exploiting it needs a network observer timing those signatures.
+    "RUSTSEC-2023-0071",
+
+    # zstd 0.13.3 / zstd-safe 7.3.0. Fixed in zstd 0.14.3 / zstd-safe 8.2. arrow-ipc 59 pins
+    # zstd ^0.13, and arrow-ipc 60 moves to ^0.14, so this is blocked on the arrow 60 upgrade.
+    # Comet's own use (native/shuffle) is not affected by these:
+    "RUSTSEC-2026-0391", # with_context leaks an abandoned stream. ShuffleCodecContext resets the
+                         # session before every frame, which is the upstream fix.
+    "RUSTSEC-2026-0403", # write::Decoder on a corrupt legacy frame. Comet only reads through
+                         # Decoder::with_buffer, which is not affected.
+    "RUSTSEC-2026-0398", # Seekable::decompress. Comet does not use the seekable API.
+    "RUSTSEC-2026-0396", # Seekable seek table. Not used.
+    "RUSTSEC-2026-0395", # CParameter::StableInBuffer. Comet only sets CompressionLevel.
+    "RUSTSEC-2026-0397", # OutBuffer::around_pos. Not used.
+    "RUSTSEC-2026-0399", # init_using_cdict / init_using_ddict. Dictionaries are not used.
+    "RUSTSEC-2026-0400", # one-shot call with a dictionary on a context with an open stream. Not used.
+    "RUSTSEC-2026-0401", # train_from_buffer. Not used.
+    "RUSTSEC-2026-0402", # CCtx::try_clone on a multithreaded context. Not used.
+    "RUSTSEC-2026-0404", # DCtx::try_clone. Not used.
+    "RUSTSEC-2026-0405", # InBuffer::pos out of range. Not used.
+    "RUSTSEC-2026-0406", # changing a multithreaded context with an unfinished frame. Comet does
+                         # not enable multithreaded compression.
+
+    # Unmaintained crates. None has a fixed release.
+    "RUSTSEC-2025-0052", # async-std, from criterion 0.7 (dev-dependency only)
+    "RUSTSEC-2024-0436", # paste, used directly for macro expansion in core, jni-bridge and
+                         # spark-expr. A proc-macro, so it is not linked into libcomet.
+    "RUSTSEC-2024-0449", # unsafe-libyaml, from log4rs -> serde_yaml. log4rs 1.4.0 is the latest.
+]

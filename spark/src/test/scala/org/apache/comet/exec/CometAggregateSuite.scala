@@ -28,12 +28,12 @@ import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Corr, Final, Partial, PartialMerge, RegrR2}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, CollectSet, Corr, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
@@ -44,9 +44,9 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, RegrSparkVersions}
+import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -301,6 +301,100 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Writes 125,000 rows over four values of g, with 62,500 distinct k that each fall in one g,
+  // then runs `f` in each of the pools. The PartialMerge keyed by (g, k) has to spill several runs
+  // of its 62,500 groups, and its input is sorted on g, a prefix of its keys, so DataFusion runs
+  // it as an ordered final aggregate (issue #6880). Each g has 15,625 distinct k and the largest v
+  // with id % 4 = g, so a key emitted twice across a change of g shows up in the answer.
+  private def withPartialMergeOverSortedPrefix(poolsMiB: Seq[Int])(f: String => Unit): Unit = {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("id % 4 AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path + "/data")
+      spark.range(0, 4).selectExpr("id AS g").write.parquet(path + "/keys")
+      for (poolMiB <- poolsMiB) {
+        withSQLConf(
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+          CometConf.COMET_BATCH_SIZE.key -> "1024",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+          CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (poolMiB / 2048.0).toString) {
+          withClue(s"With a $poolMiB MiB pool: ") {
+            f(path)
+          }
+        }
+      }
+    }
+  }
+
+  private val partialMergeOverSortedPrefixAnswer =
+    (0 until 4).map(g => Row(g.toLong, 124996L + g, 15625L))
+
+  test("PartialMerge over input sorted on a prefix of its keys spills (issue #6880)") {
+    withPartialMergeOverSortedPrefix(Seq(2, 8)) { path =>
+      // The repartition on g satisfies the PartialMerge keyed by (g, k), so the sort, the partial
+      // aggregate and the PartialMerge run in one native plan with no exchange between them. The
+      // optimizer drops the sort under the aggregate unless EliminateSorts is excluded.
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName) {
+        val df = spark.read
+          .parquet(path + "/data")
+          .repartition(1, col("g"))
+          .sortWithinPartitions("g")
+          .groupBy("g")
+          .agg(expr("max(v)"), count_distinct(col("k")))
+          .orderBy("g")
+        checkCometAnswer(df, partialMergeOverSortedPrefixAnswer)
+
+        assert(
+          spilledAggregates(df, PartialMerge).exists(_.child match {
+            case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
+            case _ => false
+          }),
+          "Expected a native PartialMerge over a partial aggregate over a sort:\n" +
+            df.queryExecution.executedPlan)
+      }
+    }
+  }
+
+  test("PartialMerge over a sort-merge join on a prefix of its keys spills (issue #6880)") {
+    // The sorts under the join need more than a 2 or 8 MiB pool's fair share, so this uses 16 MiB.
+    withPartialMergeOverSortedPrefix(Seq(16)) { path =>
+      // With the default rules, the join's hash partitioning on g satisfies the PartialMerge keyed
+      // by (g, k), so the join, the partial aggregate and the PartialMerge run in one native plan,
+      // and the PartialMerge sees its input sorted on g. The suite lets AQE broadcast up to 1g at
+      // runtime, which would turn the join into a broadcast hash join, because the keys are tiny.
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        val df = spark.read
+          .parquet(path + "/data")
+          .join(spark.read.parquet(path + "/keys"), "g")
+          .groupBy("g")
+          .agg(expr("max(v)"), count_distinct(col("k")))
+          .orderBy("g")
+        checkCometAnswer(df, partialMergeOverSortedPrefixAnswer)
+
+        // An exchange between the join and the partial aggregate would leave the PartialMerge
+        // over unsorted input, where it would still spill.
+        def reachesJoinWithoutExchange(plan: SparkPlan): Boolean = plan match {
+          case _: CometSortMergeJoinExec => true
+          case _: CometShuffleExchangeExec => false
+          case other => other.children.exists(reachesJoinWithoutExchange)
+        }
+        assert(
+          spilledAggregates(df, PartialMerge).exists(_.child match {
+            case partial: CometHashAggregateExec => reachesJoinWithoutExchange(partial.child)
+            case _ => false
+          }),
+          "Expected a native PartialMerge over a partial aggregate over a sort-merge join:\n" +
+            df.queryExecution.executedPlan)
+      }
+    }
+  }
+
   test("collect_list PartialMerge short of memory keeps one row per key (issue #6857)") {
     // The collect_list states fill the PartialMerge's memory too. Over a Spark partial, the
     // PartialMerge decodes Spark's buffers as it merges them, but reads back the native states
@@ -364,6 +458,42 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .agg(collect_list("f")),
       include,
       classOf[LocalTableScanExec])
+  }
+
+  test("grouped collect_list and collect_set over non-nullable nested fields") {
+    withTempPath { path =>
+      spark
+        .createDataFrame((0 until 32768).map { i =>
+          (i % 4096, i % 8192, s"${i % 8192}-" + "x" * 256)
+        })
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        // The literal and coalesce create required fields after the Parquet scan, which
+        // otherwise widens field nullability. Sorting removes collect order differences.
+        val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
+        // This reuses the helper for its AQE-off and single-shuffle-partition settings, which are
+        // what make the query reproduce the mismatch: Spark's defaults insert a shuffle-boundary
+        // cast that hides it. The helper's memory settings are not here to force spilling —
+        // neither stage spills on this fixture at any pool size tried (4 MiB, 2 MiB, 400 KiB), and
+        // shrinking the pool past the Final state's first allocation fails the task with
+        // "Additional allocation failed for FinalHashAggregateStream[0]" instead of spilling. The
+        // assertion is therefore native execution plus the answer. The ungrouped Accumulator path
+        // is covered by collect_list.sql and collect_set.sql.
+        withDistinctMergeMemoryPressure {
+          Seq(struct, s"array($struct)").foreach { value =>
+            val df = sql(s"""
+              SELECT _1, sort_array(collect_list(s)), sort_array(collect_set(s))
+              FROM (
+                SELECT _1, $value AS s
+                FROM tbl
+              ) GROUP BY _1""")
+            checkSparkAnswerAndOperator(df, Seq(classOf[CometHashAggregateExec]))
+          }
+        }
+      }
+    }
   }
 
   test("grouped collect_list/collect_set over nulls, duplicates and several batches") {
@@ -466,6 +596,126 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(
             cometPlan.toString.contains(s"merge_$name"),
             s"Expected $name PartialMerge stage to run natively; plan:\n$cometPlan")
+        }
+      }
+    }
+  }
+
+  test("float collect_set merges Spark partials natively on Spark 4.2 (issue #7203)") {
+    assume(isSpark42Plus, "Spark 4.2 normalizes floating-point collect_set buffers")
+    // SQL fixtures cover the answers and fallback matrix. This mixed plan needs operator exclusions
+    // and assertions on the consumed plan, which a plain SQL query directive cannot express.
+    for {
+      adaptive <- Seq(false, true)
+      objectHash <- Seq(false, true)
+    } {
+      withSQLConf(
+        COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.USE_OBJECT_HASH_AGG.key -> objectHash.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+        val data = Seq(
+          (1, 1, Some(Double.NaN)),
+          (1, 2, Some(Double.NaN)),
+          (1, 3, Some(-0.0d)),
+          (1, 4, Some(0.0d)),
+          (1, 5, Some(1.0d)),
+          (1, 6, None),
+          (2, 1, None))
+        val df = data
+          .toDF()
+          .groupBy("_1")
+          .agg(
+            count_distinct(col("_2")),
+            sort_array(collect_set(col("_3").cast("FLOAT"))),
+            sort_array(collect_set(col("_3"))))
+        val (_, plan) = checkSparkAnswerAndOperator(
+          df,
+          Seq(classOf[CometBaseAggregateExec]),
+          classOf[ObjectHashAggregateExec],
+          classOf[SortAggregateExec],
+          classOf[SortExec],
+          classOf[LocalTableScanExec])
+        assert(collect(plan) { case s: LocalTableScanExec => s }.nonEmpty, plan)
+        val nativeAggregates = collect(plan) { case a: CometBaseAggregateExec => a }
+        val sparkAggregates = collect(plan) { case a: BaseAggregateExec => a }
+        assert(nativeAggregates.exists(_.modes.contains(PartialMerge)), plan)
+        assert(nativeAggregates.exists(_.modes.contains(Final)), plan)
+        assert(!nativeAggregates.exists(_.modes == Seq(Partial)), plan)
+        assert(sparkAggregates.nonEmpty, plan)
+        assert(sparkAggregates.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
+      }
+    }
+  }
+
+  test("nested float collect_set preserves DISTINCT paths (issue #7203)") {
+    // SQL fixtures check native input. Also consume Spark's serialized complex partial buffers,
+    // and ensure the existing strict-mode fallback is not bypassed by the scalar-only guard.
+    val data = Seq(
+      (1, 1, Some(Double.NaN)),
+      (1, 2, Some(Double.NaN)),
+      (1, 3, Some(-0.0d)),
+      (1, 4, Some(0.0d)),
+      (1, 5, Some(1.0d)),
+      (1, 6, None),
+      (2, 1, None))
+    val local = data.toDF("grp", "id", "d")
+    withTempPath { path =>
+      local.write.parquet(path.getCanonicalPath)
+      for {
+        adaptive <- Seq(false, true)
+        strict <- Seq(false, true)
+        sparkPartial <- Seq(false, true)
+      } {
+        withSQLConf(
+          COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+          val input = if (sparkPartial) local else spark.read.parquet(path.getCanonicalPath)
+          val query = input
+            .groupBy("grp")
+            .agg(
+              count_distinct(col("id")),
+              expr("sort_array(transform(collect_set(array(d)), x -> CAST(x AS STRING)))"),
+              expr("sort_array(transform(collect_set(named_struct('v', d)), " +
+                "x -> CAST(x AS STRING)))"))
+          val (_, plan) = if (strict && !isSpark42Plus) {
+            checkSparkAnswerAndFallbackReason(query, "not fully compatible with Spark")
+          } else {
+            checkSparkAnswerAndOperator(
+              query,
+              Seq(classOf[CometBaseAggregateExec]),
+              classOf[ObjectHashAggregateExec],
+              classOf[SortAggregateExec],
+              classOf[LocalTableScanExec])
+          }
+          val nativeCollect = collect(plan) {
+            case a: CometBaseAggregateExec
+                if a.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[CollectSet]) =>
+              a
+          }
+          val sparkCollect = collect(plan) {
+            case a: BaseAggregateExec
+                if a.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[CollectSet]) =>
+              a
+          }
+          if (strict && !isSpark42Plus) {
+            assert(nativeCollect.isEmpty, plan)
+            assert(
+              sparkCollect.exists(_.aggregateExpressions.exists(_.mode == PartialMerge)),
+              plan)
+          } else {
+            val modes = nativeCollect.flatMap(_.aggregateExpressions.collect {
+              case a if a.aggregateFunction.isInstanceOf[CollectSet] => a.mode
+            })
+            assert(modes.contains(PartialMerge), plan)
+            assert(modes.contains(Final), plan)
+            assert(modes.contains(Partial) == !sparkPartial, plan)
+            assert(sparkCollect.nonEmpty == sparkPartial, plan)
+            assert(sparkCollect.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
+          }
         }
       }
     }
@@ -1380,6 +1630,43 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("struct min/max buffers cross engines in both directions") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      // JVM columnar shuffle can carry Spark's partial rows to a native final.
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withTable("struct_min_max") {
+        sql("CREATE TABLE struct_min_max(g int, ts bigint, s string) USING parquet")
+        // Group 1 has a null deciding field, which sorts first on both engines.
+        sql(
+          "INSERT INTO struct_min_max VALUES (1, 5, 'b'), (1, 9, NULL), (1, NULL, 'z'), " +
+            "(2, 1, '日本語'), (2, 1, 'a'), (3, NULL, NULL)")
+        for {
+          (disabled, nativeMode) <- Seq(
+            CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE -> Partial,
+            CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE -> Final)
+        } {
+          withSQLConf(disabled.key -> "false") {
+            val df = sql(
+              "SELECT g, min(struct(ts, s)), max(struct(ts, s)) FROM struct_min_max GROUP BY g")
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              collect(plan) { case a: CometBaseAggregateExec => a.modes }.flatten ==
+                Seq(nativeMode),
+              plan)
+            assert(
+              collect(plan) { case a: SortAggregateExec =>
+                a.aggregateExpressions.map(_.mode).distinct
+              }.flatten == Seq(if (nativeMode == Partial) Final else Partial),
+              plan)
+          }
+        }
+      }
+    }
+  }
+
   test("count, avg with null") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -2129,57 +2416,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             2)
         }
       }
-    }
-  }
-
-  test("regression aggregate flags follow the Spark patch release that changed them") {
-    // Both fixes shipped mid-line, so the flag must flip at the exact patch and stay off for
-    // earlier patches of the same minor version. A vendor suffix parses, a missing patch reads
-    // as 0, and an unparsable string falls back to the old minor-version rule.
-    val slopeExpectations = Seq(
-      "3.4.3" -> false,
-      "3.5.0" -> false,
-      "3.5.1" -> false,
-      "3.5.2" -> true,
-      "3.5.9" -> true,
-      "3.5.10" -> true,
-      "4.0.0" -> true,
-      "4.1.3" -> true,
-      "4.2.0-SNAPSHOT" -> true,
-      "4.1.3-amzn-1" -> true,
-      "3.5" -> false,
-      "v3.5.9" -> true)
-    slopeExpectations.foreach { case (version, expected) =>
-      assert(
-        RegrSparkVersions.slopeFiltersVarByPairNulls(version) == expected,
-        s"slope pair-null filtering for Spark $version should be $expected")
-    }
-
-    val r2Expectations = Seq(
-      "3.4.3" -> false,
-      "3.5.3" -> false,
-      "3.5.8" -> false,
-      "3.5.9" -> true,
-      "3.5.10" -> true,
-      "4.0.1" -> false,
-      "4.0.2" -> false,
-      "4.0.3" -> true,
-      "4.0.4" -> true,
-      "4.1.0" -> false,
-      "4.1.1" -> false,
-      "4.1.2" -> true,
-      "4.1.3" -> true,
-      "4.2.0" -> true,
-      "4.2.0-SNAPSHOT" -> true,
-      "3.6.0" -> true,
-      "5.0.0" -> true,
-      "4.1.3-amzn-1" -> true,
-      "3.5" -> false,
-      "v3.5.9" -> true)
-    r2Expectations.foreach { case (version, expected) =>
-      assert(
-        RegrSparkVersions.r2DegenerateCasesSwapped(version) == expected,
-        s"regr_r2 degenerate-case swap for Spark $version should be $expected")
     }
   }
 
@@ -3619,7 +3855,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      val swapped = RegrSparkVersions.r2DegenerateCasesSwapped(spark.version)
+      val swapped = SparkFixes.r2DegenerateCasesSwapped(spark.version)
       val constantX: java.lang.Double = if (swapped) null else 1.0
       val constantY: java.lang.Double = if (swapped) 1.0 else null
       for (reverse <- Seq(false, true)) {

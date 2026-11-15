@@ -15,73 +15,101 @@
 # specific language governing permissions and limitations
 # under the License.
 
+
 name: Label pull requests
 
-# Runs on pull_request_target so it can label pull requests from forks. Nothing from the pull
-# request is checked out or executed: the labeler reads the changed file list through the API
-# and the title step reads the event payload.
+# Labels a pull request after label_prs_trigger.yml runs for it. GitHub blocks
+# pull_request_target on public repositories, and a pull_request run from a fork only gets a
+# read-only token, so the labels are written here: workflow_run runs this file from the default
+# branch with a token that can write them. Nothing from the pull request is checked out or
+# executed, and nothing its run produced is read. The pull request is looked up from the run's
+# head repository, branch and commit, and its title, labels and changed files come from the API.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: [Label pull requests trigger]
+    types: [completed]
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
 
-# One group per pull request with cancellation, so at most one run writes labels at a time:
-# the labeler action reads the label set and writes it back whole, and two runs writing at
-# once can drop a label the other just added. A cancelled or replaced run loses nothing
-# because every step below is safe to repeat on the next event.
+# One group per pull request branch with cancellation, so at most one run writes labels at a
+# time: the labeler action reads the label set and writes it back whole, and two runs writing at
+# once can drop a label the other just added. A cancelled or replaced run loses nothing because
+# every step below is safe to repeat on the next event. workflow_run carries the head repository
+# and branch rather than the pull request number.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:
   label:
+    if: >-
+      github.repository == 'apache/datafusion-comet'
+      && github.event.workflow_run.event == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
     runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
-      # Checks out the base branch, never the pull request's code: under pull_request_target the
-      # default ref is the base commit, and only dev/ci/pr-type-label.mjs is read from it.
+      # Checks out the default branch, never the pull request's code: under workflow_run the
+      # default ref is the default branch, and only dev/ci/pr-type-label.mjs is read from it.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       # The type label follows the conventional commit prefix in the title, matching how
-      # maintainers label by hand. The decision reads the pull request's current labels, not the
-      # event payload, so a type label a maintainer applied before this run started stays and
-      # a run cut short by a newer push is completed by that push. Dependabot pull requests
-      # already carry their label.
-      - name: Label by title prefix
-        if: github.actor != 'dependabot[bot]'
+      # maintainers label by hand. The decision reads the pull request's current labels, so a
+      # type label a maintainer applied before this run started stays. A pull request whose head
+      # has moved on since the triggering run is skipped: the run for the newer push labels it.
+      # Dependabot pull requests already carry their label.
+      - name: Find the pull request and label by title prefix
+        id: pr
         uses: actions/github-script@v9
         with:
           script: |
+            const run = context.payload.workflow_run;
+            const head = run.head_repository;
+            if (!head) {
+              core.info('The head repository no longer exists');
+              return;
+            }
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              ...repo,
+              state: 'open',
+              head: `${head.owner.login}:${run.head_branch}`,
+              per_page: 100,
+            });
+            const pr = pulls.find((item) =>
+              item.head.sha === run.head_sha && item.head.repo?.full_name === head.full_name);
+            if (!pr) {
+              core.info(`No open pull request has head ${head.full_name}@${run.head_sha}`);
+              return;
+            }
+            core.setOutput('number', pr.number);
+            if (pr.user.login === 'dependabot[bot]') {
+              core.info('Dependabot pull requests already carry their type label');
+              return;
+            }
             const { typeLabelsToAdd } = await import(
               `${process.env.GITHUB_WORKSPACE}/dev/ci/pr-type-label.mjs`
             );
             const { data: current } = await github.rest.issues.listLabelsOnIssue({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
+              ...repo,
+              issue_number: pr.number,
               per_page: 100,
             });
-            const labels = typeLabelsToAdd(
-              context.payload.pull_request.title,
-              current.map((label) => label.name),
-            );
+            const labels = typeLabelsToAdd(pr.title, current.map((label) => label.name));
             if (labels.length === 0) {
               core.info('No type label to add');
               return;
             }
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels,
-            });
+            await github.rest.issues.addLabels({ ...repo, issue_number: pr.number, labels });
 
       - name: Label by changed paths
+        if: steps.pr.outputs.number != ''
         uses: actions/labeler@v7
         with:
           configuration-path: .github/labeler.yml
+          pr-number: ${{ steps.pr.outputs.number }}
           sync-labels: false

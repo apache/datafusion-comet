@@ -127,9 +127,10 @@ SELECT sequence(0L, 9223372036854775807L, 1L)
 query expect_error(9223372036854775809)
 SELECT sequence(0L, -9223372036854775808L, -1L)
 
--- delta overflows long but the exact length is tiny: Spark reaches an internal error
-query expect_error(Unreachable code reached)
-SELECT sequence(-9223372036854775808L, 9223372036854775807L, 9223372036854775807L)
+-- When the delta overflows a long but the exact length is tiny, Spark 4.0.5, 4.1.4 and 4.2.1
+-- return the elements (SPARK-58821) where earlier releases raise an internal error. Version
+-- directives compare only major.minor, so CometArrayExpressionSuite covers this case in
+-- "sequence whose stop - start overflows a long".
 
 -- ============================================================================
 -- Full narrow-type range: writes at the byte/short boundary. Spark's kernel

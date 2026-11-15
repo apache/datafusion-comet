@@ -129,8 +129,8 @@ pub fn deserialize_dv_bitmap(data: &[u8]) -> Result<RoaringTreemap, ExecutionErr
                 )));
             }
             let mut pos = 4usize;
-            let mut treemap = RoaringTreemap::new();
-            for key in 0..count as u64 {
+            let mut bitmaps = Vec::new();
+            for key in 0..count as u32 {
                 if rest.len() < pos + 4 {
                     return Err(GeneralError(
                         "Native deletion vector bitmap truncated".to_string(),
@@ -148,11 +148,11 @@ pub fn deserialize_dv_bitmap(data: &[u8]) -> Result<RoaringTreemap, ExecutionErr
                         GeneralError(format!("Invalid deletion vector sub-bitmap: {e}"))
                     })?;
                 pos += size as usize;
-                for value in bitmap {
-                    treemap.insert((key << 32) | value as u64);
+                if !bitmap.is_empty() {
+                    bitmaps.push((key, bitmap));
                 }
             }
-            Ok(treemap)
+            Ok(RoaringTreemap::from_bitmaps(bitmaps))
         }
         other => Err(GeneralError(format!(
             "Unexpected RoaringBitmapArray magic number {other}"
@@ -1122,10 +1122,50 @@ mod tests {
 
     #[test]
     fn native_format_decodes() {
-        let values = [0u64, 2, 3, 100, (1u64 << 32) + 7];
+        let values = [0u64, 2, 3, 100, (2u64 << 32) + 7];
         let decoded = deserialize_dv_bitmap(&native_bytes(&values)).unwrap();
         let expected: RoaringTreemap = values.into_iter().collect();
         assert_eq!(decoded, expected);
+        // `native_bytes` emits an entry for every key up to the maximum, so key 1 is an empty
+        // partition. The decoder must omit it without shifting key 2's partition index.
+        let keys: Vec<u32> = decoded.bitmaps().map(|(key, _)| key).collect();
+        assert_eq!(keys, vec![0, 2]);
+    }
+
+    #[test]
+    fn native_decode_preserves_dense_bitmap_compression() {
+        let mut bitmap = RoaringBitmap::new();
+        bitmap.insert_range(0..1_000_000);
+        let compressed_size = bitmap.serialized_size();
+        let mut bitmap_bytes = Vec::new();
+        bitmap.serialize_into(&mut bitmap_bytes).unwrap();
+
+        let mut data = NATIVE_MAGIC.to_le_bytes().to_vec();
+        data.extend(1i32.to_le_bytes());
+        data.extend((bitmap_bytes.len() as i32).to_le_bytes());
+        data.extend(bitmap_bytes);
+
+        let decoded = deserialize_dv_bitmap(&data).unwrap();
+        let (_, decoded_bitmap) = decoded.bitmaps().next().unwrap();
+        assert_eq!(decoded_bitmap.serialized_size(), compressed_size);
+
+        // Dense native DVs now reach `build_access_plan`, so the same container must survive
+        // plan construction. Group 0 (rows 0..600_000) is fully deleted and must be skipped;
+        // group 1 (rows 600_000..1_200_000) has its first 400_000 rows deleted, leaving a
+        // trailing run of 200_000 live rows to select.
+        assert_eq!(decoded.len(), 1_000_000);
+        let plan = full_file_access_plan(&[600_000, 600_000], &decoded).unwrap();
+        assert_eq!(&plan.inner()[0], &RowGroupAccess::Skip);
+        match &plan.inner()[1] {
+            RowGroupAccess::Selection(sel) => {
+                let selectors: Vec<RowSelector> = sel.clone().into();
+                assert_eq!(
+                    selectors,
+                    vec![RowSelector::skip(400_000), RowSelector::select(200_000)]
+                );
+            }
+            other => panic!("expected selection, got {other:?}"),
+        }
     }
 
     #[test]
