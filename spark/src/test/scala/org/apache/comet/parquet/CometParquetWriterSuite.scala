@@ -42,7 +42,7 @@ import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOu
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, TableIdentifier}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, BasicWriteTaskStatsTracker, FileFormatWriter, SQLHadoopMapReduceCommitProtocol, WriteFilesExec, WriteJobStatsTracker, WriteTaskStats, WriteTaskStatsTracker}
@@ -167,8 +167,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
                 case write: CometWriteFilesExec => write
               }
               .getOrElse(fail(s"expected a native parquet writer:\n$nativePlan"))
-            val stageWithTransition = nativeWrite.withNewChildren(Seq(
-              CometSparkToColumnarExec(CometNativeColumnarToRowExec(nativeWrite.children.head))))
+            val stageWithTransition = nativeWrite.withNewChildren(
+              Seq(CometSparkToColumnarExec(CometColumnarToRowExec(nativeWrite.children.head))))
             assert(
               stageWithTransition.collect { case _: ColumnarToRowTransition => true }.nonEmpty,
               s"test requires a C2R transition:\n$stageWithTransition")

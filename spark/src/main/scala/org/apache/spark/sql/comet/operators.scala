@@ -1946,12 +1946,8 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
     op.generator.children.head.dataType match {
-      case _: ArrayType =>
+      case _: ArrayType | _: MapType =>
         Compatible()
-      case _: MapType =>
-        // TODO add support for map types
-        // https://github.com/apache/datafusion-comet/issues/2837
-        Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
       case other =>
         Unsupported(Some(s"Unsupported data type: $other"))
     }
@@ -3032,6 +3028,11 @@ trait CometHashJoin {
       None
     }
   }
+
+  // mayReportFalseOrder for a window's input, checked by CometWindowExec before it relies on that
+  // order and by CometExecRule before a window that stays in Spark does.
+  private[apache] def mayReportFalseInputOrder(plan: SparkPlan): Boolean =
+    mayReportFalseOrder(plan, countInPlan = true)
 
   // Whether the order that `plan` reports may be false, because something that feeds it with no
   // sort in between cannot be relied on to keep it. Comet's hash joins report the order of their

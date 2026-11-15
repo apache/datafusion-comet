@@ -245,7 +245,7 @@ Publish a real `expirationEpochMillis` when you have one. On both paths Comet re
 
 On the Parquet/`object_store` path, `object_store` signs a request once and sends the same signature on every retry, for up to 3 minutes by default, and it does not retry a 403. The five minutes Comet leaves before an expiry cover those retries. A credential you return with less time left than that is used for the request that asked for it and not kept.
 
-The built-in adapters report an expiry when the AWS SDK exposes one, which it does on the Spark 4.x builds (SDK v2). On the Spark 3.4 and 3.5 builds (SDK v1) they cannot, and report `0`.
+The built-in adapters report an expiry when the AWS SDK exposes one, which it does on the Spark 4.x builds (SDK v2). On the Spark 3.5 build (SDK v1) they cannot, and report `0`.
 
 ### Returned fields
 

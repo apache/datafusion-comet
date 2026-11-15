@@ -5,9 +5,9 @@
 # to you under the Apache License, Version 2.0 (the
 # "License"); you may not use this file except in compliance
 # with the License.  You may obtain a copy of the License at
-# 
+#
 #   http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing,
 # software distributed under the License is distributed on an
 # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -15,10 +15,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[target.x86_64-apple-darwin]
-linker = "x86_64-apple-darwin21.4-clang"
-ar = "x86_64-apple-darwin21.4-ar"
 
-[target.aarch64-apple-darwin]
-linker = "aarch64-apple-darwin21.4-clang"
-ar = "aarch64-apple-darwin21.4-ar"
+name: Label pull requests trigger
+
+# Starts the labeler for a pull request. This run gets a read-only token and does nothing itself;
+# when it completes, label_prs.yml runs from the default branch through workflow_run and writes
+# the labels. Kept separate from Comet CI so labels arrive in seconds rather than after CI.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Hand off to label_prs.yml
+        run: echo "Labels for pull request ${{ github.event.pull_request.number }} are applied by label_prs.yml"

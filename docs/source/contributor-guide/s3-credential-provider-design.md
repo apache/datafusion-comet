@@ -142,7 +142,7 @@ The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a crede
 
 ## Property-bag handling on the Iceberg path
 
-The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`/`opendal.`) is applied native-side in `iceberg_common.rs::build_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
+The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`/`opendal.`/`hdfs.`/`hadoop.`) is applied native-side in `iceberg_common.rs::build_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
 
 `IcebergScanExec` derives a redacting `Debug`, and the `FileIO` cache key's `Debug` omits the property bag, so plan dumps and tracing do not leak it.
 
