@@ -32,3 +32,9 @@ class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
  * symbols.
  */
 class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
+
+/**
+ * Thrown when `spark.comet.nativeUdf.enabled` or `spark.comet.nativeUdf.allowedPaths` does not
+ * allow a native UDF library to be loaded.
+ */
+class CometNativeUdfNotAllowedException(msg: String) extends CometNativeException(msg)

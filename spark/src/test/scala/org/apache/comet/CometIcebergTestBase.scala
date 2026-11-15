@@ -124,13 +124,16 @@ trait CometIcebergTestBase { this: CometTestBase =>
 
   /**
    * Adds an `int` column whose initial and write defaults are both `defaultValue`, through
-   * `UpdateSchema.addColumn(name, type, Literal)`. Requires Iceberg 1.10+ and a v3 table. Callers
-   * must `REFRESH TABLE` afterwards.
+   * `UpdateSchema.addColumn(name, type, Literal)`, or to the struct `parent` through
+   * `addColumn(parent, name, type, Literal)`. Requires Iceberg 1.10+ and a v3 table. Callers must
+   * `REFRESH TABLE` afterwards.
    */
   protected def addIcebergIntColumnWithDefault(
       icebergTable: AnyRef,
       columnName: String,
-      defaultValue: Int): Unit = {
+      defaultValue: Int,
+      parent: Option[String] = None): Unit = {
+    val typeClass = IcebergReflection.loadClass("org.apache.iceberg.types.Type")
     val intType = IcebergReflection
       .loadClass("org.apache.iceberg.types.Types$IntegerType")
       .getMethod("get")
@@ -139,18 +142,22 @@ trait CometIcebergTestBase { this: CometTestBase =>
       .loadClass("org.apache.iceberg.expressions.Expressions")
       .getMethod("lit", classOf[Object])
       .invoke(null, Integer.valueOf(defaultValue))
+    val literalClass = IcebergReflection.loadClass("org.apache.iceberg.expressions.Literal")
     val update = IcebergReflection
       .loadClass("org.apache.iceberg.Table")
       .getMethod("updateSchema")
       .invoke(icebergTable)
     val updateSchemaClass = IcebergReflection.loadClass("org.apache.iceberg.UpdateSchema")
-    updateSchemaClass
-      .getMethod(
-        "addColumn",
-        classOf[String],
-        IcebergReflection.loadClass("org.apache.iceberg.types.Type"),
-        IcebergReflection.loadClass("org.apache.iceberg.expressions.Literal"))
-      .invoke(update, columnName, intType, literal)
+    parent match {
+      case Some(struct) =>
+        updateSchemaClass
+          .getMethod("addColumn", classOf[String], classOf[String], typeClass, literalClass)
+          .invoke(update, struct, columnName, intType, literal)
+      case None =>
+        updateSchemaClass
+          .getMethod("addColumn", classOf[String], typeClass, literalClass)
+          .invoke(update, columnName, intType, literal)
+    }
     updateSchemaClass.getMethod("commit").invoke(update)
   }
 
@@ -166,6 +173,36 @@ trait CometIcebergTestBase { this: CometTestBase =>
       .loadClass("org.apache.iceberg.types.Types$FixedType")
       .getMethod("ofLength", classOf[Int])
       .invoke(null, Integer.valueOf(length))
+
+  /**
+   * Whether the Iceberg runtime on the classpath can report an output ordering. Not all releases
+   * can, so ordering-dependent tests must gate on this capability rather than on a version
+   * number. We probe for SortOrderAnalyzer, which ships in exactly the builds whose
+   * SparkPartitioningAwareScan reports an ordering. Returns false if the class is missing so
+   * those tests skip rather than fail.
+   */
+  protected lazy val icebergReportsOrdering: Boolean =
+    try {
+      IcebergReflection.loadClass("org.apache.iceberg.spark.source.SortOrderAnalyzer")
+      true
+    } catch {
+      case _: Exception => false
+    }
+
+  /**
+   * Sets a single ASC sort order on an Iceberg table via the Java API. The SQL form (ALTER TABLE
+   * ... WRITE ORDERED BY) needs Iceberg's SQL extensions, which the test session does not
+   * register, so we go through Spark3Util.loadIcebergTable and replaceSortOrder instead.
+   */
+  protected def setIcebergSortOrderAsc(tableName: String, column: String): Unit = {
+    val table = IcebergReflection
+      .loadClass("org.apache.iceberg.spark.Spark3Util")
+      .getMethod("loadIcebergTable", classOf[SparkSession], classOf[String])
+      .invoke(null, SparkSession.active, tableName)
+    val replace = table.getClass.getMethod("replaceSortOrder").invoke(table)
+    val withAsc = replace.getClass.getMethod("asc", classOf[String]).invoke(replace, column)
+    withAsc.getClass.getMethod("commit").invoke(withAsc)
+  }
 
   protected def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile

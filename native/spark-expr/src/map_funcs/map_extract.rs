@@ -30,6 +30,8 @@ use datafusion::logical_expr::{
 };
 use std::sync::Arc;
 
+use crate::nested_compaction::compact_nested_take_result;
+
 /// Spark's map lookup: `GetMapValue` (`m[k]`) and `element_at(<map>, k)`.
 ///
 /// Overrides DataFusion's `map_extract` under the same name, and differs from it in two ways:
@@ -42,7 +44,8 @@ use std::sync::Arc;
 ///     other Comet map kernel and slower than Spark itself
 ///     ([#5795](https://github.com/apache/datafusion-comet/issues/5795)). Here a single Arrow
 ///     `eq` covers the whole batch of entries at once, the per-row work is a bit scan over the
-///     resulting mask, and the values are gathered with one `take`.
+///     resulting mask, and the values are gathered with one `take`, then nested results release
+///     capacity reserved for unselected values.
 ///
 /// Spark's own lookup returns the first entry whose key compares equal, so the mask scan stops at
 /// the first match too. A missing key, a `NULL` map row, and a `NULL` lookup key all produce
@@ -224,11 +227,8 @@ fn spark_map_extract(
     }
     let indices = UInt32Array::new(indices.into(), nulls.finish());
 
-    Ok(ColumnarValue::Array(take(
-        map_array.values(),
-        &indices,
-        None,
-    )?))
+    let result = take(map_array.values(), &indices, None)?;
+    Ok(ColumnarValue::Array(compact_nested_take_result(result)))
 }
 
 /// Reject a lookup key this kernel cannot compare against `key_type`.
@@ -659,5 +659,68 @@ mod tests {
         .unwrap();
         let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(result.value(0), 22);
+    }
+
+    #[test]
+    fn nested_lookup_retained_capacity() -> DataFusionResult<()> {
+        use crate::nested_compaction::test_util::{
+            assert_compact, reference_gather, skewed_nested_values, ROWS,
+        };
+        for selected_len in [0, 1] {
+            for values in skewed_nested_values(selected_len) {
+                for nullable in [false, true] {
+                    // Key 1 selects the short value at `2 * row`; key 2 holds the long one.
+                    let map = map_of(
+                        Arc::new(Int32Array::from_iter_values((0..ROWS).flat_map(|_| [1, 2]))),
+                        Arc::clone(&values),
+                        (0..=ROWS).map(|row| 2 * row as i32).collect(),
+                        nullable.then(|| (0..ROWS).map(|row| row % 4 != 0).collect()),
+                    );
+                    for (sliced, map) in [(false, map.clone()), (true, map.slice(3, ROWS - 5))] {
+                        let rows = map.len();
+                        let per_row = Int32Array::from_iter((0..rows).map(|row| match row % 11 {
+                            0 => None,
+                            1 => Some(3),
+                            _ => Some(1),
+                        }));
+                        let scalar = |key| ColumnarValue::Scalar(ScalarValue::Int32(key));
+                        for (lookup, hits) in [
+                            (scalar(Some(1)), vec![true; rows]),
+                            (scalar(Some(3)), vec![false; rows]),
+                            (scalar(None), vec![false; rows]),
+                            (
+                                ColumnarValue::Array(Arc::new(per_row.clone())),
+                                per_row.iter().map(|key| key == Some(1)).collect(),
+                            ),
+                        ] {
+                            let source_rows = (0..rows)
+                                .map(|row| {
+                                    (map.is_valid(row) && hits[row])
+                                        .then(|| map.value_offsets()[row] as usize)
+                                })
+                                .collect::<Vec<_>>();
+                            let expected = reference_gather(values.as_ref(), &source_rows)?;
+                            let input = map.to_data();
+                            let result = spark_map_extract(
+                                &ColumnarValue::Array(Arc::new(map.clone())),
+                                &lookup,
+                                rows,
+                            )?
+                            .into_array(rows)?;
+                            assert_compact(
+                                result.as_ref(),
+                                expected.as_ref(),
+                                &format!(
+                                    "{:?}, selected_len={selected_len}, nullable={nullable}, sliced={sliced}, lookup={lookup:?}",
+                                    values.data_type(),
+                                ),
+                            );
+                            assert_eq!(map.to_data(), input);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

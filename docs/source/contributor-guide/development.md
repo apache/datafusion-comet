@@ -447,7 +447,7 @@ from a clean IntelliJ configuration:
 
 6. Open the repository root as a new project in IntelliJ IDEA.
 7. In the Maven tool window, enable the `spark-4.0` and `jdk17` profiles. Disable conflicting Spark
-   version profiles such as `spark-3.4` or `spark-3.5` if IntelliJ selected them.
+   version profiles such as `spark-3.5` if IntelliJ selected them.
 8. Re-import or reload the Maven project.
 9. Build the project in IntelliJ.
 
@@ -543,7 +543,6 @@ The tests can be run with:
 
 ```sh
 export SPARK_HOME=`pwd`
-./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -552,7 +551,6 @@ and
 
 ```sh
 export SPARK_HOME=`pwd`
-./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -562,7 +560,6 @@ To regenerate the golden files, you can run the following commands.
 
 ```sh
 export SPARK_HOME=`pwd`
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -571,7 +568,6 @@ and
 
 ```sh
 export SPARK_HOME=`pwd`
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -633,11 +629,22 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 ## Submitting a Pull Request
 
+With coding agents, the number of open PRs can far exceed our review capacity. To help reviewers
+focus on fewer PRs at a time, users without write access are limited to **3 open, non-draft PRs**.
+If you reach the limit, wait for existing PRs to be merged, close them, or convert them to drafts
+before opening another. For work that is split into a series of small PRs, keep only the PR that
+is ready for review, or that the later PRs depend on, as non-draft, and open the others as drafts
+until it merges.
+
 Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
 or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
 the risk of accidentally overwriting another maintainer's commits when multiple people push
 to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
 changes before retrying; do not switch to `--force` to bypass the check.
+
+For a pull request from a fork, the pull request tier of CI runs on your fork's GitHub runners
+rather than the project's. Enable GitHub Actions on your fork and keep its `main` in sync before you
+push; see [Pull requests from forks](ci.md#pull-requests-from-forks).
 
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 

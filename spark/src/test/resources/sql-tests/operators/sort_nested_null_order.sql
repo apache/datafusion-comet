@@ -17,14 +17,8 @@
 
 -- Spark orders a null element of an array key, or a null field of a struct key, below every
 -- other value, whatever the key's NULLS FIRST or NULLS LAST, which places only a null key itself.
--- Comet's native sort places a nested null by the key's null order instead, so under ASC NULLS
--- LAST and DESC NULLS FIRST a key whose type can hold one falls back to Spark, in a Sort, a TopK
--- or a window order key (https://github.com/apache/datafusion-comet/issues/6476). The default
--- null orders, ASC NULLS FIRST and DESC NULLS LAST, put it where Spark does and stay native.
---
--- The test harness admits incompatible sort orders by default, so turn that off to check the
--- shipped policy.
--- Config: spark.comet.expression.SortOrder.allowIncompatible=false
+-- For nondefault root NULL placement, Comet wraps the key so only root NULLs use that placement;
+-- nested NULLs keep Spark's direction-dependent order in Sort, TopK and window keys.
 
 statement
 CREATE TABLE nested_null_order(id INT, g INT, i INT) USING parquet
@@ -33,25 +27,33 @@ statement
 INSERT INTO nested_null_order VALUES (1, 1, 1), (2, 1, NULL), (3, 2, 3), (4, 2, NULL), (5, 1, 2)
 
 -- Rows 2 and 4 hold a null element, which Spark sorts first under ASC and last under DESC.
--- Native, these put them at the other end.
-query expect_fallback(on an array or struct that can hold a null element or field)
+query
 SELECT id FROM nested_null_order ORDER BY array(i) DESC NULLS FIRST, id
 
-query expect_fallback(on an array or struct that can hold a null element or field)
+query
 SELECT id FROM nested_null_order ORDER BY named_struct('x', i) NULLS LAST, id
 
-query expect_fallback(on an array or struct that can hold a null element or field)
+query
 SELECT id FROM nested_null_order ORDER BY array(array(i)) NULLS LAST, id
 
+-- A root NULL and an interior NULL must be placed independently.
+query
+SELECT id FROM nested_null_order
+ORDER BY IF(id = 1, CAST(NULL AS ARRAY<INT>), array(i)) ASC NULLS LAST, id
+
+query
+SELECT id FROM nested_null_order
+ORDER BY IF(id = 1, CAST(NULL AS STRUCT<x:INT>), named_struct('x', i)) DESC NULLS FIRST, id
+
 -- TopK
-query expect_fallback(on an array or struct that can hold a null element or field)
+query
 SELECT id FROM nested_null_order ORDER BY array(i) NULLS LAST, id LIMIT 3
 
 -- Window order keys
-query expect_fallback(on an array or struct that can hold a null element or field)
+query
 SELECT id, RANK() OVER (ORDER BY array(i) DESC NULLS FIRST) AS r FROM nested_null_order
 
-query expect_fallback(on an array or struct that can hold a null element or field)
+query
 SELECT id,
   DENSE_RANK() OVER (PARTITION BY g ORDER BY named_struct('x', i) NULLS LAST) AS r
 FROM nested_null_order

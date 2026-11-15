@@ -117,6 +117,15 @@ object IcebergWriteProtoTranslation {
       }
     }
 
+  /**
+   * True when the write compresses with brotli. Unlike `resolveCompression`, never throws. The
+   * name resolves through `nativeCodec`, the same case-insensitive, untrimmed match the codec
+   * gate and the translation use, so any spelling iceberg-java reads as brotli (`BROTLI`,
+   * `Brotli`) reaches the codec class check.
+   */
+  def compressesWithBrotli(props: Map[String, String]): Boolean =
+    nativeCodec(codecName(props)).contains(CompressionCodec.Brotli)
+
   /** Builds the parquet settings message. Pure: no SparkWrite or Iceberg `Table` access. */
   def buildParquetSettings(
       props: Map[String, String],

@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::file_error_context::ParquetErrorContext;
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
@@ -51,6 +52,17 @@ mod variant_tests;
 /// with the Delta DV path so its cache-populating footer fetch issues the identical read the
 /// scan would.
 pub(crate) const METADATA_SIZE_HINT: usize = 512 * 1024;
+
+/// Native Parquet scan options that are not DataFusion options.
+/// `prepare_datafusion_session_context` attaches them to each plan's `SessionConfig` from the
+/// plan's Comet configs, and every scan the plan builds reads them there. A session without them
+/// scans with every option off.
+#[derive(Debug)]
+pub(crate) struct CometParquetScanOptions {
+    /// Load the next file's footer and page index while the current file is read
+    /// (`spark.comet.parquet.prefetchNextFileMetadata.enabled`).
+    pub prefetch_next_file_metadata: bool,
+}
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -233,6 +245,19 @@ pub(crate) fn init_datasource_exec(
     // its footer metadata (see `datetime_rebase.rs`), which is how the expression adapter
     // attributes timestamp columns to Spark's INT64 vs INT96 rebase specs.
     let scan_io_source = scan_io_source(object_store_backend);
+    // Comet's scans read one file group, the only shape the prefetch handles. An encrypted scan
+    // never prefetches, since a prefetch carries no decryption properties.
+    let prefetch_files = match file_groups.as_slice() {
+        [files]
+            if !encryption_enabled
+                && session_config
+                    .get_extension::<CometParquetScanOptions>()
+                    .is_some_and(|options| options.prefetch_next_file_metadata) =>
+        {
+            Some(files.as_slice())
+        }
+        _ => None,
+    };
     let reader_factory = Arc::new(
         EagerPageIndexReaderFactory::new(
             store,
@@ -250,7 +275,8 @@ pub(crate) fn init_datasource_exec(
                 && data_filters
                     .as_ref()
                     .is_some_and(|filters| !filters.is_empty()),
-        ),
+        )
+        .with_next_file_metadata_prefetch(prefetch_files),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
@@ -285,6 +311,11 @@ pub(crate) fn init_datasource_exec(
         _ => Arc::new(parquet_source),
     };
 
+    let file_source = if spark_parquet_options.checked_timestamp_overflow {
+        ParquetErrorContext::wrap(file_source)
+    } else {
+        file_source
+    };
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );
@@ -801,6 +832,91 @@ mod tests {
         // An empty mode (older proto producer) keeps the conservative EXCEPTION posture.
         let err = scan_no_metadata_date_file("").await.unwrap_err();
         assert!(err.contains("rebase"), "unexpected error: {err}");
+    }
+
+    /// The reader keeps the nested types of a file's ARROW:schema, so an Arrow writer's
+    /// `LargeBinary`, `BinaryView` or dictionary-encoded list elements reach the conversion to
+    /// Spark's string type as those types, not as `Binary`. A malformed value must still decode
+    /// to U+FFFD.
+    #[tokio::test]
+    async fn nested_arrow_binary_types_read_as_string_decode_invalid_utf8() {
+        use arrow::array::{Array, AsArray, BinaryArray, ListArray};
+        use arrow::buffer::OffsetBuffer;
+
+        for binary_type in [
+            DataType::LargeBinary,
+            DataType::BinaryView,
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Binary)),
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::LargeBinary)),
+        ] {
+            let element = Arc::new(Field::new("element", binary_type.clone(), true));
+            let values = arrow::compute::cast(
+                &BinaryArray::from(vec![b"one".as_slice(), &[0xff]]),
+                &binary_type,
+            )
+            .unwrap();
+            let list = ListArray::new(element, OffsetBuffer::new(vec![0, 2].into()), values, None);
+            let file_schema = Arc::new(Schema::new(vec![Field::new(
+                "s",
+                list.data_type().clone(),
+                true,
+            )]));
+            let batch =
+                RecordBatch::try_new(Arc::clone(&file_schema), vec![Arc::new(list)]).unwrap();
+
+            let filename = get_temp_filename()
+                .as_path()
+                .as_os_str()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let file = File::create(&filename).unwrap();
+            let mut writer = ArrowWriter::try_new(file, file_schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+
+            let string_list = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+            let required_schema = Arc::new(Schema::new(vec![Field::new("s", string_list, true)]));
+            let session_ctx = Arc::new(SessionContext::new());
+            let scan = init_datasource_exec(
+                required_schema,
+                None,
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                ObjectStoreBackend::Local,
+                vec![vec![PartitionedFile::from_path(filename).unwrap()]],
+                None,
+                None,
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &session_ctx,
+                false,
+                false,
+                false,
+                true,
+                "CORRECTED",
+                "CORRECTED",
+            )
+            .unwrap();
+
+            let mut strings = Vec::new();
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            while let Some(batch) = stream.next().await {
+                let batch = batch.unwrap();
+                let values = batch.column(0).as_list::<i32>().values();
+                let values = values.as_string::<i32>();
+                strings.extend(values.iter().map(|v| v.map(str::to_string)));
+            }
+            assert_eq!(
+                strings,
+                vec![Some("one".to_string()), Some("\u{fffd}".to_string())],
+                "{binary_type}"
+            );
+        }
     }
 
     /// Writes a metadata-free parquet file with one INT64 `TIMESTAMP_MICROS` column (`ts`) and
@@ -1491,7 +1607,7 @@ mod tests {
             .iter()
             .filter(|metric| metric.value().name().starts_with("scan_io_"))
             .collect::<Vec<_>>();
-        assert_eq!(scan_io_metrics.len(), 11);
+        assert_eq!(scan_io_metrics.len(), 12);
         for metric in scan_io_metrics {
             assert!(metric.labels().is_empty());
             assert_eq!(metric.partition(), None);

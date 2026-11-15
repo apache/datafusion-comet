@@ -196,6 +196,7 @@ mod comet_metric_node;
 mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
+mod output_stream_sink;
 mod shuffle_block_iterator;
 mod shuffle_partition_pusher;
 
@@ -204,6 +205,7 @@ pub use comet_metric_node::*;
 pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
 pub use comet_task_memory_manager::*;
 use comet_udf_bridge::CometUdfBridge;
+pub use output_stream_sink::{JavaOutputStreamSink, OutputStreamSink};
 use shuffle_block_iterator::CometShuffleBlockIterator;
 pub use shuffle_partition_pusher::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
@@ -350,12 +352,14 @@ impl JVMClasses<'_> {
         F: FnOnce(&mut Env) -> Result<T, E>,
         E: From<CometError>,
     {
-        debug_assert!(
-            JAVA_VM.get().is_some(),
-            "JVMClasses::with_env: JAVA_VM not initialized"
-        );
+        // A process that never started a JVM, such as a Comet Native Executor, has no VM to attach
+        // to, so a path that reaches this fails instead of being undefined behavior.
+        let java_vm = JAVA_VM.get().ok_or_else(|| {
+            E::from(CometError::Internal(
+                "JVMClasses::with_env: there is no JVM in this process".to_string(),
+            ))
+        })?;
         unsafe {
-            let java_vm = JAVA_VM.get_unchecked();
             let mut scope = jni::ScopeToken::default();
             let mut guard = java_vm
                 .attach_current_thread_guard(Default::default, &mut scope)
@@ -480,4 +484,18 @@ pub fn convert_exception(env: &mut Env, throwable: &JThrowable) -> CometResult<C
         msg: message_str,
         throwable: env.new_global_ref(throwable)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A process with no JVM, such as a Comet Native Executor, gets an error, not undefined behavior.
+    #[test]
+    fn with_env_fails_without_a_jvm() {
+        assert!(JAVA_VM.get().is_none());
+        let result: Result<(), CometError> = JVMClasses::with_env(|_| Ok(()));
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("no JVM"), "{error}");
+    }
 }

@@ -199,7 +199,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
     activeSpillSorter.setSpillInfo(spillInfo);
 
-    activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
+    activeSpillSorter.writeSortedPartitions(false, tracingEnabled);
     updatePeakMemoryUsed();
     final long spillSize = activeSpillSorter.freeMemory();
     activeSpillSorter.reset();
@@ -338,7 +338,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       final SpillInfo spillInfo = new SpillInfo(numPartitions, file, blockId);
 
       activeSpillSorter.setSpillInfo(spillInfo);
-      activeSpillSorter.writeSortedFileNative(true, tracingEnabled);
+      activeSpillSorter.writeSortedPartitions(true, tracingEnabled);
 
       freeMemory();
     }

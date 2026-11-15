@@ -20,11 +20,12 @@ under the License.
 # Older Versions
 
 These user guides are kept for reference. They are not maintained: use the
-[current stable release](1.1/index) for production guidance.
+[current stable release](1.2/index) for production guidance.
 
 ```{toctree}
 :maxdepth: 1
 
+1.1.x <1.1/index>
 1.0.x <1.0/index>
 0.17.x <0.17/index>
 0.16.x <0.16/index>

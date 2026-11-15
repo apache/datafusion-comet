@@ -19,51 +19,36 @@
 
 package org.apache.comet
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID, Sequence}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, LongType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, CometSequence, Compatible, ExprOuterClass, Incompatible, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+
+/** Counts calls to a test UDF. Comet tests run in local mode, so tasks see this object. */
+object SizeChildCounter {
+  val calls = new AtomicLong(0)
+}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  test("array set signed-zero Spark patch versions") {
-    // 4.2.0 normalizes the arguments in the plan (SPARK-54918), and 4.0.5+, 4.1.4+ and 4.2.1+
-    // normalize during evaluation (SPARK-59602). Earlier releases keep flat signed zeros apart.
-    Seq("3.4.3", "3.5.9", "4.0.0", "4.0.4", "4.0.4-SNAPSHOT", "4.1.0", "4.1.3").foreach {
-      version =>
-        assert(!ArraySetSupport.normalizesFloats(version), version)
-    }
-    Seq(
-      "4.0.5",
-      "4.0.10",
-      "4.1.4",
-      "4.1.10",
-      "4.2.0",
-      "4.2.0-SNAPSHOT",
-      "4.2.1",
-      "4.2.10",
-      "4.3.0",
-      "5.0.0").foreach { version =>
-      assert(ArraySetSupport.normalizesFloats(version), version)
-    }
-  }
-
   test("array set signed-zero support levels") {
-    // This test covers element-type detection; the preceding test pins the version boundaries.
-    val fixed = ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)
+    // This test covers element-type detection; SparkFixesSuite pins the version boundaries.
+    val fixed = SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)
     Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
       .foreach { elementType =>
         val child = AttributeReference("a", ArrayType(elementType))()
@@ -113,7 +98,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
           .foreach { case (function, arguments) =>
             val query = s"SELECT $function($arguments)"
-            if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+            if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
               checkSparkAnswerAndOperator(query)
             } else {
               checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -153,7 +138,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union(array(named_struct('x', d)), array(named_struct('x', -d)))")
         expressions.foreach { expression =>
           val query = s"SELECT size($expression) FROM array_set_nan"
-          if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+          if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
             checkSparkAnswerAndOperator(query)
           } else {
             checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -184,7 +169,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             s"array_union(array(named_struct('x', $column)), array(named_struct('x', -$column)))")
             .foreach { expression =>
               val query = s"SELECT $expression FROM array_set_zero"
-              if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+              if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
                 checkSparkAnswerAndOperator(query)
               } else {
                 checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -771,6 +756,22 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     assert(nullableDelimiter.isDefined && !nullableDelimiter.get.hasIf)
   }
 
+  test("arrays_overlap native variant by Spark version") {
+    // "array set signed-zero Spark patch versions" pins the version boundaries. Where Spark
+    // normalizes, -0.0 and 0.0 are one value in a flat FLOAT or DOUBLE array, which no pinned
+    // Spark profile can show: 4.2.0 normalizes the arguments in the plan, before the native
+    // kernel sees them.
+    assert(CometArraysOverlap.nativeFunction("4.1.3") == "spark_arrays_overlap")
+    assert(CometArraysOverlap.nativeFunction("4.1.4") == "spark_arrays_overlap_normalized")
+    // convert asks for the variant of the Spark version it runs on.
+    val array = AttributeReference("a", ArrayType(DoubleType))()
+    val proto =
+      CometArraysOverlap.convert(ArraysOverlap(array, array), Seq(array), binding = false)
+    assert(
+      proto.map(_.getScalarFunc.getFunc) ==
+        Some(CometArraysOverlap.nativeFunction(org.apache.spark.SPARK_VERSION)))
+  }
+
   test("arrays_overlap") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -1330,6 +1331,45 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("size evaluates its child once") {
+    // A NULL guard around size serializes the child a second time, so a UDF child would be
+    // called once for the guard and again for every row whose array is not NULL.
+    spark.udf.register(
+      "splitOrNull",
+      (s: String) => {
+        SizeChildCounter.calls.incrementAndGet()
+        if (s == null) null else s.split(",", -1).toSeq
+      })
+    // `udf` alone names the org.apache.comet.udf package here on Scala 2.12.
+    val splitOrEmpty = org.apache.spark.sql.functions.udf { (s: String) =>
+      SizeChildCounter.calls.incrementAndGet()
+      if (s == null) Seq.empty[String] else s.split(",", -1).toSeq
+    }
+    spark.udf.register("splitOrEmpty", splitOrEmpty.asNonNullable())
+    // Each call plans the query anew, so it runs with the configuration in effect.
+    def calls(query: String): Long = {
+      SizeChildCounter.calls.set(0)
+      sql(query).collect()
+      SizeChildCounter.calls.get()
+    }
+    withParquetTable(Seq("a,b,c", null, "", "x,y").map(Tuple1(_)), "tbl") {
+      // The two shapes that need no NULL guard: legacy size of NULL and a non-nullable child.
+      Seq("true" -> "splitOrNull", "false" -> "splitOrEmpty").foreach { case (legacy, split) =>
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          val query = s"SELECT size($split(_1)) FROM tbl"
+          checkSparkAnswerAndOperator(query)
+          var sparkCalls = 0L
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkCalls = calls(query)
+          }
+          assert(calls(query) == sparkCalls)
+        }
+      }
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/4560
   test("array_size returns null for null input") {
     val table = "t1"
@@ -1757,6 +1797,37 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       assert(e.getMessage.contains("spark.comet.batchSize"), e.getMessage)
       withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "256") {
         checkSparkAnswerAndOperator(query)
+      }
+    }
+  }
+
+  // SparkFixesSuite covers the variant for each Spark version.
+  test("sequence asks for the native variant of the Spark version it runs on") {
+    val start = AttributeReference("start", LongType)()
+    val stop = AttributeReference("stop", LongType)()
+    val step = AttributeReference("step", LongType)()
+    val proto = CometSequence.convert(
+      Sequence(start, stop, Some(step)),
+      Seq(start, stop, step),
+      binding = false)
+    assert(
+      proto.map(_.getScalarFunc.getFunc) ==
+        Some(CometSequence.nativeFunction(org.apache.spark.SPARK_VERSION)))
+  }
+
+  // When stop - start overflows a long but the sequence is short, Spark returns its elements
+  // where releases without SPARK-58821 raise INTERNAL_ERROR("Unreachable code reached.").
+  test("sequence whose stop - start overflows a long") {
+    val rows = Seq(
+      (Long.MinValue, Long.MaxValue, Long.MaxValue),
+      (Long.MinValue, 0L, 1L << 62),
+      (Long.MaxValue, Long.MinValue, -Long.MaxValue))
+    withParquetTable(rows, "t") {
+      val query = "SELECT _1, _2, _3, sequence(_1, _2, _3) FROM t"
+      if (SparkFixes.sequenceRecomputesOverflowedLength(org.apache.spark.SPARK_VERSION)) {
+        checkSparkAnswerAndOperator(query)
+      } else {
+        checkSparkError(sql(query), "INTERNAL_ERROR")
       }
     }
   }

@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, CreateNamedStruct, Descending, IsNull, Literal, NullsFirst, NullsLast, SortOrder}
 import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
@@ -32,12 +32,12 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
  * payloads fold together and signed zeros tie, as in Spark's `SQLOrderingUtil`. Only the
  * comparison key is normalized; returned values keep their original NaN representation and zero
  * sign. So floats alone never make a key incompatible, in strict floating-point mode either.
- * Nested nulls can, as below.
+ * Nested nulls require the root null placement to be independent of the comparison direction.
  *
  * Spark orders a null element or field below every other value, whatever the key's null order.
- * The native sort takes its place from the key's null order, so a key whose type can hold one is
- * incompatible under `ASC NULLS LAST` and `DESC NULLS FIRST`, with floats or without. The default
- * null orders, `ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does.
+ * The native sort takes its place from the key's null order. For a nondefault root null order,
+ * wrap the key as `struct(isnull(key), key)`: the first field controls root placement, while the
+ * second uses the direction's default null order for nested values.
  * https://github.com/apache/datafusion-comet/issues/6476
  *
  * A `RANGE` window frame orders such a null above every other value, so `CometWindowExec`
@@ -46,26 +46,20 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
  */
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
-  /**
-   * Subjects of both the runtime fallback reasons and the generated compatibility docs. Shared so
-   * the two cannot describe the policy differently.
-   */
-  private val nestedNullOrderSort =
-    "Sorting with `ASC NULLS LAST` or `DESC NULLS FIRST` on an array or struct that can hold a " +
-      "null element or field"
+  private val nondeterministicNestedKeyReason =
+    "A nested sort key with nondefault root null placement must be deterministic: " +
+      "the wrapper can evaluate the key twice, for isnull(key) and its value, " +
+      "which could disagree"
 
-  private val nestedNullOrderReason =
-    s"$nestedNullOrderSort is not 100% compatible with Spark. Spark orders a null element or " +
-      "field below every other value, whatever the key's null order, while Comet's native sort " +
-      "places it by the null order " +
-      "([#6476](https://github.com/apache/datafusion-comet/issues/6476))."
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicNestedKeyReason)
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(nestedNullOrderReason)
+  private def needsRootNullWrapper(expr: SortOrder): Boolean =
+    canHoldNestedNull(expr.child.dataType) &&
+      expr.nullOrdering != expr.direction.defaultNullOrdering
 
   override def getSupportLevel(expr: SortOrder): SupportLevel = {
-    if (canHoldNestedNull(expr.child.dataType) &&
-      expr.nullOrdering != expr.direction.defaultNullOrdering) {
-      Incompatible(Some(nestedNullOrderReason))
+    if (needsRootNullWrapper(expr) && !expr.child.deterministic) {
+      Unsupported(Some(nondeterministicNestedKeyReason))
     } else {
       Compatible()
     }
@@ -86,7 +80,13 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
       expr: SortOrder,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val wrapped = if (needsRootNullWrapper(expr)) {
+      CreateNamedStruct(
+        Seq(Literal("root_null"), IsNull(expr.child), Literal("value"), expr.child))
+    } else {
+      expr.child
+    }
+    val childExpr = exprToProtoInternal(wrapped, inputs, binding)
 
     if (childExpr.isDefined) {
       val sortOrderBuilder = ExprOuterClass.SortOrder.newBuilder()
@@ -98,7 +98,12 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
         case Descending => sortOrderBuilder.setDirectionValue(1)
       }
 
-      expr.nullOrdering match {
+      val nullOrdering = if (needsRootNullWrapper(expr)) {
+        expr.direction.defaultNullOrdering
+      } else {
+        expr.nullOrdering
+      }
+      nullOrdering match {
         case NullsFirst => sortOrderBuilder.setNullOrderingValue(0)
         case NullsLast => sortOrderBuilder.setNullOrderingValue(1)
       }
