@@ -415,9 +415,9 @@ over a native sort, a refusal fails the query, so the pool checks its requests o
 pool, as it does those of a consumer that cannot spill (`limited_to_its_share` in `fair_pool.rs`).
 It still counts as a consumer that can spill once it is active. A sort below it reads all of its
 input before the aggregate asks for any, so the sort can take the whole share, and it gives part of
-that back before the aggregate's first request: all of it if it spilled, and otherwise what
-`ExternalSorter` reserves beyond its sorted runs and, if it merges them, their sort keys, because it
-reserves about twice the bytes of each batch it buffers. The partially sorted stream still spills
+that back before the aggregate's first request: all of it if it spilled, and otherwise its merge
+reservation and what `ExternalSorter` reserves beyond its sorted runs and, if it merges them, their
+sort keys, because it reserves about twice the bytes of each batch it buffers. The partially sorted stream still spills
 when Spark refuses it. The exemption goes by the stream's name, so it also covers a `PartialMerge`
 that the planner runs as a final aggregate because its input is sorted on some of its grouping
 keys. That one is not a `CometSortAggregateExec` and its input is only partially sorted, but it is

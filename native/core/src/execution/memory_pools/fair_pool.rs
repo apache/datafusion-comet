@@ -227,9 +227,10 @@ impl Display for CometFairMemoryPool {
 /// else, so it is one of `num_spill` once it is active, and its bytes are not `unspillable`.
 /// A sort below it reads all of its input before the aggregate asks for any, so the sort can take
 /// the task's whole share. It gives part of that back before the aggregate's first request, all of
-/// it if it spilled. Otherwise `ExternalSorter`, which reserves about twice the bytes of each batch
-/// it buffers, resizes each sorted run to its own size before it emits the first batch, and a
-/// merge of the runs reserves only the batches it holds and their sort keys.
+/// it if it spilled. Otherwise `ExternalSorter` frees its merge reservation, and, since it reserves
+/// about twice the bytes of each batch it buffers, resizes each sorted run to its own size before
+/// it emits the first batch. A merge of the runs reserves only the batches it holds and their sort
+/// keys.
 /// `a_sort_that_fills_the_share_leaves_room_for_the_final_aggregate_above_it` checks both.
 fn limited_to_its_share(consumer: &MemoryConsumer) -> bool {
     consumer.can_spill() && !consumer.name().starts_with(ORDERED_FINAL_AGGREGATE)
@@ -369,8 +370,9 @@ mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::super::task_shared::RunningTask;
     use super::super::testing::{hold, spillable, PeakMemoryPool};
+    use super::super::{create_pool, MemoryPoolConfig, MemoryPoolType};
     use super::*;
-    use arrow::array::{ArrayRef, Int64Array};
+    use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::Result as DFResult;
@@ -660,8 +662,10 @@ mod tests {
         let aggregate = spillable("SingleHashAggregateStream[0]", &pool);
         aggregate.try_grow(10).unwrap();
 
-        // So the sort can use what the aggregate leaves of the task's share.
+        // So the sort can use what the aggregate leaves of the task's share, and the task's total
+        // keeps the aggregate's bytes for it.
         sort.try_grow(90).unwrap();
+        assert!(sort.try_grow(1).is_err());
 
         // Once the aggregate holds more than its initial table, it takes a share.
         sort.shrink(40);
@@ -732,21 +736,21 @@ mod tests {
         assert_eq!(fake.held(), 60);
     }
 
-    /// 16 batches of 1024 rows of `schema`'s two `Int64` columns, which `row` computes from a
-    /// distinct key in `0..16384`, in no particular order.
-    fn batches(schema: &SchemaRef, row: impl Fn(i64) -> (i64, i64)) -> Vec<RecordBatch> {
+    /// 16 batches of 1024 rows, whose columns `columns` builds from a distinct key in `0..16384`
+    /// for each row, in no particular order.
+    fn batches(schema: &SchemaRef, columns: impl Fn(&[i64]) -> Vec<ArrayRef>) -> Vec<RecordBatch> {
         (0..16)
             .map(|batch| {
-                let (first, second): (Vec<i64>, Vec<i64>) = (batch * 1024..(batch + 1) * 1024)
-                    .map(|i| row(i * 7919 % 16384))
-                    .unzip();
-                let columns: Vec<ArrayRef> = vec![
-                    Arc::new(Int64Array::from(first)),
-                    Arc::new(Int64Array::from(second)),
-                ];
-                RecordBatch::try_new(Arc::clone(schema), columns).unwrap()
+                let keys: Vec<i64> = (batch * 1024..(batch + 1) * 1024)
+                    .map(|i| i * 7919 % 16384)
+                    .collect();
+                RecordBatch::try_new(Arc::clone(schema), columns(&keys)).unwrap()
             })
             .collect()
+    }
+
+    fn int64s(values: impl Iterator<Item = i64>) -> ArrayRef {
+        Arc::new(Int64Array::from_iter_values(values))
     }
 
     /// Batches of 1024 rows, without the sort's merge reservation, which cannot spill and so would
@@ -787,7 +791,12 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let batches = batches(&schema, |key| (key, key % 16));
+        let batches = batches(&schema, |keys| {
+            vec![
+                int64s(keys.iter().copied()),
+                int64s(keys.iter().map(|key| key % 16)),
+            ]
+        });
         // `ExternalSorter` reserves about twice the bytes of each batch it buffers, so three times
         // the input holds all of it, and half of that does not.
         let input_bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
@@ -842,17 +851,15 @@ mod tests {
     /// path, and a refused request fails the query. The aggregate holds nothing while the sort
     /// reads its input, so the sort can fill the task's share. It must give part of it back before
     /// the aggregate's first request, which it does whether it emits from one sorted batch or
-    /// merges sorted runs.
+    /// merges sorted runs, with or without its merge reservation, and with 256 or 1024 groups in
+    /// each batch.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sort_that_fills_the_share_leaves_room_for_the_final_aggregate_above_it() {
-        // The partial counts that a final aggregate reads: 4096 values of `b`, each in 4 rows.
+        // The partial counts that a final aggregate reads.
         let schema = Arc::new(Schema::new(vec![
             Field::new("b", DataType::Int64, false),
             Field::new("count(a)[count]", DataType::Int64, false),
         ]));
-        let batches = batches(&schema, |key| (key / 4, 1));
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None).unwrap();
         // The schema that the partial aggregate read, which the final aggregate is built against.
         let partial_input = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         let a = col("a", &partial_input).unwrap();
@@ -862,34 +869,157 @@ mod tests {
             .build()
             .unwrap();
         let group_by = PhysicalGroupBy::new_single(vec![(col("b", &schema).unwrap(), "b".into())]);
+        let default_merge_reservation = SessionConfig::new()
+            .options()
+            .execution
+            .sort_spill_reservation_bytes;
 
-        for in_place_bytes in [usize::MAX, 0] {
-            // Emits from one sorted batch, then merges sorted runs.
-            let config = session_config().with_sort_in_place_threshold_bytes(in_place_bytes);
-            // The most that the sort reserves on its own.
-            let alone = Arc::new(PeakMemoryPool::new(usize::MAX));
-            let sort = sort_on("b", Arc::clone(&input));
-            collect_with(sort, Arc::clone(&alone) as _, config.clone()).await;
+        // 256 or 1024 values of `b` in each batch.
+        for rows_per_group in [4, 1] {
+            let batches = batches(&schema, |keys| {
+                vec![
+                    int64s(keys.iter().map(|key| key / rows_per_group)),
+                    int64s(keys.iter().map(|_| 1)),
+                ]
+            });
+            let input: Arc<dyn ExecutionPlan> =
+                MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None).unwrap();
+            // The sort's merge reservation, which cannot spill, comes out of the share. Comet runs
+            // with DataFusion's default.
+            for merge_reservation in [0, default_merge_reservation] {
+                // Emits from one sorted batch, then merges sorted runs.
+                for in_place_bytes in [usize::MAX, 0] {
+                    let config = SessionConfig::new()
+                        .with_batch_size(1024)
+                        .with_sort_spill_reservation_bytes(merge_reservation)
+                        .with_sort_in_place_threshold_bytes(in_place_bytes);
+                    // The most that the sort reserves on its own.
+                    let alone = Arc::new(PeakMemoryPool::new(usize::MAX));
+                    let sort = sort_on("b", Arc::clone(&input));
+                    collect_with(sort, Arc::clone(&alone) as _, config.clone()).await;
 
-            // A task share of exactly that.
-            let fake = FakeSpark::with(usize::MAX);
-            let sort = sort_on("b", Arc::clone(&input));
-            let aggregate = AggregateExec::try_new(
-                AggregateMode::Final,
-                group_by.clone(),
-                vec![Arc::new(count.clone())],
-                vec![None],
-                Arc::clone(&sort) as _,
-                Arc::clone(&partial_input),
-            )
-            .unwrap();
-            // Sorted on every grouping key, so an `OrderedFinalAggregateStream` with no spill path.
-            assert_eq!(aggregate.input_order_mode(), &InputOrderMode::Sorted);
-            let output = collect_with(Arc::new(aggregate), pool(&fake, alone.peak()), config).await;
-            let groups: usize = output.iter().map(RecordBatch::num_rows).sum();
-            let path = format!("sort_in_place_threshold_bytes = {in_place_bytes}");
-            assert_eq!(groups, 4096, "{path}");
-            assert_eq!(sort.metrics().unwrap().spill_count(), Some(0), "{path}");
+                    // A task share of exactly that.
+                    let fake = FakeSpark::with(usize::MAX);
+                    let sort = sort_on("b", Arc::clone(&input));
+                    let aggregate = AggregateExec::try_new(
+                        AggregateMode::Final,
+                        group_by.clone(),
+                        vec![Arc::new(count.clone())],
+                        vec![None],
+                        Arc::clone(&sort) as _,
+                        Arc::clone(&partial_input),
+                    )
+                    .unwrap();
+                    // Sorted on every grouping key, so an `OrderedFinalAggregateStream` with no
+                    // spill path.
+                    assert_eq!(aggregate.input_order_mode(), &InputOrderMode::Sorted);
+                    let pool = pool(&fake, alone.peak());
+                    let output = collect_with(Arc::new(aggregate), pool, config).await;
+                    let groups: usize = output.iter().map(RecordBatch::num_rows).sum();
+                    let case = format!(
+                        "{rows_per_group} rows per group, merge reservation {merge_reservation}, \
+                         sort_in_place_threshold_bytes {in_place_bytes}"
+                    );
+                    assert_eq!(groups, 16384 / rows_per_group as usize, "{case}");
+                    assert_eq!(sort.metrics().unwrap().spill_count(), Some(0), "{case}");
+                }
+            }
         }
+    }
+
+    /// Spark's `count(DISTINCT d) GROUP BY k` as Comet runs it in one native plan when the input
+    /// is already partitioned on `k`: Spark's `PartialMerge` keyed by `(k, d)` as a `Single`
+    /// aggregate, then the `Partial` and `Final` aggregates keyed by `k`.
+    fn distinct_count(input: Arc<dyn ExecutionPlan>) -> [Arc<AggregateExec>; 3] {
+        let schema = input.schema();
+        let keys = vec![
+            (col("k", &schema).unwrap(), "k".to_string()),
+            (col("d", &schema).unwrap(), "d".to_string()),
+        ];
+        let group_by = PhysicalGroupBy::new_single(keys);
+        let distinct = AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![],
+            vec![],
+            input,
+            Arc::clone(&schema),
+        );
+        let distinct = Arc::new(distinct.unwrap());
+
+        let schema = distinct.schema();
+        let count = AggregateExprBuilder::new(count_udaf(), vec![col("d", &schema).unwrap()])
+            .schema(Arc::clone(&schema))
+            .alias("count(d)")
+            .build()
+            .unwrap();
+        let count = Arc::new(count);
+        let by_k = PhysicalGroupBy::new_single(vec![(col("k", &schema).unwrap(), "k".to_string())]);
+        let partial = AggregateExec::try_new(
+            AggregateMode::Partial,
+            by_k.clone(),
+            vec![Arc::clone(&count)],
+            vec![None],
+            Arc::clone(&distinct) as _,
+            Arc::clone(&schema),
+        );
+        let partial = Arc::new(partial.unwrap());
+        let final_agg = AggregateExec::try_new(
+            AggregateMode::Final,
+            by_k.as_final(),
+            vec![count],
+            vec![None],
+            Arc::clone(&partial) as _,
+            schema,
+        );
+        [distinct, partial, Arc::new(final_agg.unwrap())]
+    }
+
+    /// The aggregates above the first one in `distinct_count` hold nothing while it reads its
+    /// input, so it can fill the task's share, and it holds all of its output until it has emitted
+    /// it. With wide values that leaves the `Partial` aggregate too little room, so it emits early,
+    /// and the `Final` aggregate starts while the first one still holds nearly all of the share.
+    /// DataFusion 55.2's `FinalHashAggregateStream` then spills and completes rather than failing
+    /// the query.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_final_aggregate_that_starts_while_the_one_below_fills_the_share_spills() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("d", DataType::Utf8, false),
+        ]));
+        // A distinct `k` and a 1 KiB `d` in each row.
+        let batches = batches(&schema, |keys| {
+            let d = keys.iter().map(|key| format!("{key:0>1024}"));
+            vec![
+                int64s(keys.iter().copied()),
+                Arc::new(StringArray::from_iter_values(d)),
+            ]
+        });
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None).unwrap();
+
+        // The most that the first aggregate reserves on its own.
+        let alone = Arc::new(PeakMemoryPool::new(usize::MAX));
+        let [distinct, _, _] = distinct_count(Arc::clone(&input));
+        collect_with(distinct, Arc::clone(&alone) as _, session_config()).await;
+
+        // A task share of exactly that, in a pool built the way `createPlan` builds it, so that
+        // the final aggregate reads its spill files back as it would in a task.
+        let fake = FakeSpark::with(usize::MAX);
+        let config = MemoryPoolConfig::new(MemoryPoolType::FairUnified, alone.peak());
+        let pool = create_pool(&config, -3020, &RunningTasks::default(), || fake.memory());
+        let [distinct, _, final_agg] = distinct_count(input);
+        let output = collect_with(Arc::clone(&final_agg) as _, pool, session_config()).await;
+        let groups: usize = output.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(groups, 16384);
+
+        let spills = |agg: &Arc<AggregateExec>| agg.metrics().unwrap().spill_count().unwrap();
+        assert_eq!(spills(&distinct), 0);
+        // Guards against a vacuous pass: the final aggregate had to spill, so it started short of
+        // memory.
+        assert!(
+            spills(&final_agg) > 0,
+            "the final aggregate had room to spare"
+        );
     }
 }
