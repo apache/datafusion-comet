@@ -40,4 +40,31 @@ fn main() {
             println!("cargo:rustc-link-search=native={server}");
         }
     }
+
+    // Expose the path of the comet-test-udfs cdylib to test code via
+    // COMET_TEST_UDFS_LIB. Cargo doesn't propagate cdylib outputs as
+    // DEP_<...>_OUT_DIR for non-rlib crates, so we compute the path
+    // from OUT_DIR.
+    if let Ok(out_dir) = std::env::var("OUT_DIR") {
+        // OUT_DIR is .../target/<profile>/build/<pkg-hash>/out with Cargo's
+        // classic layout and .../target/<profile>/build/<pkg>/<hash>/out with
+        // the layout that became the default in Rust 1.100. The depth differs,
+        // so find the profile directory as the parent of the nearest `build`.
+        let target_profile_dir = Path::new(&out_dir)
+            .ancestors()
+            .find(|p| p.file_name().is_some_and(|name| name == "build"))
+            .and_then(Path::parent)
+            .unwrap_or_else(|| panic!("OUT_DIR {out_dir} is not inside a `build` directory"));
+        let dylib_ext = if cfg!(target_os = "macos") {
+            "dylib"
+        } else if cfg!(target_os = "windows") {
+            "dll"
+        } else {
+            "so"
+        };
+        let lib_path = target_profile_dir.join(format!("libcomet_test_udfs.{dylib_ext}"));
+        println!("cargo:rustc-env=COMET_TEST_UDFS_LIB={}", lib_path.display());
+    }
+    println!("cargo:rerun-if-changed=../comet-test-udfs/src/lib.rs");
+    println!("cargo:rerun-if-changed=../comet-test-udfs/Cargo.toml");
 }

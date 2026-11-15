@@ -56,17 +56,17 @@ SELECT element_at(map('a', 1, 'b', 2), 'a'), element_at(map('a', 1, 'b', 2), 'mi
 -- Spark. These stay on the constructor path here because the SQL harness excludes
 -- `ConstantFolding`; `CometMapExpressionSuite` covers the folded-literal form of each.
 
--- Spark stores `-0.0` map keys as `+0.0` and compares with `nanSafeCompareDoubles`, so a `-0.0`
--- lookup finds the `+0.0` key. Native lookup compares the raw Arrow values.
-query expect_fallback(Spark normalizes floating-point map keys)
+-- Spark compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key. Native
+-- lookup compares the raw Arrow values.
+query expect_fallback(Spark looks a key up in its SQL ordering)
 SELECT element_at(map(CAST(0 AS DOUBLE), 7), CAST(-0.0 AS DOUBLE))
 
-query expect_fallback(Spark normalizes floating-point map keys)
+query expect_fallback(Spark looks a key up in its SQL ordering)
 SELECT element_at(map(CAST(0 AS FLOAT), 7), CAST(-0.0 AS FLOAT))
 
 -- The floating-point decline walks every nesting level of the key type, so an array-of-double key
 -- falls back for the same reason.
-query expect_fallback(Spark normalizes floating-point map keys)
+query expect_fallback(Spark looks a key up in its SQL ordering)
 SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(CAST(-0.0 AS DOUBLE)))
 
 -- A complex key type: `map_extract` casts the lookup key to the map's exact Arrow key type, so a

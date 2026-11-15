@@ -19,46 +19,74 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
-import org.apache.spark.sql.types.{DoubleType, FloatType}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, CreateNamedStruct, Descending, IsNull, Literal, NullsFirst, NullsLast, SortOrder}
+import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
+/**
+ * The key of a Sort, TopK, Window, WindowGroupLimit or range partitioning.
+ *
+ * Arrow orders floats by IEEE 754 total order, so the native side normalizes a `FLOAT` or
+ * `DOUBLE` key, and an array or struct key with a float at any depth, before comparing: NaN
+ * payloads fold together and signed zeros tie, as in Spark's `SQLOrderingUtil`. Only the
+ * comparison key is normalized; returned values keep their original NaN representation and zero
+ * sign. So floats alone never make a key incompatible, in strict floating-point mode either.
+ * Nested nulls require the root null placement to be independent of the comparison direction.
+ *
+ * Spark orders a null element or field below every other value, whatever the key's null order.
+ * The native sort takes its place from the key's null order. For a nondefault root null order,
+ * wrap the key as `struct(isnull(key), key)`: the first field controls root placement, while the
+ * second uses the direction's default null order for nested values.
+ * https://github.com/apache/datafusion-comet/issues/6476
+ *
+ * A `RANGE` window frame orders such a null above every other value, so `CometWindowExec`
+ * declines a `RANGE` frame that has to find a row's peers over such a key.
+ * https://github.com/apache/datafusion-comet/issues/6477
+ */
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
+  private val nondeterministicNestedKeyReason =
+    "A nested sort key with nondefault root null placement must be deterministic: " +
+      "the wrapper can evaluate the key twice, for isnull(key) and its value, " +
+      "which could disagree"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicNestedKeyReason)
+
+  private def needsRootNullWrapper(expr: SortOrder): Boolean =
+    canHoldNestedNull(expr.child.dataType) &&
+      expr.nullOrdering != expr.direction.defaultNullOrdering
+
+  override def getSupportLevel(expr: SortOrder): SupportLevel = {
+    if (needsRootNullWrapper(expr) && !expr.child.deterministic) {
+      Unsupported(Some(nondeterministicNestedKeyReason))
+    } else {
+      Compatible()
+    }
+  }
+
   /**
-   * Subject of both the runtime fallback reason and the generated compatibility docs. Shared so
-   * the two cannot describe the policy differently.
+   * Whether a value of `dataType` can hold a null below its top level: an array element or a
+   * struct field, at any depth. The key being null is not one: both engines place that by the
+   * key's null order.
    */
-  private val nestedFloatingPointSort =
-    "Sorting on floating-point values nested in arrays, structs, or maps"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    s"$nestedFloatingPointSort is not 100% compatible with Spark when " +
-      s"`${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`")
-
-  override def getSupportLevel(expr: SortOrder): SupportLevel = expr.child.dataType match {
-    // Scalar FLOAT/DOUBLE comparison keys are normalized natively (NaN payloads folded together,
-    // signed zeros tied) for Sort, TopK, Window, WindowGroupLimit, and range partitioning, which
-    // matches Spark's SQLOrderingUtil. Only the comparison key is normalized; returned values keep
-    // their original NaN representation and zero sign. So these are compatible even in strict mode.
-    case _: FloatType | _: DoubleType => Compatible()
-    // Floating-point values nested in arrays, structs, or maps are still compared with Arrow's raw
-    // total ordering, under which -0.0 sorts below 0.0 and a sign-bit NaN sorts below -Infinity.
-    // https://github.com/apache/datafusion-comet/issues/5507
-    case dt =>
-      SupportLevel
-        .strictFloatingPointReason(dt, nestedFloatingPointSort)
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(Compatible())
+  def canHoldNestedNull(dataType: DataType): Boolean = dataType match {
+    case ArrayType(elementType, containsNull) => containsNull || canHoldNestedNull(elementType)
+    case StructType(fields) => fields.exists(f => f.nullable || canHoldNestedNull(f.dataType))
+    case _ => false
   }
 
   override def convert(
       expr: SortOrder,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val wrapped = if (needsRootNullWrapper(expr)) {
+      CreateNamedStruct(
+        Seq(Literal("root_null"), IsNull(expr.child), Literal("value"), expr.child))
+    } else {
+      expr.child
+    }
+    val childExpr = exprToProtoInternal(wrapped, inputs, binding)
 
     if (childExpr.isDefined) {
       val sortOrderBuilder = ExprOuterClass.SortOrder.newBuilder()
@@ -70,7 +98,12 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
         case Descending => sortOrderBuilder.setDirectionValue(1)
       }
 
-      expr.nullOrdering match {
+      val nullOrdering = if (needsRootNullWrapper(expr)) {
+        expr.direction.defaultNullOrdering
+      } else {
+        expr.nullOrdering
+      }
+      nullOrdering match {
         case NullsFirst => sortOrderBuilder.setNullOrderingValue(0)
         case NullsLast => sortOrderBuilder.setNullOrderingValue(1)
       }

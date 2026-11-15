@@ -72,7 +72,7 @@ pub fn append_map_elements(
     map_builder: &mut MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
     map: &SparkUnsafeMap,
 ) -> Result<(), CometError> {
-    let (key_field, value_field, _) = get_map_key_value_fields(field)?;
+    let (key_field, value_field) = map_key_value_fields(field)?;
 
     let keys = &map.keys;
     let values = &map.values;
@@ -86,37 +86,31 @@ pub fn append_map_elements(
     Ok(())
 }
 
-#[allow(clippy::field_reassign_with_default)]
+/// Returns the key and value fields of a map's entries field. This runs once for every map value
+/// the shuffle converts, so unlike [`get_map_key_value_fields`] it builds no `MapFieldNames`,
+/// whose strings would be allocated and freed each time.
+pub fn map_key_value_fields(field: &FieldRef) -> Result<(&FieldRef, &FieldRef), CometError> {
+    match field.data_type() {
+        DataType::Struct(fields) if fields.len() == 2 => Ok((&fields[0], &fields[1])),
+        DataType::Struct(fields) => Err(CometError::Internal(format!(
+            "Map field should have 2 fields, but got {}",
+            fields.len()
+        ))),
+        data_type => Err(CometError::Internal(format!(
+            "Map field should be a struct, but got {data_type:?}"
+        ))),
+    }
+}
+
+/// Returns the key and value fields of a map's entries field, with the names a `MapBuilder` needs.
 pub fn get_map_key_value_fields(
     field: &FieldRef,
 ) -> Result<(&FieldRef, &FieldRef, MapFieldNames), CometError> {
-    let mut map_fieldnames = MapFieldNames::default();
-    map_fieldnames.entry = field.name().to_string();
-
-    let (key_field, value_field) = match field.data_type() {
-        DataType::Struct(fields) => {
-            if fields.len() != 2 {
-                return Err(CometError::Internal(format!(
-                    "Map field should have 2 fields, but got {}",
-                    fields.len()
-                )));
-            }
-
-            let key = &fields[0];
-            let value = &fields[1];
-
-            map_fieldnames.key = key.name().to_string();
-            map_fieldnames.value = value.name().to_string();
-
-            (key, value)
-        }
-        _ => {
-            return Err(CometError::Internal(format!(
-                "Map field should be a struct, but got {:?}",
-                field.data_type()
-            )));
-        }
+    let (key_field, value_field) = map_key_value_fields(field)?;
+    let map_fieldnames = MapFieldNames {
+        entry: field.name().to_string(),
+        key: key_field.name().to_string(),
+        value: value_field.name().to_string(),
     };
-
     Ok((key_field, value_field, map_fieldnames))
 }

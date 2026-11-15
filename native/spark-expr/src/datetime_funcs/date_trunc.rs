@@ -69,7 +69,8 @@ impl ScalarUDFImpl for SparkDateTrunc {
                 let result = date_trunc_dyn(&date, format)?;
                 Ok(ColumnarValue::Array(result))
             }
-            (ColumnarValue::Array(date), ColumnarValue::Array(formats)) => {
+            (date, ColumnarValue::Array(formats)) => {
+                let date = date.into_array(formats.len())?;
                 let result = date_trunc_array_fmt_dyn(&date, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
@@ -87,5 +88,77 @@ impl ScalarUDFImpl for SparkDateTrunc {
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{ArrayRef, Date32Array, DictionaryArray, Int32Array, StringArray};
+    use arrow::datatypes::{Field, Int32Type};
+    use datafusion::config::ConfigOptions;
+    use std::sync::Arc;
+
+    fn trunc_scalar_date(date: Option<i32>, formats: ArrayRef) -> ArrayRef {
+        let result = SparkDateTrunc::new()
+            .invoke_with_args(ScalarFunctionArgs {
+                number_rows: formats.len(),
+                args: vec![
+                    ColumnarValue::Scalar(ScalarValue::Date32(date)),
+                    ColumnarValue::Array(formats),
+                ],
+                arg_fields: vec![],
+                return_field: Arc::new(Field::new("trunc", DataType::Date32, true)),
+                config_options: Arc::new(ConfigOptions::default()),
+            })
+            .unwrap();
+        let ColumnarValue::Array(result) = result else {
+            panic!("expected an array");
+        };
+        result
+    }
+
+    #[test]
+    fn scalar_date_with_a_format_column() {
+        let formats = || Arc::new(StringArray::from(vec!["year", "MM", "quarter", "Week"]));
+        // 2024-06-15 becomes 2024-01-01, 2024-06-01, 2024-04-01 and 2024-06-10.
+        let result = trunc_scalar_date(Some(19_889), formats());
+        assert_eq!(
+            result.as_ref(),
+            &Date32Array::from(vec![19_723, 19_875, 19_814, 19_884])
+        );
+
+        // Before the epoch: 1969-12-31 becomes the start of its year, month, quarter and week.
+        let result = trunc_scalar_date(Some(-1), formats());
+        assert_eq!(
+            result.as_ref(),
+            &Date32Array::from(vec![-365, -31, -92, -3])
+        );
+    }
+
+    #[test]
+    fn scalar_date_with_dictionary_formats() {
+        let formats = DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![0, 1, 0, 1, 0]),
+            Arc::new(StringArray::from(vec!["year", "month"])),
+        )
+        .unwrap();
+        let result = trunc_scalar_date(Some(19_889), Arc::new(formats.slice(1, 3)));
+        assert_eq!(
+            result.as_ref(),
+            &Date32Array::from(vec![19_875, 19_723, 19_875])
+        );
+    }
+
+    #[test]
+    fn scalar_date_preserves_nulls_and_empty_batches() {
+        let formats = Arc::new(StringArray::from(vec!["year", "month"]));
+        let result = trunc_scalar_date(None, formats);
+        assert_eq!(result.as_ref(), &Date32Array::from(vec![None, None]));
+
+        for date in [Some(19_889), None] {
+            let result = trunc_scalar_date(date, Arc::new(StringArray::from(Vec::<&str>::new())));
+            assert_eq!(result.as_ref(), &Date32Array::from(Vec::<i32>::new()));
+        }
     }
 }

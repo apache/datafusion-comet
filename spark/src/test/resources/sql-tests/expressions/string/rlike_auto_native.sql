@@ -16,8 +16,8 @@
 -- under the License.
 
 -- Default settings: in-subset literal patterns run on the native Rust path.
--- Routing is asserted in CometRegExpJvmSuite / CometRegexParitySuite; this file
--- only checks result equality with Spark.
+-- Each query checks both native routing and result equality with Spark.
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 
 statement
 CREATE TABLE test_rlike_auto(s string) USING parquet
@@ -25,20 +25,20 @@ CREATE TABLE test_rlike_auto(s string) USING parquet
 statement
 INSERT INTO test_rlike_auto VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123'), ('aa'), ('ab'), ('foo'), ('bar'), ('a+b')
 
-query
+query expect_native(rlike)
 SELECT s RLIKE 'abc[0-9]+' FROM test_rlike_auto
 
-query
+query expect_native(rlike)
 SELECT s RLIKE '[a-zA-Z_][a-zA-Z0-9_]*' FROM test_rlike_auto
 
-query
+query expect_native(rlike)
 SELECT s RLIKE '(foo|bar){1,3}' FROM test_rlike_auto
 
-query
-SELECT s RLIKE 'a\+b' FROM test_rlike_auto
+query expect_native(rlike)
+SELECT s RLIKE r'a\+b' FROM test_rlike_auto
 
-query
+query expect_native(rlike)
 SELECT s RLIKE '' FROM test_rlike_auto
 
-query
+query expect_native(rlike)
 SELECT 'hello' RLIKE '[a-z]+', '12345' RLIKE '[0-9]+', '' RLIKE '', NULL RLIKE 'a'

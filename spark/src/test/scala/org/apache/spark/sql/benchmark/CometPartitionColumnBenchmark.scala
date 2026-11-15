@@ -39,7 +39,7 @@ object CometPartitionColumnBenchmark extends CometBenchmarkBase {
   def partitionColumnScanBenchmark(values: Int, numPartitionCols: Int): Unit = {
     val sqlBenchmark = new Benchmark(
       s"Partitioned Scan with $numPartitionCols partition column(s)",
-      values,
+      values.toLong,
       output = output)
 
     withTempPath { dir =>

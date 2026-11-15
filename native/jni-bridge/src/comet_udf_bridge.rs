@@ -42,7 +42,7 @@ impl<'a> CometUdfBridge<'a> {
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("evaluate"),
                 jni::jni_sig!(
-                    "(Ljava/lang/String;[J[JJJILorg/apache/spark/TaskContext;Ljava/lang/ClassLoader;)V"
+                    "(Ljava/lang/String;[J[JJJIIJLorg/apache/spark/TaskContext;Ljava/lang/ClassLoader;)V"
                 ),
             )?,
             method_evaluate_ret: ReturnType::Primitive(Primitive::Void),

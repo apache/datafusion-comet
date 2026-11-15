@@ -21,6 +21,10 @@ under the License.
 
 This project contains the following crates:
 
+- [common](common): Common types shared across crates
 - [core](core): Native code used by the Comet Spark plugin
+- [jni-bridge](jni-bridge): JNI interaction layer used across the native crates
+- [operators](operators): Native execution operators that need nothing else from `core`
 - [proto](proto): Comet protocol buffer definition for query plans
+- [shuffle](shuffle): Shuffle writer and reader
 - [spark-expr](spark-expr): Spark-compatible DataFusion operators and expressions

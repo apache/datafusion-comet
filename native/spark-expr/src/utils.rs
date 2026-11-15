@@ -71,7 +71,7 @@ pub fn array_with_timezone(
 ) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Millisecond, None) => {
-            assert!(!timezone.is_empty());
+            require_timezone(&timezone)?;
             match to_type {
                 Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
                 Some(DataType::Timestamp(_, Some(target_tz))) => {
@@ -90,7 +90,7 @@ pub fn array_with_timezone(
             }
         }
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
-            assert!(!timezone.is_empty());
+            require_timezone(&timezone)?;
             match to_type {
                 Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
                 Some(DataType::Timestamp(_, Some(target_tz))) => {
@@ -107,7 +107,7 @@ pub fn array_with_timezone(
             }
         }
         DataType::Timestamp(_, None) => {
-            assert!(!timezone.is_empty());
+            require_timezone(&timezone)?;
             match to_type {
                 Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
                 Some(DataType::Timestamp(_, Some(target_tz))) => {
@@ -124,7 +124,7 @@ pub fn array_with_timezone(
             }
         }
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => {
-            assert!(!timezone.is_empty());
+            require_timezone(&timezone)?;
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
             let array_with_timezone = array.clone().with_timezone(timezone.clone());
             let array = Arc::new(array_with_timezone) as ArrayRef;
@@ -136,7 +136,7 @@ pub fn array_with_timezone(
             }
         }
         DataType::Timestamp(TimeUnit::Millisecond, Some(_)) => {
-            assert!(!timezone.is_empty());
+            require_timezone(&timezone)?;
             let array = as_primitive_array::<TimestampMillisecondType>(&array);
             let array_with_timezone = array.clone().with_timezone(timezone.clone());
             let array = Arc::new(array_with_timezone) as ArrayRef;
@@ -159,6 +159,17 @@ pub fn array_with_timezone(
         }
         _ => Ok(array),
     }
+}
+
+/// Converting a timestamp needs the session timezone. An empty one means the caller built the
+/// conversion without it, which is reported as an error rather than a panic.
+fn require_timezone(timezone: &str) -> Result<(), ArrowError> {
+    if timezone.is_empty() {
+        return Err(ArrowError::InvalidArgumentError(
+            "Converting a timestamp requires a timezone, but none was given".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn datetime_cast_err(value: i64) -> ArrowError {
@@ -208,7 +219,6 @@ pub(crate) fn timestamp_ntz_to_timestamp(
     tz: &str,
     to_timezone: Option<&str>,
 ) -> Result<ArrayRef, ArrowError> {
-    assert!(!tz.is_empty());
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
@@ -261,7 +271,6 @@ pub(crate) fn cast_timestamp_to_ntz(
     array: ArrayRef,
     timezone: &str,
 ) -> Result<ArrayRef, ArrowError> {
-    assert!(!timezone.is_empty());
     let tz: Tz = timezone.parse()?;
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => {
@@ -289,7 +298,6 @@ pub(crate) fn cast_timestamp_to_ntz(
 
 /// This takes for special pre-casting cases of Spark. E.g., Timestamp to String.
 fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, ArrowError> {
-    assert!(!timezone.is_empty());
     match array.data_type() {
         DataType::Timestamp(_, _) => {
             // Spark doesn't output timezone while casting timestamp to string, but arrow's cast
@@ -424,6 +432,17 @@ mod tests {
         let dt = NaiveDateTime::parse_from_str(utc_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
         let ts = dt.and_utc().timestamp_micros();
         Arc::new(TimestampMicrosecondArray::from(vec![ts]).with_timezone(tz.to_string()))
+    }
+
+    #[test]
+    fn test_array_with_timezone_requires_a_timezone() {
+        let ltz = ts_with_tz("2024-01-15 10:30:00", "UTC");
+        let err = array_with_timezone(ltz, String::new(), Some(&DataType::Utf8)).unwrap_err();
+        assert!(err.to_string().contains("requires a timezone"), "{err}");
+
+        let ntz = array_containing("2024-01-15 10:30:00");
+        let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        assert!(array_with_timezone(ntz, String::new(), Some(&utc)).is_err());
     }
 
     #[test]

@@ -16,8 +16,8 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayBuilder, ArrayRef, BooleanBufferBuilder, GenericStringArray, ListArray,
-    OffsetSizeTrait, StringArray, StringBuilder,
+    Array, ArrayBuilder, ArrayRef, GenericStringArray, ListArray, OffsetSizeTrait, StringArray,
+    StringBuilder,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field};
@@ -99,33 +99,28 @@ fn extract_all_array<O: OffsetSizeTrait>(
 ) -> ArrayRef {
     let mut values_builder = StringBuilder::new();
     let mut offsets: Vec<i32> = Vec::with_capacity(array.len() + 1);
-    let mut null_buffer = BooleanBufferBuilder::new(array.len());
     offsets.push(0);
 
     // One set of capture locations serves the whole batch, so no per-match allocation
     // touches the compiled regex's shared group-info Arc from several threads at once.
     let mut locations = regex.capture_locations();
     for i in 0..array.len() {
-        if array.is_null(i) {
-            offsets.push(values_builder.len() as i32);
-            null_buffer.append(false);
-        } else {
+        if !array.is_null(i) {
             for_each_group_match(regex, &mut locations, array.value(i), group_idx, |s| {
                 values_builder.append_value(s)
             });
-            offsets.push(values_builder.len() as i32);
-            null_buffer.append(true);
         }
+        offsets.push(values_builder.len() as i32);
     }
 
     let values = Arc::new(values_builder.finish()) as ArrayRef;
     let field = Arc::new(Field::new("item", DataType::Utf8, true));
-    let nulls = NullBuffer::new(null_buffer.finish());
+    // The result is null exactly where the subject is, so reuse its validity.
     Arc::new(ListArray::new(
         field,
         OffsetBuffer::new(offsets.into()),
         values,
-        Some(nulls),
+        array.nulls().cloned(),
     ))
 }
 

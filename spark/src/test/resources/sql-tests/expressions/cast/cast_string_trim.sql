@@ -18,9 +18,9 @@
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 -- Whitespace trimming in cast(string as <fixed type>). Spark has two trim regimes and neither
--- trims non-ASCII whitespace, so DEL is trimmed for boolean/int/date but not for double/decimal,
--- and NBSP / U+3000 are trimmed for nothing. See conversion_funcs::trim in the native crate and
--- https://github.com/apache/datafusion-comet/issues/5149.
+-- trims non-ASCII whitespace, so DEL is trimmed for boolean/int/date/timestamp but not for
+-- double/decimal, and NBSP / U+3000 are trimmed for nothing. See conversion_funcs::trim in the
+-- native crate and https://github.com/apache/datafusion-comet/issues/5149.
 --
 -- Per-codepoint parity across all three eval modes is covered by the CometNativeCastSuite
 -- "whitespace trim parity" tests; this fixture covers the same regimes over a Parquet column.
@@ -54,7 +54,9 @@ SELECT
   cast(concat(pad, '1.5', pad) as float),
   cast(concat(pad, '1.5', pad) as double),
   cast(concat(pad, '1.5', pad) as decimal(10,2)),
-  cast(concat(pad, '2020-01-01', pad) as date)
+  cast(concat(pad, '2020-01-01', pad) as date),
+  cast(concat(pad, '2020-01-01 12:34:56', pad) as timestamp),
+  cast(concat(pad, '2020-01-01 12:34:56', pad) as timestamp_ntz)
 FROM cast_trim_pad
 
 -- Padding on its own, and padding in the interior, must never parse
@@ -66,6 +68,8 @@ SELECT
   cast(pad as double),
   cast(pad as decimal(10,2)),
   cast(pad as date),
+  cast(pad as timestamp),
+  cast(pad as timestamp_ntz),
   cast(concat('1', pad, '2') as int),
   cast(concat('1', pad, '.5') as double)
 FROM cast_trim_pad

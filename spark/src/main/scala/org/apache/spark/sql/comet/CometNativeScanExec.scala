@@ -75,6 +75,15 @@ case class CometNativeScanExec(
     with ShimStreamSourceAwareSparkPlan
     with CometScanWithPlanData {
 
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    // AQE rewrites DPP placeholders in the live scan before transition reversion.
+    // The frozen originalPlan can still contain unexecutable SubqueryAdaptiveBroadcastExecs.
+    val restoredScan =
+      originalPlan.copy(partitionFilters = partitionFilters, dataFilters = dataFilters)
+    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
+    restoredScan
+  }
+
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
 
@@ -111,27 +120,15 @@ case class CometNativeScanExec(
   // exposed for testing
   lazy val bucketedScan: Boolean = originalPlan.bucketedScan && !disableBucketedScan
 
-  override lazy val outputPartitioning: Partitioning = {
-    if (bucketedScan) {
-      originalPlan.outputPartitioning
-    } else {
-      // Use perPartitionData.length instead of originalPlan.inputRDD.getNumPartitions.
-      //
-      // originalPlan.inputRDD triggers FileSourceScanExec's full scan pipeline including
-      // codegen on partition filter expressions. With DPP, this calls
-      // InSubqueryExec.doGenCode which requires the subquery to have finished - but
-      // outputPartitioning can be accessed before prepare() runs (e.g., by
-      // ValidateRequirements during plan validation).
-      //
-      // perPartitionData goes through serializedPartitionData, which explicitly resolves
-      // DPP subqueries (via updateResult()) before accessing file partitions. This is the
-      // same pattern CometIcebergNativeScanExec uses.
-      //
-      // This is also more correct: perPartitionData.length reflects the post-DPP partition
-      // count, matching what CometExecRDD actually uses in doExecuteColumnar().
-      UnknownPartitioning(perPartitionData.length)
-    }
-  }
+  // Like FileSourceScanExec, only a bucketed scan knows its partitioning while planning. The
+  // file-split count of any other scan depends on dynamic partition pruning, whose subqueries
+  // resolve at execution. AQE reads outputPartitioning while it optimizes a stage
+  // (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so computing the file
+  // partitions here would run a placeholder subquery. At execution, CometNativeExec sizes the
+  // native RDD from perPartitionData instead.
+  override lazy val outputPartitioning: Partitioning =
+    if (bucketedScan) originalPlan.outputPartitioning else UnknownPartitioning(0)
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
@@ -276,31 +273,18 @@ case class CometNativeScanExec(
       Seq.empty,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      perPartitionFilePaths = perPartitionFilePaths) {
+      perPartitionFilePaths = perPartitionFilePaths,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
-
-        // Report scan input metrics after the iterator is fully consumed.
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-
-        res
+        super.compute(split, context)
       }
     }
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
-    // Canonicalize originalPlan but strip its DPP partition filters.
-    // originalPlan carries column selection and schema info needed for
-    // equals/hashCode. But its partitionFilters may have stale DPP
-    // expressions (e.g., SABs not yet converted to TrueLiteral) that
-    // would prevent exchange reuse between otherwise-identical scans.
-    val canonOriginal = if (originalPlan != null) {
-      val stripped = originalPlan.copy(partitionFilters =
-        CometScanUtils.filterUnusedDynamicPruningExpressions(originalPlan.partitionFilters))
-      stripped.doCanonicalize()
-    } else {
-      null
-    }
     CometNativeScanExec(
       nativeOp,
       relation,
@@ -314,7 +298,7 @@ case class CometNativeScanExec(
       QueryPlan.normalizePredicates(dataFilters, output),
       None,
       disableBucketedScan,
-      canonOriginal,
+      CometScanUtils.canonicalizeOriginalPlan(originalPlan),
       SerializedPlan(None),
       null, // Transient scan not needed for canonicalization
       ""
@@ -366,12 +350,17 @@ object CometNativeScanExec {
       session: SparkSession,
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
-    // Multiple scans of same table with different projections/filters get different keys.
+    // Multiple scans of same table with different projections/filters get different keys, and
+    // the op's plan_id separates scans that match on those but read different files (see
+    // PlanDataInjector.withPlanId). It must be the same key NativeScanPlanDataInjector.getKey
+    // rebuilds from nativeOp.
     // The hash is computed once here and embedded in the NativeScan proto, so executors
     // (including the native shuffle writer) rebuild the key instead of hashing per task.
     val common = nativeOp.getNativeScan.getCommon
     val sourceKeyHash = NativeScanPlanDataInjector.sourceKeyHash(common)
-    val sourceKey = NativeScanPlanDataInjector.sourceKey(common.getSource, sourceKeyHash)
+    val sourceKey = PlanDataInjector.withPlanId(
+      NativeScanPlanDataInjector.sourceKey(common.getSource, sourceKeyHash),
+      nativeOp.getPlanId)
     val opWithKey = nativeOp.toBuilder
       .setNativeScan(nativeOp.getNativeScan.toBuilder.setSourceKeyHash(sourceKeyHash))
       .build()

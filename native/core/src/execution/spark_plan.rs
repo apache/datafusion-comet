@@ -57,15 +57,11 @@ impl SparkPlan {
         children: Vec<Arc<SparkPlan>>,
         additional_native_plans: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Self {
-        let mut accum: Vec<Arc<dyn ExecutionPlan>> = vec![];
-        for plan in &additional_native_plans {
-            accum.push(Arc::clone(plan));
-        }
         Self {
             plan_id,
             native_plan,
             children,
-            additional_native_plans: accum,
+            additional_native_plans,
         }
     }
 

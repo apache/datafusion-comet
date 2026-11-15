@@ -37,7 +37,7 @@ object ShimCometUnionExec {
   def unionRDDs[T: ClassTag](
       sc: SparkContext,
       rdds: Seq[RDD[T]],
-      @annotation.nowarn("cat=unused") outputPartitioning: Partitioning): RDD[T] = {
+      outputPartitioning: Partitioning): RDD[T] = {
     sc.union(rdds)
   }
 }

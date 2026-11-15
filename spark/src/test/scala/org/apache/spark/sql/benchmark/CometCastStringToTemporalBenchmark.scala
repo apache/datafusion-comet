@@ -71,7 +71,7 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
 
           // Run date cast benchmarks with the same data
           dateCastConfigs.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }
@@ -94,7 +94,7 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
 
           // Run timestamp cast benchmarks with the same data
           timestampCastConfigs.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

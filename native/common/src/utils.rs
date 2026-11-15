@@ -52,10 +52,59 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
 /// per-class malformed lengths below (E0/ED overlong & surrogate handling, F0/F4 range checks)
 /// match the observable replacement behavior of the JDK UTF-8 decoder; they were determined from
 /// observed `new String(bytes, UTF_8)` output, not by reviewing the OpenJDK source.
+// Inlined so that callers in other crates, such as the JVM columnar shuffle converting one value at
+// a time, get the ASCII check without a call.
+#[inline]
 pub fn decode_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
+    // ASCII is valid UTF-8, and on short strings checking for it is several times cheaper than
+    // `str::from_utf8`, whose cost dominated the JVM columnar shuffle's string conversion. Longer
+    // values are checked out of line: checking them here made the shuffle's `get_string` too large
+    // to inline into its per-row loops.
+    if bytes.len() <= ASCII_BLOCK && bytes.is_ascii() {
+        // SAFETY: every ASCII byte sequence is valid UTF-8.
+        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) });
+    }
+    decode_long_or_non_ascii_utf8_spark_lossy(bytes)
+}
+
+/// How many bytes [`decode_utf8_spark_lossy`] checks for ASCII at a time.
+const ASCII_BLOCK: usize = 32;
+
+/// Whether every byte of `block` is ASCII. ORing its words keeps every byte's high bit and compiles
+/// to a few vector instructions. On aarch64, `<[u8]>::is_ascii` branches on each word instead, and
+/// on long values it is slower than `str::from_utf8`.
+#[inline]
+fn is_ascii_block(block: &[u8; ASCII_BLOCK]) -> bool {
+    let (words, _) = block.as_chunks::<8>();
+    let bits = words
+        .iter()
+        .fold(0, |acc, word| acc | u64::from_ne_bytes(*word));
+    bits & 0x8080_8080_8080_8080 == 0
+}
+
+/// [`decode_utf8_spark_lossy`] for bytes that are longer than an ASCII block or not all ASCII.
+// Cold so that callers lay the short ASCII path out as the fall-through. Without it, the shuffle's
+// per-row string loops took an extra jump for every short ASCII value.
+#[cold]
+fn decode_long_or_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
+    // A long value is checked for ASCII a block at a time, and only the bytes from the first block
+    // that is not ASCII are validated, so a value whose first non-ASCII byte comes late is not
+    // scanned twice. An ASCII byte is a whole character, so those bytes validate on their own.
+    let mut ascii_len = 0;
+    if bytes.len() > ASCII_BLOCK {
+        let (blocks, tail) = bytes.as_chunks::<ASCII_BLOCK>();
+        let ascii_blocks = blocks.iter().take_while(|b| is_ascii_block(b)).count();
+        if ascii_blocks == blocks.len() && tail.is_ascii() {
+            // SAFETY: every ASCII byte sequence is valid UTF-8.
+            return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) });
+        }
+        ascii_len = ascii_blocks * ASCII_BLOCK;
+    }
+
     // Fast path: well-formed UTF-8 borrows with zero copy (the overwhelmingly common case).
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        return Cow::Borrowed(s);
+    if std::str::from_utf8(&bytes[ascii_len..]).is_ok() {
+        // SAFETY: ASCII followed by valid UTF-8 is valid UTF-8.
+        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) });
     }
 
     const RC: char = '\u{FFFD}';
@@ -195,6 +244,59 @@ mod tests {
         match decode_utf8_spark_lossy(s.as_bytes()) {
             Cow::Borrowed(b) => assert_eq!(b, s),
             Cow::Owned(_) => panic!("valid UTF-8 must borrow, not allocate"),
+        }
+    }
+
+    #[test]
+    fn decode_utf8_spark_lossy_ascii_is_borrowed_zero_copy() {
+        // Lengths below and above a machine word and an ASCII block, so both the check of short
+        // values and the block check of long ones run, the latter with bytes after the last block.
+        for s in [
+            "",
+            "a",
+            "value-1",
+            "value-12345",
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+            &"0123456789".repeat(10),
+        ] {
+            match decode_utf8_spark_lossy(s.as_bytes()) {
+                Cow::Borrowed(b) => assert_eq!(b, s),
+                Cow::Owned(_) => panic!("ASCII must borrow, not allocate"),
+            }
+        }
+        // A single byte past ASCII anywhere still takes the validating paths.
+        let mut bytes = b"abcdefghijklmnop".to_vec();
+        bytes[11] = 0xFF;
+        assert_eq!(decode_utf8_spark_lossy(&bytes), "abcdefghijk\u{FFFD}mnop");
+    }
+
+    #[test]
+    fn decode_utf8_spark_lossy_non_ascii_at_every_offset() {
+        // A long value is validated from its first block that is not ASCII. Put a character or an
+        // ill-formed byte at every offset of values up to a few blocks long, so it lands in short
+        // values and in each block of long ones, across block boundaries and after the last block.
+        let ascii = |n: usize| "x".repeat(n);
+        for len in 1..=100 {
+            for at in 0..len {
+                for c in ["é", "日", "🦀"] {
+                    let s = format!("{}{c}{}", ascii(at), ascii(len - at));
+                    match decode_utf8_spark_lossy(s.as_bytes()) {
+                        Cow::Borrowed(b) => assert_eq!(b, s),
+                        Cow::Owned(_) => panic!("valid UTF-8 must borrow, not allocate"),
+                    }
+                    // An ill-formed byte after it still makes the value take the lossy decode.
+                    let mut bytes = s.as_bytes().to_vec();
+                    bytes.push(0xFF);
+                    assert_eq!(decode_utf8_spark_lossy(&bytes), format!("{s}\u{FFFD}"));
+                }
+                // 0xFF is never valid, and 0x80 is a continuation byte with no lead byte.
+                for b in [0xFF, 0x80] {
+                    let mut bytes = ascii(len).into_bytes();
+                    bytes[at] = b;
+                    let expected = format!("{}\u{FFFD}{}", ascii(at), ascii(len - at - 1));
+                    assert_eq!(decode_utf8_spark_lossy(&bytes), expected);
+                }
+            }
         }
     }
 

@@ -26,10 +26,10 @@ version you are running:
 ```{toctree}
 :maxdepth: 2
 
-Spark 3.4 <spark-3.4/index>
 Spark 3.5 <spark-3.5/index>
 Spark 4.0 <spark-4.0/index>
 Spark 4.1 <spark-4.1/index>
+Spark 4.2 <spark-4.2/index>
 ```
 
 Expressions that are not 100% Spark-compatible fall back to Spark by default, except those

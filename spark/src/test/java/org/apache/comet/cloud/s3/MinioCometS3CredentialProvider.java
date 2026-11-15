@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -41,6 +42,7 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
   public static final String TEST_INSTANCE_TAG = "comet.test-instance-tag";
 
   private static final AtomicReference<Credentials> CREDS = new AtomicReference<>();
+  private static final AtomicLong EXPIRATION = new AtomicLong(0L);
   private static final AtomicInteger CALL_COUNT = new AtomicInteger(0);
   private static final AtomicInteger INIT_COUNT = new AtomicInteger(0);
   private static final AtomicReference<String> LAST_BUCKET = new AtomicReference<>();
@@ -58,6 +60,14 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
 
   public static void installCredentials(String accessKeyId, String secretAccessKey) {
     CREDS.set(new Credentials(accessKeyId, secretAccessKey));
+  }
+
+  /**
+   * Sets the {@code expirationEpochMillis} the provider reports. {@code 0}, the default, means
+   * unknown.
+   */
+  public static void installExpiration(long expirationEpochMillis) {
+    EXPIRATION.set(expirationEpochMillis);
   }
 
   public static int callCount() {
@@ -115,7 +125,7 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
       throw new IllegalStateException(
           "MinioCometS3CredentialProvider used before installCredentials() was called");
     }
-    return new CometS3Credentials(c.accessKeyId, c.secretAccessKey, null, 0L);
+    return new CometS3Credentials(c.accessKeyId, c.secretAccessKey, null, EXPIRATION.get());
   }
 
   private static final class Credentials {

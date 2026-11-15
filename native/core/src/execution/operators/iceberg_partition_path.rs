@@ -20,13 +20,14 @@
 //! [`CometLocationGenerator`] stands in for iceberg-rust's `DefaultLocationGenerator`. It lays out
 //! files identically (`{data_location}/{partition_path}/{file_name}`), but renders the partition
 //! path itself so the directory names match iceberg-java's `PartitionSpec#partitionToPath` rather
-//! than iceberg-rust's `PartitionSpec::partition_to_path`, which diverges from it -- and, for a
-//! pre-1970 `timestamptz` value, panics.
+//! than iceberg-rust's `PartitionSpec::partition_to_path`, which diverges from it -- and panics for
+//! a pre-1970 `timestamptz` value or a date past `chrono`'s calendar.
 
 use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use datafusion_comet_common::civil_from_days;
 use datafusion_comet_spark_expr::java_float_string;
 use iceberg::spec::{
     Literal, PartitionKey, PartitionSpec, PrimitiveLiteral, PrimitiveType, SchemaRef, StructType,
@@ -86,7 +87,7 @@ impl CometLocationGenerator {
 ///
 /// `partition_type` is `key`'s spec resolved against its schema. It is passed in rather than
 /// resolved here because resolution can fail and every caller already holds one: the location
-/// generator resolves it at task start, and `ClusteredBatchSplitter` needs it to read partition
+/// generator resolves it at task start, and `PartitionSplitter` needs it to read partition
 /// values.
 pub(crate) fn partition_to_path(partition_type: &StructType, key: &PartitionKey) -> String {
     let fields = partition_type.fields();
@@ -148,14 +149,15 @@ const NULL: &str = "null";
 ///
 /// | Iceberg type       | iceberg-java                  | iceberg-rust                     |
 /// |--------------------|-------------------------------|----------------------------------|
+/// | `date`             | `10000-01-01`, `-001-12-31`   | panics past year 262142; an `identity` value outside years 0-9999 is `+10000-01-01`, `-0001-12-31` |
 /// | `timestamp`        | `1969-12-31T23:59:58.5`       | `1969-12-31 23:59:58.500`        |
 /// | `timestamptz`      | `1969-12-31T23:59:58.5+00:00` | panics for a negative value with a sub-second part; otherwise `1969-12-31 23:59:58.500 UTC` |
 /// | `binary` / `fixed` | base64                        | uppercase hex                    |
-/// | `float` / `double` | `1.0`, `1.0E20`               | `1`, `100000000000000000000`     |
+/// | `float` / `double` | `1.0`, `1.0E20`               | `1.0`, `1.0E20` since #3358; `Double::MAX` still renders as 309 digits (see below) |
 ///
-/// The nanosecond timestamp types get the same treatment for the same reason. They are V3-only, so
-/// `CometIcebergNativeWrite`'s format-version gate keeps them out of a native write today; the arms
-/// exist so a future V3 write does not reintroduce the panic.
+/// The nanosecond timestamp types get the same treatment for the same reason. Spark cannot plan a
+/// write to them today, and `CometIcebergNativeWrite`'s column-type rule declines them as well; the
+/// arms exist so a future write of one does not reintroduce the panic.
 ///
 /// `float` and `double` go through `java_float_string`, which `cast(float as string)` also uses;
 /// delegating rendered `Double.MAX_VALUE` as 309 digits and failed the write with `File name too
@@ -169,13 +171,16 @@ fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal
 
     // `field_type` is the transform's *result* type (`partition_to_path` passes the partition
     // struct's field type), so a transform reaches an arm below only if it produces that type.
-    // `year`/`month`/`hour` and `bucket` produce `int` and `day` produces `date`, which no arm
-    // matches, so a bucketed float column never gets here; iceberg-rust already mirrors
-    // `TransformUtil` for the ordinals. `truncate` keeps its source type and accepts `binary`, so
-    // it can reach the base64 arm, which is also how iceberg-java's default `toHumanString` spells
-    // a truncated binary. It does not accept float or double, so `identity` is the only way into
-    // those two arms.
+    // `year`/`month`/`hour` and `bucket` produce `int`, which no arm matches, so a bucketed float
+    // column never gets here; iceberg-rust already mirrors `TransformUtil` for those ordinals. Of
+    // them only `hour` goes through `chrono`, and an `i32` hour count spans about 245,000 years
+    // either side of 1970, inside its calendar. `day` produces `date`, so it shares the date arm
+    // with `identity`, as it shares `TransformUtil.humanDay` in iceberg-java. `truncate` keeps its
+    // source type and accepts `binary`, so it can reach the base64 arm, which is also how
+    // iceberg-java's default `toHumanString` spells a truncated binary. It does not accept float
+    // or double, so `identity` is the only way into those two arms.
     match (field_type.as_primitive_type(), &primitive) {
+        (Some(PrimitiveType::Date), PrimitiveLiteral::Int(days)) => human_day(*days),
         (Some(PrimitiveType::Timestamp), PrimitiveLiteral::Long(micros)) => {
             iso_timestamp(*micros, 6, false)
         }
@@ -198,6 +203,18 @@ fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal
         }
         _ => transform.to_human_string(field_type, value),
     }
+}
+
+/// Renders an epoch day the way iceberg-java's `TransformUtil.humanDay` does, which spells both a
+/// `day` partition value and an `identity` one on a `date` column:
+/// `String.format("%04d-%02d-%02d", ...)` of the day's year, month, and day of month.
+///
+/// That is not `ISO_LOCAL_DATE`: `%04d` pads to four characters counting the sign and never writes
+/// a `+`, so year 10000 is `10000` and year -1 is `-001` (compare [`iso_year`]). Rust's `{:04}`
+/// pads the same way.
+fn human_day(days: i32) -> String {
+    let (year, month, day) = civil_from_days(i64::from(days));
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// Renders a sub-second count since the Unix epoch the way iceberg-java's
@@ -248,37 +265,6 @@ fn iso_year(year: i64) -> String {
     } else {
         format!("-{:04}", year.unsigned_abs())
     }
-}
-
-/// Splits a day count since 1970-01-01 into `(year, month, day)` in the proleptic Gregorian
-/// calendar (Howard Hinnant's `civil_from_days`).
-///
-/// Hand-rolled rather than delegated to `chrono` because this must be total: every `i64` micros
-/// value reaches a partition path, and `chrono`'s calendar stops at year 262143 while `i64` micros
-/// reach year 292277. iceberg-java's `ChronoUnit.MICROS.addTo(EPOCH, micros)` has no such ceiling,
-/// so a value past `chrono`'s range must still produce the same string, not an error we cannot
-/// return from `generate_location` anyway.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    // Shift the epoch to 0000-03-01 so leap days land at the end of the 400-year era.
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = (shifted - era * 146_097) as u64; // [0, 146096]
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365; // [0, 399]
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
-    let march_month = (5 * day_of_year + 2) / 153; // [0, 11], 0 = March
-    let day = (day_of_year - (153 * march_month + 2) / 5 + 1) as u32; // [1, 31]
-    let month = if march_month < 10 {
-        march_month + 3
-    } else {
-        march_month - 9
-    } as u32; // [1, 12]
-    let year = year_of_era as i64 + era * 400;
-    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[cfg(test)]
@@ -373,7 +359,7 @@ mod tests {
         assert_eq!(iso_year(-10_000), "-10000");
     }
 
-    // `i64` micros reach year 292277, past `chrono`'s year-262143 ceiling; iceberg-java has no
+    // `i64` micros reach year 294247, past `chrono`'s year-262142 ceiling; iceberg-java has no
     // such ceiling, so these must still render rather than fail.
     #[test]
     fn renders_timestamps_beyond_chronos_calendar() {
@@ -381,19 +367,44 @@ mod tests {
         assert_eq!(timestamptz(i64::MIN), "-290308-12-21T19:59:05.224192+00:00");
     }
 
+    // Expectations from iceberg-java 1.11's `Transforms.day()` and `Transforms.identity()` bound
+    // to `date`, run on a JDK 17 JVM; `TransformUtil.humanDay` is the same in 1.5. `%04d` rather
+    // than ISO: no `+` above year 9999, and the sign counts toward the four characters.
     #[test]
-    fn civil_from_days_matches_the_gregorian_calendar() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(-1), (1969, 12, 31));
-        assert_eq!(civil_from_days(59), (1970, 3, 1));
-        // 1972 was a leap year; 1900 was not.
-        assert_eq!(civil_from_days(789), (1972, 2, 29));
-        assert_eq!(civil_from_days(-25_567), (1900, 1, 1));
-        assert_eq!(civil_from_days(-25_509), (1900, 2, 28));
-        assert_eq!(civil_from_days(-25_508), (1900, 3, 1));
-        assert_eq!(civil_from_days(-719_468), (0, 3, 1));
-        assert_eq!(civil_from_days(-719_528), (0, 1, 1));
-        assert_eq!(civil_from_days(-719_529), (-1, 12, 31));
+    fn renders_dates_like_java_human_day() {
+        let cases = [
+            (0, "1970-01-01"),
+            (-1, "1969-12-31"),
+            (2_932_896, "9999-12-31"),
+            (2_932_897, "10000-01-01"),
+            (-719_528, "0000-01-01"),
+            (-719_529, "-001-12-31"),
+            (-719_893, "-001-01-01"),
+            // The last day of `chrono`'s calendar and the first one past it, either side.
+            (95_026_236, "262142-12-31"),
+            (95_026_237, "262143-01-01"),
+            (-96_465_292, "-262143-01-01"),
+            (-96_465_293, "-262144-12-31"),
+            // `date_from_unix_date(100000000)` and both ends of Spark's date domain.
+            (100_000_000, "275760-09-13"),
+            (-100_000_000, "-271821-04-20"),
+            (i32::MAX, "5881580-07-11"),
+            (i32::MIN, "-5877641-06-23"),
+        ];
+        for (days, expected) in cases {
+            // `day` produces a `date`, so it renders exactly like an `identity` date.
+            for transform in [Transform::Day, Transform::Identity] {
+                assert_eq!(
+                    human_string(
+                        &transform,
+                        &Type::Primitive(PrimitiveType::Date),
+                        Some(&Literal::Primitive(PrimitiveLiteral::Int(days))),
+                    ),
+                    expected,
+                    "{transform} of day {days}"
+                );
+            }
+        }
     }
 
     fn double(value: f64) -> String {
@@ -477,7 +488,6 @@ mod tests {
             ),
             (PrimitiveType::Int, PrimitiveLiteral::Int(-7), "-7"),
             (PrimitiveType::Long, PrimitiveLiteral::Long(-7), "-7"),
-            (PrimitiveType::Date, PrimitiveLiteral::Int(-1), "1969-12-31"),
             (
                 PrimitiveType::String,
                 PrimitiveLiteral::String("a b".to_string()),
@@ -499,6 +509,40 @@ mod tests {
                 Some(&Literal::Primitive(literal)),
             );
             assert_eq!(rendered, expected, "type={field_type:?}");
+        }
+    }
+
+    // The ordinal transforms stay delegated all the way out: `year` and `month` are arithmetic, and
+    // `hour` reaches `chrono` only inside its calendar -- `i32::MAX` and `i32::MIN` are as far as
+    // an hour count goes, and the last case is what `hours(timestamp_micros(9000000000000000000))`
+    // wraps to. Expectations from iceberg-java 1.11's `toHumanString` for each transform.
+    #[test]
+    fn renders_ordinals_like_java_at_the_extremes() {
+        let cases = [
+            (Transform::Year, 0, "1970"),
+            (Transform::Year, 8_030, "10000"),
+            (Transform::Year, -1_971, "-001"),
+            (Transform::Year, 5_879_610, "5881580"),
+            (Transform::Year, -5_879_611, "-5877641"),
+            (Transform::Month, 96_360, "10000-01"),
+            (Transform::Month, -23_641, "-001-12"),
+            (Transform::Month, 70_555_326, "5881580-07"),
+            (Transform::Month, -70_555_327, "-5877641-06"),
+            (Transform::Hour, -1, "1969-12-31-23"),
+            (Transform::Hour, i32::MAX, "246953-10-09-07"),
+            (Transform::Hour, i32::MIN, "-243014-03-24-16"),
+            (Transform::Hour, -1_794_967_296, "-202799-02-07-00"),
+        ];
+        for (transform, ordinal, expected) in cases {
+            assert_eq!(
+                human_string(
+                    &transform,
+                    &Type::Primitive(PrimitiveType::Int),
+                    Some(&Literal::Primitive(PrimitiveLiteral::Int(ordinal))),
+                ),
+                expected,
+                "{transform} ordinal {ordinal}"
+            );
         }
     }
 

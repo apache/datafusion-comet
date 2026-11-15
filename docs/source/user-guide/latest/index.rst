@@ -28,8 +28,8 @@ types, operators, and expressions that Comet supports, along with a compatibilit
 known differences from Apache Spark.
 
 Operational topics include reading and understanding Comet query plans, tuning, available metrics,
-and integration guides for Apache Iceberg and Kubernetes. Select a topic from the navigation menu
-to read more.
+and integration guides for Apache Celeborn and Kubernetes. The data source pages cover Parquet, Apache Iceberg, and Delta Lake. Select a topic from
+the navigation menu to read more.
 
 .. _toc.user-guide-links-$COMET_VERSION:
 .. toctree::
@@ -43,14 +43,25 @@ to read more.
 
 .. toctree::
    :maxdepth: 1
-   :caption: What Comet Supports
+   :caption: Data Sources
    :hidden:
 
    Supported Data Sources <datasources>
+   Parquet <parquet>
+   Apache Iceberg <iceberg>
+   Delta Lake (experimental) <delta>
+   S3 Credential Providers <s3-credential-providers>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: What Comet Supports
+   :hidden:
+
    Supported Data Types <datatypes>
    Supported Operators <operators>
    Supported Expressions <expressions>
    ScalaUDF and Java UDF Support <scala_java_udfs>
+   Custom Rust UDFs <rust_udfs>
 
 .. toctree::
    :maxdepth: 1
@@ -58,7 +69,6 @@ to read more.
    :hidden:
 
    Overview <compatibility/index>
-   compatibility/scans
    compatibility/floating-point
    compatibility/regex
    compatibility/operators
@@ -72,18 +82,28 @@ to read more.
    :hidden:
 
    Understanding Comet Plans <understanding-comet-plans>
-   Tuning Guide <tuning>
    Metrics Guide <metrics>
+   In-Memory Cache <in-memory-cache>
    PyArrow UDF Acceleration <pyarrow-udfs>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tuning
+   :hidden:
+
+   Overview <tuning>
+   Memory <tuning/memory>
+   Shuffle <tuning/shuffle>
+   Celeborn Shuffle <tuning/celeborn>
+   Operators <tuning/operators>
+   Row/Columnar Transitions <tuning/transitions>
 
 .. toctree::
    :maxdepth: 1
    :caption: Integrations
    :hidden:
 
-   Iceberg Guide <iceberg>
-   Iceberg Writes <iceberg-writes>
-   S3 Credential Providers <s3-credential-providers>
+   Celeborn Guide <celeborn>
    Kubernetes Guide <kubernetes>
 
 .. toctree::

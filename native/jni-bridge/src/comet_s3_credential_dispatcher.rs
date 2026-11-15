@@ -34,6 +34,10 @@ pub struct CometS3CredentialDispatcher<'a> {
     pub method_ensure_initialized_ret: ReturnType,
     pub method_get_credentials_for_path: JStaticMethodID,
     pub method_get_credentials_for_path_ret: ReturnType,
+    /// Returns a bucket's policy locations as a `String[]`, or null when the provider does not
+    /// implement `CometS3LocationScopedCredentialProvider`.
+    pub method_get_policy_locations: JStaticMethodID,
+    pub method_get_policy_locations_ret: ReturnType,
     pub field_access_key_id: JFieldID,
     pub field_secret_access_key: JFieldID,
     pub field_session_token: JFieldID,
@@ -63,6 +67,12 @@ impl<'a> CometS3CredentialDispatcher<'a> {
                 ),
             )?,
             method_get_credentials_for_path_ret: ReturnType::Object,
+            method_get_policy_locations: env.get_static_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getPolicyLocations"),
+                jni::jni_sig!("(JLjava/lang/String;)[Ljava/lang/String;"),
+            )?,
+            method_get_policy_locations_ret: ReturnType::Array,
             field_access_key_id: env.get_field_id(
                 &credentials_class,
                 jni::jni_str!("accessKeyId"),

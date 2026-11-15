@@ -65,7 +65,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     prepareSortArrayTable(width) {
       runExpressionBenchmark(
         s"sort_array int ascending (width=$width)",
-        values,
+        values.toLong,
         "SELECT sort_array(int_arr) FROM parquetV1Table")
     }
   }
@@ -74,7 +74,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     prepareSortArrayTable(width) {
       runExpressionBenchmark(
         s"sort_array int descending (width=$width)",
-        values,
+        values.toLong,
         "SELECT sort_array(int_arr, false) FROM parquetV1Table")
     }
   }
@@ -83,7 +83,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     prepareSortArrayTable(width) {
       runExpressionBenchmark(
         s"element_at(sort_array(int_arr), 1) (width=$width)",
-        values,
+        values.toLong,
         "SELECT element_at(sort_array(int_arr), 1) FROM parquetV1Table")
     }
   }
@@ -112,7 +112,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
         runExpressionBenchmark(
           "array_position - int array",
-          values,
+          values.toLong,
           "SELECT array_position(int_arr, search_val) FROM parquetV1Table")
       }
     }
@@ -140,7 +140,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
         runExpressionBenchmark(
           "array_position - string array",
-          values,
+          values.toLong,
           "SELECT array_position(str_arr, search_val) FROM parquetV1Table")
       }
     }

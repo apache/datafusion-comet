@@ -20,12 +20,9 @@
 -- collation semantics that make Spark tie e.g. 'A' with 'a' under UTF8_LCASE. Falling
 -- back to Spark keeps peer equality intact.
 --
--- Unlike the other window_group_limit_* fixtures this file pins the threshold instead of running
--- the -1,1000 matrix. `spark.sql.optimizer.windowGroupLimitThreshold=-1` makes
--- `InferWindowGroupLimit` a no-op (see its `apply`), so no `WindowGroupLimit` node is planned and
--- the `expect_fallback` reason below - which only `CometWindowGroupLimitExec.convert` can emit -
--- is unreachable by construction. The plain `WindowExec` path that the -1 arm would exercise has
--- no collation guard of its own and is tracked separately.
+-- Pin the threshold so these queries exercise WindowGroupLimit plans. The sort below the
+-- window must also reject collated keys (#6158); its fallback can happen before the
+-- WindowGroupLimit converter, so either operator may supply the collation fallback reason.
 
 -- MinSparkVersion: 4.0
 -- Config: spark.sql.optimizer.windowGroupLimitThreshold=1000
@@ -34,14 +31,10 @@ statement
 CREATE TABLE test_wgl_collation(grp int, s string) USING parquet
 
 statement
-INSERT INTO test_wgl_collation VALUES (1, 'A'), (1, 'a'), (1, 'b')
+INSERT INTO test_wgl_collation VALUES (1, 'A'), (1, 'a'), (1, 'b'), (1, 'B')
 
--- Keep the values byte-order-compatible with UTF8_LCASE order ('A' < 'a' < 'b' holds under both).
--- `QueryPlanSerde.supportedSortType` only rejects collated strings for single-column sorts, so the
--- two-column `Sort [key ASC, s ASC]` that Spark injects below `WindowGroupLimitExec` still runs on
--- Comet and sorts by raw bytes. Values where the two orders disagree (e.g. 'a' before 'B' under
--- UTF8_LCASE but after it by byte value) would feed Spark's fallback operator a wrongly ordered
--- stream and fail for a reason unrelated to what this file pins.
+-- Byte order places 'B' before 'a', while UTF8_LCASE places it after. Spark's fallback window
+-- operators must receive collation-aware ordering, including for multi-column sort keys.
 
 -- Case-insensitive ORDER BY key: 'A' and 'a' must tie at rank 1 (Spark keeps both).
 query expect_fallback(non-default string collation)

@@ -31,9 +31,9 @@ import org.apache.comet.CometConf
 
 class CometEmptyRelationExecSuite extends CometTestBase {
 
-  // CometTestBase enables the Spark-to-Arrow bridge; use its production default here.
+  // CometTestBase enables the Spark-to-Arrow conversions; use their production defaults here.
   override protected def sparkConf: SparkConf =
-    super.sparkConf.remove(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key)
+    super.sparkConf.setAll(sparkToArrowConversionConfs(enabled = false))
 
   test(
     "EmptyRelationExec is discovered by AQE for joins with default Comet conversion settings") {
@@ -81,11 +81,11 @@ class CometEmptyRelationExecSuite extends CometTestBase {
     }
   }
 
-  test("EmptyRelationExec discovered by AQE feeds native aggregates and Spark existence joins") {
+  test("EmptyRelationExec discovered by AQE feeds native aggregates and native existence joins") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
       withParquetTable(Seq((1, 2), (2, 3)), "aqe_empty_input") {
         // Retain Spark's Range input so AQE can infer emptiness from its completed shuffle.
@@ -102,7 +102,8 @@ class CometEmptyRelationExecSuite extends CometTestBase {
           collect(aggregatePlan) { case a: CometHashAggregateExec => a }.nonEmpty,
           aggregatePlan.toString)
 
-        // Existence joins retain Spark's fallback and preserve probe rows with false markers.
+        // Existence joins now run natively over the CometEmptyRelation, preserving probe rows with
+        // false markers.
         val existence = "SELECT l._1, EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM " +
           s"$empty r WHERE r.k = l._1) AS matched FROM aqe_empty_input l"
         val (_, joinPlan) = checkSparkAnswer(existence)
@@ -111,9 +112,9 @@ class CometEmptyRelationExecSuite extends CometTestBase {
           collect(joinPlan) { case e: CometEmptyRelationExec => e }.nonEmpty,
           joinPlan.toString)
         assert(
-          collect(joinPlan) { case j: BroadcastHashJoinExec => j }.nonEmpty,
+          collect(joinPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
           joinPlan.toString)
-        assert(collect(joinPlan) { case j: CometBroadcastHashJoinExec => j }.isEmpty)
+        assert(collect(joinPlan) { case j: BroadcastHashJoinExec => j }.isEmpty)
       }
     }
   }

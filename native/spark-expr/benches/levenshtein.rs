@@ -25,24 +25,86 @@ use std::sync::Arc;
 mod common;
 use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
+/// Generator pair for one dataset: the invariant right side plus a left-side
+/// factory that takes the per-row index, so every dataset fills the same shape.
+struct Dataset {
+    label: &'static str,
+    right: fn(usize) -> String,
+    left: fn(usize) -> String,
+    row_counts: &'static [usize],
+}
+
+/// ASCII: both operands are ASCII, so `is_ascii() && is_ascii()` enables the
+/// byte-level fast path.
+const ASCII: Dataset = Dataset {
+    label: "ascii",
+    right: |_| "sitting".to_string(),
+    left: |_| "kitten".to_string(),
+    row_counts: &ROW_COUNTS,
+};
+
+/// Non-ASCII: both operands are non-ASCII, so the fast path is skipped and the
+/// Unicode `chars()` path runs. Both sides pay the `is_ascii()` scan.
+const NON_ASCII: Dataset = Dataset {
+    label: "non-ascii",
+    right: |_| "smörgås".to_string(),
+    left: |_| "naïve".to_string(),
+    row_counts: &ROW_COUNTS,
+};
+
+/// Mixed: right is non-ASCII, left is ASCII. `s.is_ascii() && t.is_ascii()`
+/// short-circuits on the second operand, so only the left scan is saved.
+const MIXED: Dataset = Dataset {
+    label: "mixed",
+    right: |_| "café".to_string(),
+    left: |_| "cafe".to_string(),
+    row_counts: &ROW_COUNTS,
+};
+
+/// Batch size for longer inputs: 128 rows prevents astronomical runtimes
+/// (e.g. 524k rows of 512x512 DP would take several minutes per sample).
+const LONG_ROW_COUNTS: [usize; 1] = [128];
+
+/// Long ASCII (128 chars): tests longer string inputs where the bounds checks
+/// overhead inside the DP matrix inner loop is prominent.
+const ASCII_128: Dataset = Dataset {
+    label: "ascii-128",
+    right: |_| "b".repeat(128),
+    left: |_| "a".repeat(128),
+    row_counts: &LONG_ROW_COUNTS,
+};
+
+/// Long ASCII (512 chars): matches the exact reviewer reproduction shape
+/// (128 rows x 512 chars) to ensure no regressions against base.
+const ASCII_512: Dataset = Dataset {
+    label: "ascii-512",
+    right: |_| "b".repeat(512),
+    left: |_| "a".repeat(512),
+    row_counts: &LONG_ROW_COUNTS,
+};
+
+const DATASETS: [Dataset; 5] = [ASCII, NON_ASCII, MIXED, ASCII_128, ASCII_512];
+
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("spark_levenshtein");
-    for rows in ROW_COUNTS {
-        let right = string_array(rows, 0.0, |_| "sitting".to_string());
-        for (null_ratio, tag) in NULL_RATIOS {
-            let left = string_array(rows, null_ratio, |_| "kitten".to_string());
-            let args = vec![
-                ColumnarValue::Array(left),
-                ColumnarValue::Array(Arc::clone(&right)),
-            ];
-            group.bench_with_input(
-                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
-                &args,
-                |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
-            );
+    for dataset in &DATASETS {
+        let mut group = c.benchmark_group(format!("spark_levenshtein/{}", dataset.label));
+        for &rows in dataset.row_counts {
+            let right = string_array(rows, 0.0, |_| (dataset.right)(0));
+            for (null_ratio, tag) in NULL_RATIOS {
+                let left = string_array(rows, null_ratio, |_| (dataset.left)(0));
+                let args = vec![
+                    ColumnarValue::Array(left),
+                    ColumnarValue::Array(Arc::clone(&right)),
+                ];
+                group.bench_with_input(
+                    BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                    &args,
+                    |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
+                );
+            }
         }
+        group.finish();
     }
-    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);

@@ -118,11 +118,11 @@ query
 SELECT regr_count(y, x), regr_avgx(y, x), regr_avgy(y, x) FROM test_regr_all_null
 
 -- regr_sxx/syy/sxy return NULL when there are no non-null pairs
-query tolerance=1e-6
+query
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_all_null
 
 -- regr_slope/intercept/r2 return NULL when there are no non-null pairs
-query tolerance=1e-6
+query
 SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_all_null
 
 -- edge case: single non-null pair (slope/intercept/r2 require >= 2 rows)
@@ -136,10 +136,10 @@ query
 SELECT regr_count(y, x), regr_avgx(y, x), regr_avgy(y, x) FROM test_regr_single
 
 -- sxx/syy/sxy are 0 for a single pair; slope/intercept/r2 are NULL
-query tolerance=1e-6
+query
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_single
 
-query tolerance=1e-6
+query
 SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_single
 
 -- edge case: independent variable (x) is constant but y varies.
@@ -152,10 +152,10 @@ CREATE TABLE test_regr_const_x(y double, x double) USING parquet
 statement
 INSERT INTO test_regr_const_x VALUES (1.0, 5.0), (2.0, 5.0), (3.0, 5.0), (4.0, 5.0)
 
-query tolerance=1e-6
+query
 SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_const_x
 
-query tolerance=1e-6
+query
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_x
 
 -- edge case: dependent variable (y) is constant but x varies.
@@ -168,8 +168,37 @@ CREATE TABLE test_regr_const_y(y double, x double) USING parquet
 statement
 INSERT INTO test_regr_const_y VALUES (7.0, 1.0), (7.0, 2.0), (7.0, 3.0), (7.0, 4.0)
 
-query tolerance=1e-6
+query
 SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_const_y
 
-query tolerance=1e-6
+query
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_y
+
+-- Both moments are nonzero, but their product underflows to zero.
+statement
+CREATE TABLE test_regr_underflow(v double, grp int) USING parquet
+
+statement
+INSERT INTO test_regr_underflow VALUES (1e-100, 0), (NULL, 0), (2e-100, 0)
+
+query
+SELECT regr_r2(v, v), regr_r2(v, -v) FROM test_regr_underflow
+
+query
+SELECT grp, regr_r2(v, v), regr_r2(v, -v) FROM test_regr_underflow GROUP BY grp
+
+statement
+SET spark.sql.ansi.enabled=true
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT regr_r2(v, v) FROM test_regr_underflow
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT grp, regr_r2(v, -v) FROM test_regr_underflow GROUP BY grp
+
+-- The existing constant-input guards precede division, even in ANSI mode.
+query
+SELECT regr_r2(y, x) FROM test_regr_const_x
+
+query
+SELECT regr_r2(y, x) FROM test_regr_const_y

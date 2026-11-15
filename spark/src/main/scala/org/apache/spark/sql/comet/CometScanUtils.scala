@@ -19,8 +19,17 @@
 
 package org.apache.spark.sql.comet
 
+import java.net.URI
+import java.util.Locale
+
+import scala.collection.mutable
+
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
-import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.FileSourceScanExec
+import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.types.StructType
+
+import org.apache.comet.objectstore.NativeConfig
 
 object CometScanUtils {
 
@@ -29,20 +38,216 @@ object CometScanUtils {
    * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
    */
   def filterUnusedDynamicPruningExpressions(predicates: Seq[Expression]): Seq[Expression] = {
-    // Strip DPP expressions for canonicalization. Matches Spark's
-    // FileSourceScanExec.filterUnusedDynamicPruningExpressions (TrueLiteral).
-    // Also strips unconverted SAB wrappers because AQE stageCache canonicalizes
-    // before our queryStageOptimizerRule converts them, so they would prevent
-    // exchange reuse between otherwise-identical scans.
-    predicates.filterNot {
-      case DynamicPruningExpression(Literal.TrueLiteral) => true
-      case DynamicPruningExpression(
-            InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
-        true
-      case DynamicPruningExpression(
-            InSubqueryExec(_, _: SubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
-        true
-      case _ => false
+    // Matches Spark's FileSourceScanExec.filterUnusedDynamicPruningExpressions. A DPP filter that
+    // still holds the adaptive broadcast placeholder must stay: AQE keys a query stage by its
+    // exchange as it was before the stage optimizer rules converted that placeholder, so dropping
+    // it makes scans with different DPP filters equal and lets AQE reuse one stage for both.
+    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
+  }
+
+  /**
+   * Canonicalizes a Comet scan's `originalPlan` (which may be null) without any of its DPP
+   * partition filters. That copy carries the column selection and schema needed for equals and
+   * hashCode, but its DPP filters are stale because no DPP rule rewrites them. The scan's own DPP
+   * filters, passed through [[filterUnusedDynamicPruningExpressions]], carry its DPP identity.
+   */
+  def canonicalizeOriginalPlan(originalPlan: FileSourceScanExec): FileSourceScanExec = {
+    if (originalPlan == null) {
+      null
+    } else {
+      originalPlan
+        .copy(partitionFilters =
+          originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]))
+        .doCanonicalize()
+    }
+  }
+
+  /**
+   * Bin packs `files` with `pack` separately for each object store `storeKey` names, so no
+   * partition holds files from two stores, and numbers the partitions from 0. Files that share
+   * one store are packed exactly as `pack` packs them.
+   */
+  def packFilesPerStore[K](files: Seq[PartitionedFile], storeKey: PartitionedFile => K)(
+      pack: Seq[PartitionedFile] => Seq[FilePartition]): Seq[FilePartition] = {
+    val groups = groupByStore(files, storeKey)
+    if (groups.size <= 1) {
+      pack(files)
+    } else {
+      groups
+        .flatMap(pack)
+        .zipWithIndex
+        .map { case (partition, index) => partition.copy(index = index) }
+    }
+  }
+
+  /**
+   * Splits each partition into one partition per object store `storeKey` names, keeping the file
+   * order, and numbers the partitions from 0. Returns `partitions` itself when none mixes stores.
+   */
+  def splitPartitionsByStore[K](
+      partitions: Seq[FilePartition],
+      storeKey: PartitionedFile => K): Seq[FilePartition] = {
+    val split = partitions.flatMap { partition =>
+      val groups = groupByStore(partition.files.toSeq, storeKey)
+      if (groups.length <= 1) {
+        Seq(partition)
+      } else {
+        groups.map(files => FilePartition(partition.index, files.toArray))
+      }
+    }
+    if (split.length == partitions.length) {
+      partitions
+    } else {
+      split.zipWithIndex.map { case (partition, index) => partition.copy(index = index) }
+    }
+  }
+
+  /** `files` grouped by store, in first-seen store order, keeping file order. */
+  private def groupByStore[K](
+      files: Seq[PartitionedFile],
+      storeKey: PartitionedFile => K): Seq[Seq[PartitionedFile]] = {
+    val groups = mutable.LinkedHashMap.empty[K, mutable.ArrayBuffer[PartitionedFile]]
+    files.foreach { file =>
+      groups.getOrElseUpdate(storeKey(file), mutable.ArrayBuffer.empty[PartitionedFile]) += file
+    }
+    groups.valuesIterator.map(_.toVector).toVector
+  }
+
+  /**
+   * What the native CSV and Text scans serialize besides their format options: the object store
+   * options of every scheme the scan reads, and its file partitions, split so that none mixes
+   * object stores.
+   */
+  case class NativeFileScanInput(
+      objectStoreOptions: Map[String, String],
+      filePartitions: Seq[FilePartition])
+
+  /**
+   * Prepares the part of a native file scan's serialization that does not depend on the format:
+   * the Hadoop conf from the read options, the object store options, and the per-store partition
+   * split. `Left` is the reason the scan must stay on Spark. `readOptions` is the scan's option
+   * map with the case of each key preserved, as Spark's reader factory builds the Hadoop conf.
+   *
+   * A read option can list a scheme for libhdfs that the session does not. Native reads through
+   * libhdfs with the executor classpath's configuration, not the read options, so a scheme that
+   * only the options route there cannot be read natively, and the scan declines it, as the native
+   * Parquet scan does.
+   */
+  def prepareNativeFileScan(
+      scanName: String,
+      op: CometBatchScanExec,
+      readOptions: Map[String, String]): Either[String, NativeFileScanInput] = {
+    val sessionState = op.session.sessionState
+    val hadoopConf = sessionState.newHadoopConfWithOptions(readOptions)
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val scanLibhdfs = NativeConfig.resolveScanLibhdfsSchemes(
+      NativeConfig.resolveLibhdfsSchemes(sessionState.newHadoopConf()),
+      hadoopConf)
+    val libhdfsSchemes = scanLibhdfs.libhdfs
+    val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val scanOnlyLibhdfsSchemes = inputPartitions.view
+      .flatMap(_.files.view.flatMap(file => NativeConfig.lowerScheme(file.pathUri)))
+      .filter(scanLibhdfs.scanOnly.contains)
+      .toSet
+    if (scanOnlyLibhdfsSchemes.nonEmpty) {
+      return Left(
+        s"$scanName does not support filesystem scheme(s) " +
+          s"${scanOnlyLibhdfsSchemes.toSeq.sorted.mkString(", ")} listed for libhdfs only " +
+          "through reader options")
+    }
+    val multiStoreReason = multiStoreFallbackReason(
+      scanName,
+      inputPartitions.view.flatMap(_.files.view.map(_.pathUri)),
+      s3CompliantSchemes,
+      libhdfsSchemes,
+      isBucketedScan = false)
+    if (multiStoreReason.nonEmpty) {
+      return Left(multiStoreReason.get)
+    }
+    // The options of every scheme the scan reads, or a decline for the ABFS layouts one
+    // resolution cannot serve. Checked before the split below so that its reason is reported.
+    val fileUris = inputPartitions.view.flatMap(_.files).map(_.pathUri)
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+        case Right(options) => options
+        case Left(reason) => return Left(reason)
+      }
+    // Native planning reads each partition through one object store.
+    val filePartitions = splitPartitionsByStore(
+      inputPartitions,
+      file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
+    Right(NativeFileScanInput(objectStoreOptions, filePartitions))
+  }
+
+  /** Indexes into `dataSchema` of the columns in `readDataSchema`, in `dataSchema` order. */
+  def projectionVector(dataSchema: StructType, readDataSchema: StructType): Seq[Integer] = {
+    val readFieldNames = readDataSchema.fieldNames
+    dataSchema.zipWithIndex
+      .filter { case (field, _) => readFieldNames.contains(field.name) }
+      .map(_._2.asInstanceOf[Integer])
+  }
+
+  /**
+   * Why a native scan of `uris` must fall back because of where they live, or None. The scan
+   * forwards the settings of every scheme it reads, and translates alias settings to the
+   * `fs.s3a.*` keys of the alias bucket. So it falls back when one bucket is read through an
+   * S3-compliant alias and another scheme, or when an alias path has no bucket and other S3 paths
+   * would get its settings. A bucketed scan reads each table bucket as one partition, so its
+   * paths must share one store. `scanName` starts the reason. `uris` is walked once, so a lazy
+   * view of a scan's files works.
+   */
+  def multiStoreFallbackReason(
+      scanName: String,
+      uris: Iterable[URI],
+      s3CompliantSchemes: Set[String],
+      libhdfsSchemes: Set[String],
+      isBucketedScan: Boolean): Option[String] = {
+    // Schemes per native store, and per settings scope of the stores native reads itself. An
+    // S3-family path is scoped by its bucket, which drops the port the store key keeps.
+    val (schemesByStore, schemesByScope) =
+      uris.foldLeft(
+        (Map.empty[NativeConfig.ObjectStoreKey, Set[String]], Map.empty[String, Set[String]])) {
+        case ((byStore, byScope), uri) =>
+          val store = NativeConfig.objectStoreKey(uri, s3CompliantSchemes, libhdfsSchemes)
+          val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
+          val scope =
+            if (NativeConfig.isS3FamilyScheme(scheme, s3CompliantSchemes)) {
+              "s3://" + NativeConfig.bucketForUri(uri, s3CompliantSchemes).getOrElse("")
+            } else {
+              store.key
+            }
+          (
+            byStore.updated(store, byStore.getOrElse(store, Set.empty[String]) + scheme),
+            if (store.isLibhdfs) byScope
+            else byScope.updated(scope, byScope.getOrElse(scope, Set.empty[String]) + scheme))
+      }
+    val nativeScopes = schemesByScope.toSeq.sortBy(_._1)
+    val sharedAliasScope = nativeScopes.find { case (_, schemes) =>
+      schemes.size > 1 && schemes.exists(s3CompliantSchemes.contains)
+    }
+    // An alias path with no bucket translates its settings to the global `fs.s3a.*` keys.
+    val s3Paths = nativeScopes.flatMap { case (scope, schemes) =>
+      schemes.toSeq.filter(NativeConfig.isS3FamilyScheme(_, s3CompliantSchemes)).map(scope -> _)
+    }
+    val hasBucketlessAlias = s3Paths.exists { case (scope, scheme) =>
+      scope == "s3://" && s3CompliantSchemes.contains(scheme)
+    }
+    if (sharedAliasScope.nonEmpty) {
+      val (store, schemes) = sharedAliasScope.get
+      Some(
+        s"$scanName reads the object store $store through schemes " +
+          s"${schemes.toSeq.sorted.mkString(", ")}, but forwards one set of settings per store")
+    } else if (hasBucketlessAlias && s3Paths.size > 1) {
+      Some(
+        s"$scanName reads an S3-compliant alias path with no bucket next to other S3 paths, " +
+          "but would apply its alias settings to every bucket")
+    } else if (isBucketedScan && schemesByStore.size > 1) {
+      val keys = schemesByStore.keys.toSeq.map(_.toString).sorted.mkString(", ")
+      Some(
+        s"$scanName of a bucketed table reads paths in object stores $keys, but reads each " +
+          "table bucket through one store")
+    } else {
+      None
     }
   }
 }

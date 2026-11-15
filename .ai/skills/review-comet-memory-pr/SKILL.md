@@ -68,12 +68,17 @@ Native operators reserve through DataFusion's `MemoryConsumer` and `MemoryReserv
 - [ ] **`try_grow` failure turns into spilling, not an error.** For a spillable operator,
       `ResourcesExhausted` is the signal to spill and retry. A new operator that propagates it as a
       query failure has converted a recoverable condition into a lost task.
-- [ ] **`grow` is infallible and panics if the pool refuses.** It is only correct where the caller
-      genuinely cannot spill. A new `grow` call site needs that justification.
+- [ ] **Treat a new `grow` call site as potential unbacked memory.** `grow` cannot fail. When
+      Spark grants less than asked, the Comet pools record the full amount anyway and carry the
+      shortfall as overcommit, which Spark does not know about and can hand to another consumer
+      or task. Nothing caps how far successive `grow` calls overcommit short of the container
+      limit. That is acceptable only for memory that already exists and cannot be spilled, such
+      as a spilled batch read back from disk, so a new call site needs that justification.
+      Memory the caller is about to allocate belongs behind `try_grow`.
 - [ ] **Every `try_grow` has a matching `shrink`, including on the error path.** A reservation
       leaked on an early return is charged for the life of the task.
-- [ ] **A partial grant is released, not kept.** `acquired < additional` must release and report
-      `ResourcesExhausted`.
+- [ ] **In `try_grow`, a partial grant is released, not kept.** `acquired < additional` must
+      release and report `ResourcesExhausted`. Only `grow` keeps a partial grant, as overcommit.
 - [ ] **An operator that buffers without reserving is invisible to the pool.** If the PR adds
       buffering, ask where the reservation is. "It is only a few batches" is how the accounting gap
       grows.
@@ -95,13 +100,27 @@ configuration, from the inside out:
 
 - [ ] A new decorator forwards **every** `MemoryPool` method to its inner pool. A partial
       implementation makes `reserved()` disagree between levels.
-- [ ] **`fair_unified` compares against the shared total, not a per-consumer quota.** It divides
-      `pool_size` by the number of registered consumers and rejects if the pool's total reserved
-      plus the request exceeds that quotient. With two consumers and an 8 GiB pool, once one holds
-      3 GiB a 2 GiB request from the other is refused. If the PR changes this comparison it changes
-      when every query spills, so it needs benchmark evidence, not reasoning.
-- [ ] **`num_consumers` counts every consumer in the task**, across every native plan, because the
-      pool is task-shared.
+- [ ] **`fair_unified` holds the consumers that can spill to a share of the task's share.** The
+      task's share is `spark.memory.offHeap.size` divided by the tasks on the executor running
+      native plans, which `RunningTasks` counts while each task holds its task-shared pool, or
+      `pool_size` if that is smaller. A consumer that can spill is
+      refused if what it holds plus the request exceeds what the consumers that cannot spill leave
+      of the task's share, divided by the registered consumers that can spill, or if the task's
+      total plus the request exceeds the task's share. A consumer that cannot spill is refused only
+      if the task's total plus the request exceeds `pool_size`, which binds before Spark's own
+      limit only while the deprecated fraction is below `1 / N`. With eight running tasks, a 16 GiB
+      pool and two consumers that can spill, each may hold 1 GiB, or 768 MiB while a merge holds
+      512 MiB. The pool keeps a running total for each consumer id, so the sibling reservations
+      that `new_empty()`, `split()` and `take()` create count against one share. A PR that checks
+      `reservation.size()` instead lets an operator with several reservations, such as a sort's
+      streaming merge, take other consumers' shares. It also depends on when DataFusion updates the
+      size, which is after it calls `try_grow` but before it calls `shrink`. A PR that limits a
+      consumer that cannot spill to a share, or sizes the shares from the whole pool, brings back
+      #7088: one operator takes the task's share from Spark and a merge or hash join build fails
+      the task. If the PR changes any of these comparisons it changes when every query spills, so
+      it needs benchmark evidence, not reasoning.
+- [ ] **The consumers that divide the task's share are every consumer that can spill in the
+      task**, across every native plan, because the pool is task-shared.
 - [ ] **Task-shared pool lifetime.** `acquire_task_shared_pool` keeps a process-wide
       `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. The returned `Arc` is the only
       lifetime handle, so there is no explicit release to forget and a `createPlan` that fails
@@ -110,9 +129,11 @@ configuration, from the inside out:
       so it only removes an entry that is still its own, which handles the race where an `acquire`
       observes an expired `Weak` and inserts a replacement first. Do not let that check be
       simplified away.
-- [ ] **Only `fair_unified` and `greedy_unified` are valid in off-heap mode.** Other pool types are
-      on-heap only and belong to `CATEGORY_TESTING`, because on-heap mode exists so the Spark SQL
-      test suite can run against Comet and must not be used in production.
+- [ ] **`fair_unified` and `greedy_unified` are the only pool types.** On-heap mode ignores the
+      pool-type string and always gets `UnboundedMemoryPool`: it exists so the Spark SQL test suite
+      can run against Comet, it accounts for nothing, and it must not be used in production. A PR
+      re-adding a sized on-heap pool is reintroducing a budget that bounds nothing real (see
+      issue #6063).
 
 ## 4. The Spark Bridge
 
@@ -130,18 +151,18 @@ reclamation, that is a significant change and needs to say what it does to in-fl
 ## 5. Budget and Configuration
 
 `CometExecIterator.getMemoryConfig` computes the budget once per executor and passes it across JNI
-as `memory_limit`:
+as `memory_limit`, along with `spark.memory.offHeap.size` itself as `off_heap_size`, which
+`fair_unified` divides among the tasks running native plans:
 
 ```text
 memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
+off_heap_size = spark.memory.offHeap.size
 ```
 
 - [ ] A new memory config goes through `getMemoryConfig` rather than being read separately in
-      native code.
+      native code, and a new value crossing JNI is added to `createPlan` on both sides.
 - [ ] Changing `memoryPool.fraction` semantics affects every deployment that tuned it as a haircut
       for the accounting gap.
-- [ ] `memory_limit_per_task` is read only by the on-heap pool types. A PR wiring it into an
-      off-heap path is probably confused.
 - [ ] On Kubernetes, `spark.memory.offHeap.size` is **part of** the pod limit, not headroom on top
       of it. A PR whose fix is "raise the off-heap size" is asking for fewer executors per node.
       `spark.executor.memoryOverhead` is the only real slack in the container, and JVM non-heap
@@ -171,13 +192,17 @@ what test was added. Ask for at least one of:
 - A trace comparing `jemalloc_allocated` against the summed
   `thread_NNN_comet_memory_reserved` values, which is the only way to see the accounting gap
 - Spill counts from `spark.comet.explain.native.enabled=true`, before and after
+- For a DataFusion upgrade, or a change to a spilling operator, a run where the operator spills
+  under a tight pool and then reads its spill back. The DataFusion 55.1 final aggregate lost the
+  ability to spill again during that replay, and only a run at a small off-heap size showed it
+  (#6254).
 - For a fix to an OOM report, the exit code that identifies which budget was exceeded. 137 or
   `OOMKilled` is the cgroup. 52 with `java.lang.OutOfMemoryError` is JVM heap. A failed task with
   `SparkOutOfMemoryError` and a surviving executor is Spark's pool, the only one of the three that
   is recoverable at task level.
 
 `spark/src/test/scala/org/apache/spark/CometTaskMemoryManagerSuite.scala` and
-`CometBoundedShuffleMemoryAllocatorSuite.scala` are the existing JVM-side tests. A change to the
+`CometUnboundedShuffleMemoryAllocatorSuite.scala` are the existing JVM-side tests. A change to the
 bridge or an allocator should extend one of them.
 
 ## 8. Does the PR Make `memory_management.md` Stale?
@@ -189,7 +214,8 @@ will not catch. Check:
 - The **pool stack** diagram, if a decorator is added, removed, or reordered
 - The **pool type** table, if a pool type is added, removed, or changes how it is sized
 - The `memory_limit` formula, if the budget calculation changes
-- The **fair pool** description, which spells out the shared-total comparison and its consequence
+- The **fair pool** description, which spells out the task share, the share and task-total
+  checks, and their consequences
 - The **Crossing the FFI boundary** section, which names the operators that reserve for imported
   batches
 - The **Open problems** list. If the PR closes one of these gaps, the entry must be removed or

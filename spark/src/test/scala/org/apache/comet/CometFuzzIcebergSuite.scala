@@ -38,9 +38,13 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
   }
 
   test("select * with limit") {
-    val sql = s"SELECT * FROM $icebergTableName LIMIT 500"
-    val (_, cometPlan) = checkSparkAnswer(sql)
-    assert(1 == collectIcebergNativeScans(cometPlan).length)
+    // Without an ORDER BY, the rows a LIMIT keeps depend on the order the data files are read in,
+    // so read one file at a time to keep that order.
+    withSQLConf(CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.key -> "1") {
+      val sql = s"SELECT * FROM $icebergTableName LIMIT 500"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(1 == collectIcebergNativeScans(cometPlan).length)
+    }
   }
 
   test("order by single column") {

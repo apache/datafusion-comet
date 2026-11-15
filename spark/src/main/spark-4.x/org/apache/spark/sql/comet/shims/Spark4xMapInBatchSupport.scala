@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInArrowExec, MapInPandasExec}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DataType
 
 /**
  * Shared 4.x bits for `ShimCometMapInBatch`. The matchers and `runnerInputs` helper are identical
@@ -62,6 +63,7 @@ trait Spark4xMapInBatchSupport {
   /** Inputs every 4.x `ArrowPythonRunner` constructor needs in the same shape. */
   protected case class RunnerInputs(
       chainedFunc: Seq[(ChainedPythonFunctions, Long)],
+      outputSchema: DataType,
       pythonRunnerConf: Map[String, String],
       jobArtifactUUID: Option[String],
       arrowMaxRecordsPerBatch: Int,
@@ -75,6 +77,7 @@ trait Spark4xMapInBatchSupport {
   protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
     RunnerInputs(
       chainedFunc = Seq((ChainedPythonFunctions(Seq(pythonUDF.func)), pythonUDF.resultId.id)),
+      outputSchema = pythonUDF.dataType,
       pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
       jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid),
       arrowMaxRecordsPerBatch = conf.arrowMaxRecordsPerBatch,

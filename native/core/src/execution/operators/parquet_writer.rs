@@ -22,6 +22,7 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
+    io::Write,
     sync::Arc,
 };
 
@@ -30,6 +31,8 @@ use opendal::Operator;
 #[cfg(feature = "hdfs-opendal")]
 use std::io::Cursor;
 
+use crate::jvm_bridge::OutputStreamSink;
+use crate::parquet::datetime_rebase::SPARK_VERSION_METADATA_KEY;
 use crate::parquet::parquet_support::is_hdfs_scheme;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
@@ -39,7 +42,7 @@ use async_trait::async_trait;
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
-    execution::context::TaskContext,
+    execution::{context::TaskContext, memory_pool::MemoryConsumer},
     physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
@@ -53,7 +56,7 @@ use futures::TryStreamExt;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, GzipLevel, ZstdLevel},
-    file::properties::WriterProperties,
+    file::{metadata::KeyValue, properties::WriterProperties},
 };
 use url::Url;
 
@@ -93,12 +96,15 @@ enum ParquetWriter {
     /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
     /// The opendal::Writer is created lazily on first write
     #[cfg(feature = "hdfs-opendal")]
-    Remote(
-        Box<ArrowWriter<Cursor<Vec<u8>>>>,
-        Option<opendal::Writer>,
-        Box<Operator>,
-        String,
-    ),
+    Remote {
+        arrow_writer: Box<ArrowWriter<Cursor<Vec<u8>>>>,
+        hdfs_writer: Option<opendal::Writer>,
+        op: Box<Operator>,
+        output_path: String,
+    },
+    /// Writer for a file the JVM created through Hadoop's FileSystem API (`HadoopFileOutput`),
+    /// which only supplies the file's bytes.
+    OutputStream(ArrowWriter<OutputStreamWriter>),
 }
 
 impl ParquetWriter {
@@ -110,34 +116,39 @@ impl ParquetWriter {
         match self {
             ParquetWriter::LocalFile(writer) => writer.write(batch),
             #[cfg(feature = "hdfs-opendal")]
-            ParquetWriter::Remote(
-                arrow_parquet_buffer_writer,
-                hdfs_writer_opt,
+            ParquetWriter::Remote {
+                arrow_writer,
+                hdfs_writer,
                 op,
                 output_path,
-            ) => {
+            } => {
                 // Write batch to in-memory buffer
-                arrow_parquet_buffer_writer.write(batch)?;
+                arrow_writer.write(batch)?;
 
-                // Flush and get the current buffer content
-                arrow_parquet_buffer_writer.flush()?;
-                let cursor = arrow_parquet_buffer_writer.inner_mut();
-                let current_data = cursor.get_ref().clone();
+                // `flush()` closes the in-progress row group but leaves bytes in the internal
+                // `BufWriter`. `sync()` pushes those bytes down into our cursor so the upload
+                // is genuinely incremental. Then take ownership of the cursor's buffer and
+                // reset it to empty for the next batch (no clone, no explicit clear).
+                arrow_writer.flush()?;
+                arrow_writer.sync()?;
+                let cursor = arrow_writer.inner_mut();
+                let current_data = std::mem::take(cursor.get_mut());
+                cursor.set_position(0);
 
                 // Create HDFS writer lazily on first write
-                if hdfs_writer_opt.is_none() {
+                if hdfs_writer.is_none() {
                     let writer = op.writer(output_path.as_str()).await.map_err(|e| {
                         parquet::errors::ParquetError::External(
                             format!("Failed to create HDFS writer for '{}': {}", output_path, e)
                                 .into(),
                         )
                     })?;
-                    *hdfs_writer_opt = Some(writer);
+                    *hdfs_writer = Some(writer);
                 }
 
                 // Write the accumulated data to HDFS
-                if let Some(hdfs_writer) = hdfs_writer_opt {
-                    hdfs_writer.write(current_data).await.map_err(|e| {
+                if let Some(w) = hdfs_writer {
+                    w.write(current_data).await.map_err(|e| {
                         parquet::errors::ParquetError::External(
                             format!(
                                 "Failed to write batch to HDFS file '{}': {}",
@@ -148,70 +159,197 @@ impl ParquetWriter {
                     })?;
                 }
 
-                // Clear the buffer after upload
-                cursor.get_mut().clear();
-                cursor.set_position(0);
-
                 Ok(())
+            }
+            ParquetWriter::OutputStream(writer) => writer
+                .write(batch)
+                .map_err(|e| writer.inner_mut().stream_failure_or(e)),
+        }
+    }
+
+    /// Memory the writer holds between batches: parquet-rs's estimate for the in-progress row
+    /// group, which counts encoded pages, encoder buffers, dictionaries and any Bloom filters.
+    /// The remote writer flushes a row group after every batch and hands its staging buffer to
+    /// the upload, so that buffer counts only for what it still holds. The buffer an output
+    /// stream writer collects its next write in counts too.
+    fn memory_size(&self) -> usize {
+        match self {
+            ParquetWriter::LocalFile(writer) => writer.memory_size(),
+            #[cfg(feature = "hdfs-opendal")]
+            ParquetWriter::Remote { arrow_writer, .. } => {
+                arrow_writer.memory_size() + arrow_writer.inner().get_ref().capacity()
+            }
+            ParquetWriter::OutputStream(writer) => {
+                writer.memory_size() + writer.inner().buffer.capacity()
             }
         }
     }
 
-    /// Close the writer and finalize the file
-    async fn close(self) -> std::result::Result<(), parquet::errors::ParquetError> {
+    /// Close the writer and finalize the file. Returns the file's size in bytes, which every
+    /// writer counts as it writes.
+    async fn close(self) -> std::result::Result<Option<u64>, parquet::errors::ParquetError> {
         match self {
-            ParquetWriter::LocalFile(writer) => {
-                writer.close()?;
-                Ok(())
+            ParquetWriter::LocalFile(mut writer) => {
+                // `finish` rather than `close`, which would drop the count of bytes written.
+                writer.finish()?;
+                Ok(Some(writer.bytes_written() as u64))
             }
             #[cfg(feature = "hdfs-opendal")]
-            ParquetWriter::Remote(
-                arrow_parquet_buffer_writer,
-                mut hdfs_writer_opt,
+            ParquetWriter::Remote {
+                mut arrow_writer,
+                mut hdfs_writer,
                 op,
                 output_path,
-            ) => {
-                // Close the arrow writer to finalize parquet format
-                let cursor = arrow_parquet_buffer_writer.into_inner()?;
-                let final_data = cursor.into_inner();
+            } => {
+                // Finalize the Parquet footer into the in-memory cursor. `bytes_written()`
+                // reports the authoritative file size once `finish()` has flushed the footer.
+                // We cannot call `into_inner()` after `finish()`: `finish()` marks the
+                // underlying `SerializedFileWriter` as finished, and `into_inner()` then fails
+                // with `SerializedFileWriter already finished`. Pull the bytes out through
+                // `inner_mut()` instead - `finish()` has already flushed the buffered writer
+                // into the cursor.
+                arrow_writer.finish()?;
+                let total_bytes = arrow_writer.bytes_written() as u64;
+                let final_data = std::mem::take(arrow_writer.inner_mut().get_mut());
 
-                // Create HDFS writer if not already created
-                if hdfs_writer_opt.is_none() && !final_data.is_empty() {
-                    let writer = op.writer(output_path.as_str()).await.map_err(|e| {
-                        parquet::errors::ParquetError::External(
-                            format!("Failed to create HDFS writer for '{}': {}", output_path, e)
-                                .into(),
-                        )
-                    })?;
-                    hdfs_writer_opt = Some(writer);
-                }
-
-                // Write any remaining data
                 if !final_data.is_empty() {
-                    if let Some(mut hdfs_writer) = hdfs_writer_opt {
-                        hdfs_writer.write(final_data).await.map_err(|e| {
+                    let mut w = match hdfs_writer.take() {
+                        Some(w) => w,
+                        None => op.writer(output_path.as_str()).await.map_err(|e| {
                             parquet::errors::ParquetError::External(
                                 format!(
-                                    "Failed to write final data to HDFS file '{}': {}",
+                                    "Failed to create HDFS writer for '{}': {}",
                                     output_path, e
                                 )
                                 .into(),
                             )
-                        })?;
-
-                        // Close the HDFS writer
-                        hdfs_writer.close().await.map_err(|e| {
-                            parquet::errors::ParquetError::External(
-                                format!("Failed to close HDFS writer for '{}': {}", output_path, e)
-                                    .into(),
+                        })?,
+                    };
+                    w.write(final_data).await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!(
+                                "Failed to write final data to HDFS file '{}': {}",
+                                output_path, e
                             )
-                        })?;
-                    }
+                            .into(),
+                        )
+                    })?;
+                    w.close().await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!("Failed to close HDFS writer for '{}': {}", output_path, e)
+                                .into(),
+                        )
+                    })?;
                 }
 
-                Ok(())
+                Ok(Some(total_bytes))
+            }
+            ParquetWriter::OutputStream(mut writer) => {
+                // `finish` sends the footer and flushes the writer's last write, so the JVM can
+                // close the file once this returns.
+                writer
+                    .finish()
+                    .map_err(|e| writer.inner_mut().stream_failure_or(e))?;
+                Ok(Some(writer.bytes_written() as u64))
             }
         }
+    }
+}
+
+/// The task's error for `e`, a Parquet write that failed. A failed write to the JVM output stream
+/// comes back as the stream's own error, which keeps the Java exception it carries, so the JVM
+/// rethrows that exception as it was. Any other failure is reported with `what` and its text.
+fn write_error(e: parquet::errors::ParquetError, what: &str) -> DataFusionError {
+    match e {
+        parquet::errors::ParquetError::External(source) => {
+            match source.downcast::<DataFusionError>() {
+                Ok(stream_failure) => *stream_failure,
+                Err(source) => DataFusionError::Execution(format!(
+                    "{what}: {}",
+                    parquet::errors::ParquetError::External(source)
+                )),
+            }
+        }
+        e => DataFusionError::Execution(format!("{what}: {e}")),
+    }
+}
+
+/// Writes a Parquet file's bytes to the output stream of the file the JVM created. Bytes are
+/// collected into writes of the stream's `max_write_size`, so a file costs one upcall per write
+/// rather than one per page.
+struct OutputStreamWriter {
+    sink: Arc<dyn OutputStreamSink>,
+    /// Bytes not yet handed to the stream, at most `capacity` of them.
+    buffer: Vec<u8>,
+    capacity: usize,
+    /// Set once a write to the stream has failed. Nothing is sent after that, not even what
+    /// dropping the Parquet writer flushes, since the stream is in an unknown state and the JVM
+    /// aborts the file once the failure reaches it.
+    failed: bool,
+    /// What the failed write returned, until [`Self::stream_failure_or`] reports it. Parquet only
+    /// sees the `io::Error` that `Write` allows, so this keeps the error itself: for the JNI sink
+    /// it holds the Java exception the stream threw, which the JVM then rethrows as it was.
+    failure: Option<DataFusionError>,
+}
+
+impl OutputStreamWriter {
+    fn new(sink: Arc<dyn OutputStreamSink>) -> Self {
+        let capacity = sink.max_write_size().max(1);
+        Self {
+            sink,
+            buffer: Vec::with_capacity(capacity),
+            capacity,
+            failed: false,
+            failure: None,
+        }
+    }
+
+    /// The error to report for `e`, a write of this file that Parquet failed: the stream's own
+    /// error when a write to the stream caused it.
+    fn stream_failure_or(
+        &mut self,
+        e: parquet::errors::ParquetError,
+    ) -> parquet::errors::ParquetError {
+        match self.failure.take() {
+            Some(failure) => parquet::errors::ParquetError::External(Box::new(failure)),
+            None => e,
+        }
+    }
+
+    /// Hands the buffered bytes to the stream.
+    fn send(&mut self) -> std::io::Result<()> {
+        if self.failed {
+            return Err(std::io::Error::other(
+                "a previous write to the output stream failed",
+            ));
+        }
+        if !self.buffer.is_empty() {
+            if let Err(e) = self.sink.write(&self.buffer) {
+                self.failed = true;
+                let error = std::io::Error::other(e.to_string());
+                self.failure = Some(e);
+                return Err(error);
+            }
+            self.buffer.clear();
+        }
+        Ok(())
+    }
+}
+
+impl Write for OutputStreamWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        // A full buffer is sent before taking more rather than as soon as it fills, so that a
+        // failed send consumes none of `data`, as `Write` requires of an error.
+        if self.buffer.len() == self.capacity || self.failed {
+            self.send()?;
+        }
+        let taken = data.len().min(self.capacity - self.buffer.len());
+        self.buffer.extend_from_slice(&data[..taken]);
+        Ok(taken)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.send()
     }
 }
 
@@ -220,18 +358,9 @@ impl ParquetWriter {
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Where this task writes. When `work_dir` is set (the Spark 3.x `CometNativeWriteExec`
-    /// path) this is the write's output directory and is unused; the file name is derived from
-    /// `work_dir`. Otherwise (Spark 4.0+, `CometWriteFilesExec`) it is the exact path of the file
-    /// to write, chosen by the JVM commit protocol and used verbatim - this operator then never
-    /// derives file names of its own.
+    /// The exact path of the file this task writes, chosen by Spark's commit protocol on the JVM
+    /// side and used verbatim - this operator never derives file names of its own.
     output_path: String,
-    /// Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only.
-    work_dir: Option<String>,
-    /// Job ID for tracking this write operation
-    job_id: Option<String>,
-    /// Task attempt ID for this specific task
-    task_attempt_id: Option<i32>,
     /// Compression codec
     compression: ParquetCompression,
     /// Partition ID (from Spark TaskContext)
@@ -240,8 +369,13 @@ pub struct ParquetWriterExec {
     column_names: Vec<String>,
     /// Catalyst's target schema, including nullability and Parquet field metadata.
     output_schema: Option<SchemaRef>,
+    /// Spark version recorded in the footer as `org.apache.spark.version`, if any.
+    spark_version: Option<String>,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
+    /// The output stream of the file at `output_path`, when the JVM created that file. The writer
+    /// then writes the file's bytes there and never opens `output_path` itself.
+    output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
@@ -254,9 +388,6 @@ impl ParquetWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: Option<String>,
-        job_id: Option<String>,
-        task_attempt_id: Option<i32>,
         compression: ParquetCompression,
         partition_id: i32,
         column_names: Vec<String>,
@@ -276,17 +407,30 @@ impl ParquetWriterExec {
         Ok(ParquetWriterExec {
             input,
             output_path,
-            work_dir,
-            job_id,
-            task_attempt_id,
             compression,
             partition_id,
             column_names,
             output_schema,
+            spark_version: None,
             object_store_options,
+            output_stream: None,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
+    }
+
+    /// Record the Spark version in each file's footer key-value metadata, as Spark's
+    /// `ParquetWriteSupport` does.
+    pub fn with_spark_version(mut self, spark_version: Option<String>) -> Self {
+        self.spark_version = spark_version;
+        self
+    }
+
+    /// Write the file's bytes to `output_stream`, when there is one: the output stream of the file
+    /// the JVM created at `output_path`, which the writer then never creates itself.
+    pub fn with_output_stream(mut self, output_stream: Option<Arc<dyn OutputStreamSink>>) -> Self {
+        self.output_stream = output_stream;
+        self
     }
 
     /// Create an Arrow writer based on the storage scheme
@@ -297,6 +441,7 @@ impl ParquetWriterExec {
     /// * `props` - Writer properties including compression
     /// * `runtime_env` - Runtime environment for object store registration
     /// * `object_store_options` - Configuration options for object store
+    /// * `output_stream` - The output stream of the file, when the JVM created it
     ///
     /// # Returns
     /// * `Ok(ParquetWriter)` - A writer appropriate for the storage scheme
@@ -307,7 +452,22 @@ impl ParquetWriterExec {
         props: WriterProperties,
         _runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
         object_store_options: &HashMap<String, String>,
+        output_stream: Option<Arc<dyn OutputStreamSink>>,
     ) -> Result<ParquetWriter> {
+        // The JVM created the file through its own FileSystem, so the path is not this writer's
+        // to interpret, whatever its scheme.
+        if let Some(output_stream) = output_stream {
+            let writer =
+                ArrowWriter::try_new(OutputStreamWriter::new(output_stream), schema, Some(props))
+                    .map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to create output stream writer: {}",
+                        e
+                    ))
+                })?;
+            return Ok(ParquetWriter::OutputStream(writer));
+        }
+
         // Parse URL and match on storage scheme directly
         let url = Url::parse(output_file_path).map_err(|e| {
             DataFusionError::Execution(format!("Failed to parse URL '{}': {}", output_file_path, e))
@@ -347,12 +507,12 @@ impl ParquetWriterExec {
 
                 // HDFS writer will be created lazily on first write
                 // Use the path from prepare_object_store_with_configs
-                Ok(ParquetWriter::Remote(
-                    Box::new(arrow_parquet_buffer_writer),
-                    None,
-                    Box::new(op),
-                    object_store_path.to_string(),
-                ))
+                Ok(ParquetWriter::Remote {
+                    arrow_writer: Box::new(arrow_parquet_buffer_writer),
+                    hdfs_writer: None,
+                    op: Box::new(op),
+                    output_path: object_store_path.to_string(),
+                })
             }
             #[cfg(not(feature = "hdfs-opendal"))]
             {
@@ -461,18 +621,19 @@ impl ExecutionPlan for ParquetWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ParquetWriterExec::try_new(
-                Arc::clone(&children[0]),
-                self.output_path.clone(),
-                self.work_dir.clone(),
-                self.job_id.clone(),
-                self.task_attempt_id,
-                self.compression.clone(),
-                self.partition_id,
-                self.column_names.clone(),
-                self.output_schema.clone(),
-                self.object_store_options.clone(),
-            )?)),
+            1 => Ok(Arc::new(
+                ParquetWriterExec::try_new(
+                    Arc::clone(&children[0]),
+                    self.output_path.clone(),
+                    self.compression.clone(),
+                    self.partition_id,
+                    self.column_names.clone(),
+                    self.output_schema.clone(),
+                    self.object_store_options.clone(),
+                )?
+                .with_spark_version(self.spark_version.clone())
+                .with_output_stream(self.output_stream.clone()),
+            )),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
             )),
@@ -490,12 +651,13 @@ impl ExecutionPlan for ParquetWriterExec {
         let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition);
         let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition);
         let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
+        let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         let runtime_env = context.runtime_env();
+        let reservation = MemoryConsumer::new(format!("ParquetWriterExec[{partition}]"))
+            .register(context.memory_pool());
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
-        let work_dir = self.work_dir.clone();
-        let task_attempt_id = self.task_attempt_id;
         let compression = self.compression.to_parquet()?;
         let column_names = self.column_names.clone();
 
@@ -514,23 +676,30 @@ impl ExecutionPlan for ParquetWriterExec {
             Arc::new(Schema::new(fields))
         });
 
-        let part_file = match &work_dir {
-            // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
-            None => self.output_path.clone(),
-            // Spark 3.x hands over a working directory instead and expects the writer to name the
-            // file; that branch goes away with Spark 3.x support.
-            Some(work_dir) => match task_attempt_id {
-                Some(attempt_id) => format!(
-                    "{}/part-{:05}-{:05}.parquet",
-                    work_dir, self.partition_id, attempt_id
-                ),
-                None => format!("{}/part-{:05}.parquet", work_dir, self.partition_id),
-            },
-        };
+        // The JVM commit protocol has already chosen the exact file to write.
+        let part_file = self.output_path.clone();
 
         // Configure writer properties
+        // Recording the version tells Spark's `getRebaseSpec` and `datetime_rebase.rs` that this
+        // file's dates and INT64 timestamps need no rebase. That holds only because this writer
+        // never rebases: the Scala serde declines a LEGACY write rebase mode. If the writer ever
+        // honors LEGACY it must also write `org.apache.spark.legacyDateTime` and
+        // `org.apache.spark.timeZone`, or readers will silently read shifted values. An empty
+        // version is skipped: readers compare versions lexicographically, so it would sort below
+        // 3.0.0 and make the file read as legacy.
+        let key_value_metadata = self
+            .spark_version
+            .as_ref()
+            .filter(|version| !version.is_empty())
+            .map(|version| {
+                vec![KeyValue::new(
+                    SPARK_VERSION_METADATA_KEY.to_string(),
+                    version.clone(),
+                )]
+            });
         let props = WriterProperties::builder()
             .set_compression(compression)
+            .set_key_value_metadata(key_value_metadata)
             .build();
 
         let object_store_options = self.object_store_options.clone();
@@ -540,6 +709,7 @@ impl ExecutionPlan for ParquetWriterExec {
             props,
             runtime_env,
             &object_store_options,
+            self.output_stream.clone(),
         )?;
 
         // Clone schema for use in async closure
@@ -553,6 +723,8 @@ impl ExecutionPlan for ParquetWriterExec {
             while let Some(batch_result) = stream.try_next().await.transpose() {
                 let batch = batch_result?;
 
+                let mut timer = elapsed_compute.timer();
+
                 // Track row count
                 total_rows += batch.num_rows() as i64;
 
@@ -562,9 +734,10 @@ impl ExecutionPlan for ParquetWriterExec {
                     // the placeholder Scan. Both schemas use the same Catalyst data types, and
                     // disabling field-name matching still recursively validates nested nullability;
                     // only nested field names and metadata are ignored.
+                    let (_, columns, _) = batch.into_parts();
                     RecordBatch::try_new_with_options(
                         Arc::clone(&schema_for_write),
-                        batch.columns().to_vec(),
+                        columns,
                         &RecordBatchOptions::new().with_match_field_names(false),
                     )
                     .map_err(|e| {
@@ -574,23 +747,23 @@ impl ExecutionPlan for ParquetWriterExec {
                     batch
                 };
 
-                writer.write(&renamed_batch).await.map_err(|e| {
-                    DataFusionError::Execution(format!("Failed to write batch: {}", e))
-                })?;
+                writer
+                    .write(&renamed_batch)
+                    .await
+                    .map_err(|e| write_error(e, "Failed to write batch"))?;
+                // The writer cannot spill, so a row group the pool will not grant fails the task.
+                reservation.try_resize(writer.memory_size())?;
+
+                timer.stop();
             }
 
-            writer.close().await.map_err(|e| {
-                DataFusionError::Execution(format!("Failed to close writer: {}", e))
-            })?;
-
-            // Get file size - strip file:// prefix if present for local filesystem access
-            let local_path = part_file
-                .strip_prefix("file://")
-                .or_else(|| part_file.strip_prefix("file:"))
-                .unwrap_or(&part_file);
-            let file_size = std::fs::metadata(local_path)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
+            let mut timer = elapsed_compute.timer();
+            let file_size = writer
+                .close()
+                .await
+                .map_err(|e| write_error(e, "Failed to close writer"))?
+                .unwrap_or(0) as i64;
+            timer.stop();
 
             // Update metrics with write statistics
             files_written.add(1);
@@ -619,11 +792,14 @@ impl ExecutionPlan for ParquetWriterExec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::memory_pools::testing::PeakMemoryPool;
     use arrow::array::{Array, Int32Array, ListArray, StringArray};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::prelude::SessionContext;
+    use datafusion::execution::memory_pool::MemoryPool;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
     use parquet::basic::Repetition;
     use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -654,11 +830,10 @@ mod tests {
         );
     }
 
-    /// Spark 4.0+ hands over the exact file to write rather than a working directory. The writer
-    /// must use that path verbatim - Spark's commit protocol owns naming and staging, and
+    /// The JVM hands over the exact file to write. The writer must use that path verbatim - Spark's commit protocol owns naming and staging, and
     /// committers that track individual files depend on the name it chose.
     #[tokio::test]
-    async fn test_parquet_writer_uses_output_path_verbatim_without_work_dir() -> Result<()> {
+    async fn test_parquet_writer_uses_output_path_verbatim() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -675,9 +850,6 @@ mod tests {
         let writer = ParquetWriterExec::try_new(
             input,
             output_path,
-            None, // work_dir: Spark 4.0+ path
-            None,
-            None,
             ParquetCompression::None,
             // A non-zero partition id must not leak into the file name.
             3,
@@ -701,6 +873,52 @@ mod tests {
         let reader = SerializedFileReader::new(File::open(written)?)?;
         assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
 
+        Ok(())
+    }
+
+    /// Spark's datetime rebase logic reads `org.apache.spark.version` back from the footer, and
+    /// `ParquetIOSuite` asserts it is present, so the writer must record the version it is given.
+    #[tokio::test]
+    async fn test_parquet_writer_records_spark_version_in_footer() -> Result<()> {
+        for (spark_version, expected) in [
+            (Some("3.5.9"), Some("3.5.9")),
+            (Some(""), None),
+            (None, None),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )?;
+            let memory_source =
+                MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+            let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+            let temp_dir = tempfile::tempdir()?;
+            let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
+
+            let writer = ParquetWriterExec::try_new(
+                input,
+                output_path,
+                ParquetCompression::None,
+                0,
+                vec!["id".to_string()],
+                None,
+                HashMap::new(),
+            )?
+            .with_spark_version(spark_version.map(str::to_string));
+            let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+            while stream.try_next().await?.is_some() {}
+
+            let reader =
+                SerializedFileReader::new(File::open(temp_dir.path().join("part-00000.parquet"))?)?;
+            let found = reader
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .and_then(|kvs| kvs.iter().find(|kv| kv.key == SPARK_VERSION_METADATA_KEY))
+                .and_then(|kv| kv.value.as_deref());
+            assert_eq!(found, expected);
+        }
         Ok(())
     }
 
@@ -742,13 +960,10 @@ mod tests {
         let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
         let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
         let temp_dir = tempfile::tempdir()?;
-        let work_dir = format!("file://{}", temp_dir.path().display());
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
         let writer = ParquetWriterExec::try_new(
             input,
-            work_dir.clone(),
-            Some(work_dir),
-            None,
-            None,
+            output_path,
             ParquetCompression::None,
             0,
             vec!["required_id".to_string(), "values".to_string()],
@@ -811,13 +1026,10 @@ mod tests {
         let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
         let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
         let temp_dir = tempfile::tempdir()?;
-        let work_dir = format!("file://{}", temp_dir.path().display());
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
         let writer = ParquetWriterExec::try_new(
             input,
-            work_dir.clone(),
-            Some(work_dir),
-            None,
-            None,
+            output_path,
             ParquetCompression::None,
             0,
             vec!["values".to_string()],
@@ -843,9 +1055,81 @@ mod tests {
         Ok(())
     }
 
+    /// Exercise the `ParquetWriter::Remote` write/close path against an in-memory
+    /// opendal `Operator`, so the remote path has real automated coverage without
+    /// requiring an HDFS cluster. Writes a handful of batches, reads the uploaded
+    /// bytes back with `ParquetRecordBatchReaderBuilder`, and asserts the returned
+    /// row count and the reported `bytes_written` both match the upload.
+    #[tokio::test]
+    #[cfg(feature = "hdfs-opendal")]
+    async fn test_parquet_writer_remote_memory_backend() -> Result<()> {
+        use opendal::services::Memory;
+        use opendal::Operator;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let op = Operator::new(Memory::default()).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create memory operator: {}", e))
+        })?;
+        let output_path = "test/data.parquet".to_string();
+
+        let schema = create_test_record_batch(1)?.schema();
+        let props = WriterProperties::builder()
+            .set_compression(Compression::UNCOMPRESSED)
+            .build();
+        let buffer = Vec::new();
+        let cursor = Cursor::new(buffer);
+        let arrow_writer = ArrowWriter::try_new(cursor, Arc::clone(&schema), Some(props))
+            .map_err(|e| DataFusionError::Execution(format!("try_new failed: {}", e)))?;
+
+        let mut writer = ParquetWriter::Remote {
+            arrow_writer: Box::new(arrow_writer),
+            hdfs_writer: None,
+            op: Box::new(op.clone()),
+            output_path: output_path.clone(),
+        };
+
+        let mut expected_rows: i64 = 0;
+        for i in 1..=3 {
+            let batch = create_test_record_batch(i)?;
+            expected_rows += batch.num_rows() as i64;
+            writer.write(&batch).await.map_err(|e| {
+                DataFusionError::Execution(format!("Failed to write batch {}: {}", i, e))
+            })?;
+        }
+
+        let reported_bytes = writer
+            .close()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Failed to close writer: {}", e)))?
+            .expect("the remote writer reports the bytes it wrote");
+
+        let uploaded = op.read(&output_path).await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to read uploaded object: {}", e))
+        })?;
+        let uploaded_bytes = uploaded.to_vec();
+        assert_eq!(
+            reported_bytes as usize,
+            uploaded_bytes.len(),
+            "bytes_written must match uploaded object length"
+        );
+
+        let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(uploaded_bytes))
+            .map_err(|e| DataFusionError::Execution(format!("Reader builder failed: {}", e)))?
+            .build()
+            .map_err(|e| DataFusionError::Execution(format!("Reader build failed: {}", e)))?;
+        let mut actual_rows: i64 = 0;
+        for batch in reader {
+            let batch =
+                batch.map_err(|e| DataFusionError::Execution(format!("Read error: {}", e)))?;
+            actual_rows += batch.num_rows() as i64;
+        }
+        assert_eq!(actual_rows, expected_rows);
+
+        Ok(())
+    }
+
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
     /// Example batch_id 1 -> 0..1000, 2 -> 1001..2000
-    #[allow(dead_code)]
     fn create_test_record_batch(batch_id: i32) -> Result<RecordBatch> {
         assert!(batch_id > 0, "batch_id must be greater than 0");
         let num_rows = batch_id * 1000;
@@ -866,6 +1150,272 @@ mod tests {
         // Create RecordBatch
         RecordBatch::try_new(schema, vec![Arc::new(int_array), Arc::new(string_array)])
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    }
+
+    /// Writes `batches` to a local file, reserving from `pool` as a task reserves from its own,
+    /// and returns the size of the file written.
+    async fn write_reserving_from(
+        pool: &Arc<PeakMemoryPool>,
+        batches: Vec<RecordBatch>,
+    ) -> Result<u64> {
+        let temp_dir = tempfile::tempdir()?;
+        let file = temp_dir.path().join("part-00000.parquet");
+        let writer = writer_of(
+            batches,
+            format!("file://{}", file.display()),
+            ParquetCompression::None,
+        )?;
+        let pool: Arc<dyn MemoryPool> = Arc::<PeakMemoryPool>::clone(pool);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()?;
+        let context = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+        let mut stream = writer.execute(0, context.task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+        Ok(std::fs::metadata(file)?.len())
+    }
+
+    /// The writer reserves its in-progress row group, here the whole file, until the file is
+    /// closed.
+    #[tokio::test]
+    async fn test_parquet_writer_reserves_its_row_group_until_the_file_closes() -> Result<()> {
+        let pool = Arc::new(PeakMemoryPool::new(usize::MAX));
+        let batches = (1..=5)
+            .map(create_test_record_batch)
+            .collect::<Result<_>>()?;
+        let file_size = write_reserving_from(&pool, batches).await?;
+        assert!(
+            pool.peak() as u64 >= file_size / 2,
+            "reserved {} bytes for a row group written as a {file_size}-byte file",
+            pool.peak()
+        );
+        assert_eq!(pool.reserved(), 0, "the writer kept its reservation");
+        Ok(())
+    }
+
+    /// A row group the pool will not grant fails the write with the pool's error, rather than
+    /// holding memory nothing accounts for.
+    #[tokio::test]
+    async fn test_parquet_writer_fails_when_the_pool_refuses_its_row_group() -> Result<()> {
+        let pool = Arc::new(PeakMemoryPool::new(1024));
+        let error = write_reserving_from(&pool, vec![create_test_record_batch(1)?])
+            .await
+            .expect_err("a row group larger than the pool must fail the write");
+        assert!(
+            matches!(error, DataFusionError::ResourcesExhausted(_)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("ParquetWriterExec[0]"),
+            "{error}"
+        );
+        assert_eq!(pool.reserved(), 0, "the failed write kept its reservation");
+        Ok(())
+    }
+
+    /// Records what a writer hands the output stream of a file the JVM created, and fails the
+    /// write with index `failing_write` when there is one.
+    #[derive(Default)]
+    struct RecordingSink {
+        max_write_size: usize,
+        failing_write: Option<usize>,
+        writes: std::sync::Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl RecordingSink {
+        fn new(max_write_size: usize) -> Self {
+            Self {
+                max_write_size,
+                ..Default::default()
+            }
+        }
+
+        fn writes(&self) -> Vec<Vec<u8>> {
+            self.writes.lock().unwrap().clone()
+        }
+    }
+
+    impl OutputStreamSink for RecordingSink {
+        fn max_write_size(&self) -> usize {
+            self.max_write_size
+        }
+
+        fn write(&self, data: &[u8]) -> Result<()> {
+            let mut writes = self.writes.lock().unwrap();
+            assert!(
+                data.len() <= self.max_write_size,
+                "a write of {} bytes exceeds the stream's limit of {}",
+                data.len(),
+                self.max_write_size
+            );
+            writes.push(data.to_vec());
+            if self.failing_write == Some(writes.len() - 1) {
+                return Err(DataFusionError::Execution(
+                    "injected output stream failure".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// A writer of `batches`, read from memory, to `output_path`.
+    fn writer_of(
+        batches: Vec<RecordBatch>,
+        output_path: String,
+        compression: ParquetCompression,
+    ) -> Result<ParquetWriterExec> {
+        let schema = batches[0].schema();
+        let column_names = schema.fields().iter().map(|f| f.name().clone()).collect();
+        let memory_source = MemorySourceConfig::try_new(&[batches], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        ParquetWriterExec::try_new(
+            input,
+            output_path,
+            compression,
+            0,
+            column_names,
+            None,
+            HashMap::new(),
+        )
+    }
+
+    /// Writes `batches` with a writer for `output_path`, through `output_stream` when there is
+    /// one, and returns the writer for its metrics.
+    async fn write_batches(
+        batches: Vec<RecordBatch>,
+        output_path: String,
+        output_stream: Option<Arc<dyn OutputStreamSink>>,
+    ) -> Result<Arc<ParquetWriterExec>> {
+        let writer = Arc::new(
+            writer_of(batches, output_path, ParquetCompression::Snappy)?
+                .with_output_stream(output_stream),
+        );
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+        Ok(writer)
+    }
+
+    /// A file the JVM created gets exactly the bytes the writer would have written to a file of
+    /// its own, in writes no larger than the stream accepts, and the writer never opens the path
+    /// itself.
+    #[tokio::test]
+    async fn test_parquet_writer_writes_a_jvm_created_file_through_its_output_stream() -> Result<()>
+    {
+        let batches: Vec<RecordBatch> = (1..=5)
+            .map(create_test_record_batch)
+            .collect::<Result<_>>()?;
+        let temp_dir = tempfile::tempdir()?;
+        let local_file = temp_dir.path().join("part-00000.parquet");
+        write_batches(
+            batches.clone(),
+            format!("file://{}", local_file.display()),
+            None,
+        )
+        .await?;
+        let expected = std::fs::read(&local_file)?;
+
+        let max_write_size = 4096;
+        let sink = Arc::new(RecordingSink::new(max_write_size));
+        let magic_path = "s3a://bucket/table/__magic_job-0001/job-0001/tasks/\
+                          attempt_0001_m_000000_0/__base/part-00000.parquet";
+        let writer = write_batches(
+            batches,
+            magic_path.to_string(),
+            Some(Arc::clone(&sink) as Arc<dyn OutputStreamSink>),
+        )
+        .await?;
+
+        let writes = sink.writes();
+        assert!(
+            writes.len() > 1,
+            "expected several writes, got {}",
+            writes.len()
+        );
+        let (last, full) = writes.split_last().unwrap();
+        assert!(
+            full.iter().all(|write| write.len() == max_write_size),
+            "every write but the last fills the stream's limit: {:?}",
+            writes.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+        assert!(!last.is_empty() && last.len() <= max_write_size);
+        assert_eq!(writes.concat(), expected);
+
+        let metrics = writer.metrics().unwrap();
+        assert_eq!(
+            metrics.sum_by_name("bytes_written").unwrap().as_usize(),
+            expected.len()
+        );
+        assert_eq!(
+            metrics.sum_by_name("rows_written").unwrap().as_usize(),
+            5000
+        );
+        Ok(())
+    }
+
+    /// A failed write to the output stream fails the task with the stream's own error, unchanged,
+    /// which for the JNI sink carries the Java exception the JVM then rethrows as it was.
+    #[tokio::test]
+    async fn test_parquet_writer_fails_when_its_output_stream_fails() -> Result<()> {
+        let batches: Vec<RecordBatch> = (1..=5)
+            .map(create_test_record_batch)
+            .collect::<Result<_>>()?;
+        let sink = Arc::new(RecordingSink {
+            failing_write: Some(1),
+            ..RecordingSink::new(1024)
+        });
+        let error = write_batches(
+            batches,
+            "s3a://bucket/table/part-00000.parquet".to_string(),
+            Some(Arc::clone(&sink) as Arc<dyn OutputStreamSink>),
+        )
+        .await
+        .expect_err("a failed write to the output stream must fail the task");
+
+        assert!(
+            matches!(&error, DataFusionError::Execution(message)
+                if message == "injected output stream failure"),
+            "{error:?}"
+        );
+        assert_eq!(
+            sink.writes().len(),
+            2,
+            "the writer kept writing to a stream that had failed"
+        );
+        Ok(())
+    }
+
+    /// Once a write to the stream has failed, the writer sends nothing more: neither what a
+    /// caller writes next, nor what a flush, such as the one dropping the Parquet writer makes,
+    /// would send. A failed send also consumes none of the bytes it was handed, as `Write`
+    /// requires of an error.
+    #[test]
+    fn test_output_stream_writer_sends_nothing_after_a_failed_write() {
+        let sink = Arc::new(RecordingSink {
+            failing_write: Some(0),
+            ..RecordingSink::new(4)
+        });
+        let mut writer = OutputStreamWriter::new(Arc::clone(&sink) as Arc<dyn OutputStreamSink>);
+
+        // A full buffer is only sent when the next bytes arrive.
+        writer.write_all(b"abcd").unwrap();
+        assert!(sink.writes().is_empty());
+        writer
+            .write(b"e")
+            .expect_err("the stream fails its first write");
+        assert_eq!(sink.writes(), vec![b"abcd".to_vec()]);
+        assert_eq!(writer.buffer, b"abcd", "the failed write consumed bytes");
+
+        writer
+            .write(b"e")
+            .expect_err("the writer must not write to a failed stream");
+        writer
+            .flush()
+            .expect_err("the writer must not flush to a failed stream");
+        assert_eq!(
+            sink.writes().len(),
+            1,
+            "the writer wrote to a failed stream"
+        );
     }
 
     #[tokio::test]
@@ -1019,6 +1569,7 @@ mod tests {
             props,
             runtime_env,
             &HashMap::new(),
+            None,
         )?;
 
         // Write 5 batches in a loop
@@ -1068,16 +1619,14 @@ mod tests {
         let memory_exec = Arc::new(DataSourceExec::new(Arc::new(memory_source_config)));
 
         // Create ParquetWriterExec with DataSourceExec as input
-        let output_path = "unused".to_string();
-        let work_dir = "hdfs://namenode:9000/user/test_parquet_writer_exec".to_string();
+        let output_path =
+            "hdfs://namenode:9000/user/test_parquet_writer_exec/part-00000-00123.parquet"
+                .to_string();
         let column_names = vec!["id".to_string(), "name".to_string()];
 
         let parquet_writer = ParquetWriterExec::try_new(
             memory_exec,
             output_path,
-            Some(work_dir),
-            None,      // job_id
-            Some(123), // task_attempt_id
             ParquetCompression::None,
             0, // partition_id
             column_names,

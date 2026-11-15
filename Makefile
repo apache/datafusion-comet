@@ -15,13 +15,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-.PHONY: all core jvm test clean release-linux release bench print-benchmark-args
+.PHONY: all core jvm test clean rat release bench print-benchmark-args
 
 define spark_jvm_17_extra_args
 $(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs $(PROFILES))
 endef
 
 # Build optional Comet native features (like hdfs-opendal e.g)
+comma := ,
+# The jemalloc Maven profile also builds the native library with the jemalloc allocator.
+ifneq (,$(findstring jemalloc,$(PROFILES)))
+override COMET_FEATURES := $(if $(COMET_FEATURES),$(COMET_FEATURES)$(comma))jemalloc
+endif
+# With both allocator features, native/core/src/lib.rs quietly selects the system allocator.
+ifneq (,$(and $(findstring jemalloc,$(COMET_FEATURES)),$(findstring mimalloc,$(COMET_FEATURES))))
+$(error The jemalloc and mimalloc features cannot be combined)
+endif
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
 
 # JVM max heap for the benchmark targets. Lower this when benchmarking on a
@@ -53,6 +62,8 @@ clean:
 	cd native && cargo clean
 	./mvnw clean $(PROFILES)
 	rm -rf .dist
+rat:
+	./dev/release/check-rat.sh HEAD
 bench:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(FEATURES_ARG) $(filter-out $@,$(MAKECMDGOALS))
 format:
@@ -65,59 +76,19 @@ format:
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)
 
-# build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container
+# build native libs for amd64 architecture Linux on a Linux/amd64 machine/container
 core-amd64-libs:
 	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
-ifdef HAS_OSXCROSS
-	rustup target add x86_64-apple-darwin
-	cd native && cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
-endif
 
-# build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container
+# build native libs for arm64 architecture Linux on a Linux/arm64 machine/container
 core-arm64-libs:
 	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
-ifdef HAS_OSXCROSS
-	rustup target add aarch64-apple-darwin
-	cd native && cargo build --target aarch64-apple-darwin --release $(FEATURES_ARG)
-endif
 
-core-amd64:
-	rustup target add x86_64-apple-darwin
-	cd native && RUSTFLAGS="-Ctarget-cpu=skylake" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
-	mkdir -p spark/target/classes/org/apache/comet/darwin/x86_64
-	cp native/target/x86_64-apple-darwin/release/libcomet.dylib spark/target/classes/org/apache/comet/darwin/x86_64
-	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
-	mkdir -p spark/target/classes/org/apache/comet/linux/amd64
-	cp native/target/release/libcomet.so spark/target/classes/org/apache/comet/linux/amd64
-	jar -cf spark/target/comet-native-x86_64.jar \
-		-C spark/target/classes/org/apache/comet darwin \
-		-C spark/target/classes/org/apache/comet linux
-	./dev/deploy-file spark/target/comet-native-x86_64.jar comet-native-x86_64${COMET_CLASSIFIER} jar
-
-core-arm64:
-	rustup target add aarch64-apple-darwin
-	cd native && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --release $(FEATURES_ARG)
-	mkdir -p spark/target/classes/org/apache/comet/darwin/aarch64
-	cp native/target/aarch64-apple-darwin/release/libcomet.dylib spark/target/classes/org/apache/comet/darwin/aarch64
-	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
-	mkdir -p spark/target/classes/org/apache/comet/linux/aarch64
-	cp native/target/release/libcomet.so spark/target/classes/org/apache/comet/linux/aarch64
-	jar -cf spark/target/comet-native-aarch64.jar \
-		-C spark/target/classes/org/apache/comet darwin \
-		-C spark/target/classes/org/apache/comet linux
-	./dev/deploy-file spark/target/comet-native-aarch64.jar comet-native-aarch64${COMET_CLASSIFIER} jar
-
-release-linux: clean
-	rustup target add aarch64-apple-darwin x86_64-apple-darwin
-	cd native && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --release $(FEATURES_ARG)
-	cd native && RUSTFLAGS="-Ctarget-cpu=skylake" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
-	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
-	./mvnw install -Prelease -DskipTests $(PROFILES)
 release:
 	cd native && RUSTFLAGS="$(RUSTFLAGS) -Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 release-nogit:
-	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
+	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
 	./mvnw install -Prelease -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 benchmark-%: release
 	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='$(BENCH_MAVEN_OPTS)' ../mvnw $(BENCH_MVN_ARGS) -Dexec.mainClass="$*" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)

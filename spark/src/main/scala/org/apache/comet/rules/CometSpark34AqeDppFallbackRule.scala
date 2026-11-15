@@ -126,8 +126,8 @@ case object CometSpark34AqeDppFallbackRule
     // AQE re-optimization path: see case 4 in the class-level docstring. On subsequent
     // re-optimize cycles Spark's PlanAdaptiveSubqueries hands us a SubqueryBroadcastExec (not
     // the original SAB), and the freshly-planned main-BHJ build BE has no tag carried over.
-    sbScans.foreach { case (scan, sb) =>
-      tagForSubqueryBroadcast(plan, scan, sb)
+    sbScans.foreach { case (_, sb) =>
+      tagForSubqueryBroadcast(plan, sb)
     }
 
     // This rule only tags; it never rewrites the plan structurally.
@@ -227,10 +227,7 @@ case object CometSpark34AqeDppFallbackRule
    * plan. No peer-scan tagging path is needed because the SMJ self-join case (SPARK-32509) never
    * produces a `SubqueryBroadcastExec`.
    */
-  private def tagForSubqueryBroadcast(
-      plan: SparkPlan,
-      scan: SparkPlan,
-      sb: SubqueryBroadcastExec): Unit = {
+  private def tagForSubqueryBroadcast(plan: SparkPlan, sb: SubqueryBroadcastExec): Unit = {
     val keyIds: Set[Any] = sb.buildKeys.flatMap(_.references.map(_.exprId)).toSet
     if (keyIds.isEmpty) {
       logWarning(s"SubqueryBroadcast '${sb.name}' has empty buildKeys; skipping")

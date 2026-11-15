@@ -120,8 +120,15 @@ object CometScanContrib extends Logging {
    * speculative and can fail for reasons entirely outside the query -- an unreachable object
    * store, a metadata format newer than the contrib understands, a version-skewed reflective
    * lookup -- and none of those should turn a runnable query into a failed one. Logging (rather
-   * than swallowing silently) keeps an unexpectedly-declining contrib diagnosable. `NonFatal`
-   * deliberately lets `LinkageError`/`OOM`-class failures through.
+   * than swallowing silently) keeps an unexpectedly-declining contrib diagnosable.
+   *
+   * `NonFatal` does not match `LinkageError` (`NoSuchMethodError`, `NoClassDefFoundError`, ...),
+   * so it is caught separately and contained the same way: a contrib jar built against internals
+   * Comet has since moved or removed is a classpath/version skew, not a JVM-corrupting failure,
+   * and must not fail a query Spark could otherwise run. Genuinely fatal conditions --
+   * `OutOfMemoryError` and the like -- are neither `NonFatal` nor `LinkageError` and always
+   * propagate; this is a narrow, deliberate widening for one specific `Error` subtype, not a
+   * blanket `catch (Throwable)`.
    */
   private def firstClaim(hook: CometScanContrib => Option[SparkPlan]): Option[SparkPlan] =
     firstClaimFrom(contribs)(hook)
@@ -145,6 +152,21 @@ object CometScanContrib extends Logging {
           logWarning(
             s"Contrib scan handler ${contrib.getClass.getName} threw while examining a scan; " +
               "declining it and continuing with Comet's built-in handling",
+            e)
+          None
+        case e: LinkageError =>
+          // A version-skewed contrib jar (compiled against a Comet internal that has since
+          // moved, been renamed, or been removed) surfaces as NoSuchMethodError,
+          // NoClassDefFoundError, or a sibling LinkageError -- a classpath mismatch, not a
+          // query-specific failure, and not the JVM corruption OutOfMemoryError/StackOverflowError
+          // signal. Contained the same way a NonFatal decline is: logged and treated as "this
+          // contrib does not claim this scan" so a stale contrib jar cannot fail a query Spark
+          // could otherwise run.
+          logWarning(
+            s"Contrib scan handler ${contrib.getClass.getName} failed with " +
+              s"${e.getClass.getName}, indicating it was built against a different version of " +
+              "Comet's internals than is on the classpath now; declining it and continuing with " +
+              "Comet's built-in handling",
             e)
           None
       }

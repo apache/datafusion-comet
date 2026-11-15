@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Attribut
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometHashAggregateExec, CometLocalTableScanExec, CometNativeExec, CometScanWrapper, CometSortExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometCollectLimitExec, CometHashAggregateExec, CometLocalTableScanExec, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSortAggregateExec, CometSortExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowTransition, LocalTableScanExec, SortExec, SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
@@ -144,7 +144,7 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
 
   test("the actual composite manager loads Comet and default auto preserves Spark shuffle") {
     val conf = spark.sessionState.conf
-    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometShuffleManagerEnabled)
     assertNativeExecutionLoaded()
     assert(CometConf.COMET_SHUFFLE_MODE.get(conf) == "auto")
     assert(!isCometShuffleEnabled(conf))
@@ -187,6 +187,28 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
         val exchange = ShuffleExchangeExec(partitioning, child)
         assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometNativeShuffle))
         assert(reasons(exchange).isEmpty)
+      }
+    }
+  }
+
+  test("positional round robin stays off under Celeborn") {
+    // Positional placement would be the first path to hand the push writer sliced batches, and
+    // an indeterminate stage's rollback has not been shown to hold for push shuffle, so the
+    // planner keeps content-hash placement even where the plan would otherwise qualify.
+    withTempPath { dir =>
+      spark.range(100).write.parquet(dir.getAbsolutePath)
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val plan =
+          spark.read.parquet(dir.getAbsolutePath).repartition(8).queryExecution.executedPlan
+        val exchanges = cometExchanges(plan)
+        assert(exchanges.size == 1, s"expected one Comet exchange:\n$plan")
+        // A bare native scan, so the shuffle manager is the only thing ruling positional out.
+        assert(exchanges.head.child.isInstanceOf[CometNativeScanExec], s"$plan")
+        assert(!exchanges.head.usesPositionalRoundRobin)
       }
     }
   }
@@ -239,6 +261,26 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
         assert(CometShuffleExchangeExec.shuffleSupported(exchange).isEmpty)
         assert(reasons(exchange).exists(_.contains("Comet")))
         assert(CometExecRule(spark)(exchange).isInstanceOf[ShuffleExchangeExec])
+      }
+    }
+  }
+
+  test("the shuffle input conversion leaves a Spark child to Spark's shuffle") {
+    // The conversion only takes over from the JVM columnar shuffle, which Celeborn does not
+    // have, and Celeborn's native shuffle needs a native child. Without Celeborn, auto and jvm
+    // would convert this child. Native mode has no JVM columnar shuffle either, so the reason
+    // is what shows that Celeborn kept Spark's shuffle there.
+    Seq("auto", "jvm", "native").foreach { mode =>
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> mode,
+        CometConf.COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.key -> "true") {
+        val leaf = sparkLeaf()
+        val exchange = ShuffleExchangeExec(HashPartitioning(leaf.output, 2), leaf)
+        assert(!CometShuffleExchangeExec.convertsInputForNativeShuffle(exchange), mode)
+        assert(reasons(exchange).exists(_.contains("Celeborn")), s"$mode: ${reasons(exchange)}")
+        val planned = CometExecRule(spark)(exchange)
+        assert(planned.isInstanceOf[ShuffleExchangeExec], planned)
+        assert(collect(planned) { case c: CometSparkToColumnarExec => c }.isEmpty, planned)
       }
     }
   }
@@ -431,6 +473,37 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
     }
   }
 
+  // SortAggregateExec carries the same TypedImperativeAggregate buffer formats as
+  // ObjectHashAggregateExec, so preserveSparkAggregateBuffers must restore a Comet sort-aggregate
+  // Partial too. Regression guard: that predicate matched only CometHashAggregateExec before
+  // CometSortAggregateExec existed, which would have let a native collect_list buffer reach a
+  // Spark Final across a fallen-back Celeborn exchange.
+  test("a Comet sort-aggregate Partial is restored when a Celeborn exchange falls back") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false") {
+      val partial = collect(collectionAggregatePlan) {
+        case aggregate: CometSortAggregateExec if aggregate.modes == Seq(Partial) => aggregate
+      }.head
+
+      manager.withPlanningSupport(
+        CelebornNativeShufflePlanningSupport(fallbackPartitionThreshold = 2L)) {
+        val exchange =
+          ShuffleExchangeExec(HashPartitioning(Seq(partial.output.head), 4), partial)
+        val restored = CometExecRule(spark)(exchange)
+        assertSparkExchange(restored)
+        assert(
+          collect(restored) { case aggregate: CometBaseAggregateExec => aggregate }.isEmpty,
+          s"$restored")
+        val sparkPartial = collect(restored) { case aggregate: BaseAggregateExec =>
+          aggregate
+        }.head
+        assert(sparkPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+      }
+    }
+  }
+
   test("transition reversion preserves native aggregate buffers across a Celeborn exchange") {
     manager.withPlanningSupport(CelebornNativeShufflePlanningSupport()) {
       withSQLConf(
@@ -582,15 +655,14 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
             val nativeAggregates = collect(executedPlan) {
               case aggregate: CometHashAggregateExec => aggregate
             }
-            if (function == "count") {
-              // COUNT's non-null Long buffer is safe for Spark Final to consume.
+            if (function == "count" || function == "avg") {
+              // COUNT and repaired non-decimal AVG emit Spark-compatible partial buffers.
               assert(nativeAggregates.size == 1, s"$executedPlan")
               assert(nativeAggregates.head.modes == Seq(Partial), s"$executedPlan")
             } else {
               // A Spark final cannot deserialize Comet's ArrayType collect_list/collect_set
-              // state as BinaryType, or safely merge AVG's never-updated (null, 0) buffer.
-              // Both halves must agree when the exchange falls back, not just when an
-              // aggregate operator itself is unsupported.
+              // state as BinaryType. Both halves must agree when the exchange falls back,
+              // not just when an aggregate operator itself is unsupported.
               assert(nativeAggregates.isEmpty, s"$executedPlan")
             }
           }
@@ -603,13 +675,15 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-        val nativeRegistrations = manager.nativeRegistrations.get()
-        val plan = input.repartition(2, col("value")).queryExecution.executedPlan
-        assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == adaptive)
-        val exchanges = cometExchanges(plan)
-        assert(exchanges.nonEmpty, s"expected native exchange:\n$plan")
-        assert(exchanges.forall(_.shuffleType == CometNativeShuffle))
-        assert(manager.nativeRegistrations.get() == nativeRegistrations)
+        for (key <- Seq(col("value"), col("value").cast("decimal(38, 0)"))) {
+          val nativeRegistrations = manager.nativeRegistrations.get()
+          val plan = input.repartition(2, key).queryExecution.executedPlan
+          assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == adaptive)
+          val exchanges = cometExchanges(plan)
+          assert(exchanges.nonEmpty, s"expected native exchange:\n$plan")
+          assert(exchanges.forall(_.shuffleType == CometNativeShuffle))
+          assert(manager.nativeRegistrations.get() == nativeRegistrations)
+        }
       }
     }
 
@@ -630,17 +704,19 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       }
     }
 
-    test(s"unsupported native repartition executes Spark fallback with AQE=$adaptive") {
+    test(s"unsupported repartition executes Spark fallback: AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         CometConf.COMET_SHUFFLE_MODE.key -> "native",
         CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "false") {
         val nativeRegistrations = manager.nativeRegistrations.get()
+        val sparkRegistrations = manager.sparkRegistrations.get()
         val query = input.repartition(2)
         assertSparkExchange(query.queryExecution.executedPlan)
         checkAnswer(query, (1L to 32L).map(Row(_)))
         assert(cometExchanges(query.queryExecution.executedPlan).isEmpty)
         assert(manager.nativeRegistrations.get() == nativeRegistrations)
+        assert(manager.sparkRegistrations.get() > sparkRegistrations)
       }
     }
 

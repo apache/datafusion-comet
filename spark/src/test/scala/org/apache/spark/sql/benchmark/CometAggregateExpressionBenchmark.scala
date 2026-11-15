@@ -41,6 +41,12 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("min_int", "SELECT MIN(c_int) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("max_int", "SELECT MAX(c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "min_string",
+      "SELECT MIN(CAST(c_int AS STRING)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_string",
+      "SELECT MAX(CAST(c_int AS STRING)) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("min_double", "SELECT MIN(c_double) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("max_double", "SELECT MAX(c_double) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("sum_int", "SELECT SUM(c_int) FROM parquetV1Table GROUP BY grp"),
@@ -101,7 +107,10 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "SELECT SUM(c_int) FROM parquetV1Table GROUP BY high_card_grp"),
     AggExprConfig(
       "count_distinct_high_card",
-      "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY high_card_grp"))
+      "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY high_card_grp"),
+    AggExprConfig(
+      "min_string_high_card",
+      "SELECT MIN(CAST(c_int AS STRING)) FROM parquetV1Table GROUP BY high_card_grp"))
 
   // Exact percentile. Only the single-percentage, default-frequency, numeric-input form runs
   // natively through Comet's Spark-compatible percentile UDAF; other forms fall back to Spark.
@@ -190,6 +199,24 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "min_by_high_card",
       "SELECT min_by(c_int, c_long) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // min / max over a struct of an ordering key and a payload. The key decides every comparison,
+  // so the narrow (64 byte) and wide (4 KiB) cases differ only in what has to be carried along.
+  private val structMinMaxAggregates = List(
+    AggExprConfig(
+      "max_struct_narrow",
+      "SELECT MAX(struct(k, narrow)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_struct_wide",
+      "SELECT MAX(struct(k, wide)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "min_struct_wide",
+      "SELECT MIN(struct(k, wide)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_struct_narrow_global",
+      "SELECT MAX(struct(k, narrow)) FROM parquetV1Table"),
+    AggExprConfig("max_struct_wide_global", "SELECT MAX(struct(k, wide)) FROM parquetV1Table"),
+    AggExprConfig("min_struct_wide_global", "SELECT MIN(struct(k, wide)) FROM parquetV1Table"))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
 
@@ -217,7 +244,30 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             approxCountDistinctAggregates ++ maxMinByAggregates
 
           allAggregates.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
+          }
+        }
+      }
+    }
+
+    // Fewer rows than above, since each wide payload is 4 KiB.
+    runBenchmarkWithTable("Struct min/max benchmarks", 200 * 1000) { v =>
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            dir,
+            spark.sql(s"""
+              SELECT
+                CAST(value % 1000 AS INT) AS grp,
+                CAST(value AS LONG) AS k,
+                CASE WHEN value % 10 = 0 THEN NULL ELSE sha2(CAST(value AS STRING), 256) END AS narrow,
+                CASE WHEN value % 10 = 0 THEN NULL
+                  ELSE repeat(sha2(CAST(value AS STRING), 256), 64) END AS wide
+              FROM $tbl
+            """))
+
+          structMinMaxAggregates.foreach { config =>
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

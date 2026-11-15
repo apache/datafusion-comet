@@ -82,13 +82,13 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
           inSubsetPatterns.foreach { p =>
             val query = rlikeQuery(p.pattern)
             runBenchmark(p.name) {
-              runInSubsetModes(p.name, v, query)
+              runInSubsetModes(p.name, v.toLong, query)
             }
           }
           outOfSubsetPatterns.foreach { p =>
             val query = rlikeQuery(p.pattern)
             runBenchmark(p.name) {
-              runOutOfSubsetModes(p.name, v, query)
+              runOutOfSubsetModes(p.name, v.toLong, query)
             }
           }
         }

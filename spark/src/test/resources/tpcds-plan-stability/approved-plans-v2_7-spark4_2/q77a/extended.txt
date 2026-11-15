@@ -65,7 +65,7 @@ CometColumnarToRow
                :           :     :                       +- CometProject
                :           :     :                          +- CometFilter
                :           :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
-               :           :     +- Project
+               :           :     +-  Project [COMET: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
                :           :        :  :- Subquery
                :           :        :  :  +- CometColumnarToRow
                :           :        :  :     +- CometProject
@@ -81,7 +81,7 @@ CometColumnarToRow
                :           :        :  :                             +- CometFilter
                :           :        :  :                                +- CometNativeScan parquet spark_catalog.default.date_dim
                :           :        :  +- ReusedSubquery
-               :           :        +-  Scan OneRowRelation [COMET: Scan OneRowRelation is not supported]
+               :           :        +- Scan OneRowRelation
                :           +- CometColumnarToRow
                :              +- CometProject
                :                 +- CometBroadcastHashJoin
@@ -184,7 +184,7 @@ CometColumnarToRow
                :                    :     :                       +- CometProject
                :                    :     :                          +- CometFilter
                :                    :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
-               :                    :     +- Project
+               :                    :     +-  Project [COMET: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
                :                    :        :  :- Subquery
                :                    :        :  :  +- CometColumnarToRow
                :                    :        :  :     +- CometProject
@@ -200,7 +200,7 @@ CometColumnarToRow
                :                    :        :  :                             +- CometFilter
                :                    :        :  :                                +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    :        :  +- ReusedSubquery
-               :                    :        +-  Scan OneRowRelation [COMET: Scan OneRowRelation is not supported]
+               :                    :        +- Scan OneRowRelation
                :                    +- CometColumnarToRow
                :                       +- CometProject
                :                          +- CometBroadcastHashJoin
@@ -303,7 +303,7 @@ CometColumnarToRow
                                     :     :                       +- CometProject
                                     :     :                          +- CometFilter
                                     :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
-                                    :     +- Project
+                                    :     +-  Project [COMET: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
                                     :        :  :- Subquery
                                     :        :  :  +- CometColumnarToRow
                                     :        :  :     +- CometProject
@@ -319,7 +319,7 @@ CometColumnarToRow
                                     :        :  :                             +- CometFilter
                                     :        :  :                                +- CometNativeScan parquet spark_catalog.default.date_dim
                                     :        :  +- ReusedSubquery
-                                    :        +-  Scan OneRowRelation [COMET: Scan OneRowRelation is not supported]
+                                    :        +- Scan OneRowRelation
                                     +- CometColumnarToRow
                                        +- CometProject
                                           +- CometBroadcastHashJoin
@@ -359,4 +359,4 @@ CometColumnarToRow
                                                                   +- CometFilter
                                                                      +- CometNativeScan parquet spark_catalog.default.web_page
 
-Comet accelerated 291 out of 329 eligible operators (88%). Final plan contains 13 transitions between Spark and Comet. Accelerated expressions: 12 native, 0 codegen dispatch.
+Comet accelerated 69 out of 89 eligible operators (77%). Final plan contains 5 transitions between Spark and Comet. Accelerated expressions: 12 native, 0 codegen dispatch.

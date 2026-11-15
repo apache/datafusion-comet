@@ -20,18 +20,21 @@
 package org.apache.comet.vector
 
 import scala.collection.mutable
+import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.util.AutoCloseables
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
 import org.apache.spark.SparkException
-import org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, ConstantColumnVectors}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
+import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometRuntimeException}
 
 /**
  * Provides functionality for importing Arrow vectors from native code and wrapping them as
@@ -293,26 +296,33 @@ class NativeUtil extends AutoCloseable {
   }
 
   /**
-   * Takes zero-copy slices of the input batch with given start index and maximum number of rows.
-   *
-   * @param batch
-   *   Input batch
-   * @param startIndex
-   *   Start index of the slice
-   * @param maxNumRows
-   *   Maximum number of rows in the slice
-   * @return
-   *   A new batch with the sliced vectors
+   * Fails, closing `batch`, if a column that this instance imported from native labels a
+   * timestamp with a different timezone than Comet's convention for its Spark type in
+   * `expectedTypes`. Nothing past this point reads the label, so this is the last place a wrong
+   * one can be seen. Test-only; see `CometConf.COMET_STRICT_TIMESTAMP_LABELS`.
    */
-  def takeRows(batch: ColumnarBatch, startIndex: Int, maxNumRows: Int): ColumnarBatch = {
-    val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
-
-    for (i <- 0 until batch.numCols()) {
-      val column = batch.column(i).asInstanceOf[CometVector]
-      arrayVectors += column.slice(startIndex, maxNumRows)
+  def checkTimestampLabels(batch: ColumnarBatch, expectedTypes: Seq[DataType]): Unit = {
+    val mismatch = expectedTypes.indices
+      .take(batch.numCols())
+      .iterator
+      .map { i =>
+        batch.column(i) match {
+          case vector: CometVector =>
+            NativeUtil.timestampLabelMismatch(
+              vector.getValueVector.getField,
+              expectedTypes(i),
+              dictionaryProvider,
+              s"col[$i]")
+          case _ => None
+        }
+      }
+      .collectFirst { case Some(detail) => detail }
+    mismatch.foreach { detail =>
+      batch.close()
+      throw new CometRuntimeException(
+        "Native plan output labels a timestamp with a different timezone than the type Spark " +
+          s"declared, at $detail")
     }
-
-    new ColumnarBatch(arrayVectors.toArray, maxNumRows)
   }
 
   override def close(): Unit = {
@@ -322,6 +332,55 @@ class NativeUtil extends AutoCloseable {
 }
 
 object NativeUtil {
+
+  /**
+   * Describes the first timestamp in `field` whose timezone label is not Comet's convention for
+   * the Spark type at the same position in `dataType`, as a path rooted at `path`. That is
+   * `CometArrowStream.NATIVE_TIMEZONE` for `TimestampType` and no timezone for
+   * `TimestampNTZType`. Returns `None` when every label is right. Nothing else about `field` is
+   * checked. A dictionary-encoded field is checked by its values, looked up in `provider`.
+   */
+  private[comet] def timestampLabelMismatch(
+      field: Field,
+      dataType: DataType,
+      provider: DictionaryProvider,
+      path: String): Option[String] = {
+    val valueField = Option(field.getDictionary)
+      .map(encoding => provider.lookup(encoding.getId).getVector.getField)
+      .getOrElse(field)
+    val children = valueField.getChildren.asScala
+    def child(index: Int, childType: DataType, childPath: String): Option[String] =
+      children
+        .lift(index)
+        .flatMap(timestampLabelMismatch(_, childType, provider, childPath))
+    (dataType, valueField.getType) match {
+      case (TimestampType, ts: ArrowType.Timestamp)
+          if ts.getTimezone != CometArrowStream.NATIVE_TIMEZONE =>
+        Some(
+          s"$path: expected TimestampType labelled ${CometArrowStream.NATIVE_TIMEZONE}, found $ts")
+      case (TimestampNTZType, ts: ArrowType.Timestamp) if ts.getTimezone != null =>
+        Some(s"$path: expected TimestampNTZType with no timezone, found $ts")
+      case (StructType(fields), _: ArrowType.Struct) =>
+        fields.indices.iterator
+          .map(i => child(i, fields(i).dataType, s"$path.${fields(i).name}"))
+          .collectFirst { case Some(detail) => detail }
+      case (ArrayType(elementType, _), _: ArrowType.List) =>
+        child(0, elementType, s"$path.element")
+      case (MapType(keyType, valueType, _), _: ArrowType.Map) =>
+        children.headOption.flatMap { entries =>
+          val keyValue = entries.getChildren.asScala
+          keyValue
+            .lift(0)
+            .flatMap(timestampLabelMismatch(_, keyType, provider, s"$path.key"))
+            .orElse(
+              keyValue
+                .lift(1)
+                .flatMap(timestampLabelMismatch(_, valueType, provider, s"$path.value")))
+        }
+      case _ => None
+    }
+  }
+
   def rootAsBatch(arrowRoot: VectorSchemaRoot): ColumnarBatch = {
     rootAsBatch(arrowRoot, null)
   }

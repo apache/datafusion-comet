@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{new_null_array, Array, ArrayRef, AsArray, BooleanArray};
+use crate::float_semantics::normalize_floats;
+use arrow::array::{new_null_array, Array, ArrayRef, BooleanArray};
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Field, FieldRef, Float32Type, Float64Type};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -39,6 +40,13 @@ use std::sync::Arc;
 /// buffer and, on a tie in the ordering, the later row wins. Because ties across
 /// partitions are processed in an unspecified order, Spark documents the function as
 /// non-deterministic when several rows share the extremum ordering.
+///
+/// # Float orderings
+///
+/// Spark compares the ordering with `SQLOrderingUtil.compareDoubles`, while the accumulators rank
+/// it in Arrow's row format, which orders floats by IEEE 754 total order. The ordering column goes
+/// through [`normalize_floats`] first, which makes the two agree. This is verified identical on
+/// Spark 3.4 through master.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaxMinBy {
     name: String,
@@ -145,56 +153,6 @@ fn extremum_sort_options(is_max: bool) -> SortOptions {
     }
 }
 
-/// Canonicalize a floating-point ordering column so that Arrow's row-format byte order reproduces
-/// Spark's comparison for this aggregate.
-///
-/// Spark compares the ordering with `SQLOrderingUtil.compareDoubles`/`compareFloats`, wired in via
-/// `PhysicalDoubleType.ordering`/`PhysicalFloatType.ordering`. That is
-/// `if (x == y) 0 else java.lang.Double.compare(x, y)`, which has two consequences Arrow's row
-/// format does not share:
-///
-/// * `-0.0` and `0.0` tie, because the `x == y` short-circuit is IEEE equality. Arrow encodes
-///   floats by flipping the bits off the sign, a total order placing `-0.0` strictly below `0.0`.
-/// * every `NaN` is one value and sorts above `+Infinity`, because `Double.compare` goes through
-///   `doubleToLongBits`. Arrow uses the raw bits, so a sign-bit-set `NaN` would sort below
-///   `-Infinity` instead.
-///
-/// Folding `-0.0` into `0.0` and every `NaN` into the canonical `NaN` makes the row bytes agree
-/// with `compareDoubles` on both counts. This is verified identical on Spark 3.4 through master.
-///
-/// Note this is the opposite of what `mode` needs: `mode` keys a hash map via
-/// `OpenHashSet`'s `equals` (`java.lang.Double.equals`), which distinguishes `-0.0` from `0.0`, so
-/// it must *not* fold them. Same two input values, different Spark comparison path, opposite
-/// correct behaviour.
-fn canonicalize_float_ordering(array: &ArrayRef) -> ArrayRef {
-    match array.data_type() {
-        DataType::Float32 => Arc::new(array.as_primitive::<Float32Type>().unary::<_, Float32Type>(
-            |v| {
-                if v.is_nan() {
-                    f32::NAN
-                } else if v == 0.0 {
-                    // `-0.0 == 0.0` in IEEE 754, so this catches negative zero only.
-                    0.0
-                } else {
-                    v
-                }
-            },
-        )),
-        DataType::Float64 => Arc::new(array.as_primitive::<Float64Type>().unary::<_, Float64Type>(
-            |v| {
-                if v.is_nan() {
-                    f64::NAN
-                } else if v == 0.0 {
-                    0.0
-                } else {
-                    v
-                }
-            },
-        )),
-        _ => Arc::clone(array),
-    }
-}
-
 /// Accumulator that tracks the running `(value, ordering)` pair for the extremum ordering.
 #[derive(Debug)]
 struct MaxMinByAccumulator {
@@ -231,7 +189,7 @@ impl MaxMinByAccumulator {
             return Ok(());
         }
 
-        let ordering_arr = canonicalize_float_ordering(ordering_arr);
+        let ordering_arr = normalize_floats(ordering_arr);
         let rows = self
             .ordering_converter
             .convert_columns(&[Arc::clone(&ordering_arr)])?;
@@ -389,7 +347,7 @@ impl MaxMinByGroupsAccumulator {
         let value_rows = self
             .value_converter
             .convert_columns(&[Arc::clone(&values[0])])?;
-        let ordering_arr = canonicalize_float_ordering(&values[1]);
+        let ordering_arr = normalize_floats(&values[1]);
         let ordering_rows = self
             .ordering_converter
             .convert_columns(&[Arc::clone(&ordering_arr)])?;

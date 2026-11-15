@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, BinaryArithmetic, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -30,7 +30,6 @@ import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
   def createMathExpression(
-      expr: Expression,
       left: Expression,
       right: Expression,
       inputs: Seq[Attribute],
@@ -89,6 +88,35 @@ trait MathBase {
       Unsupported(Some(s"Unsupported datatype $dt"))
     }
 
+  // Only `Divide` and `IntegralDivide` need this. `spark_decimal_div` computes its
+  // scale-alignment exponents in `u32`, so a negative scale wraps to roughly 4.29e9, clears the
+  // precision check, and sends the BigInt branch into `10.pow(~4.29e9)`. That is an unbounded
+  // allocation rather than an overflow, so it hangs rather than failing. `decimal_div` now
+  // rejects a negative scale up front, which makes that diagnosable, but there is still no
+  // usable native result, so division stays unsupported here.
+  //
+  // `Add`, `Subtract`, `Multiply`, `Remainder` and `UnaryMinus` are deliberately not guarded.
+  // Their kernels scale-align by `10^(max_scale - s)`, which is never negative. What used to
+  // break them was the decimal width test in `PhysicalPlanner::create_binary_expr_with_options`
+  // and `create_modulo_expr`, where a negative scale underflowed a `u8` and panicked in a debug
+  // build. Both compute that width in `i16` now. They run natively on negative-scale decimals
+  // and are pinned by a regression test in `CometExpressionSuite`. See issue #5013.
+  private[comet] val negScaleDecimalArithmeticReason: String =
+    "Decimal division with negative scale is not supported natively"
+
+  private[comet] def negScaleDecimalRejection(expr: BinaryArithmetic): Option[Unsupported] = {
+    def isNegScale(dt: DataType): Boolean = dt match {
+      case d: DecimalType => d.scale < 0
+      case _ => false
+    }
+    if (isNegScale(expr.left.dataType) || isNegScale(expr.right.dataType) ||
+      isNegScale(expr.dataType)) {
+      Some(Unsupported(Some(negScaleDecimalArithmeticReason)))
+    } else {
+      None
+    }
+  }
+
   /**
    * True when an `Add` / `Multiply` chain of `dataType` in `evalMode` can be rebalanced without
    * changing results. Only integral types in LEGACY (wrapping, modular) eval mode are exactly
@@ -110,12 +138,12 @@ trait MathBase {
    * `returnType`. Rebalances a flattened chain into an `O(log n)`-depth tree so deep `a + b +
    * ...` chains serialize to a shallow proto instead of a left-deep one that overflows protobuf's
    * recursion limit when the plan is re-parsed. Only safe for exactly-associative chains --
-   * callers gate via [[isAssociativeAndRebalanceable]]. The flattened leaves all share the
-   * chain's type (Spark coerces operands to it, with casts acting as flatten boundaries), so a
-   * single `returnType` / `evalMode` is correct for every inner node.
+   * callers gate via [[isAssociativeAndRebalanceable]]. Spark coerces operands to the chain's
+   * type. Flattening stops at casts and at nested `Add` or `Multiply` expressions with a
+   * different `evalMode`, so every rebuilt inner node can use the chain's `returnType` and
+   * `evalMode`.
    */
   def createBalancedMathExpr(
-      expr: Expression,
       operands: Seq[Expression],
       inputs: Seq[Attribute],
       binding: Boolean,
@@ -163,10 +191,9 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
       val operands = flattenAssociative(
         expr,
-        { case _: Add => true; case _ => false },
+        { case a: Add => a.evalMode == expr.evalMode; case _ => false },
         { case a: Add => (a.left, a.right) })
       createBalancedMathExpr(
-        expr,
         operands,
         inputs,
         binding,
@@ -175,7 +202,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         (builder, mathExpr) => builder.setAdd(mathExpr))
     } else {
       createMathExpression(
-        expr,
         expr.left,
         expr.right,
         inputs,
@@ -197,7 +223,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createMathExpression(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -222,10 +247,9 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
       val operands = flattenAssociative(
         expr,
-        { case _: Multiply => true; case _ => false },
+        { case m: Multiply => m.evalMode == expr.evalMode; case _ => false },
         { case m: Multiply => (m.left, m.right) })
       createBalancedMathExpr(
-        expr,
         operands,
         inputs,
         binding,
@@ -234,7 +258,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         (builder, mathExpr) => builder.setMultiply(mathExpr))
     } else {
       createMathExpression(
-        expr,
         expr.left,
         expr.right,
         inputs,
@@ -248,16 +271,20 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
-  override def getSupportLevel(expr: Divide): SupportLevel = {
-    if (expr.dataType.isInstanceOf[DecimalType] &&
-      (!expr.left.dataType.isInstanceOf[DecimalType] ||
-        !expr.right.dataType.isInstanceOf[DecimalType])) {
-      // This is only a sanity check; Spark's type coercion should prevent this case.
-      Unsupported(Some("Decimal division with a decimal result requires decimal operands"))
-    } else {
-      mathDataTypeSupportLevel(expr.left.dataType)
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
+
+  override def getSupportLevel(expr: Divide): SupportLevel =
+    negScaleDecimalRejection(expr).getOrElse {
+      if (expr.dataType.isInstanceOf[DecimalType] &&
+        (!expr.left.dataType.isInstanceOf[DecimalType] ||
+          !expr.right.dataType.isInstanceOf[DecimalType])) {
+        // This is only a sanity check; Spark's type coercion should prevent this case.
+        Unsupported(Some("Decimal division with a decimal result requires decimal operands"))
+      } else {
+        mathDataTypeSupportLevel(expr.left.dataType)
+      }
     }
-  }
 
   override def convert(
       expr: Divide,
@@ -269,7 +296,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
     createMathExpression(
-      expr,
       expr.left,
       rightExpr,
       inputs,
@@ -282,8 +308,11 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
+
   override def getSupportLevel(expr: IntegralDivide): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
   override def convert(
       expr: IntegralDivide,
@@ -310,7 +339,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
     }
 
     val divideExpr = createMathExpression(
-      expr,
       left,
       rightExpr,
       inputs,
@@ -356,7 +384,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createMathExpression(
-      expr,
       expr.left,
       expr.right,
       inputs,

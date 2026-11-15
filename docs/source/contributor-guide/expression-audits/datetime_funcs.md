@@ -33,6 +33,11 @@
 
 - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 
+## date_trunc
+
+- Spark 4.2.0 and later raise `long overflow` when SECOND or MILLISECOND truncation falls below the smallest timestamp, like every other unit (SPARK-56663). Earlier versions wrap the Long subtraction. The serde tells the native kernel which Spark it runs against, so on 4.2 those two units also keep dictionary key masking for values near the lower bound.
+- Performance (tuned 2026-10-06, PR [#5956](https://github.com/apache/datafusion-comet/pull/5956)): scalar timestamp truncation skips dictionary key masking for infallible fine units and safe UTC/NTZ values with substantial repetition. A values-only range check retains masking near the lower timestamp bound; non-UTC calendar paths and high-cardinality coarse batches retain masking to avoid errors and unnecessary calendar work on unused entries. About 19x faster for MICROSECOND with 65,536 keys and 32 distinct values. Matched Criterion coverage includes sparse/dense/all-NULL keys, high-cardinality YEAR batches, and used/unused overflow values. Benchmark: `benches/timestamp_trunc.rs`.
+
 ## dayname
 
 - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated day name (`DayOfWeek.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.

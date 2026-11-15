@@ -19,8 +19,9 @@
 -- to `LAST_WIN`. `CometMapFromEntries` mixes in `CodegenDispatchFallback`, so its native
 -- `Incompatible` normally routes through the JVM codegen dispatcher; we disable the dispatcher
 -- here so the incompat branch surfaces as a genuine Spark fallback rather than in-pipeline
--- codegen. The default `EXCEPTION` mode agrees with Comet and is covered by
--- `map_from_entries.sql`.
+-- codegen. The dispatched path, with a key that really repeats, is covered by
+-- `map_builders_float_key_last_win.sql`. The default `EXCEPTION` mode agrees with Comet and is
+-- covered by `map_from_entries.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false

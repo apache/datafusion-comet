@@ -34,7 +34,7 @@ object CometUnixTimestampBenchmark extends CometBenchmarkBase {
         prepareTable(
           dir,
           spark
-            .range(rows)
+            .range(rows.toLong)
             .selectExpr(
               "timestamp_seconds(id) AS ts",
               "date_format(timestamp_seconds(id), 'yyyy-MM-dd HH:mm:ss') AS s",
@@ -48,7 +48,7 @@ object CometUnixTimestampBenchmark extends CometBenchmarkBase {
           runBenchmark(name) {
             runExpressionBenchmark(
               name,
-              rows,
+              rows.toLong,
               s"SELECT unix_timestamp($arguments) FROM parquetV1Table")
           }
         }
@@ -57,7 +57,7 @@ object CometUnixTimestampBenchmark extends CometBenchmarkBase {
           runBenchmark(name) {
             runExpressionBenchmark(
               name,
-              rows,
+              rows.toLong,
               s"SELECT unix_timestamp($arguments) AS u, count(*) FROM parquetV1Table GROUP BY u")
           }
         }

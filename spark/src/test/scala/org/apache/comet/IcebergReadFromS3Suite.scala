@@ -247,6 +247,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       "s3.secret-access-key" -> "WRONG_SECRET_KEY",
       "s3.endpoint" -> minioContainer.getS3URL,
       "s3.region" -> "us-east-1",
+      "client.region" -> "us-east-1",
       "s3.path-style-access" -> "true")
     val warehouse = s"s3a://$testBucketName/warehouse-bad-creds"
 
@@ -280,6 +281,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       "s3.secret-access-key" -> password,
       "s3.endpoint" -> minioContainer.getS3URL,
       "s3.region" -> "us-east-1",
+      "client.region" -> "us-east-1",
       "s3.path-style-access" -> "true")
     val warehouse = s"s3a://$testBucketName/warehouse-vending"
 

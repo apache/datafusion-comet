@@ -37,7 +37,6 @@ object CometBitwiseAnd extends CometExpressionSerde[BitwiseAnd] {
       { case _: BitwiseAnd => true; case _ => false },
       { case b: BitwiseAnd => (b.left, b.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -67,7 +66,6 @@ object CometBitwiseOr extends CometExpressionSerde[BitwiseOr] {
       { case _: BitwiseOr => true; case _ => false },
       { case b: BitwiseOr => (b.left, b.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -85,7 +83,6 @@ object CometBitwiseXor extends CometExpressionSerde[BitwiseXor] {
       { case _: BitwiseXor => true; case _ => false },
       { case b: BitwiseXor => (b.left, b.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -107,7 +104,6 @@ object CometShiftRight extends CometExpressionSerde[ShiftRight] {
     }
 
     createBinaryExpr(
-      expr,
       expr.left,
       rightExpression,
       inputs,
@@ -130,7 +126,6 @@ object CometShiftLeft extends CometExpressionSerde[ShiftLeft] {
     }
 
     createBinaryExpr(
-      expr,
       expr.left,
       rightExpression,
       inputs,

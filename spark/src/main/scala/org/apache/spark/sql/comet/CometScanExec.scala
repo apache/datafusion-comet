@@ -40,6 +40,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.collection._
 
+import org.apache.comet.objectstore.NativeConfig
+
 /**
  * Comet physical scan node for DataSource V1. This node is created by CometScanRule as a planning
  * intermediate and is always replaced before execution: CometExecRule converts it to a
@@ -228,7 +230,7 @@ case class CometScanExec(
       driverMetrics("staticFilesSize") = filesSize
     }
     if (relation.partitionSchema.nonEmpty) {
-      driverMetrics("numPartitions") = partitions.length
+      driverMetrics("numPartitions") = partitions.length.toLong
     }
   }
 
@@ -253,10 +255,7 @@ case class CometScanExec(
    */
   def getFilePartitions(): Seq[FilePartition] = {
     val filePartitions = if (bucketedScan) {
-      createFilePartitionsForBucketedScan(
-        relation.bucketSpec.get,
-        dynamicallySelectedPartitions,
-        relation)
+      createFilePartitionsForBucketedScan(relation.bucketSpec.get, dynamicallySelectedPartitions)
     } else {
       createFilePartitionsForNonBucketedScan(dynamicallySelectedPartitions, relation)
     }
@@ -271,13 +270,10 @@ case class CometScanExec(
    *   the bucketing spec.
    * @param selectedPartitions
    *   Hive-style partition that are part of the read.
-   * @param fsRelation
-   *   [[HadoopFsRelation]] associated with the read.
    */
   private def createFilePartitionsForBucketedScan(
       bucketSpec: BucketSpec,
-      selectedPartitions: Array[PartitionDirectory],
-      fsRelation: HadoopFsRelation): Seq[FilePartition] = {
+      selectedPartitions: Array[PartitionDirectory]): Seq[FilePartition] = {
     logInfo(s"Planning with ${bucketSpec.numBuckets} buckets")
     val filesGroupedToBuckets =
       selectedPartitions
@@ -382,7 +378,15 @@ case class CometScanExec(
       }
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
+    // Native planning reads each partition through one object store, so pack files per store.
+    val hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
+    CometScanUtils.packFilesPerStore(
+      splitFiles,
+      file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes)) {
+      files => FilePartition.getFilePartitions(relation.sparkSession, files, maxSplitBytes)
+    }
   }
 
   override def doCanonicalize(): CometScanExec = {

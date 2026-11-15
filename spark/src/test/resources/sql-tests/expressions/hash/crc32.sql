@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- ConfigMatrix: parquet.enable.dictionary=false,true
+
 -- crc32 function
 statement
 CREATE TABLE test(col string, a int, b float) USING parquet

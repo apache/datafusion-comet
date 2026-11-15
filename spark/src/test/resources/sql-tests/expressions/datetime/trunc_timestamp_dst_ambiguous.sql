@@ -15,36 +15,62 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Regression test for ambiguous local times during DST fall-back.
--- On 2024-11-03 at 2:00 AM America/Los_Angeles, clocks fall back to 1:00 AM,
--- so 1:30 AM occurs twice (once in PDT, once in PST). Truncating 01:30 to HOUR
--- gives 01:00, which is ambiguous. chrono's DateTime::with_minute(0) returns
--- None for ambiguous results, causing a panic in as_micros_from_unix_epoch_utc.
+-- Differential coverage for scalar date_trunc around DST overlaps, gaps, and historical offsets
+-- containing seconds. Explicit UTC offsets include both occurrences of the repeated US fall-back
+-- hour. The 2018 Sao Paulo values exercise its historic midnight spring-forward gap: truncating a
+-- valid 01:30 local timestamp to DAY targets the nonexistent local midnight. Africa/Monrovia used
+-- UTC-00:44:30 until 1972, so its local minute boundaries do not align with UTC minute boundaries.
+-- Asia/Aden covers minute truncation across a historical offset transition. Havana repeated
+-- midnight on 2020-11-01, which makes MONTH select the earlier UTC occurrence. Toronto
+-- skipped 1919-03-30 23:30 through 1919-03-31 00:30, so WEEK must select the gap end.
+-- Asuncion skipped midnight on 2023-10-01, a MONTH and QUARTER boundary.
 
 -- Config: spark.comet.expression.TruncTimestamp.allowIncompatible=true
--- Config: spark.sql.session.timeZone=America/Los_Angeles
+-- Config: spark.sql.parquet.int96RebaseModeInWrite=CORRECTED
+-- ConfigMatrix: spark.sql.session.timeZone=America/Los_Angeles,America/New_York,America/Sao_Paulo,Africa/Monrovia,Asia/Aden,America/Havana,America/Toronto,America/Asuncion
 
 statement
 CREATE TABLE test_trunc_ambiguous(ts timestamp) USING parquet
 
 statement
 INSERT INTO test_trunc_ambiguous VALUES
-  (timestamp('2024-11-03 01:30:00'))
+  (timestamp('1919-04-02T16:00:00Z')),
+  (timestamp('1919-03-31T04:30:00Z')),
+  (timestamp('2023-10-15T12:00:00Z')),
+  (TIMESTAMP '1960-06-15 10:30:45'),
+  (timestamp('1947-03-13T20:53:30.123Z')),
+  (timestamp('1972-01-07T00:44:45Z')),
+  (timestamp('2018-11-04T01:30:15.123456Z')),
+  (timestamp('2018-11-04T02:30:15.123456Z')),
+  (timestamp('2018-11-04T03:30:15.123456Z')),
+  (timestamp('2018-11-04T04:30:15.123456Z')),
+  (timestamp('2024-03-10T06:30:15.123456Z')),
+  (timestamp('2024-03-10T07:30:15.123456Z')),
+  (timestamp('2024-03-10T08:30:15.123456Z')),
+  (timestamp('2024-03-10T09:30:15.123456Z')),
+  (timestamp('2024-03-10T10:30:15.123456Z')),
+  (timestamp('2024-03-10T11:30:15.123456Z')),
+  (timestamp('2024-11-03T05:30:15.123456Z')),
+  (timestamp('2024-11-03T06:30:15.123456Z')),
+  (timestamp('2024-11-03T07:30:15.123456Z')),
+  (timestamp('2024-11-03T08:30:15.123456Z')),
+  (timestamp('2024-11-03T09:30:15.123456Z')),
+  (timestamp('2024-11-03T10:30:15.123456Z')),
+  (timestamp('2020-11-15T12:00:00Z')),
+  (NULL)
 
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('DAY', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('HOUR', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('WEEK', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('MONTH', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('QUARTER', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('YEAR', ts) FROM test_trunc_ambiguous ORDER BY ts
+query
+SELECT
+  ts,
+  date_trunc('YEAR', ts),
+  date_trunc('QUARTER', ts),
+  date_trunc('MONTH', ts),
+  date_trunc('WEEK', ts),
+  date_trunc('DAY', ts),
+  date_trunc('HOUR', ts),
+  date_trunc('MINUTE', ts),
+  date_trunc('SECOND', ts),
+  date_trunc('MILLISECOND', ts),
+  date_trunc('MICROSECOND', ts)
+FROM test_trunc_ambiguous
+ORDER BY ts

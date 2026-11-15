@@ -85,6 +85,7 @@ object CometTimeExtractBenchmark extends CometBenchmarkBase {
   private def runKernels(precision: Int, nulls: Boolean): Unit = {
     val size = 10000
     val time = new TimeNanoVector("t", CometArrowAllocator)
+    val digest = new VarBinaryVector("digest", CometArrowAllocator)
     val serialized = new VarBinaryVector("expr", CometArrowAllocator)
     try {
       time.allocateNew(size)
@@ -114,11 +115,14 @@ object CometTimeExtractBenchmark extends CometBenchmarkBase {
       val buffer = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
       val bytes = new Array[Byte](buffer.remaining())
       buffer.get(bytes)
+      digest.allocateNew()
+      digest.setSafe(0, CometScalaUDFCodegen.digest(bytes))
+      digest.setValueCount(1)
       serialized.allocateNew()
       serialized.setSafe(0, bytes)
       serialized.setValueCount(1)
       val dispatcher = new CometScalaUDFCodegen()
-      val inputs = Array[org.apache.arrow.vector.ValueVector](serialized, time)
+      val inputs = Array[org.apache.arrow.vector.ValueVector](digest, serialized, time)
       val result = dispatcher.evaluate(inputs, size)
       try {
         val vector =
@@ -170,12 +174,14 @@ object CometTimeExtractBenchmark extends CometBenchmarkBase {
         }
       }
     } finally {
+      digest.close()
       serialized.close()
       time.close()
     }
   }
 
-  @volatile private var sink: Long = 0L
+  // Written but never read: the volatile store keeps the JIT from dropping the measured work.
+  @volatile private var sink: Long = 0L // scalafix:ok RemoveUnused
 
   private def plan(query: String, arm: String): SparkPlan = {
     withSQLConf(

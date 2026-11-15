@@ -71,7 +71,9 @@ $SPARK_HOME/bin/spark-submit \
     --driver-memory 8G \
     --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
-    --conf spark.executor.memory=32G \
+    --conf spark.executor.memory=16G \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=16G \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.task.cpus=1 \

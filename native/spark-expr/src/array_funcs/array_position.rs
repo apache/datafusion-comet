@@ -29,11 +29,10 @@ use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, 
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use num::Float;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use super::nested_float_normalize::{has_float_leaf, normalize_nested_floats};
+use crate::float_semantics::{compare_floats, has_float_leaf, normalize_nested_floats};
 
 /// Spark array_position() function that returns the 1-based position of an element in an array.
 /// Returns 0 if the element is not found (Spark behavior differs from DataFusion which returns null).
@@ -182,11 +181,10 @@ where
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_val = element_typed.value(row_index);
-        let search_is_nan = search_val.is_nan();
         for i in start..end {
             if !values_typed.is_null(i) {
                 let v = values_typed.value(i);
-                if (search_is_nan && v.is_nan()) || v == search_val {
+                if compare_floats(v, search_val).is_eq() {
                     result[row_index] = (i - start + 1) as i64;
                     break;
                 }

@@ -22,11 +22,12 @@ under the License.
 ## MapSort (Spark 4.0+)
 
 Spark 4.0 inserts `MapSort` to normalize map values when they appear in grouping expressions or
-shuffle hash partitioning keys. Comet runs `MapSort` natively for supported scalar key types.
+shuffle hash partitioning keys. Comet runs `MapSort` in Rust for supported scalar key types.
 
 Other orderable key types have no native implementation. By default those cases fall the
-enclosing projection or shuffle back to Spark. Set `spark.comet.expression.MapSort.codegen.enabled=true`
-to run Spark's own generated JVM code through the codegen dispatcher instead, so the enclosing
+enclosing projection or native shuffle back to Spark. Set
+`spark.comet.expression.MapSort.codegen.enabled=true` to run Spark's own generated JVM code through
+the codegen dispatcher instead, so the enclosing
 operator can stay in the Comet pipeline. That dispatcher route is not a native `MapSort`
 implementation, and a matched microbenchmark of these shapes is slower than the Spark fallback.
 
@@ -38,8 +39,11 @@ Arrow's sort uses IEEE total ordering for floating-point, which differs from Spa
 an expression, Comet safely falls back to Spark.
 
 Set `spark.comet.expression.MapSort.enabled=false` to disable Comet `MapSort` entirely, including
-the native scalar-key path. That expression-specific setting leaves the codegen dispatcher
-available to unrelated expressions.
+the Rust implementation for scalar keys. That expression-specific setting leaves the codegen
+dispatcher available to unrelated expressions.
+
+JVM shuffle computes partition IDs with Spark expressions, so it supports these map keys
+independently of the `MapSort` codegen setting.
 
 <!--BEGIN:EXPR_COMPAT[map]-->
 <!--END:EXPR_COMPAT-->

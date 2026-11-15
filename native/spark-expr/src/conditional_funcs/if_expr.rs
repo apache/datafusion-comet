@@ -15,18 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::CaseWhenExpr;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::{expressions::CaseExpr, PhysicalExpr};
+use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::sync::Arc;
 
-/// IfExpr is a wrapper around CaseExpr, because `IF(a, b, c)` is semantically equivalent to
+/// IfExpr is a wrapper around CaseWhenExpr, because `IF(a, b, c)` is semantically equivalent to
 /// `CASE WHEN a THEN b ELSE c END`.
 #[derive(Debug, Eq)]
 pub struct IfExpr {
@@ -34,7 +35,7 @@ pub struct IfExpr {
     true_expr: Arc<dyn PhysicalExpr>,
     false_expr: Arc<dyn PhysicalExpr>,
     // we delegate to case_expr for evaluation
-    case_expr: Arc<CaseExpr>,
+    case_expr: Arc<CaseWhenExpr>,
 }
 
 impl Hash for IfExpr {
@@ -76,9 +77,14 @@ impl IfExpr {
             true_expr: Arc::clone(&true_expr),
             false_expr: Arc::clone(&false_expr),
             case_expr: Arc::new(
-                CaseExpr::try_new(None, vec![(if_expr, true_expr)], Some(false_expr)).unwrap(),
+                CaseWhenExpr::try_new(vec![(if_expr, true_expr)], Some(false_expr)).unwrap(),
             ),
         }
+    }
+
+    /// The `CASE WHEN` that this evaluates as.
+    pub(crate) fn case_when(&self) -> &CaseWhenExpr {
+        &self.case_expr
     }
 }
 

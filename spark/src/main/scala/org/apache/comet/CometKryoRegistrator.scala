@@ -41,8 +41,9 @@ import com.esotericsoftware.kryo.Kryo
  * runs, so Comet cannot add this for you the way it can add `spark.sql.cache.serializer`;
  * `CometDriverPlugin` logs a warning instead when the combination looks unsafe.
  *
- * Two payloads need it: the `Array[ChunkedByteBuffer]` a native broadcast broadcasts, and
- * `CometCachedBatch`. The first applies whether or not the in-memory cache feature is enabled.
+ * Two payloads need it: the `CometBroadcastValue`, an array of `ChunkedByteBuffer`s, that a
+ * native broadcast broadcasts, and `CometCachedBatch`, whose payload is a `ChunkedByteBuffer`
+ * too. The first applies whether or not the in-memory cache feature is enabled.
  */
 class CometKryoRegistrator extends KryoRegistrator {
   override def registerClasses(kryo: Kryo): Unit = {
