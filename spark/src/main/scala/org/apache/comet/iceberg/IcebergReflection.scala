@@ -1969,16 +1969,16 @@ object IcebergReflection extends Logging {
 
   /**
    * `ManifestFiles.read(ManifestFile, FileIO, Map<Integer, PartitionSpec>)`, the only overload
-   * that is public on every supported Iceberg release (1.5.2 through 1.12; 1.12 dropped the
+   * that is public on every supported Iceberg release (1.8.1 through 1.12; 1.12 dropped the
    * two-argument one).
    */
   private def manifestReadMethodOf(fileIOClass: Class[_]): java.lang.reflect.Method =
-    loadClass(ClassNames.MANIFEST_FILES)
-      .getMethod(
-        "read",
-        loadClass(ClassNames.MANIFEST_FILE),
-        fileIOClass,
-        classOf[java.util.Map[_, _]])
+    getMethod(
+      loadClass(ClassNames.MANIFEST_FILES),
+      "read",
+      loadClass(ClassNames.MANIFEST_FILE),
+      fileIOClass,
+      classOf[java.util.Map[_, _]])
 
   private def newInMemoryFileIO(location: String, bytes: Array[Byte]): AnyRef = {
     val cls = loadClass(ClassNames.INMEMORY_FILE_IO)

@@ -19,9 +19,12 @@
 
 """Fast regression tests for the Iceberg write report summary."""
 
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -95,6 +98,31 @@ class SummarizeIcebergWritesTest(unittest.TestCase):
         # A shard job and dev/local-ci.sh summarize their own report directory directly.
         (self.root / "iceberg-writes-local.jsonl").write_text(records("native", "jvm"))
         self.assertEqual(self.load(), (["jvm", "native"], []))
+
+    def run_main(self, *args):
+        argv = sys.argv
+        sys.argv = ["summarize-iceberg-writes.py", "--title", "fixture", *args, str(self.root)]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                return SUMMARIZE.main()
+        finally:
+            sys.argv = argv
+
+    def test_require_native_passes_with_a_native_write(self):
+        self.attempt(1, 1, "jvm", "native")
+        self.attempt(2, 1, "jvm")
+        self.assertEqual(self.run_main("--require-native"), 0)
+
+    def test_require_native_fails_when_every_write_falls_back(self):
+        self.attempt(1, 1, "jvm", "spark")
+        self.attempt(2, 1, "jvm")
+        self.assertEqual(self.run_main("--require-native"), 1)
+        self.assertEqual(self.run_main(), 0)
+
+    def test_require_native_fails_when_no_writes_were_recorded(self):
+        self.attempt(1, 1)
+        self.assertEqual(self.run_main("--require-native"), 1)
 
     def test_no_writes_at_all(self):
         summary = SUMMARIZE.summarize("fixture", *SUMMARIZE.load([self.root / "missing"]))

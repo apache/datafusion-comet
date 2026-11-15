@@ -189,5 +189,8 @@ shows the count and share of each writer, the most common fallback reasons, and 
 operators. Each shard and the extensions job gets its own table. The shard coverage job adds one for
 all shards together, counting only the latest attempt of each shard. A shard whose latest attempt
 recorded no writes is named above the table rather than counted from an earlier attempt. The raw
-records are uploaded with the job's other reports. The summary never fails a job.
+records are uploaded with the job's other reports. The shard coverage job and the extensions job fail
+when none of their writes ran on the native writer, because Iceberg's tests pass on either writer and
+would not otherwise show the native writer declining every write. A shard's own summary never fails
+its job.
 `dev/local-ci.sh iceberg` prints the same summary after each shard and after the extensions target.

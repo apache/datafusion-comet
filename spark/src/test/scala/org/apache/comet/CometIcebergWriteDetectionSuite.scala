@@ -29,8 +29,9 @@ import org.apache.iceberg.{PartitionSpec, StructLike, TableMetadata, TableOperat
 import org.apache.iceberg.aws.s3.S3FileIO
 import org.apache.iceberg.catalog.TableIdentifier
 import org.apache.iceberg.encryption.EncryptionManager
-import org.apache.iceberg.hadoop.{HadoopCatalog, HadoopFileIO}
-import org.apache.iceberg.io.{FileIO, LocationProvider, ResolvingFileIO}
+import org.apache.iceberg.hadoop.{HadoopCatalog, HadoopConfigurable, HadoopFileIO}
+import org.apache.iceberg.io.{FileIO, InputFile, LocationProvider, OutputFile, ResolvingFileIO}
+import org.apache.iceberg.util.SerializableSupplier
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
@@ -1855,6 +1856,32 @@ case class TransitionProbeLeaf(columnar: Boolean) extends LeafExecNode {
     throw new UnsupportedOperationException("planning-only node")
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
     throw new UnsupportedOperationException("planning-only node")
+}
+
+/**
+ * A FileIO that works normally (delegating to HadoopFileIO) but whose class is not on Comet's
+ * recognized-FileIO allowlist. Composition rather than inheritance is the point: a HadoopFileIO
+ * SUBCLASS passes the hierarchy check by design, while this class must be declined. Instantiated
+ * reflectively by Iceberg's `CatalogUtil.loadFileIO`, hence top-level with a no-arg constructor.
+ */
+class DetectionDelegatingFileIO extends FileIO with HadoopConfigurable {
+  private val delegate = new HadoopFileIO()
+
+  override def newInputFile(path: String): InputFile = delegate.newInputFile(path)
+  override def newOutputFile(path: String): OutputFile = delegate.newOutputFile(path)
+  override def deleteFile(path: String): Unit = delegate.deleteFile(path)
+  override def initialize(properties: java.util.Map[String, String]): Unit =
+    delegate.initialize(properties)
+  override def setConf(conf: Configuration): Unit = delegate.setConf(conf)
+  // `getConf` is abstract through Hadoop's `Configurable` up to Iceberg 1.11 and a default method
+  // of `HadoopConfigurable` in 1.12. Scala requires `override` for the default method and accepts
+  // it for the abstract one, so this spelling compiles against both.
+  override def getConf: Configuration = delegate.getConf
+  override def serializeConfWith(
+      confSerializer: java.util.function.Function[
+        Configuration,
+        SerializableSupplier[Configuration]]): Unit =
+    delegate.serializeConfWith(confSerializer)
 }
 
 /**
