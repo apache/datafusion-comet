@@ -57,6 +57,13 @@ pub(super) async fn prepare_scan(
         return (Arc::clone(input), false);
     };
     let (config, source, _) = original;
+    // Preflight has no decryption properties and cannot reuse a failed encrypted
+    // footer load. Native scans advertise their key factory through factory_id;
+    // other configured sources can supply file_decryption directly.
+    let crypto = &source.table_parquet_options().crypto;
+    if crypto.file_decryption.is_some() || crypto.factory_id.is_some() {
+        return (Arc::clone(input), false);
+    }
     let Some(factory) = source.parquet_file_reader_factory() else {
         return (Arc::clone(input), false);
     };

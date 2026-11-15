@@ -27,6 +27,8 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
+mod encryption;
+
 fn instrumented_scan(
     files: &[&tempfile::NamedTempFile],
     session: &Arc<SessionContext>,
