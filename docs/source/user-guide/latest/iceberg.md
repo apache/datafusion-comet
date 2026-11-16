@@ -945,6 +945,9 @@ a data file but not what any reader computes from it:
 - Footer key-value metadata differs: native files carry an `ARROW:schema` entry and no
   `iceberg.schema` entry; iceberg-java files are the opposite.
 - The Parquet root schema element is named `arrow_schema` (iceberg-java: `table`).
+- The native writer places each row group's Bloom filters immediately after that row group;
+  iceberg-java places all filters after the final row group. Readers locate filters through each
+  column chunk's `bloom_filter_offset`, so placement does not change membership checks or pruning.
 - `created_by` reads `Apache Iceberg <version> (Comet)`, where iceberg-java's files carry
   parquet-mr's version string.
 - No page CRC checksums: iceberg-java writes one in every page header, and parquet-rs writes none.
