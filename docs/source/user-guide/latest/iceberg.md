@@ -530,31 +530,37 @@ A write is eligible only when ALL of the following hold:
 | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | resolved write format (`write-format` option overlaid on `write.format.default`)                                                            | `parquet`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `format-version`                                                                                                                            | `1`, `2` or `3` (on `3`, writes that carry row lineage fall back; see below)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | the sizes/limit must be positive Java ints (`Integer.parseInt` semantics — no trimming, no values past `Int.MaxValue` — matching iceberg-java, whose writer fails on anything else); `compression-level` must be a Java int within the native writer's per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored by both writers for snappy/lz4/none) — iceberg-java never validates the level, so an out-of-range value falls back rather than becoming a native task failure |
+| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | the sizes/limit must be positive Java ints (`Integer.parseInt` semantics — no trimming, no values past `Int.MaxValue` — matching iceberg-java, whose writer fails on anything else); `compression-level` must be a Java int within the native writer's per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored for snappy/lz4/none), which iceberg-java never validates, so other levels fall back; `brotli` needs Hadoop's `BrotliCodec` class on the classpath (see below) |
 | `write.parquet.row-group-check-min-record-count`                                                                                            | unset or `100` (the default)                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `write.parquet.row-group-check-max-record-count`                                                                                            | unset or `10000` (the default)                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `write.parquet.page-version`                                                                                                                | unset or `v1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `write.parquet.shred-variants`                                                                                                              | unset or `false` (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)                                                                                                                                                                                                                                                                                                                                                                                               |
-| `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding, which is gated)                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `write.parquet.shred-variants`                                                                                                              | any value (iceberg-java shreds only top-level `variant` columns, and a `variant` column falls back on its type)                                                                                                                                                                                                                                                                                                                                                                 |
+| `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding a `variant` column, which falls back)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | unset or `false`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | only `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back, apart from the ignored settings listed below                                                                                                                                                                                                         |
+| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, plus the ignored, encryption and credential settings described below, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                      |
 | Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
 | partition spec                                                                                                                              | any, except a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                                                                                      |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
 
-Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
-everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
-`bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
-any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
-key in the session Hadoop configuration other than the reader-only
-`parquet.hadoop.vectored.io.enabled` (with `HadoopFileIO`-backed output those reach
-iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
-`write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
+Within `write.parquet.*`, everything not listed above must be absent: unvetted keys (e.g.
+`bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions) fall
+back. iceberg-java builds its Parquet writer's settings from `write.parquet.*` keys. Of the
+`parquet.*` keys, only `parquet.columnindex.truncate.length` changes its data files beyond their
+compressed bytes, whether it is set as a table or write property or in the Hadoop configuration
+that reaches the writer. That key falls back, and so does `parquet.enable.dictionary` as a table
+or write property. The zstd level and worker count (`parquet.compression.codec.zstd.level` and
+`.workers`) are codec-level side channels, which the accepted divergences below cover. Every other
+`parquet.*` key, such as `parquet.block.size` or the reader-only
+`parquet.hadoop.vectored.io.enabled`, is ignored, because iceberg-java's writer ignores it too. The
+Hadoop configuration checked is the session's and, for a `HadoopFileIO`, the FileIO's own, which
+carries the catalog's `hadoop.*` overrides. Also gated explicitly: any `encryption.*` key,
+`write.object-storage.enabled=true`, and `write.location-provider.impl`. An `io-impl` table
+property is ignored, because iceberg-java reads `io-impl` from catalog properties only.
 
 Three checks look past properties at the table's instantiated state, because they can be
 configured at the catalog level (or by a custom `TableOperations`) without any table or write
@@ -581,14 +587,55 @@ gate and native translation, including after session or catalog options change. 
 implementations without a Hadoop configuration, such as `S3FileIO`, use only their initialized
 properties; session and catalog Hadoop options are neither checked nor forwarded. Hadoop's built-in
 `core-default.xml` values are not treated as explicit settings, but
-programmatic settings and values from site or custom `*-default.xml` resources are. Spark's
-session-wide S3A vectored-read and `downgrade.syncable.exceptions` compatibility settings are also
-ignored, as are the S3A committer (`committer.name`, `committer.magic.enabled`,
-`committer.threads`), `bulk.delete.page.size` and `experimental.input.fadvise` settings, because
-none of them can alter an Iceberg data-file write request. Spark 4.1 sets `committer.name` and
-`committer.magic.enabled` itself when `spark-hadoop-cloud` is on the classpath. Ignored settings are
-matched by their plain `fs.s3a.<name>` keys, so a per-bucket `fs.s3a.bucket.<data-bucket>.<name>`
-form still falls back. Unknown explicit
+programmatic settings and values from site or custom `*-default.xml` resources are. S3A settings
+that cannot change the written object, where it is written or who writes it are ignored, because
+the native writer has its own connection pool, timeouts, retries and upload buffering and does not
+go through S3A. They are the connection pool, thread, timeout and retry settings (such as
+`connection.maximum`, `threads.max`, `connection.timeout`, `attempts.maximum` and `retry.limit`),
+upload buffering and multipart sizing (such as `fast.upload.buffer`, `multipart.size`,
+`multipart.threshold`, `buffer.dir` and `block.size`), read, listing and delete settings (such as
+Spark's session-wide vectored-read settings, `readahead.range`, `experimental.input.fadvise` and
+`bulk.delete.page.size`), `downgrade.syncable.exceptions`, the S3A committer settings
+(`committer.name`, `committer.magic.enabled`, `committer.threads`), `impl` when it names
+`org.apache.hadoop.fs.s3a.S3AFileSystem`, and `fs.s3a.region`, which S3A does not read. Spark 4.1
+sets `committer.name` and `committer.magic.enabled` itself when `spark-hadoop-cloud` is on the
+classpath. The data bucket's per-bucket `fs.s3a.bucket.<data-bucket>.<name>` forms of these
+settings are ignored too. The native writer applies none of these values. It bounds each storage
+call, which can upload a whole row group, by `spark.comet.iceberg.ioTimeout` (30 seconds by
+default), so on a slow endpoint raise that rather than the S3A timeouts. It never sends
+`Expect: 100-continue`, which is what `connection.expect.continue=false` turns off.
+`multipart.uploads.enabled` is ignored only when it is `true`. A store without multipart uploads
+needs `false`, which makes S3A send each file in one PUT, but the native writer uses a multipart
+upload for any file over 5 MiB, so a write with `false` falls back. Settings that can change a
+request still fall back: endpoint and region
+selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers and
+access points.
+
+S3A server-side encryption is translated into iceberg-rust's `s3.sse.*` settings, with S3A's own
+precedence: the data bucket's `fs.s3a.bucket.<data-bucket>.*` setting wins over the global one,
+even when it is empty, which is how a bucket turns a global setting off, and
+`encryption.algorithm` and `encryption.key` win over the older `server-side-encryption-algorithm`
+and `server-side-encryption.key`. SSE-S3 (`AES256`), SSE-KMS (with or without a key) and SSE-C are
+supported. The translated settings replace the catalog's own `s3.sse.*` properties, which
+`HadoopFileIO` ignores. DSSE-KMS and client-side encryption fall back, and so do encryption
+settings when a Hadoop credential store (`hadoop.security.credential.provider.path` or
+`fs.s3a.security.credential.provider.path`) is configured, because the store can supply the values
+instead of the configuration.
+
+When `aws.credentials.provider` names the S3A credential providers explicitly, iceberg-java's
+writer signs with exactly that list, so the native writer takes its credentials from the same list
+through `HadoopS3ACredentialProviderAdapter`, which runs S3A's own provider factory on the
+executor (see [S3 credential providers](s3-credential-providers.md)). The provider list and the
+assumed-role and credential-store settings it reads are then admitted. This applies only when the
+catalog names no `s3.comet.credential.provider.class` of its own. A list that names an anonymous
+provider, directly or through `aws.credentials.provider.mapping`, and S3A delegation tokens,
+still fall back. Without an explicit list, the native writer
+uses its own credential chain, as for a read.
+
+On the `FileIO` side, the multipart, staging-directory,
+retry, delete-batching and client-preload settings are ignored, and so is `s3.delete-enabled=true`.
+`s3.delete-enabled=false` falls back, because a failed native write task deletes the files it
+wrote, which `S3FileIO` keeps when deletes are disabled. Unknown explicit
 `fs.s3a.*`, `s3.*`, or `client.*` settings therefore fall back at planning time instead of being
 silently ignored by the native storage backend. The exception is a vendor-owned `s3.*` /
 `client.*` property when
@@ -613,6 +660,15 @@ can be dropped afterwards. A spec that mixes such a field with a live one falls 
 cannot write through it either, so the write fails with iceberg-java's own error rather than in
 the native writer ([#6141](https://github.com/apache/datafusion-comet/issues/6141)). A spec whose
 fields are all `void` writes unpartitioned and stays eligible.
+
+A write that compresses with `brotli` falls back unless Hadoop's
+`org.apache.hadoop.io.compress.BrotliCodec` class can be loaded. parquet-mr compresses and
+decompresses brotli pages with that class, and neither Spark nor Iceberg ships it. Without a brotli
+codec jar on the classpath, iceberg-java fails the write, and no JVM Parquet reader, Spark's or
+Iceberg's, can read a brotli file. parquet-rs compresses brotli without the class, so a native write
+would commit files that only a native reader could read. The gate looks the class up on the
+driver, through the class loader that Spark adds application jars to
+([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -787,9 +843,18 @@ a data file but not what any reader computes from it:
   their pages and row groups end at different rows, so byte-identical output is not achievable even
   for a default `zstd` table. The decompressed data is identical. For the same reason,
   codec-level side channels (`zlib.compress.level`, `compression.brotli.quality`,
+  `parquet.compression.codec.zstd.level`, `parquet.compression.codec.zstd.workers` and
   `io.compression.codec.zstd.level` — the last is present in every Hadoop configuration by
-  default) are not gated: they can only shift compressed bytes, which are already accepted as
-  divergent.
+  default) are not gated: the native writer does not read them, and they can only shift
+  compressed bytes, which are already accepted as divergent. A numeric gzip level is the one
+  exception, because it changes whether iceberg-java can write at all. Hadoop reads
+  `zlib.compress.level` as the name of a `ZlibCompressor.CompressionLevel` constant, such as
+  `BEST_SPEED`, so iceberg-java fails a gzip write whose level is a number, set either as
+  `write.parquet.compression-level` or as `zlib.compress.level` in the Hadoop configuration. It
+  fails on Hadoop 3.4, and on Hadoop 3.3 when Hadoop's native zlib library is loaded. The native
+  writer writes such a table at its `write.parquet.compression-level`, or at gzip's default level,
+  and any reader can decompress the pages, whatever the level
+  ([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 #### Manifest metadata visible to later readers
 
@@ -860,9 +925,6 @@ Which entries apply depends on which native paths are enabled:
 
 The native Iceberg writer is disabled by default. With `spark.comet.write.iceberg.enabled=true`:
 
-- **Brotli tables.** The native writer commits brotli-compressed files. JVM Parquet readers can
-  read them only if Hadoop's `BrotliCodec` is on the classpath. iceberg-java fails the write
-  instead ([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 - **`write.parquet.compression-codec=none`.** The native writer writes the table uncompressed, and
   iceberg-java rejects the value. The native writer also trims or lowercases a few other settings
   that iceberg-java reads as written

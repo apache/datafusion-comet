@@ -3227,12 +3227,15 @@ class CometCodegenSuite
         checkSparkAnswerAndFallbackReason(
           "SELECT decfn.ns.apply_as_money(c) FROM t",
           "has no native handler")
-        // Spark hashes the value the function returned. AQE would coalesce the partitions.
+        // Spark hashes the value the function returned, on the JVM, so the exchange itself has
+        // no reason to fall back: #5971 stopped the columnar path from consulting a native-serde
+        // gate it never uses, and the call still runs in Spark inside the partitioning
+        // expression. Comparing `spark_partition_id()` with Spark pins that the rows still land
+        // where Spark puts them. AQE would coalesce the partitions.
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-          checkSparkAnswerAndFallbackReason(
+          checkSparkAnswer(
             "SELECT c, spark_partition_id() FROM " +
-              "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(c))",
-            reason)
+              "(SELECT * FROM t DISTRIBUTE BY decfn.ns.as_money(c))")
         }
       }
     }

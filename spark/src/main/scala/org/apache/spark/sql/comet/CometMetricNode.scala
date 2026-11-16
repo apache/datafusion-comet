@@ -75,11 +75,11 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * zero.
    */
   private[comet] def sumMetricValues(metricName: String): Long =
-    sumMetricValues(metricName, new IdentityHashMap[SQLMetric, java.lang.Boolean]())
+    sumMetricValues(metricName, new IdentityHashMap[SQLMetric, java.lang.Long]())
 
   private def sumMetricValues(
       metricName: String,
-      seenMetrics: IdentityHashMap[SQLMetric, java.lang.Boolean]): Long = {
+      seenMetrics: IdentityHashMap[SQLMetric, java.lang.Long]): Long = {
     def sumFromNode(metricNode: CometMetricNode): Long = {
       val nodeValue = metricNode.metrics.get(metricName).fold(0L) { metric =>
         CometMetricNode.claimMetricValue(metric, seenMetrics)
@@ -122,17 +122,32 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * one task may share accumulators (see [[reportSpillMetrics]]), so each accumulator is counted
    * once per task.
    */
-  def reportScanInputMetrics(ctx: TaskContext): Unit = {
-    val seenMetrics = CometMetricNode.taskSeenMetrics(ctx).scanInput
-    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
-      val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
-      def claimed(leaf: CometMetricNode, metricName: String): Long =
-        leaf.metrics.get(metricName).fold(0L)(CometMetricNode.claimMetricValue(_, seenMetrics))
+  def reportScanInputMetrics(ctx: TaskContext): Unit =
+    registerScanInputReport(ctx, whileRunning = false)
 
-      val totalBytes = scanLeaves.map(claimed(_, "bytes_scanned")).sum
-      val totalRows = scanLeaves.map { leaf =>
-        claimed(leaf, "output_rows") + claimed(leaf, "pushdown_rows_pruned")
-      }.sum
+  /**
+   * [[reportScanInputMetrics]], which also reports each time native code publishes the plan's
+   * metrics, so the UI shows the input of a running task. Only for a plan that reads all of its
+   * task's input: a JVM scan in the same task sets its counters from a value it snapshotted when
+   * it started, which would drop what this added in the meantime.
+   */
+  def reportScanInputMetricsWhileRunning(ctx: TaskContext): Unit =
+    registerScanInputReport(ctx, whileRunning = true)
+
+  private def registerScanInputReport(ctx: TaskContext, whileRunning: Boolean): Unit = {
+    val seenMetrics = CometMetricNode.taskSeenMetrics(ctx)
+    val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
+    def claimed(leaf: CometMetricNode, metricName: String): Long =
+      leaf.metrics.get(metricName).fold(0L) { metric =>
+        CometMetricNode.claimMetricValue(metric, seenMetrics.scanInput)
+      }
+    def report(): Unit = {
+      var totalBytes = 0L
+      var totalRows = 0L
+      scanLeaves.foreach { leaf =>
+        totalBytes += claimed(leaf, "bytes_scanned")
+        totalRows += claimed(leaf, "output_rows") + claimed(leaf, "pushdown_rows_pruned")
+      }
       if (totalBytes > 0L) {
         ctx.taskMetrics().inputMetrics.incBytesRead(totalBytes)
       }
@@ -140,6 +155,10 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
         ctx.taskMetrics().inputMetrics.incRecordsRead(totalRows)
       }
     }
+    if (whileRunning) {
+      seenMetrics.onPublish ::= (() => report())
+    }
+    val _ = ctx.addTaskCompletionListener[Unit](_ => report())
   }
 
   /**
@@ -256,6 +275,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   def set_all_from_bytes(bytes: Array[Byte]): Unit = {
     val metricNode = Metric.NativeMetricNode.parseFrom(bytes)
     set_all(metricNode)
+    CometMetricNode.reportOnPublish()
   }
 }
 
@@ -269,15 +289,20 @@ object CometMetricNode {
   // one task runs.
   private val gaugeMetricNames = Set("peak_mem_used", "build_mem_used")
 
-  private type SeenMetricSet = IdentityHashMap[SQLMetric, java.lang.Boolean]
+  // The value each accumulator had when a reporting listener last claimed it for the task.
+  private type ClaimedValues = IdentityHashMap[SQLMetric, java.lang.Long]
 
   private case class SeenMetrics(
-      disk: SeenMetricSet,
-      memory: SeenMetricSet,
-      scanInput: SeenMetricSet)
+      disk: ClaimedValues,
+      memory: ClaimedValues,
+      scanInput: ClaimedValues) {
+    // Reports to run each time native code publishes metrics on the task thread. A body field,
+    // so it takes no part in equality.
+    var onPublish: List[() => Unit] = Nil
+  }
 
   // Per running task attempt: the accumulators already claimed by a reporting listener, one
-  // identity set per reported task metric (see reportSpillMetrics and reportScanInputMetrics).
+  // identity map per reported task metric (see reportSpillMetrics and reportScanInputMetrics).
   // The first registration installs a cleanup listener ahead of every reporting listener, so it
   // runs last (reverse registration order) and removes the entry.
   private val seenMetricsByTask = new ConcurrentHashMap[Long, SeenMetrics]()
@@ -299,10 +324,30 @@ object CometMetricNode {
     }
   }
 
-  /** The metric's value the first time it is claimed for a task, zero afterwards. */
-  private def claimMetricValue(metric: SQLMetric, seenMetrics: SeenMetricSet): Long =
-    if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) math.max(metric.value, 0L)
-    else 0L
+  /** Runs the running task's publish reports. Native code publishes on the task thread. */
+  private def reportOnPublish(): Unit = {
+    val ctx = TaskContext.get()
+    val reports = if (ctx == null) null else seenMetricsByTask.get(ctx.taskAttemptId())
+    if (reports != null) {
+      reports.onPublish.foreach(report => report())
+    }
+  }
+
+  /**
+   * What the metric has gained since it was last claimed for a task, all of it the first time, so
+   * a report that runs while the task runs and again when it completes counts it once.
+   */
+  private def claimMetricValue(metric: SQLMetric, claimedValues: ClaimedValues): Long = {
+    val value = math.max(metric.value, 0L)
+    val previous = claimedValues.get(metric)
+    val claimed = if (previous == null) 0L else previous.longValue
+    if (value > claimed) {
+      claimedValues.put(metric, value)
+      value - claimed
+    } else {
+      0L
+    }
+  }
 
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
