@@ -74,7 +74,7 @@ class CometPlanEqualitySuite extends AnyFunSuite {
     assert(scan.partitionFilters.isEmpty && scan.dataFilters.isEmpty)
   }
 
-  test("scan canonicalization retains Spark normalization and removes original DPP filters") {
+  test("scan canonicalization preserves runtime fields and Spark normalization") {
     val output = Seq(AttributeReference("id", IntegerType)())
     val staticFilter = GreaterThan(output.head, Literal(1))
     val scan = ExtendedFileSourceScanExec(
@@ -83,9 +83,14 @@ class CometPlanEqualitySuite extends AnyFunSuite {
         Seq(staticFilter, DynamicPruningExpression(EqualTo(output.head, Literal(2)))),
       dataFilters = Seq(LessThan(output.head, Literal(10))))
 
+    val canonicalized = CometScanUtils.canonicalizeOriginalPlan(scan)
+    val expectedSparkScan = scan.copy(partitionFilters = Seq(staticFilter)).doCanonicalize()
+
+    assert(canonicalized.getClass == scan.getClass)
+    assert(canonicalized.productIterator.toSeq.takeRight(2) == Seq(true, output))
+    // Check Spark's normalized fields separately from the distribution's extra fields.
     assert(
-      CometScanUtils.canonicalizeOriginalPlan(scan) ==
-        scan.copy(partitionFilters = Seq(staticFilter)).doCanonicalize())
+      canonicalized.productIterator.toSeq.dropRight(2) == expectedSparkScan.productIterator.toSeq)
     assert(CometScanUtils.canonicalizeOriginalPlan(null) == null)
   }
 

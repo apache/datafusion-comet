@@ -69,6 +69,13 @@ private[apache] class ExtendedFileSourceScanExec(
       dataFilters,
       tableIdentifier,
       disableBucketedScan) {
+  override def doCanonicalize(): FileSourceScanExec = {
+    // Keep the simulated vendor fields observable after Spark normalizes its own fields.
+    val args = super.doCanonicalize().productIterator.map(_.asInstanceOf[AnyRef]).toArray
+    makeCopy(args ++ Array[AnyRef](Boolean.box(vendorFlag), vendorOutput))
+      .asInstanceOf[FileSourceScanExec]
+  }
+
   override def productArity: Int = 11
 
   override def productElement(index: Int): Any = index match {
