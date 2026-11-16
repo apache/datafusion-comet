@@ -647,6 +647,21 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("bloom-filter enabled=false stays native regardless of the folding opt-in") {
+    Seq("false", "true").foreach { foldingEnabled =>
+      withSQLConf(
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key -> foldingEnabled) {
+        withDetectionCatalog { _ =>
+          createTable(
+            "bloom_disabled",
+            partitionSpec = "",
+            properties = Some("'write.parquet.bloom-filter-enabled.column.id'='false'"))
+          assertSupportLevelIs[Compatible]("bloom_disabled")
+        }
+      }
+    }
+  }
+
   test("bloom-filter enabled=false with NDV follows runtime support and validates NDV") {
     withDetectionCatalog { _ =>
       val configuredNdv = 1000

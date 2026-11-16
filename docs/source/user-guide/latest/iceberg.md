@@ -864,7 +864,7 @@ serialized space by shrinking toward the target FPP; Java retains the larger fil
 retains the original buffer capacity, so this does not imply lower peak writer memory.
 
 In addition to the [general native-write eligibility conditions](#native-parquet-write-eligibility),
-native writes for configured Bloom columns require all of the following:
+native writes with enabled Bloom filters require all of the following:
 
 - `spark.comet.write.iceberg.enabled=true`.
 - `spark.comet.write.iceberg.bloomFilterFolding.enabled=true`.
@@ -894,6 +894,7 @@ version determines eligibility; Spark's version alone does not enable this featu
 | 3.5           | 1.8.1          | Native eligible; field names and aliases; FPP interpreted, NDV ignored |
 | 4.0           | 1.10.0         | Native eligible; FPP interpreted, NDV ignored                          |
 | 4.1           | 1.11.0         | Native eligible; FPP and NDV interpreted                               |
+| 4.2           | 1.10.0         | Native eligible; FPP interpreted, NDV ignored                          |
 
 Before Iceberg 1.8, Bloom names are raw Parquet paths; trailing empty components such as `id.`
 are normalized as Java does. Iceberg 1.8/1.9 resolves field names and collection aliases by field
@@ -904,6 +905,10 @@ The cap range applies whenever a `write.parquet.bloom-filter-enabled.column.*` p
 present, even if set to `false`. With no such properties, the cap is unused: unset or any
 positive Java int, such as `100`, keeps an otherwise eligible write native. Malformed, zero,
 or negative caps select Java, which rejects them through its normal validation.
+
+Setting only `write.parquet.bloom-filter-enabled.column.<col>=false` keeps an otherwise
+eligible write on the native writer, whether the folding option is enabled or disabled.
+No filter is requested in that case.
 
 The Bloom option defaults to `false`, selecting Java's writer for Bloom-enabled tables. Enabling
 it accepts byte differences and the pruning tradeoff below; it cannot turn folding off inside

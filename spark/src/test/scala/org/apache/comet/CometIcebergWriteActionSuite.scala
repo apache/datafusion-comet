@@ -1679,6 +1679,26 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("enabled=false writes natively without Bloom filters regardless of the folding opt-in") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq("false", "true").zipWithIndex.foreach { case (foldingEnabled, index) =>
+        val table = s"bloom_disabled_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some("'write.parquet.bloom-filter-enabled.column.id'='false'"))
+        assertNativeWriteEngages(
+          table,
+          Seq(1),
+          bloomFilterFoldingEnabled = foldingEnabled.toBoolean) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, 'region', 1.0)")
+        }
+        assert(!parquetBloomFilterPresent(table, "id"))
+      }
+    }
+  }
+
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
@@ -6687,9 +6707,11 @@ class CometIcebergWriteActionSuite
     writes
   }
 
-  private def assertNativeWriteEngages(tableName: String, expectedIds: Seq[Int])(
-      action: => Unit): Unit = {
-    val snapshot = withNativeEnabled { captureWrite(tableName)(action) }
+  private def assertNativeWriteEngages(
+      tableName: String,
+      expectedIds: Seq[Int],
+      bloomFilterFoldingEnabled: Boolean = true)(action: => Unit): Unit = {
+    val snapshot = withNativeEnabled(captureWrite(tableName)(action), bloomFilterFoldingEnabled)
     assert(
       snapshot.snapshotDelta == 1L,
       s"expected 1 commit via native path, got ${snapshot.snapshotDelta}. Plans:\n" +

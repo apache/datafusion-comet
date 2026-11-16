@@ -801,6 +801,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     } catch {
       case _: ClassNotFoundException | _: LinkageError => false
     }
+
   // These are Apache Parquet Java BlockSplitBloomFilter implementation bounds, not Iceberg
   // TableProperties constants, so they cannot be obtained through IcebergReflection:
   // scalastyle:off line.size.limit
