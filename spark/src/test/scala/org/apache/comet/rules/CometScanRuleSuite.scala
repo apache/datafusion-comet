@@ -260,7 +260,9 @@ class CometScanRuleSuite extends CometTestBase {
     // read through the integer to decimal cast kernel, which cannot take a negative scale.
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
       withTempPath { path =>
-        Seq(Some(100), Some(200), None).toDF("a").repartition(1).write.parquet(path.toString)
+        val ints = StructType(Array(StructField("a", IntegerType)))
+        val rows = spark.sparkContext.parallelize(Seq(Row(100), Row(200), Row(null)), 1)
+        spark.createDataFrame(rows, ints).write.parquet(path.toString)
         val schema = StructType(Array(StructField("a", DecimalType(12, -2))))
         checkSparkAnswerAndFallbackReason(
           spark.read.schema(schema).parquet(path.toString),
