@@ -7769,6 +7769,75 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("shredded variant columns read natively") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg's Spark writer shreds variants from 1.11")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Iceberg's writer shreds. Comet's native writer would write the variants unshredded.
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        val table = "test_cat.db.shredded_variant"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id BIGINT, data VARIANT, tags VARIANT, ts VARIANT) " +
+              "USING iceberg TBLPROPERTIES ('format-version' = '3', " +
+              "'write.parquet.shred-variants' = 'true')")
+          // Most rows fit the shredded type. The others land in `value`: an extra field (a
+          // partially shredded object), a missing field, a scalar, a variant null, and a SQL null.
+          // One file, so Iceberg infers each shredded type from all of the rows.
+          spark.sql(s"""
+            INSERT INTO $table SELECT /*+ COALESCE(1) */ * FROM VALUES
+              (1, parse_json('{"name": "a", "age": 25}'), parse_json('[1, 2]'),
+               CAST(TIMESTAMP '2024-01-01 00:00:00.123456' AS VARIANT)),
+              (2, parse_json('{"name": "b", "age": 30}'), parse_json('[3]'),
+               CAST(TIMESTAMP '1969-12-31 23:59:59.999999' AS VARIANT)),
+              (3, parse_json('{"name": "c", "age": 35, "city": "x"}'), parse_json('[]'),
+               CAST(TIMESTAMP '2024-06-30 12:00:00' AS VARIANT)),
+              (4, parse_json('{"name": "d"}'), parse_json('[4, "five", null]'),
+               parse_json('"not a timestamp"')),
+              (5, parse_json('5'), parse_json('"not an array"'), parse_json('null')),
+              (6, parse_json('null'), parse_json('null'), NULL),
+              (7, NULL, NULL, CAST(TIMESTAMP '2000-02-29 00:00:00' AS VARIANT))
+              AS t(id, data, tags, ts)
+          """)
+
+          // Without `typed_value` in the files, this test would only read unshredded variants.
+          val dataFiles =
+            spark.sql(s"SELECT file_path FROM $table.files").collect().map(_.getString(0))
+          assert(dataFiles.length == 1, dataFiles.mkString(", "))
+          val schema = withParquetReader(dataFiles.head)(_.getFooter.getFileMetaData.getSchema)
+          Seq("data", "tags", "ts").foreach { column =>
+            assert(
+              schema
+                .getType(schema.getFieldIndex(column))
+                .asGroupType()
+                .containsField("typed_value"),
+              s"Expected `$column` to be shredded:\n$schema")
+          }
+
+          checkIcebergNativeScan(
+            s"SELECT id, to_json(data), to_json(tags), to_json(ts) FROM $table ORDER BY id")
+          checkIcebergNativeScan(
+            s"SELECT id, try_variant_get(data, '$$.name', 'string'), " +
+              s"try_variant_get(data, '$$.age', 'int'), try_variant_get(tags, '$$[0]', 'int'), " +
+              s"try_variant_get(ts, '$$', 'timestamp') FROM $table ORDER BY id")
+          checkIcebergNativeScan(
+            s"SELECT id FROM $table WHERE try_variant_get(data, '$$.age', 'int') > 28 ORDER BY id")
+          checkIcebergNativeScan(s"SELECT to_json(tags) FROM $table ORDER BY id")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
   test("partition evolution - _partition contains fields from all historical specs") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 

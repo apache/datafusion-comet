@@ -295,6 +295,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-avro"
+version = "59.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cba30bb78cb38952b3f8adea1bd617bc171e4af4ac94fb6db4f03d7cee7b200d"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "bytes",
+ "crc",
+ "flate2",
+ "indexmap 2.14.2",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "snap",
+ "strum_macros 0.28.0",
+ "uuid",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "arrow-buffer"
 version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1629,6 +1651,21 @@ checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc-fast"
@@ -3598,7 +3635,6 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/c-thiel/iceberg-rust?rev=524f5fddcb42700d81e7c843e8e499666afcf00d#524f5fddcb42700d81e7c843e8e499666afcf00d"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3606,6 +3642,7 @@ dependencies = [
  "array-init",
  "arrow-arith",
  "arrow-array",
+ "arrow-avro",
  "arrow-buffer",
  "arrow-cast",
  "arrow-ord",
@@ -3634,8 +3671,9 @@ dependencies = [
  "ordered-float 4.6.0",
  "parquet",
  "parquet-geospatial",
+ "parquet-variant-compute",
  "rand 0.9.5",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "roaring",
  "serde",
  "serde_bytes",
@@ -3657,7 +3695,6 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/c-thiel/iceberg-rust?rev=524f5fddcb42700d81e7c843e8e499666afcf00d#524f5fddcb42700d81e7c843e8e499666afcf00d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3667,7 +3704,6 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/c-thiel/iceberg-rust?rev=524f5fddcb42700d81e7c843e8e499666afcf00d#524f5fddcb42700d81e7c843e8e499666afcf00d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5990,6 +6026,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
