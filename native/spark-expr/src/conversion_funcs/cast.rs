@@ -172,6 +172,9 @@ pub struct SparkCastOptions {
     /// True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
     /// 0 instead of applying the integral-digit limit to it (SPARK-60118).
     pub decimal_zero_any_exponent: bool,
+    /// True when Spark does not apply the 38 integral-digit limit when it casts a string to
+    /// decimal, as it does not with `spark.sql.legacy.allowNegativeScaleOfDecimal`.
+    pub decimal_skip_integral_digit_limit: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -191,6 +194,7 @@ impl SparkCastOptions {
             timezone: timezone.to_string(),
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
+            decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -204,6 +208,7 @@ impl SparkCastOptions {
             timezone: "".to_string(),
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
+            decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -316,6 +321,7 @@ pub(crate) fn cast_array(
             scale,
             eval_mode,
             cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_skip_integral_digit_limit,
         ),
         (Utf8 | LargeUtf8, Decimal256(precision, scale)) => cast_string_to_decimal(
             &array,
@@ -324,6 +330,7 @@ pub(crate) fn cast_array(
             scale,
             eval_mode,
             cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_skip_integral_digit_limit,
         ),
         (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
             if eval_mode == EvalMode::Ansi =>
@@ -555,11 +562,11 @@ fn cast_struct_to_struct(
                 })
                 .collect::<DataFusionResult<Vec<_>>>()?;
 
-            Ok(Arc::new(StructArray::new(
+            Ok(Arc::new(StructArray::try_new(
                 to_fields.clone(),
                 cast_fields,
                 array.nulls().cloned(),
-            )))
+            )?))
         }
         _ => unreachable!(),
     }
@@ -1751,6 +1758,70 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    /// Struct min/max casts its input this way to relabel nullable fields as non-nullable,
+    /// so the values, including a UTC timestamp, must come through unchanged.
+    #[test]
+    fn test_cast_struct_relabels_nullable_fields_as_non_nullable() {
+        let ts_type =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+        let ts: ArrayRef = Arc::new(
+            PrimitiveArray::<TimestampMicrosecondType>::from(vec![-1, 0, 1]).with_timezone("UTC"),
+        );
+        let s: ArrayRef = Arc::new(StringArray::from(vec!["a", "中文", ""]));
+        let inner_from = Fields::from(vec![Field::new("s", DataType::Utf8, true)]);
+        let inner_to = Fields::from(vec![Field::new("s", DataType::Utf8, false)]);
+        let inner: ArrayRef = Arc::new(StructArray::new(inner_from.clone(), vec![s], None));
+        let from_fields = Fields::from(vec![
+            Field::new("ts", ts_type.clone(), true),
+            Field::new("inner", DataType::Struct(inner_from), true),
+        ]);
+        let to_fields = Fields::from(vec![
+            Field::new("ts", ts_type, false),
+            Field::new("inner", DataType::Struct(inner_to), false),
+        ]);
+        // The outer struct itself may be null.
+        let outer: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![ts, inner],
+            Some(vec![true, false, true].into()),
+        ));
+        let to_type = DataType::Struct(to_fields);
+
+        let result = cast_array(
+            Arc::clone(&outer),
+            &to_type,
+            &SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+        )
+        .unwrap();
+
+        assert_eq!(result.data_type(), &to_type);
+        assert_eq!(result.nulls(), outer.nulls());
+        let result = result.as_struct();
+        let original = outer.as_struct();
+        assert_eq!(result.column(0).as_ref(), original.column(0).as_ref());
+        assert_eq!(
+            result.column(1).as_struct().column(0).as_ref(),
+            original.column(1).as_struct().column(0).as_ref()
+        );
+    }
+
+    /// A null under a field relabeled as non-nullable must be an error, not a panic.
+    #[test]
+    fn test_cast_struct_to_non_nullable_field_with_null_returns_error() {
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
+        let from_fields = Fields::from(vec![Field::new("v", DataType::Int64, true)]);
+        let to_fields = Fields::from(vec![Field::new("v", DataType::Int64, false)]);
+        let array: ArrayRef = Arc::new(StructArray::new(from_fields, vec![values], None));
+
+        let result = cast_array(
+            array,
+            &DataType::Struct(to_fields),
+            &SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

@@ -25,6 +25,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.mapreduce.Job
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -87,6 +88,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some(s"Unsupported compression codec: $codec"))
             }
 
+            NativeWriteUtils
+              .legacyDatetimeRebaseWriteReason(cmd.query.output)
+              .foreach(reason => return Unsupported(Some(reason)))
+
             Incompatible(Some("Parquet write support is highly experimental"))
           case _ =>
             Unsupported(Some("Only Parquet writes are supported"))
@@ -127,6 +132,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .newBuilder()
         .setOutputPath(outputPath)
         .setCompression(codec)
+        .setSparkVersion(SPARK_VERSION_SHORT)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
         .addAllOutputSchema(schema2Proto(
           cmd.query.schema.fields.toIndexedSeq,

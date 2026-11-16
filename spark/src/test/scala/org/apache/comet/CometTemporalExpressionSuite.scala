@@ -26,7 +26,10 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.comet.{CometLocalLimitExec, CometProjectExec}
+import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -55,6 +58,122 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       .lastOption
       .getOrElse(
         fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
+
+  test("make_date does not evaluate an invalid row beyond a partial consumer") {
+    import testImplicits._
+
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.PushProjectionThroughLimit",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(2)
+            .coalesce(1)
+            .selectExpr(
+              "CAST(CASE WHEN id = 0 THEN 1 ELSE 13 END AS INT) AS m",
+              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text")
+            .write
+            .parquet(path.getCanonicalPath)
+        }
+        withTempView("make_date_limit") {
+          spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("make_date_limit")
+          for (codegen <- Seq(false, true)) {
+            withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+              val query = "SELECT unix_date(make_date(2024, m, 1)) FROM make_date_limit LIMIT 1"
+              var expected = Seq.empty[Row]
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(query).collect().toSeq
+              }
+              assert(expected == Seq(Row(19723)))
+              val df = sql(query)
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              assert(plan.collect { case p: ProjectExec => p }.isEmpty, plan.treeString)
+              assert(plan.collect { case p: CometProjectExec => p }.size == 1, plan.treeString)
+              assert(plan.collect { case p: CometLocalLimitExec => p }.size == 1, plan.treeString)
+              assert(
+                !new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(_.contains("make_date")),
+                plan.treeString)
+              assert(df.collect().toSeq == expected)
+
+              val unlimited = query.stripSuffix(" LIMIT 1")
+              val partialConsumers: Seq[(String, DataFrame => Seq[Row])] = Seq(
+                ("RDD.take", df => df.rdd.take(1).toSeq),
+                (
+                  "mapPartitions",
+                  df => df.as[Int].mapPartitions(_.take(1)).collect().toSeq.map(Row(_))))
+              partialConsumers.foreach { case (name, consume) =>
+                withClue(s"$name codegen=$codegen: ") {
+                  withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    expected = consume(sql(unlimited))
+                  }
+                  assert(expected == Seq(Row(19723)))
+                  assert(consume(sql(unlimited)) == expected)
+                }
+              }
+
+              // LIMIT can also skip an eager date argument produced by an earlier projection.
+              val yearQuery = """
+                |SELECT r, unix_date(make_date(y, 1, 1)), r + 1 FROM (
+                |  SELECT rand(7L) AS r, CAST(year_text AS INT) AS y FROM make_date_limit
+                |) LIMIT 1
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(yearQuery).collect().toSeq
+              }
+              assert(expected.size == 1 && expected.head.getInt(1) == 19723)
+              val yearDf = sql(yearQuery)
+              assert(yearDf.collect().toSeq == expected)
+              val yearPlan = stripAQEPlan(yearDf.queryExecution.executedPlan)
+              assert(yearPlan.collect { case p: ProjectExec => p }.size == 2, yearPlan.treeString)
+              assert(
+                yearPlan.collect { case p: CometProjectExec => p }.isEmpty,
+                yearPlan.treeString)
+
+              // A join key needs the cast on visited rows, but LIMIT still skips later rows.
+              val joinedYearQuery = """
+                |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, 1, 1)), p.r + 1 FROM (
+                |  SELECT rand(7L) AS r, CAST(year_text AS INT) AS y FROM make_date_limit
+                |) p JOIN (SELECT 2024 AS k UNION ALL SELECT 2025 AS k) b ON p.y = b.k
+                |LIMIT 1
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(joinedYearQuery).collect().toSeq
+              }
+              assert(expected.size == 1 && expected.head.getInt(1) == 19723)
+              val joinedYearDf = sql(joinedYearQuery)
+              assert(joinedYearDf.collect().toSeq == expected)
+              val joinedYearPlan = stripAQEPlan(joinedYearDf.queryExecution.executedPlan)
+              assert(
+                joinedYearPlan.collect {
+                  case p: ProjectExec if p.output.exists(_.name == "r") => p
+                }.size == 2,
+                joinedYearPlan.treeString)
+              assert(
+                joinedYearPlan.collect { case join: BroadcastHashJoinExec => join }.size == 1,
+                joinedYearPlan.treeString)
+
+              // A full collection must still evaluate the second row in the native expression.
+              val full = sql(unlimited)
+              checkCometOperators(stripAQEPlan(full.queryExecution.executedPlan))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(full)
+              Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+                withClue(s"$engine codegen=$codegen: ") {
+                  assert(
+                    error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
   test("next_day and make_date ANSI errors match Spark exceptions") {
     withSQLConf(

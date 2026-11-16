@@ -36,12 +36,13 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
+import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOutputCommitProtocol}
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, TableIdentifier}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, BasicWriteTaskStatsTracker, FileFormatWriter, SQLHadoopMapReduceCommitProtocol, WriteFilesExec, WriteJobStatsTracker, WriteTaskStats, WriteTaskStatsTracker}
@@ -166,8 +167,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
                 case write: CometWriteFilesExec => write
               }
               .getOrElse(fail(s"expected a native parquet writer:\n$nativePlan"))
-            val stageWithTransition = nativeWrite.withNewChildren(Seq(
-              CometSparkToColumnarExec(CometNativeColumnarToRowExec(nativeWrite.children.head))))
+            val stageWithTransition = nativeWrite.withNewChildren(
+              Seq(CometSparkToColumnarExec(CometColumnarToRowExec(nativeWrite.children.head))))
             assert(
               stageWithTransition.collect { case _: ColumnarToRowTransition => true }.nonEmpty,
               s"test requires a C2R transition:\n$stageWithTransition")
@@ -654,6 +655,71 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
       assertParquetCodec(outputPath, CompressionCodecName.LZ4_RAW)
+    }
+  }
+
+  test("parquet write records the Spark version in the footer") {
+    // Spark's ParquetWriteSupport writes org.apache.spark.version, and the datetime rebase logic
+    // of both Spark and Comet's native scan reads it back to tell Spark 3.0+ files from older ones.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withNativeWriter {
+        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      val conf = spark.sparkContext.hadoopConfiguration
+      val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+      assert(partFiles.nonEmpty, s"No part files found under $outputPath")
+      partFiles.foreach { partFile =>
+        val inputFile = HadoopInputFile.fromPath(new Path(partFile.getAbsolutePath), conf)
+        Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+          val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
+          assert(metadata.get("org.apache.spark.version") == SPARK_VERSION_SHORT)
+        }
+      }
+    }
+  }
+
+  test("parquet write of a pre-1582 date reads back unchanged under LEGACY read rebase") {
+    // The version footer key is what makes readers treat the file as written by Spark 3.0+. Without
+    // it, LEGACY read rebase shifts these dates. This also pins down that the native writer writes
+    // proleptic Gregorian values, the invariant behind writing the key without legacy markers.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark
+        .range(0, 3)
+        .selectExpr("id", "date_add(DATE'1500-01-01', CAST(id AS INT)) AS d")
+
+      withNativeWriter {
+        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      val expected = df.collect()
+      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> "LEGACY") {
+        checkAnswer(spark.read.parquet(outputPath), expected.toSeq)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          checkAnswer(spark.read.parquet(outputPath), expected.toSeq)
+        }
+      }
+    }
+  }
+
+  test("parquet write falls back to Spark when the datetime write rebase mode is LEGACY") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df =
+        spark.range(0, 10).selectExpr("id", "date_add(DATE'2000-01-01', CAST(id AS INT)) AS d")
+
+      withNativeWriter {
+        withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+          val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+          assertNoCometNativeWriteExec(plan)
+        }
+      }
     }
   }
 
@@ -2344,7 +2410,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
             captureWritePlan(sql("INSERT INTO v2_file_target SELECT * FROM v2_file_source"))
           assertHasCometNativeWriteExec(plan)
           assert(RecordingFileSystem.created.size == 2, RecordingFileSystem.created)
-          assert(RecordingFileSystem.closed.asScala == RecordingFileSystem.created.asScala)
+          // The two tasks run concurrently, so their files close in any order.
+          assert(
+            RecordingFileSystem.closed.asScala.toSet == RecordingFileSystem.created.asScala.toSet)
           checkAnswer(spark.table("v2_file_target"), df)
         }
       }

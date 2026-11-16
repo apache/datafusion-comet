@@ -116,6 +116,7 @@ impl OperatorBuilder for ParquetWriterBuilder {
                     .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
                 object_store_options,
             )?
+            .with_spark_version(writer.spark_version.clone())
             .with_output_stream(jvm_output_stream(
                 writer.jvm_output_stream,
                 planner.output_stream.as_ref(),

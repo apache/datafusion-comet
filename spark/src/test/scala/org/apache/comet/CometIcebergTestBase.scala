@@ -124,13 +124,16 @@ trait CometIcebergTestBase { this: CometTestBase =>
 
   /**
    * Adds an `int` column whose initial and write defaults are both `defaultValue`, through
-   * `UpdateSchema.addColumn(name, type, Literal)`. Requires Iceberg 1.10+ and a v3 table. Callers
-   * must `REFRESH TABLE` afterwards.
+   * `UpdateSchema.addColumn(name, type, Literal)`, or to the struct `parent` through
+   * `addColumn(parent, name, type, Literal)`. Requires Iceberg 1.10+ and a v3 table. Callers must
+   * `REFRESH TABLE` afterwards.
    */
   protected def addIcebergIntColumnWithDefault(
       icebergTable: AnyRef,
       columnName: String,
-      defaultValue: Int): Unit = {
+      defaultValue: Int,
+      parent: Option[String] = None): Unit = {
+    val typeClass = IcebergReflection.loadClass("org.apache.iceberg.types.Type")
     val intType = IcebergReflection
       .loadClass("org.apache.iceberg.types.Types$IntegerType")
       .getMethod("get")
@@ -139,18 +142,22 @@ trait CometIcebergTestBase { this: CometTestBase =>
       .loadClass("org.apache.iceberg.expressions.Expressions")
       .getMethod("lit", classOf[Object])
       .invoke(null, Integer.valueOf(defaultValue))
+    val literalClass = IcebergReflection.loadClass("org.apache.iceberg.expressions.Literal")
     val update = IcebergReflection
       .loadClass("org.apache.iceberg.Table")
       .getMethod("updateSchema")
       .invoke(icebergTable)
     val updateSchemaClass = IcebergReflection.loadClass("org.apache.iceberg.UpdateSchema")
-    updateSchemaClass
-      .getMethod(
-        "addColumn",
-        classOf[String],
-        IcebergReflection.loadClass("org.apache.iceberg.types.Type"),
-        IcebergReflection.loadClass("org.apache.iceberg.expressions.Literal"))
-      .invoke(update, columnName, intType, literal)
+    parent match {
+      case Some(struct) =>
+        updateSchemaClass
+          .getMethod("addColumn", classOf[String], classOf[String], typeClass, literalClass)
+          .invoke(update, struct, columnName, intType, literal)
+      case None =>
+        updateSchemaClass
+          .getMethod("addColumn", classOf[String], typeClass, literalClass)
+          .invoke(update, columnName, intType, literal)
+    }
     updateSchemaClass.getMethod("commit").invoke(update)
   }
 

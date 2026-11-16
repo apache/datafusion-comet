@@ -52,7 +52,7 @@ not documented, please [file an issue](https://github.com/apache/datafusion-come
 
 ### Which Spark and Java versions does Comet support?
 
-Spark 3.4, 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. Spark 3.4 is deprecated. The
+Spark 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. The
 [installation guide](../user-guide/latest/installation.md#supported-spark-versions) lists the exact
 Spark, Java, and Scala versions, and the
 [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page lists known
@@ -90,7 +90,7 @@ for one platform only.
 
 ### Why do I get a `ClassNotFoundException` for `CometShuffleManager`?
 
-Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.4 and 3.5,
+Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.5,
 executors create the shuffle manager before they load jars passed with `--jars` or `--packages`, so
 the jar must be on the startup classpath. Either copy it into `$SPARK_HOME/jars` on every machine, or
 set `spark.driver.extraClassPath` and `spark.executor.extraClassPath` to its path, as the
@@ -131,7 +131,7 @@ Common causes of a small speedup are:
   manager, Comet disables itself and logs a warning, unless `spark.comet.shuffle.enabled=false`, in
   which case Comet runs but every shuffle runs in Spark. On Spark 4.0 and later, `CometPlugin` sets
   the manager when the application leaves `spark.shuffle.manager` unset, so this applies there only
-  when the application names another manager. On Spark 3.4 and 3.5 the application must set it. See
+  when the application names another manager. On Spark 3.5 the application must set it. See
   [Shuffle Tuning](../user-guide/latest/tuning/shuffle.md).
 - **Too little memory.** Native operators spill to disk when the off-heap pool is too small. See
   [Memory Tuning](../user-guide/latest/tuning/memory.md).

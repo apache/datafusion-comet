@@ -26,10 +26,14 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 import scala.jdk.CollectionConverters._
+import scala.util.Using
 
+import org.apache.hadoop.fs.Path
 import org.apache.iceberg.data.IcebergGenerics
 import org.apache.iceberg.expressions.Expressions
 import org.apache.iceberg.spark.Spark3Util
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -121,13 +125,24 @@ class CometIcebergNativeSuite
   }
 
   /**
-   * Verifies query correctness and that it falls back to Spark because a projected column's
-   * nested fields were added or renamed over the table's schema history, as `fields` lists them
-   * (for example `s.b (added)`).
+   * Verifies query correctness and that it reads `scans` native Iceberg scans, for a query that
+   * reads the same table more than once.
    */
-  private def checkNestedFieldEvolutionFallback(query: String, fields: String): Unit = {
+  private def checkIcebergNativeScans(query: String, scans: Int): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    assert(
+      collectIcebergNativeScans(cometPlan).length == scans,
+      s"Expected $scans CometIcebergNativeScanExec nodes. Plan:\n$cometPlan")
+  }
+
+  /**
+   * Verifies query correctness and that it falls back to Spark because a projected column has
+   * structs, listed in `structs` by path (for example `items.element`), whose fields were all
+   * added after some data files were written.
+   */
+  private def checkNestedFieldEvolutionFallback(query: String, structs: String): Unit = {
     val (_, cometPlan) =
-      checkSparkAnswerAndFallbackReason(query, s"files written before the change: $fields")
+      checkSparkAnswerAndFallbackReason(query, s"differently from Spark: $structs")
     assert(
       collectIcebergNativeScans(cometPlan).isEmpty,
       s"Expected fallback to Spark but found a CometIcebergNativeScanExec. Plan:\n$cometPlan")
@@ -150,6 +165,12 @@ class CometIcebergNativeSuite
     }
     count
   }
+
+  /** Opens the Parquet footer of the file at `path`, runs `f` on it, and always closes it. */
+  private def withParquetReader[T](path: String)(f: ParquetFileReader => T): T =
+    Using.resource(
+      ParquetFileReader.open(
+        HadoopInputFile.fromPath(new Path(path), spark.sessionState.newHadoopConf())))(f)
 
   test("create and query simple Iceberg table with Hadoop catalog") {
     assume(icebergAvailable, "Iceberg not available in classpath")
@@ -1010,24 +1031,17 @@ class CometIcebergNativeSuite
 
         // Check the fixture shape in the footer so it cannot silently degrade into a layout
         // where file-level or row-group-level pruning would explain the byte savings.
-        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
-          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
-            new org.apache.hadoop.fs.Path(dataFilePath),
-            spark.sessionState.newHadoopConf()))
-        val idPages =
-          try {
-            val rowGroups = reader.getRowGroups
-            assert(rowGroups.size == 1, s"expected one row group, got ${rowGroups.size}")
-            val idChunk = rowGroups
-              .get(0)
-              .getColumns
-              .asScala
-              .find(_.getPath.toDotString == "id")
-              .getOrElse(fail("id column chunk not found"))
-            reader.readOffsetIndex(idChunk).getPageCount
-          } finally {
-            reader.close()
-          }
+        val idPages = withParquetReader(dataFilePath) { reader =>
+          val rowGroups = reader.getRowGroups
+          assert(rowGroups.size == 1, s"expected one row group, got ${rowGroups.size}")
+          val idChunk = rowGroups
+            .get(0)
+            .getColumns
+            .asScala
+            .find(_.getPath.toDotString == "id")
+            .getOrElse(fail("id column chunk not found"))
+          reader.readOffsetIndex(idChunk).getPageCount
+        }
         assert(idPages > 50, s"expected more than 50 id pages, got $idPages")
 
         def runAndCollectScan(sql: String): (CometIcebergNativeScanExec, Long) = {
@@ -1209,6 +1223,80 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT id, data FROM test_cat.db.eq_delete_evolution ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.eq_delete_evolution")
+      }
+    }
+  }
+
+  // iceberg-rust fails to read a nested field that has a default value and that a data file lacks.
+  // While nested schema pruning is off, the scan reads every nested field of a projected column,
+  // including one the query prunes away, so the check on defaults must cover the task schema.
+  test("nested field with a default value falls back when the scan reads it") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Nested column defaults require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.nested_default"
+        spark.sql(
+          s"CREATE TABLE $table (id INT, s STRUCT<a: INT>) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '3')")
+        spark.sql(
+          s"INSERT INTO $table VALUES (1, named_struct('a', 1)), (2, named_struct('a', 2))")
+        addIcebergIntColumnWithDefault(
+          loadIcebergTable(spark, "test_cat", "db", "nested_default"),
+          "b",
+          7,
+          parent = Some("s"))
+        spark.sql(s"REFRESH TABLE $table")
+
+        // The query prunes s.b, so the pruned task schema omits it.
+        checkIcebergNativeScan(s"SELECT id, s.a FROM $table ORDER BY id")
+        // With pruning off the scan reads s.b too, and the file lacks it.
+        withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
+          checkIcebergNativeScanFallback(
+            s"SELECT id, s.a FROM $table ORDER BY id",
+            "nested default read by the unpruned task schema")
+        }
+        checkIcebergNativeScanFallback(
+          s"SELECT id, s.b FROM $table ORDER BY id",
+          "nested default read by the query")
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  // iceberg-rust binds an equality delete's key by name, and rejects a case-insensitive name that
+  // matches two columns. The delete's key is taken from the task schema, spelled exactly as in it,
+  // so the binding is case sensitive. The query reads neither column, as the batch adaptation
+  // after iceberg-rust rejects a read of two columns that differ only by case.
+  test("equality delete on a column whose name differs from another only by case") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        SQLConf.CASE_SENSITIVE.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.eq_delete_case"
+        spark.sql(
+          s"CREATE TABLE $table (id INT, ID STRING, v STRING) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(s"INSERT INTO $table VALUES (1, 'a', 'x'), (2, 'b', 'y'), (3, 'c', 'z')")
+        commitEqualityDelete("test_cat", "db", "eq_delete_case", "id", 2, warehouseDir)
+
+        // The pruned task schema holds only `v` and the key `id`. The full one holds both columns.
+        checkPrunedAndFullReads(s"SELECT v FROM $table ORDER BY v")
+        spark.sql(s"DROP TABLE $table")
       }
     }
   }
@@ -1861,11 +1949,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  // The native read does not match a data file's nested fields to the table's by field id
-  // (apache/iceberg-rust#2617). It fails on a file that lacks a nested field the table has gained,
-  // and can return NULL for a nested field renamed since the file was written, so these reads
-  // must fall back.
-  test("schema evolution - nested field added to a struct falls back") {
+  test("schema evolution - nested field added to a struct stays native") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -1887,34 +1971,27 @@ class CometIcebergNativeSuite
         spark.sql(s"ALTER TABLE $table ADD COLUMN s.b INT")
         spark.sql(s"INSERT INTO $table VALUES (3, named_struct('a', 3, 'b', 30))")
 
-        checkNestedFieldEvolutionFallback(s"SELECT id, s FROM $table ORDER BY id", "s.b (added)")
+        // The first file lacks s.b, which the native read fills with NULLs.
+        checkIcebergNativeScan(s"SELECT id, s FROM $table ORDER BY id")
+        checkIcebergNativeScan(s"SELECT s FROM $table ORDER BY s.a")
         // Spark pushes these null checks into the scan.
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, s FROM $table WHERE s IS NOT NULL ORDER BY id",
-          "s.b (added)")
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id FROM $table WHERE s IS NULL ORDER BY id",
-          "s.b (added)")
-        // The native read asks only for s.a here, but the check also covers the column's full
-        // type in the table schema, so it still falls back.
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, s.a FROM $table ORDER BY id",
-          "s.b (added)")
-        checkNestedFieldEvolutionFallback(
+        checkIcebergNativeScan(s"SELECT id, s FROM $table WHERE s IS NOT NULL ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id FROM $table WHERE s IS NULL ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, s.a FROM $table ORDER BY id")
+        checkIcebergNativeScans(
           s"SELECT l.id, r.id FROM $table l JOIN $table r ON l.s = r.s ORDER BY l.id",
-          "s.b (added)")
-        // The old snapshot's files lack s.b too, and the scan's full schema is the current one,
-        // which has it.
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, s FROM $table VERSION AS OF $snapshotBeforeAdd ORDER BY id",
-          "s.b (added)")
-
-        // A read that does not project the evolved column stays native.
+          2)
+        // The scan reads only s.b, which the first file lacks, so that file has none of the fields
+        // the scan reads.
+        checkNestedFieldEvolutionFallback(s"SELECT id, s.b FROM $table ORDER BY id", "s")
+        // The old snapshot's files lack s.b too, and its schema does not have the field.
+        checkIcebergNativeScan(s"SELECT id, s FROM $table VERSION AS OF $snapshotBeforeAdd")
         checkIcebergNativeScan(s"SELECT id FROM $table ORDER BY id")
 
         // A VERSION AS OF read whose full schema is older than the table's: the pruned-away
         // nested partition source `s.k` makes the scan read its full schema, and the dropped `c`
-        // makes that the snapshot's, which still has the s.b that the first file predates.
+        // makes that the snapshot's, which still has the s.b that the first file predates. The
+        // native read fills it with NULLs.
         val historical = "test_cat.db.evo_struct_historical"
         spark.sql(s"""
           CREATE TABLE $historical (id INT, c INT, s STRUCT<k: STRING, a: INT>)
@@ -1928,12 +2005,11 @@ class CometIcebergNativeSuite
         val snapshotWithB = latestSnapshotId(historical)
         spark.sql(s"ALTER TABLE $historical DROP COLUMN c")
         spark.sql(s"ALTER TABLE $historical DROP COLUMN s.b")
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, c, s.a FROM $historical VERSION AS OF $snapshotWithB ORDER BY id",
-          "s.b (added)")
+        checkIcebergNativeScan(
+          s"SELECT id, c, s.a FROM $historical VERSION AS OF $snapshotWithB ORDER BY id")
 
-        // Unpartitioned, the same read takes the pruned schema, which leaves s.b out, so it stays
-        // native. With pruning off it reads the full schema and falls back.
+        // Unpartitioned, the same read takes the pruned schema, which leaves s.b out. With pruning
+        // off it reads the full schema. Both stay native.
         val unpartitioned = "test_cat.db.evo_struct_historical_unpartitioned"
         spark.sql(s"CREATE TABLE $unpartitioned (id INT, c INT, s STRUCT<a: INT>) USING iceberg")
         spark.sql(s"INSERT INTO $unpartitioned VALUES (1, 100, named_struct('a', 10))")
@@ -1946,7 +2022,7 @@ class CometIcebergNativeSuite
           s"SELECT id, c, s.a FROM $unpartitioned VERSION AS OF $unpartitionedSnapshot ORDER BY id"
         checkIcebergNativeScan(unpartitionedQuery)
         withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
-          checkNestedFieldEvolutionFallback(unpartitionedQuery, "s.b (added)")
+          checkIcebergNativeScan(unpartitionedQuery)
         }
         // The task schema is chosen during planning, so a query planned with pruning on still
         // reads the pruned schema when it runs with pruning off.
@@ -1961,7 +2037,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("schema evolution - nested field added inside an array or a map falls back") {
+  test("schema evolution - nested field added inside an array or a map stays native") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -1979,19 +2055,12 @@ class CometIcebergNativeSuite
         spark.sql(s"ALTER TABLE $listTable ADD COLUMN items.element.b INT")
         spark.sql(s"INSERT INTO $listTable VALUES (3, array(named_struct('a', 30, 'b', 300)))")
 
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, items FROM $listTable ORDER BY id",
-          "items.element.b (added)")
+        checkIcebergNativeScan(s"SELECT id, items FROM $listTable ORDER BY id")
         // Spark infers isnotnull(items) below a non-outer generator and pushes it into the scan.
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, e.a, e.b FROM $listTable LATERAL VIEW explode(items) x AS e ORDER BY id",
-          "items.element.b (added)")
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, posexplode(items) FROM $listTable ORDER BY id",
-          "items.element.b (added)")
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, inline(items) FROM $listTable ORDER BY id",
-          "items.element.b (added)")
+        checkIcebergNativeScan(
+          s"SELECT id, e.a, e.b FROM $listTable LATERAL VIEW explode(items) x AS e ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, posexplode(items) FROM $listTable ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, inline(items) FROM $listTable ORDER BY id")
 
         val mapTable = "test_cat.db.evo_map"
         spark.sql(s"CREATE TABLE $mapTable (id INT, m MAP<STRING, STRUCT<a: INT>>) USING iceberg")
@@ -1999,14 +2068,10 @@ class CometIcebergNativeSuite
         spark.sql(s"ALTER TABLE $mapTable ADD COLUMN m.value.b INT")
         spark.sql(s"INSERT INTO $mapTable VALUES (3, map('k', named_struct('a', 3, 'b', 30)))")
 
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, m FROM $mapTable ORDER BY id",
-          "m.value.b (added)")
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, explode(m) FROM $mapTable ORDER BY id",
-          "m.value.b (added)")
+        checkIcebergNativeScan(s"SELECT id, m FROM $mapTable ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, explode(m) FROM $mapTable ORDER BY id")
 
-        // A field added several levels down, and a struct-typed field, are found too.
+        // A field added several levels down, and a struct-typed field.
         val deepTable = "test_cat.db.evo_deep"
         spark.sql(
           s"CREATE TABLE $deepTable (id INT, s STRUCT<l: ARRAY<STRUCT<a: INT>>>) USING iceberg")
@@ -2014,9 +2079,9 @@ class CometIcebergNativeSuite
           s"INSERT INTO $deepTable VALUES (1, named_struct('l', array(named_struct('a', 1))))")
         spark.sql(s"ALTER TABLE $deepTable ADD COLUMN s.l.element.b INT")
         spark.sql(s"ALTER TABLE $deepTable ADD COLUMN s.t STRUCT<x: INT>")
-        checkNestedFieldEvolutionFallback(
-          s"SELECT id, s FROM $deepTable ORDER BY id",
-          "s.l.element.b (added), s.t (added)")
+        spark.sql(
+          s"INSERT INTO $deepTable VALUES (2, named_struct('l', array(named_struct('a', 2, 'b', 20)), 't', named_struct('x', 5)))")
+        checkIcebergNativeScan(s"SELECT id, s FROM $deepTable ORDER BY id")
 
         spark.sql(s"DROP TABLE $listTable")
         spark.sql(s"DROP TABLE $mapTable")
@@ -2025,7 +2090,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("schema evolution - nested field dropped and re-added under the same name falls back") {
+  test("schema evolution - nested field dropped and re-added under the same name stays native") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2037,9 +2102,9 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // The re-added s.b has a new field id, so the old file's s.b is not it. Drop and re-add it
-        // in one schema change, so every schema in the history has a field named s.b and only
-        // the field id tells them apart.
+        // The re-added s.b has a new field id, so the old file's s.b is not it and reads as NULL.
+        // Drop and re-add it in one schema change, so every schema in the history has a field
+        // named s.b and only the field id tells them apart.
         val table = "test_cat.db.evo_readd"
         spark.sql(s"CREATE TABLE $table (id INT, s STRUCT<a: INT, b: INT>) USING iceberg")
         spark.sql(s"INSERT INTO $table VALUES (1, named_struct('a', 1, 'b', 2))")
@@ -2052,14 +2117,14 @@ class CometIcebergNativeSuite
         spark.sql(s"REFRESH TABLE $table")
         spark.sql(s"INSERT INTO $table VALUES (2, named_struct('a', 3, 'b', 4))")
 
-        checkNestedFieldEvolutionFallback(s"SELECT id, s FROM $table ORDER BY id", "s.b (added)")
+        checkIcebergNativeScan(s"SELECT id, s FROM $table ORDER BY id")
 
         spark.sql(s"DROP TABLE $table")
       }
     }
   }
 
-  test("schema evolution - nested field renamed falls back") {
+  test("schema evolution - nested field renamed stays native") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2080,8 +2145,7 @@ class CometIcebergNativeSuite
             moved STRUCT<a: INT, b: INT>
           ) USING iceberg
         """)
-        // The nulls make Iceberg write the nested fields as optional, as the table declares them,
-        // which is the layout where the native read returns NULL for a renamed field.
+        // The nulls make Iceberg write the nested fields as optional, as the table declares them.
         spark.sql(s"""
           INSERT INTO $table VALUES
             (1, named_struct('a', 1, 'b', 'x'), array(named_struct('a', 1, 'b', 2)),
@@ -2100,15 +2164,135 @@ class CometIcebergNativeSuite
              named_struct('b', 4, 'c', 3))
         """)
 
+        checkIcebergNativeScan(s"SELECT id, s FROM $table ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, items FROM $table ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, moved FROM $table ORDER BY id")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  // Spark reads a struct whose current fields all postdate a data file as NULL at the top level and
+  // as a struct of NULLs inside another struct. The native read gives a struct of NULLs or NULL
+  // depending on what else the scan reads, so these reads fall back.
+  test("schema evolution - struct whose fields were all added falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.evo_disjoint"
+        spark.sql(s"""
+          CREATE TABLE $table (
+            id INT,
+            s STRUCT<a: INT>,
+            items ARRAY<STRUCT<a: INT>>,
+            outer_s STRUCT<x: INT, inner_s: STRUCT<a: INT>>,
+            partial STRUCT<a: INT, b: INT>
+          ) USING iceberg
+        """)
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (1, named_struct('a', 1), array(named_struct('a', 1)),
+             named_struct('x', 1, 'inner_s', named_struct('a', 1)), named_struct('a', 1, 'b', 2)),
+            (2, null, null, null, null)
+        """)
+        spark.sql(s"ALTER TABLE $table ADD COLUMN s.b INT")
+        spark.sql(s"ALTER TABLE $table DROP COLUMN s.a")
+        spark.sql(s"ALTER TABLE $table ADD COLUMN items.element.b INT")
+        spark.sql(s"ALTER TABLE $table DROP COLUMN items.element.a")
+        spark.sql(s"ALTER TABLE $table ADD COLUMN outer_s.inner_s.b INT")
+        spark.sql(s"ALTER TABLE $table DROP COLUMN outer_s.inner_s.a")
+        // partial keeps b, so a file that predates the change still has one of its fields.
+        spark.sql(s"ALTER TABLE $table ADD COLUMN partial.c INT")
+        spark.sql(s"ALTER TABLE $table DROP COLUMN partial.a")
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (3, named_struct('b', 3), array(named_struct('b', 3)),
+             named_struct('x', 3, 'inner_s', named_struct('b', 3)), named_struct('b', 3, 'c', 4))
+        """)
+
+        checkNestedFieldEvolutionFallback(s"SELECT s FROM $table ORDER BY id", "s")
+        checkNestedFieldEvolutionFallback(s"SELECT id, s FROM $table ORDER BY id", "s")
+        checkNestedFieldEvolutionFallback(s"SELECT id, s.b FROM $table ORDER BY id", "s")
         checkNestedFieldEvolutionFallback(
-          s"SELECT id, s FROM $table ORDER BY id",
-          "s.z (renamed from a)")
+          s"SELECT id FROM $table WHERE s IS NULL ORDER BY id",
+          "s")
         checkNestedFieldEvolutionFallback(
-          s"SELECT id, items FROM $table ORDER BY id",
-          "items.element.z (renamed from a)")
+          s"SELECT items FROM $table ORDER BY id",
+          "items.element")
         checkNestedFieldEvolutionFallback(
-          s"SELECT id, moved FROM $table ORDER BY id",
-          "moved.c (renamed from a)")
+          s"SELECT outer_s FROM $table ORDER BY id",
+          "outer_s.inner_s")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, outer_s, items, s FROM $table ORDER BY id",
+          "items.element, outer_s.inner_s, s")
+
+        // A read that does not project those columns, or whose struct kept a field, stays native.
+        checkIcebergNativeScan(s"SELECT id FROM $table ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, partial FROM $table ORDER BY id")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  // No schema change, so the schema evolution fallback does not apply.
+  test("data file that omits an optional nested field stays native") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.omitted_nested"
+        spark.sql(s"""
+          CREATE TABLE $table (id INT, s STRUCT<a: INT, b: INT>, l ARRAY<STRUCT<x: INT, y: INT>>)
+          USING iceberg
+        """)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, named_struct('a', 1, 'b', 10), array(named_struct('x', 1, 'y', 100)))
+          """)
+          // Set after the insert: accept-any-schema matches columns by name.
+          spark.sql(
+            s"ALTER TABLE $table SET TBLPROPERTIES ('write.spark.accept-any-schema' = 'true')")
+          // This file has no s.b and no l.element.y.
+          spark
+            .sql("""
+              SELECT 2 AS id, named_struct('a', 2) AS s, array(named_struct('x', 20)) AS l
+              UNION ALL
+              SELECT 3, CAST(NULL AS STRUCT<a: INT>), CAST(NULL AS ARRAY<STRUCT<x: INT>>)
+            """)
+            .writeTo(table)
+            .append()
+        }
+
+        // Check the footers, so the test fails if a writer starts filling in the missing fields.
+        val fileLeaves = spark.sql(s"SELECT file_path FROM $table.files").collect().map { row =>
+          withParquetReader(row.getString(0)) { reader =>
+            reader.getFooter.getFileMetaData.getSchema.getColumns.asScala
+              .map(_.getPath.mkString("."))
+              .toSet
+          }
+        }
+        val omitted = Set("s.b", "l.list.element.y")
+        // Check the paths against the full-schema file first, or a wrong path makes the next
+        // assert always pass.
+        assert(fileLeaves.exists(omitted.subsetOf), s"leaves: ${fileLeaves.mkString(", ")}")
+        assert(fileLeaves.exists(!_.exists(omitted)), s"leaves: ${fileLeaves.mkString(", ")}")
+
+        checkPrunedAndFullReads(s"SELECT * FROM $table ORDER BY id")
+        checkPrunedAndFullReads(s"SELECT id, s.b FROM $table WHERE s.b IS NULL ORDER BY id")
 
         spark.sql(s"DROP TABLE $table")
       }
@@ -2833,11 +3017,12 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Data files written without Iceberg field ids and read with no name mapping: iceberg-rust then
-  // projects whole top-level columns by position, and a by-name struct cast narrows each one to
-  // the pruned type. Spark's own reader returns NULL nested fields for such a table, so the pruned
-  // read is checked against the native read of every nested field instead.
-  test("nested schema pruning on data files without field ids") {
+  // Data files written without Iceberg field ids and read with no name mapping: neither reader
+  // can match such a file's nested fields to the table's, so a struct's fields read as NULL.
+  // Spark's reader gives them fallback readers; iceberg-rust, since apache/iceberg-rust#3437,
+  // treats them as absent, whether the struct is read whole or pruned. Top-level columns still
+  // read. A list of structs is the one shape the readers still disagree on.
+  test("nested fields of data files without field ids read as NULL, as in Spark") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2897,24 +3082,35 @@ class CometIcebergNativeSuite
           spark.sql(
             s"ALTER TABLE $table UNSET TBLPROPERTIES IF EXISTS ('schema.name-mapping.default')")
 
-          def nativeRows(query: String, pruneNestedFields: Boolean): Seq[Row] = {
-            var rows = Seq.empty[Row]
+          // Both readers agree, with the struct read whole and read pruned.
+          Seq(
+            s"SELECT id, s FROM $table ORDER BY id",
+            s"SELECT id, s.b FROM $table ORDER BY id",
+            s"SELECT count(*) FROM $table WHERE s.a IS NULL",
+            s"SELECT count(*) FROM $table WHERE s IS NULL").foreach(checkPrunedAndFullReads)
+          // And NULL is what they agree on, not the file's values.
+          val rows = spark.sql(s"SELECT id, s.b FROM $table ORDER BY id").collect()
+          assert(rows.length == 100 && rows.forall(_.isNullAt(1)), rows.mkString(","))
+          // A list of structs: Spark's reader drops the elements and returns an empty list, the
+          // native read keeps each element with its fields NULL.
+          val listQuery = s"SELECT items.x FROM $table ORDER BY id"
+          Seq(true, false).foreach { pruneNestedFields =>
             withSQLConf(
               CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key ->
                 pruneNestedFields.toString) {
-              val df = spark.sql(query)
-              rows = df.collect().toSeq
+              val df = spark.sql(listQuery)
+              val native = df.collect()
               assertSingleNativeScan(df.queryExecution.executedPlan)
+              assert(
+                native.length == 100 && native.forall(_.getSeq[Any](0) == Seq(null)),
+                native.take(3).mkString(","))
             }
-            rows
           }
-          // `s.b` is the struct's last field, so a positional cast would read `s.a` instead.
-          Seq(
-            s"SELECT id, s.b FROM $table ORDER BY id",
-            s"SELECT id, items.x FROM $table ORDER BY id").foreach { query =>
-            val full = nativeRows(query, pruneNestedFields = false)
-            assert(full.length == 100 && full.forall(!_.isNullAt(1)), s"$query: $full")
-            assert(nativeRows(query, pruneNestedFields = true) == full, query)
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val vanilla = spark.sql(listQuery).collect()
+            assert(
+              vanilla.length == 100 && vanilla.forall(_.getSeq[Any](0).isEmpty),
+              vanilla.take(3).mkString(","))
           }
 
           spark.sql(s"DROP TABLE $table")
@@ -2922,6 +3118,102 @@ class CometIcebergNativeSuite
         } catch {
           case _: ClassNotFoundException =>
             cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
+
+  // A table migrated from Spark-written Parquet reads its files, which have no field ids, through
+  // its name mapping. iceberg-rust cannot open the list layout that `spark.sql.parquet.writeLegacyFormat`
+  // writes (a two-level list) through a name mapping: the read schema it supplies keeps a field
+  // id on the list's element field and the Parquet reader rejects it. The layout is only known
+  // from the file, so the scan falls back for the list column and stays native for the primitives.
+  test("name-mapped table with a list column from a legacy Parquet layout falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/legacy_list"
+        // Non-null elements and a non-null struct field: with `writeLegacyFormat` Spark then writes
+        // the two-level layout, `repeated group array { required int32 col2 }`, the list's
+        // element being the repeated group itself.
+        val sparkSchema = StructType(
+          Seq(
+            org.apache.spark.sql.types.StructField("id", IntegerType, nullable = false),
+            org.apache.spark.sql.types.StructField(
+              "col1",
+              ArrayType(
+                StructType(Seq(
+                  org.apache.spark.sql.types.StructField("col2", IntegerType, nullable = false))),
+                containsNull = false))))
+        val jsonRows = (0 until 10).map(i => s"""{"id": $i, "col1": [{"col2": ${i * 2}}]}""")
+        withSQLConf("spark.sql.parquet.writeLegacyFormat" -> "true") {
+          spark.read
+            .schema(sparkSchema)
+            .json(spark.createDataset(jsonRows)(org.apache.spark.sql.Encoders.STRING))
+            .coalesce(1)
+            .write
+            .parquet(dataPath)
+        }
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        val table = "test_cat.db.legacy_list"
+        spark.sql(s"CREATE TABLE $table (id INT, col1 ARRAY<STRUCT<col2: INT>>) USING iceberg")
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val icebergTable = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+            .loadTable(
+              org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "legacy_list"))
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+            .table()
+          // What the migrate and snapshot actions set for a table they create: `importSparkTable`
+          // reads a mapping that is already there and does not create one.
+          icebergTable
+            .updateProperties()
+            .set(
+              "schema.name-mapping.default",
+              org.apache.iceberg.mapping.NameMappingParser
+                .toJson(org.apache.iceberg.mapping.MappingUtil.create(icebergTable.schema())))
+            .commit()
+          spark.sql(s"CREATE TABLE parquet_legacy_list USING parquet LOCATION '$dataPath'")
+          tableUtilClass
+            .getMethod(
+              "importSparkTable",
+              classOf[org.apache.spark.sql.SparkSession],
+              classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+              classOf[org.apache.iceberg.Table],
+              classOf[String])
+            .invoke(
+              null,
+              spark,
+              new org.apache.spark.sql.catalyst.TableIdentifier("parquet_legacy_list"),
+              icebergTable,
+              s"${warehouseDir.getAbsolutePath}/staging")
+
+          // The list column: declined at planning, and Spark reads the file's values.
+          val (_, listPlan) = checkSparkAnswerAndFallbackReason(
+            s"SELECT id, col1 FROM $table ORDER BY id",
+            "Nested columns with Iceberg name mapping")
+          assert(
+            collect(listPlan) { case s: CometIcebergNativeScanExec => s }.isEmpty,
+            s"$listPlan")
+          val read = spark.sql(s"SELECT col1[0].col2 FROM $table ORDER BY id").collect()
+          assert(read.map(_.getInt(0)).toSeq == (0 until 10).map(_ * 2), read.mkString(","))
+
+          // The primitives alone stay native.
+          val (_, idPlan) = checkSparkAnswer(s"SELECT id FROM $table ORDER BY id")
+          assertSingleNativeScan(idPlan)
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table")
+          spark.sql("DROP TABLE IF EXISTS parquet_legacy_list")
         }
       }
     }
@@ -4457,11 +4749,7 @@ class CometIcebergNativeSuite
         assert(parquetFiles.nonEmpty, "Expected at least one Parquet file")
 
         val parquetFile = parquetFiles.head
-        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
-          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
-            new org.apache.hadoop.fs.Path(parquetFile.getAbsolutePath),
-            spark.sessionState.newHadoopConf()))
-        try {
+        withParquetReader(parquetFile.getAbsolutePath) { reader =>
           val parquetSchema = reader.getFooter.getFileMetaData.getSchema
           val int96Columns = parquetSchema.getColumns.asScala
             .filter(_.getPrimitiveType.getPrimitiveTypeName ==
@@ -4471,8 +4759,6 @@ class CometIcebergNativeSuite
           assert(
             int96Columns.size >= 4,
             s"Expected at least 4 INT96 columns but found ${int96Columns.size}: ${int96Columns.mkString(", ")}")
-        } finally {
-          reader.close()
         }
 
         // Create an unpartitioned Iceberg table and import the Parquet files
@@ -4521,27 +4807,31 @@ class CometIcebergNativeSuite
             distinctCount == numRows,
             s"Expected $numRows distinct IDs but got $distinctCount")
 
-          // Spark's Iceberg reader returns null for INT96 timestamps inside structs,
-          // so we can't use checkIcebergNativeScan (which compares against Spark) for
-          // ts_struct. Instead, compare Comet's read against the raw Parquet source.
           checkIcebergNativeScan(
             "SELECT id, ts, value, ts_array, ts_map FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan("SELECT id, ts FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan("SELECT id, ts_array FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan("SELECT id, ts_map FROM test_cat.db.int96_test ORDER BY id")
-
-          // Validate ts_struct against raw Parquet since Spark's Iceberg reader can't read it
-          val icebergStructDf = spark
-            .sql("SELECT id, ts_struct FROM test_cat.db.int96_test ORDER BY id")
-            .collect()
-          val parquetStructDf = spark.read
-            .parquet(dataPath)
-            .select("id", "ts_struct")
-            .orderBy("id")
-            .collect()
+          // The imported file has no field ids, so neither reader can read the struct's fields
+          // (apache/iceberg-rust#3437): the native scan returns the struct with NULL fields, and
+          // Spark's reader, which cannot tell an optional struct's own nullness without a field
+          // to read, returns NULL for the struct itself. The native read still decodes the
+          // INT96 leaf, since such a file is read by whole columns, so an overflow would
+          // surface here.
+          val structQuery = "SELECT id, ts_struct FROM test_cat.db.int96_test ORDER BY id"
+          val structDf = spark.sql(structQuery)
+          val nativeStructs = structDf.collect()
+          assertSingleNativeScan(structDf.queryExecution.executedPlan)
           assert(
-            icebergStructDf.sameElements(parquetStructDf),
-            "ts_struct mismatch between Comet Iceberg read and raw Parquet")
+            nativeStructs.length == numRows &&
+              nativeStructs.forall(_.getStruct(1) == Row(null, null)),
+            nativeStructs.take(3).mkString(","))
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val sparkStructs = spark.sql(structQuery).collect()
+            assert(
+              sparkStructs.length == numRows && sparkStructs.forall(_.isNullAt(1)),
+              sparkStructs.take(3).mkString(","))
+          }
 
           spark.sql("DROP TABLE test_cat.db.int96_test")
           spark.sql("DROP TABLE parquet_temp")

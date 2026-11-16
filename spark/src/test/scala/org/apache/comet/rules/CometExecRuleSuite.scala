@@ -29,12 +29,13 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Count, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, IdentityBroadcastMode, RoundRobinPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, IdentityBroadcastMode, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.CometExec.nativeLeaves
@@ -43,13 +44,16 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
+import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, OperatorOuterClass, QueryPlanSerde, Unsupported}
+import org.apache.comet.shims.ShimCometWindowGroupLimit
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -149,6 +153,1011 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  test("make_date preserves row demand below lazy consumers, including reused native plans") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (2025) AS t(y)")
+      val sample = createSparkPlan(
+        spark,
+        "SELECT * FROM (SELECT * FROM range(8)) TABLESAMPLE (50 PERCENT)").collectFirst {
+        case op: SampleExec => op
+      }.get
+      val consumers: Seq[(String, SparkPlan => SparkPlan)] = Seq(
+        ("LIMIT", child => CollectLimitExec(1, child)),
+        ("LIMIT", child => LocalLimitExec(1, child)),
+        ("LIMIT", child => GlobalLimitExec(1, child)),
+        ("SAMPLE", child => sample.withNewChildren(Seq(child))),
+        ("FILTER", child => FilterExec(GreaterThan(child.output.head, Literal(0)), child)))
+      for (ansi <- Seq(false, true); boundedYear <- Seq(false, true)) {
+        def project: SparkPlan = ProjectExec(
+          Seq(
+            input.output.head,
+            Alias(
+              MakeDate(
+                if (boundedYear) Literal(2024) else input.output.head,
+                Literal(1),
+                Literal(1),
+                ansi),
+              "date")()),
+          input)
+        val native = applyCometExecRule(project)
+        assert(countOperators(native, classOf[CometProjectExec]) == 1, native.treeString)
+        for ((boundary, consume) <- consumers; reused <- Seq(false, true)) {
+          val child = if (reused) applyCometExecRule(project) else project
+          val consumer = consume(child)
+          val converted = applyCometExecRule(consumer)
+          for (result <- Seq(converted, applyCometExecRule(converted))) {
+            // A reused local-table sink has no native child operator for a new cap.
+            val capped = consumer.isInstanceOf[CollectLimitExec] && !reused
+            val fallback = (ansi || !boundedYear) && !capped
+            withClue(
+              s"ansi=$ansi boundedYear=$boundedYear reused=$reused $boundary\n${result.treeString}") {
+              assert(countOperators(result, classOf[ProjectExec]) == (if (fallback) 1 else 0))
+              assert(
+                countOperators(result, classOf[CometProjectExec]) == (if (fallback) 0 else 1))
+              assert(new ExtendedExplainInfo()
+                .getFallbackReasons(result)
+                .exists(
+                  _.contains(s"make_date requires Spark evaluation below $boundary")) == fallback)
+            }
+          }
+        }
+
+        // These consumers evaluate their complete input independently of the outer limit.
+        val materializers: Seq[SparkPlan => SparkPlan] = Seq(
+          child => SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child),
+          child => ShuffleExchangeExec(SinglePartition, child))
+        materializers.foreach { materialize =>
+          val result = applyCometExecRule(LocalLimitExec(1, materialize(project)))
+          assert(countOperators(result, classOf[CometProjectExec]) == 1, result.treeString)
+          assert(
+            !new ExtendedExplainInfo()
+              .getFallbackReasons(result)
+              .exists(_.contains("make_date requires Spark evaluation below LIMIT")))
+        }
+      }
+    }
+  }
+
+  test("make_date ANSI-off projections retain guards for throwing inputs and siblings") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+      val rows = Seq((2024.toShort, Some(1), 1), (2024.toShort, Some(13), 0))
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.createDataFrame(rows).coalesce(1).write.parquet(path.getCanonicalPath)
+        }
+        withParquetTable(path.getCanonicalPath, "make_date_non_ansi") {
+          // A literal or widened small-integer year cannot overflow the Date32 representation.
+          // The invalid month is harmless with ANSI off, including below a lazy row consumer.
+          for (year <- Seq("2024", "_1")) {
+            val df = sql(s"SELECT make_date($year, _2, 1) FROM make_date_non_ansi LIMIT 10")
+            checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+          }
+
+          val deferred = sql("""
+          |SELECT r, IF(r < 0, dt, DATE '2024-01-01'), r + 1 FROM (
+          |  SELECT rand(7L) AS r, make_date(2024, _2, 1) AS dt FROM make_date_non_ansi
+          |)
+          |""".stripMargin)
+          checkSparkAnswerAndOperator(deferred, includeClasses = Seq(classOf[CometProjectExec]))
+          assert(
+            countOperators(deferred.queryExecution.executedPlan, classOf[CometProjectExec]) == 2)
+
+          // A harmless date producer can still yield NULL and hide a throwing operand in
+          // its consumer. Repeated r keeps the date and arithmetic in separate projections.
+          val consumers = Seq(
+            ("unix_date(dt) + element_at(array(1), i)", true),
+            ("unix_date(dt) - element_at(array(1), i)", true),
+            ("unix_date(dt) * element_at(array(1), i)", true),
+            ("unix_date(dt) + 1", false),
+            ("unix_date(dt) + i", false),
+            ("i + unix_date(dt)", false))
+          for ((consumer, fallback) <- consumers) {
+            val df = sql(s"""
+              |SELECT r, r + 1, $consumer AS result FROM (
+              |  SELECT rand(7L) AS r, make_date(2024, _2, 1) AS dt, _3 AS i
+              |  FROM make_date_non_ansi
+              |)
+              |""".stripMargin)
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            withClue(s"consumer=$consumer\n${plan.treeString}") {
+              assert(countOperators(plan, classOf[ProjectExec]) == (if (fallback) 1 else 0))
+              assert(countOperators(plan, classOf[CometProjectExec]) == (if (fallback) 1 else 2))
+              assert(countOperators(plan, classOf[CometNativeScanExec]) == 1)
+            }
+          }
+
+          // Index zero throws even with ANSI off. A limit can skip a throwing date argument,
+          // and a NULL date can skip an unrelated right operand in Spark's arithmetic.
+          val guarded = Seq(
+            "SELECT make_date(2024, 1, element_at(array(1), _3)) FROM make_date_non_ansi LIMIT 1",
+            "SELECT unix_date(make_date(2024, _2, 1)) + element_at(array(1), _3) FROM make_date_non_ansi")
+          guarded.foreach { query =>
+            val df = sql(query)
+            val capped = query.endsWith("LIMIT 1")
+            if (capped) {
+              checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+            } else {
+              checkSparkAnswer(df)
+            }
+            val plan = df.queryExecution.executedPlan
+            assert(countOperators(plan, classOf[ProjectExec]) == (if (capped) 0 else 1))
+            assert(countOperators(plan, classOf[CometProjectExec]) == (if (capped) 1 else 0))
+            if (capped) assert(countOperators(plan, classOf[CometLocalLimitExec]) == 1)
+          }
+        }
+
+      }
+
+      // The date's day attribute looks harmless locally, but its lower producer can throw.
+      withParquetTable(Seq((Some(1), 1), (None, 0)), "make_date_non_ansi_input") {
+        val df = sql("""
+          |SELECT r, make_date(2024, m, d), r + 1 FROM (
+          |  SELECT rand(7L) AS r, _1 AS m, element_at(array(1), _2) AS d
+          |  FROM make_date_non_ansi_input
+          |)
+          |""".stripMargin)
+        checkSparkAnswer(df)
+        val plan = df.queryExecution.executedPlan
+        assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+        assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+      }
+    }
+  }
+
+  test("make_date collect limit reuses the native projection input cap") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .createDataFrame(Seq((2024, 1, "1"), (2024, 13, "bad")))
+            .coalesce(1)
+            .write
+            .parquet(path.getCanonicalPath)
+        }
+        withParquetTable(path.getCanonicalPath, "make_date_limit_cap") {
+          for (capEnabled <- Seq(false, true)) {
+            withSQLConf(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.key -> capEnabled.toString) {
+              val df = sql("SELECT make_date(_1, _2, 1) FROM make_date_limit_cap LIMIT 1")
+              if (capEnabled) {
+                checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+              } else {
+                checkSparkAnswer(df)
+              }
+              val converted = stripAQEPlan(df.queryExecution.executedPlan)
+              for (plan <- Seq(converted, applyCometExecRule(converted))) {
+                assert(countOperators(plan, classOf[ProjectExec]) == (if (capEnabled) 0 else 1))
+                assert(
+                  countOperators(plan, classOf[CometProjectExec]) == (if (capEnabled) 1 else 0))
+                assert(
+                  countOperators(plan, classOf[CometLocalLimitExec]) == (if (capEnabled) 1
+                                                                         else 0))
+                assert(new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(
+                    _.contains("make_date requires Spark evaluation below LIMIT")) != capEnabled)
+              }
+
+              // The cap must still evaluate a bad date when it belongs to the consumed prefix.
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
+                sql("SELECT make_date(_1, _2, 1) FROM make_date_limit_cap LIMIT 2"))
+              Seq(sparkError, cometError).foreach { error =>
+                assert(
+                  error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+              }
+            }
+          }
+
+          // A cap immediately below the date does not protect this lower producing projection.
+          // Repeated r keeps both projections, and LIMIT skips the second row's invalid cast.
+          val producer = sql("""
+          |SELECT r, make_date(y, m, 1), r + 1 FROM (
+          |  SELECT rand(7L) AS r, _1 AS y, CAST(_3 AS INT) AS m FROM make_date_limit_cap
+          |) LIMIT 1
+          |""".stripMargin)
+          checkSparkAnswer(producer)
+          val plan = producer.queryExecution.executedPlan
+          assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+        }
+      }
+    }
+  }
+
+  test("make_date shuffle keys remain eager below a limit") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+      for (invalid <- Seq(false, true)) {
+        val rows = Seq.fill(20)((2024, 1, 1)) :+ ((2024, if (invalid) 13 else 1, 1))
+        withParquetTable(rows, "make_date_shuffle") {
+          val df = spark
+            .table("make_date_shuffle")
+            .repartition(8, expr("make_date(_1, _2, _3)"))
+            .limit(10)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          val exchanges = plan.collect { case exchange: CometShuffleExchangeExec => exchange }
+          withClue(plan.treeString) {
+            assert(exchanges.size == 1)
+            assert(exchanges.head.shuffleType == CometNativeShuffle)
+            assert(
+              exchanges.head.originalPlan.expressions.exists(_.exists(_.isInstanceOf[MakeDate])))
+          }
+          if (invalid) {
+            // LIMIT cannot hide an invalid key, even when enough valid input rows precede it.
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+              withClue(s"$engine: ") {
+                assert(
+                  error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+              }
+            }
+          } else {
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
+
+  test("make_date join input demand reaches local sorts before hash join rewriting") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+      val left = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (2025) AS t(y)")
+      val right = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = MakeDate(left.output.head, Literal(1), Literal(1), failOnError = false)
+      val projection = ProjectExec(Seq(left.output.head, Alias(date, "date")()), left)
+      def sort(child: SparkPlan): SparkPlan =
+        SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child)
+      val join = SortMergeJoinExec(
+        Seq(left.output.head),
+        Seq(right.output.head),
+        Inner,
+        None,
+        sort(applyCometExecRule(projection)),
+        sort(right))
+      val converted = applyCometExecRule(join)
+      for (result <- Seq(converted, applyCometExecRule(converted))) {
+        assert(countOperators(result, classOf[SortMergeJoinExec]) == 1, result.treeString)
+        assert(countOperators(result, classOf[CometProjectExec]) == 0, result.treeString)
+        assert(countOperators(result, classOf[ProjectExec]) == 1, result.treeString)
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(result)
+            .exists(_.contains("make_date requires Spark evaluation below JOIN")))
+      }
+    }
+  }
+
+  test("make_date remains deferred across conditional projections") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.DATETIME_JAVA8API_ENABLED.key -> "false") {
+      val selectedDate = java.sql.Date.valueOf("2024-01-01")
+      val rows = Seq((2024, 13, None), (2024, 1, Some(selectedDate)))
+      withParquetTable(rows, "make_date_deferred") {
+        def checkProjection(query: String)(checkSparkRows: Seq[Row] => Unit): SparkPlan = {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            expected = sql(query).collect().toSeq
+          }
+          checkSparkRows(expected)
+          val df = sql(query)
+          checkCometAnswer(df, expected)
+          stripAQEPlan(df.queryExecution.executedPlan)
+        }
+
+        def assertDeferredProjection(plan: SparkPlan): Unit = {
+          assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+        }
+
+        val expressions = Seq(
+          "IF(r < 0, dt, DATE '2024-01-01')",
+          "COALESCE(IF(r >= 0, DATE '2024-01-01', NULL), dt)")
+        for (aqe <- Seq(false, true); expression <- expressions) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            // Reusing nondeterministic r prevents the optimizer from merging the projections.
+            val query = s"""
+              |SELECT r, $expression AS d FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, _2, 1) AS dt FROM make_date_deferred
+              |)
+              |""".stripMargin
+            val plan = checkProjection(query) { expected =>
+              assert(expected.map(_.getDate(1)) == Seq.fill(2)(selectedDate))
+            }
+            withClue(s"aqe=$aqe expression=$expression\n${plan.treeString}") {
+              assertDeferredProjection(plan)
+            }
+          }
+        }
+
+        for (aqe <- Seq(false, true)) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            val plan = checkProjection("""
+              |SELECT r, datediff(nullable_date, dt) AS d, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, _3 AS nullable_date, make_date(_1, _2, 1) AS dt
+              |  FROM make_date_deferred
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.size == 2)
+              assert(expected.map(_.get(1)).toSet == Set(null, 0))
+            }
+            assertDeferredProjection(plan)
+          }
+        }
+
+        // A nullable date can also hide a throwing sibling produced by the lower projection.
+        withParquetTable(Seq((None, "bad"), (Some(2024), "1")), "make_date_sibling") {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val consumers = Seq(
+              "unix_date(dt) + rhs",
+              "date_add(dt, rhs)",
+              "(dt IS NULL) OR (rhs > 0)",
+              "IF(dt IS NULL, 0, rhs)")
+            for (expression <- consumers) {
+              val plan = checkProjection(s"""
+                |SELECT r, $expression AS result, r + 1 AS repeated_r FROM (
+                |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt, CAST(_2 AS INT) AS rhs
+                |  FROM make_date_sibling
+                |)
+                |""".stripMargin) { expected =>
+                assert(expected.size == 2)
+              }
+              assertDeferredProjection(plan)
+            }
+
+            // Selecting dt forces the date eagerly, but the IF branch can still skip rhs.
+            val selected = checkProjection("""
+              |SELECT r, dt, IF(dt IS NULL, 0, rhs) AS result, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt, CAST(_2 AS INT) AS rhs
+              |  FROM make_date_sibling
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.map(row => (row.getDate(1), row.getInt(2))).toSet ==
+                Set((null, 0), (selectedDate, 1)))
+            }
+            assertDeferredProjection(selected)
+
+            // A deferred source column stays native; it cannot expose a skipped error.
+            val safeSibling = checkProjection("""
+              |SELECT r, dt, IF(dt IS NULL, 0, rhs) AS result, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt, _1 AS rhs
+              |  FROM make_date_sibling
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.map(row => (row.getDate(1), row.getInt(2))).toSet ==
+                Set((null, 0), (selectedDate, 2024)))
+            }
+            assert(
+              countOperators(safeSibling, classOf[CometProjectExec]) == 2,
+              safeSibling.treeString)
+            assert(
+              countOperators(safeSibling, classOf[CometNativeScanExec]) == 1,
+              safeSibling.treeString)
+
+            // Repeated r and r2 retain all three projections. The date and skipped cast can
+            // originate on either side of the intervening alias, so neither placement is safe.
+            val siblingProducers = Seq(
+              (
+                "cast below date",
+                0,
+                """
+                |SELECT r, r + 1 AS repeated_r, rand(11L) AS r2,
+                |       make_date(y, 1, 1) AS dt, raw_rhs AS rhs FROM (
+                |  SELECT rand(7L) AS r, _1 AS y, CAST(_2 AS INT) AS raw_rhs
+                |  FROM make_date_sibling
+                |)
+                |""".stripMargin),
+              (
+                "cast above date",
+                1,
+                """
+                |SELECT r, r + 1 AS repeated_r, rand(11L) AS r2,
+                |       original_date AS dt, CAST(s AS INT) AS rhs FROM (
+                |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS original_date, _2 AS s
+                |  FROM make_date_sibling
+                |)
+                |""".stripMargin))
+            for ((placement, nativeProjects, producer) <- siblingProducers) {
+              val plan = checkProjection(s"""
+                |SELECT r, repeated_r, r2, r2 + 1, dt, IF(dt IS NULL, 0, rhs) AS result
+                |FROM ($producer)
+                |""".stripMargin) { expected =>
+                assert(expected.map(row => (row.getDate(4), row.getInt(5))).toSet ==
+                  Set((null, 0), (selectedDate, 1)))
+              }
+              withClue(s"$placement\n${plan.treeString}") {
+                assert(countOperators(plan, classOf[ProjectExec]) == 3 - nativeProjects)
+                assert(countOperators(plan, classOf[CometProjectExec]) == nativeProjects)
+                assert(countOperators(plan, classOf[CometNativeScanExec]) == 1)
+              }
+            }
+          }
+        }
+
+        // Each expression references dt once: repeated uses would force Spark to evaluate it
+        // eagerly and would not exercise the eager-reference analysis for that parent.
+        val eagerExpressions = Seq(
+          "year(dt)",
+          "month(dt)",
+          "date_add(dt, 1)",
+          "greatest(dt, DATE '2024-02-01')",
+          "hash(dt, 1)",
+          "unix_date(dt) + 1")
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          // YEAR evaluates its child only when its enclosing IF selects that branch.
+          val maskedYear = checkProjection("""
+            |SELECT r, IF(r < 0, YEAR(dt), 1) AS result, r + 1 AS repeated_r FROM (
+            |  SELECT rand(7L) AS r, make_date(_1, _2, 1) AS dt FROM make_date_deferred
+            |)
+            |""".stripMargin) { expected =>
+            assert(expected.map(_.getInt(1)) == Seq(1, 1))
+          }
+          assertDeferredProjection(maskedYear)
+
+          eagerExpressions.foreach { expression =>
+            val plan = checkProjection(s"""
+              |SELECT r, $expression AS result, IF(r < 0, 0, r + 1) AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, _2, 1) AS dt
+              |  FROM make_date_deferred WHERE _2 BETWEEN 1 AND 12
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.size == 1)
+            }
+            withClue(s"expression=$expression\n${plan.treeString}") {
+              assert(countOperators(plan, classOf[CometProjectExec]) == 2)
+              assert(countOperators(plan, classOf[CometNativeScanExec]) == 1)
+              assert(
+                !new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("make_date keeps deferred arguments in their producing projections") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val rows = Seq((None, None, "bad"), (Some(2024), Some(1), "1"))
+      withParquetTable(rows, "make_date_arguments") {
+        def checkProjection(
+            query: String,
+            expectedDates: Set[Any],
+            dateIndex: Int = 1): SparkPlan = {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            expected = sql(query).collect().toSeq
+          }
+          assert(expected.map(_.get(dateIndex)).toSet == expectedDates)
+          val df = sql(query)
+          checkCometAnswer(df, expected)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          plan
+        }
+
+        val cases = Seq(
+          ("_1 AS y, CAST(_3 AS INT) AS m", "make_date(y, m, 1)", "", true),
+          ("_2 AS m, CAST(_3 AS INT) AS d", "make_date(2024, m, d)", "", true),
+          // Reading a column is safe even if make_date skips the argument.
+          ("_1 AS y, _2 AS m", "make_date(y, m, 1)", "", false),
+          // The year is always evaluated, so its producer can remain native.
+          (
+            "CAST(_3 AS INT) + 2023 AS y, _2 AS m",
+            "make_date(y, m, 1)",
+            "WHERE _1 IS NOT NULL",
+            false))
+        for ((arguments, date, filter, deferred) <- cases) {
+          // Repeated r keeps the projections separate without forcing the date arguments.
+          val query = s"""
+            |SELECT r, unix_date($date) AS d, r + 1 AS repeated_r FROM (
+            |  SELECT rand(7L) AS r, $arguments FROM make_date_arguments $filter
+            |)
+            |""".stripMargin
+          val expectedDates: Set[Any] = if (filter.isEmpty) Set(null, 19723) else Set(19723)
+          val plan = checkProjection(query, expectedDates)
+          withClue(s"arguments=$arguments date=$date\n${plan.treeString}") {
+            assert(countOperators(plan, classOf[ProjectExec]) == (if (deferred) 2 else 0))
+            assert(countOperators(plan, classOf[CometProjectExec]) == (if (deferred) 0 else 2))
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains("make_date requires Spark evaluation")) == deferred)
+          }
+        }
+
+        // Broadcast joins can forward a streamed-side expression without evaluating it. The raw
+        // string join key does not force the month cast when the upper date sees a null year.
+        for (buildLeft <- Seq(false, true); deferred <- Seq(true, false)) {
+          val month = if (deferred) "CAST(_3 AS INT)" else "_2"
+          val probe = s"""(
+            |  SELECT rand(7L) AS r, _1 AS y, _3 AS s, $month AS m
+            |  FROM make_date_arguments
+            |) p""".stripMargin
+          val build = "(SELECT 'bad' AS k UNION ALL SELECT '1' AS k) b"
+          val inputs = if (buildLeft) s"$build JOIN $probe" else s"$probe JOIN $build"
+          val joined = checkProjection(
+            s"""
+              |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, p.m, 1)) AS d,
+              |       p.r + 1 AS repeated_r
+              |FROM $inputs ON p.s = b.k
+              |""".stripMargin,
+            Set(null, 19723))
+          withClue(s"buildLeft=$buildLeft deferred=$deferred\n${joined.treeString}") {
+            // Exclude the literal projections used to construct the broadcast input.
+            val sparkProjects = joined.collect {
+              case p: ProjectExec if p.output.exists(_.name == "r") => p
+            }
+            val nativeProjects = joined.collect {
+              case p: CometProjectExec if p.output.exists(_.name == "r") => p
+            }
+            assert(sparkProjects.size == (if (deferred) 2 else 0))
+            assert(nativeProjects.size == (if (deferred) 0 else 2))
+            assert(
+              countOperators(joined, classOf[BroadcastHashJoinExec]) ==
+                (if (deferred) 1 else 0))
+            assert(
+              countOperators(joined, classOf[CometBroadcastHashJoinExec]) ==
+                (if (deferred) 0 else 1))
+            val buildSides = joined.collect {
+              case join: BroadcastHashJoinExec => join.buildSide
+              case join: CometBroadcastHashJoinExec => join.buildSide
+            }
+            assert(buildSides == Seq(if (buildLeft) BuildLeft else BuildRight))
+          }
+        }
+
+        // A join key forces the cast before the date can skip its month argument.
+        val keyRequired = checkProjection(
+          """
+            |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, p.m, 1)), p.r + 1 FROM (
+            |  SELECT rand(7L) AS r, _1 AS y,
+            |         CAST(COALESCE(CAST(_2 AS STRING), '1') AS INT) AS m
+            |  FROM make_date_arguments
+            |) p JOIN (SELECT 1 AS k UNION ALL SELECT 2 AS k) b ON p.m = b.k
+            |""".stripMargin,
+          Set(null, 19723))
+        assert(
+          keyRequired.collect {
+            case p: CometProjectExec if p.output.exists(_.name == "r") => p
+          }.size == 2,
+          keyRequired.treeString)
+        assert(
+          countOperators(keyRequired, classOf[CometBroadcastHashJoinExec]) == 1,
+          keyRequired.treeString)
+
+        // Repeated r and r2 retain an intervening projection that only aliases the month.
+        val aliased = checkProjection(
+          """
+            |SELECT r, repeated_r, r2, r2 + 1, unix_date(make_date(y, month_alias, 1)) FROM (
+            |  SELECT r, r + 1 AS repeated_r, rand(11L) AS r2, y, m AS month_alias FROM (
+            |    SELECT rand(7L) AS r, _1 AS y, CAST(_3 AS INT) AS m FROM make_date_arguments
+            |  )
+            |)
+            |""".stripMargin,
+          Set(null, 19723),
+          dateIndex = 4)
+        assert(countOperators(aliased, classOf[ProjectExec]) == 3, aliased.treeString)
+        assert(countOperators(aliased, classOf[CometProjectExec]) == 0, aliased.treeString)
+      }
+    }
+  }
+
+  test("make_date arguments remain deferred for unmatched broadcast join rows") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((1, "2024"), (2, "bad")), "make_date_join_probe") {
+        withParquetTable(Seq(Tuple1(1)), "make_date_join_build") {
+          def checkJoined(query: String, dateIndex: Int, projects: Int, scans: Int): SparkPlan = {
+            var expected = Seq.empty[Row]
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              expected = sql(query).collect().toSeq
+            }
+            assert(expected.size == 1 && expected.head.getInt(dateIndex) == 19723)
+            val df = sql(query)
+            checkCometAnswer(df, expected)
+            val plan = stripAQEPlan(df.queryExecution.executedPlan)
+            withClue(plan.treeString) {
+              assert(plan.collect {
+                case p: ProjectExec if p.output.exists(_.name == "r") => p
+              }.size == projects)
+              assert(plan.collect {
+                case p: CometProjectExec if p.output.exists(_.name == "r") => p
+              }.isEmpty)
+              assert(countOperators(plan, classOf[CometNativeScanExec]) == scans)
+            }
+            plan
+          }
+
+          val probe = """(
+            |  SELECT _1 AS k, rand(7L) AS r, CAST(_2 AS INT) AS y
+            |  FROM make_date_join_probe
+            |) p""".stripMargin
+          val build = "make_date_join_build b"
+          for (buildLeft <- Seq(false, true)) {
+            val inputs = if (buildLeft) s"$build JOIN $probe" else s"$probe JOIN $build"
+            val plan = checkJoined(
+              s"""
+                |SELECT /*+ BROADCAST(b) */ p.r, p.r + 1, unix_date(make_date(p.y, 1, 1))
+                |FROM $inputs ON p.k = b._1
+                |""".stripMargin,
+              dateIndex = 2,
+              projects = 2,
+              scans = 2)
+            withClue(s"buildLeft=$buildLeft\n${plan.treeString}") {
+              val joins = plan.collect { case join: BroadcastHashJoinExec => join }
+              assert(joins.map(_.buildSide) == Seq(if (buildLeft) BuildLeft else BuildRight))
+            }
+          }
+
+          // Repeated r2 retains the alias projection above the join that discards the bad row.
+          val aliased = checkJoined(
+            s"""
+              |SELECT r, repeated_r, r2, r2 + 1, unix_date(make_date(date_year, 1, 1)) FROM (
+              |  SELECT /*+ BROADCAST(b) */ p.r, p.r + 1 AS repeated_r, rand(11L) AS r2,
+              |         p.y AS date_year FROM $probe JOIN $build ON p.k = b._1
+              |)
+              |""".stripMargin,
+            dateIndex = 4,
+            projects = 3,
+            scans = 2)
+          assert(countOperators(aliased, classOf[BroadcastHashJoinExec]) == 1, aliased.treeString)
+
+          // The outer join requires y only after the inner join accepts a row. Null-safe equality
+          // keeps an inferred isNotNull(y) filter from evaluating the cast before either join.
+          // Spark also inserts a projection between the joins to drop the inner join keys.
+          val nested = checkJoined(
+            s"""
+              |SELECT /*+ BROADCAST(b, c) */ p.r, p.r + 1, unix_date(make_date(p.y, 1, 1))
+              |FROM $probe JOIN $build ON p.k = b._1
+              |JOIN (SELECT _1 + 2023 AS y FROM make_date_join_build) c ON p.y <=> c.y
+              |""".stripMargin,
+            dateIndex = 2,
+            projects = 3,
+            scans = 3)
+          assert(countOperators(nested, classOf[BroadcastHashJoinExec]) == 2, nested.treeString)
+        }
+      }
+    }
+  }
+
+  test("make_date single-argument count evaluates its nullable argument eagerly") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val rows = Seq((0, Some(2024), 1), (0, None, 1), (1, Some(2025), 1))
+      withParquetTable(rows, "make_date_count") {
+        val query = "SELECT _1, count(make_date(_2, _3, 1)), sum(_3) " +
+          "FROM make_date_count GROUP BY _1"
+        val df = sql(query)
+        checkCometAnswer(df, Seq(Row(0, 1L, 2L), Row(1, 1L, 1L)))
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(countOperators(plan, classOf[HashAggregateExec]) == 0, plan.treeString)
+        assert(countOperators(plan, classOf[CometHashAggregateExec]) == 2, plan.treeString)
+
+        // A physical plan bypasses the optimizer's COUNT(non-nullable) -> COUNT(1) rewrite.
+        // Spark does not evaluate this invalid date, so it must not reach a native update.
+        val partial = createSparkPlan(spark, query).collectFirst {
+          case aggregate: HashAggregateExec
+              if aggregate.aggregateExpressions.forall(_.mode == Partial) =>
+            aggregate
+        }.get
+        val skippedDate = MakeDate(Literal(2024), Literal(13), Literal(1), failOnError = true)
+        assert(!skippedDate.nullable)
+        val nonNullableCount =
+          partial.copy(aggregateExpressions = partial.aggregateExpressions.map {
+            case expression if expression.aggregateFunction.isInstanceOf[Count] =>
+              expression.copy(aggregateFunction = Count(Seq(skippedDate)))
+            case expression => expression
+          })
+        assert(MakeDateEvaluation.reason(MakeDateEvaluation.preserve(nonNullableCount)).isDefined)
+      }
+    }
+  }
+
+  test("make_date aggregate arguments retain Spark execution") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
+      val rows = Seq((2024, 1, Some(1)), (2024, 13, None), (2025, 1, Some(1)))
+      withParquetTable(rows, "make_date_aggregate") {
+        val cases = Seq(
+          (
+            "unix_date(min(make_date(_1, _2, 1)) FILTER (WHERE _2 <= 12))",
+            classOf[HashAggregateExec],
+            Row(19723)),
+          (
+            "sort_array(collect_list(unix_date(make_date(_1, _2, 1))) " +
+              "FILTER (WHERE _2 <= 12))",
+            classOf[ObjectHashAggregateExec],
+            Row(Seq(19723, 20089))),
+          (
+            "count(make_date(_1, _2, 1)) FILTER (WHERE _2 <= 12)",
+            classOf[HashAggregateExec],
+            Row(2L)),
+          ("count(_3, make_date(_1, _2, 1))", classOf[HashAggregateExec], Row(2L)))
+        cases.foreach { case (expression, aggregateClass, expected) =>
+          val df = sql(s"SELECT $expression FROM make_date_aggregate")
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(
+            plan.exists { op =>
+              aggregateClass.isInstance(op) &&
+              op.expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+            },
+            plan.treeString)
+          val name = aggregateClass.getSimpleName.stripSuffix("Exec")
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains(s"make_date requires Spark evaluation in $name")),
+            plan.treeString)
+          checkCometAnswer(df, Seq(expected))
+        }
+      }
+    }
+  }
+
+  test("make_date top-k respects input ordering and deferred output projection") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      // Ordered top-k takes one row per partition before the final selection.
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+      val template = createSparkPlan(
+        spark,
+        "SELECT * FROM VALUES (1), (13) AS t(m) ORDER BY m LIMIT 1").collectFirst {
+        case topK: TakeOrderedAndProjectExec => topK
+      }.get
+      val input = template.child
+      val date = Alias(MakeDate(Literal(2024), input.output.head, Literal(1), true), "date")()
+      def project(child: SparkPlan): ProjectExec = ProjectExec(input.output :+ date, child)
+      val order = template.sortOrder
+      for (sorted <- Seq(false, true)) {
+        val child = project(if (sorted) SortExec(order, false, input) else input)
+        assert(SortOrder.orderingSatisfies(child.outputOrdering, order) == sorted)
+        val result = applyCometExecRule(template.copy(projectList = child.output, child = child))
+        if (sorted) {
+          assert(result.isInstanceOf[TakeOrderedAndProjectExec], result.treeString)
+          assert(countOperators(result, classOf[CometProjectExec]) == 0, result.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(result)
+              .exists(_.contains("make_date requires Spark evaluation below LIMIT")))
+          assert(
+            result.executeCollect().map(row => (row.getInt(0), row.getInt(1))).toSeq ==
+              Seq((1, 19723)))
+        } else {
+          assert(result.isInstanceOf[CometTakeOrderedAndProjectExec], result.treeString)
+          assert(countOperators(result, classOf[CometProjectExec]) == 1, result.treeString)
+        }
+      }
+      val deferred = applyCometExecRule(template.copy(projectList = input.output :+ date))
+      assert(deferred.isInstanceOf[TakeOrderedAndProjectExec], deferred.treeString)
+      assert(
+        new ExtendedExplainInfo()
+          .getFallbackReasons(deferred)
+          .exists(_.contains("make_date requires Spark evaluation in TakeOrderedAndProject")))
+      assert(
+        deferred.executeCollect().map(row => (row.getInt(0), row.getInt(1))).toSeq ==
+          Seq((1, 19723)))
+    }
+  }
+
+  test("make_date below a window group limit retains Spark evaluation") {
+    val windowLimitClass = ShimCometWindowGroupLimit.windowGroupLimitClass
+    assume(windowLimitClass.isDefined, "WindowGroupLimit requires Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+      val plan = createSparkPlan(
+        spark,
+        """
+        |SELECT p, y FROM (
+        |  SELECT p, y, row_number() OVER (PARTITION BY p ORDER BY y) AS rn
+        |  FROM VALUES (0, 2024), (0, 2025) AS t(p, y)
+        |) WHERE rn <= 1
+        |""".stripMargin)
+      val limit = plan.collectFirst { case op if windowLimitClass.get.isInstance(op) => op }.get
+      val input = limit.children.head
+      val year = input.output.find(_.name == "y").get
+      val date = Alias(MakeDate(year, Literal(1), Literal(1), false), "date")()
+      val projected = ProjectExec(input.output :+ date, input)
+      val result = applyCometExecRule(limit.withNewChildren(Seq(projected)))
+      assert(windowLimitClass.get.isInstance(result), result.treeString)
+      assert(
+        result.exists {
+          case p: ProjectExec => p.projectList.exists(_.exists(_.isInstanceOf[MakeDate]))
+          case _ => false
+        },
+        result.treeString)
+      assert(
+        new ExtendedExplainInfo()
+          .getFallbackReasons(result)
+          .exists(_.contains("make_date requires Spark evaluation below LIMIT")),
+        result.treeString)
+    }
+  }
+
+  test("make_date operator opt-out retains invalid-date errors and expression guards") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = Alias(MakeDate(input.output.head, Literal(1), Literal(1), true), "date")()
+      // Tag the Spark plan before disabling the setting.
+      val guarded = MakeDateEvaluation.preserve(LocalLimitExec(1, ProjectExec(Seq(date), input)))
+      assert(countOperators(guarded, classOf[ProjectExec]) == 1, guarded.treeString)
+      assert(MakeDateEvaluation.reason(guarded).isDefined, guarded.treeString)
+      withSQLConf(CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.key -> "false") {
+        assert(MakeDateEvaluation.reason(guarded).isEmpty)
+        val converted = applyCometExecRule(guarded)
+        assert(countOperators(converted, classOf[CometProjectExec]) == 1, converted.treeString)
+        assert(countOperators(converted, classOf[CometLocalLimitExec]) == 1, converted.treeString)
+        withParquetTable(Seq((2024, 1, 1), (2025, 1, 1)), "make_date_opt_out") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT unix_date(make_date(_1, _2, _3)) FROM make_date_opt_out LIMIT 1"),
+            Seq(classOf[CometProjectExec], classOf[CometCollectLimitExec]))
+          val (_, joinPlan) = checkSparkAnswerAndOperator(
+            sql("""
+              |SELECT /*+ BROADCAST(b) */ unix_date(p.d), b._1 FROM (
+              |  SELECT _1 AS y, make_date(_1, _2, _3) AS d FROM make_date_opt_out
+              |) p JOIN make_date_opt_out b ON p.y = b._1
+              |""".stripMargin),
+            Seq(classOf[CometProjectExec], classOf[CometBroadcastHashJoinExec]))
+          val join = joinPlan.collectFirst { case j: CometBroadcastHashJoinExec => j }.get
+          assert(
+            join.left.exists {
+              case p: CometProjectExec =>
+                p.originalPlan.expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+              case _ => false
+            },
+            joinPlan.treeString)
+
+          val invalidDate = sql("SELECT make_date(_1, _2 + 12, _3) FROM make_date_opt_out")
+          checkCometOperators(stripAQEPlan(invalidDate.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(invalidDate)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            withClue(s"$engine: ") {
+              assert(error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+            }
+          }
+        }
+
+        // A nullable left operand must still skip a throwing date on the right of arithmetic.
+        withParquetTable(Seq((None, 13), (Some(1), 1)), "make_date_opt_out_expression") {
+          val df = sql("""
+            |SELECT _1 + unix_date(make_date(2024, _2, 1)) FROM make_date_opt_out_expression
+            |""".stripMargin)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(countOperators(plan, classOf[ProjectExec]) == 1, plan.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation under Add")),
+            plan.treeString)
+          checkCometAnswer(df, Seq(Row(null), Row(19724)))
+        }
+      }
+    }
+  }
+
+  test("make_date fallback reuses native broadcast rows in Spark's broadcast representation") {
+    for (nestedLoop <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+        val date = MakeDate(input.output.head, Literal(1), Literal(1), failOnError = false)
+        val probe =
+          applyCometExecRule(ProjectExec(Seq(input.output.head, Alias(date, "date")()), input))
+        val build = applyCometExecRule(
+          createSparkPlan(spark, "SELECT CAST(id AS INT) AS y FROM range(2024, 2028, 1, 2)"))
+        assert(build.isInstanceOf[CometNativeExec], build.treeString)
+        val key = build.output.head
+        val mode =
+          if (nestedLoop) IdentityBroadcastMode
+          else HashedRelationBroadcastMode(Seq(BoundReference(0, key.dataType, key.nullable)))
+        val sparkExchange = BroadcastExchangeExec(mode, build)
+        val exchange = CometBroadcastExchangeExec(sparkExchange, build.output, mode, build)
+        val reused = ReusedExchangeExec(build.output.map(_.newInstance()), exchange)
+        val inputs = Seq[SparkPlan](
+          exchange,
+          reused,
+          BroadcastQueryStageExec(0, exchange, exchange.canonicalized),
+          BroadcastQueryStageExec(1, reused, reused.canonicalized))
+        inputs.zipWithIndex.foreach { case (broadcast, index) =>
+          // Model a native plan supplied by an earlier planning pass; its parent must restore it.
+          val native = if (nestedLoop) {
+            val original = BroadcastNestedLoopJoinExec(probe, broadcast, BuildRight, Inner, None)
+            CometBroadcastNestedLoopJoinExec.createExec(
+              OperatorOuterClass.Operator.getDefaultInstance,
+              original)
+          } else {
+            val original = BroadcastHashJoinExec(
+              Seq(probe.output.head),
+              Seq(broadcast.output.head),
+              Inner,
+              BuildRight,
+              None,
+              probe,
+              broadcast)
+            CometBroadcastHashJoinExec.createExec(
+              OperatorOuterClass.Operator.getDefaultInstance,
+              original)
+          }
+          val converted = applyCometExecRule(native)
+          for (result <- Seq(converted, applyCometExecRule(converted))) {
+            val join = result.asInstanceOf[BaseJoinExec]
+            assert(join.isInstanceOf[BroadcastNestedLoopJoinExec] == nestedLoop)
+            val restored = join.right.asInstanceOf[CometColumnarToRowExec]
+            assert(restored.output == broadcast.output)
+            assert(restored.child eq broadcast)
+            assert(countOperators(join.left, classOf[CometProjectExec]) == 0)
+          }
+          if (index == 0) {
+            val restored = converted
+              .asInstanceOf[BaseJoinExec]
+              .right
+              .asInstanceOf[CometColumnarToRowExec]
+            val relation = restored.executeBroadcast[Any]().value
+            val rows = if (nestedLoop) {
+              relation.asInstanceOf[Array[InternalRow]].toVector
+            } else {
+              // HashedRelation is private[execution]; inspect Spark's broadcast through its keys/get
+              // methods.
+              val keys = PrivateMethod[Iterator[InternalRow]](Symbol("keys"))
+              val get = PrivateMethod[Iterator[InternalRow]](Symbol("get"))
+              val hashed = relation.asInstanceOf[AnyRef]
+              (hashed invokePrivate keys()).flatMap { key =>
+                (hashed invokePrivate get(key)).map(_.copy()).toVector
+              }.toVector
+            }
+            // Restore the complete build relation without re-executing its native input.
+            withClue(s"nestedLoop=$nestedLoop: ") {
+              assert(rows.map(_.getInt(0)).sorted == Seq(2024, 2025, 2026, 2027))
+            }
+          }
+        }
+      }
+    }
   }
 
   /**

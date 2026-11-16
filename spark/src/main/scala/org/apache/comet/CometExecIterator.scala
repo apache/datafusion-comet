@@ -454,6 +454,22 @@ object CometExecIterator extends Logging {
     }
   }
 
+  /**
+   * Called on the Spark task thread before reducing semi-join keys. Only the fair pool can refuse
+   * a sort reservation before Spark can spill another consumer; the greedy pool always asks
+   * Spark.
+   */
+  def hasOtherExecutionMemory(context: TaskContext): Boolean = {
+    if (!CometSparkSessionExtensions.isOffHeapEnabled(SparkEnv.get.conf) ||
+      COMET_OFFHEAP_MEMORY_POOL_TYPE.get() != "fair_unified") {
+      false
+    } else {
+      val memory = taskMemories.get(context)
+      memory != null &&
+      memory.manager.internal.getMemoryConsumptionForThisTask > memory.manager.getUsed
+    }
+  }
+
   private val memoryUsageLogStarted = new AtomicBoolean(false)
 
   /** Native plans running at the previous memory usage log. Only the log's own thread uses it. */
