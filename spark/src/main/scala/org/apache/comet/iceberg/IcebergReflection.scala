@@ -1418,7 +1418,7 @@ object IcebergReflection extends Logging {
   /**
    * Reads a `private final` field from a `SparkWrite` instance via reflection. The field names
    * referenced by callers (`queryId`, `targetFileSize`, `useFanoutWriter`, `outputSpecId`,
-   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.8.1 / 1.10.0 / 1.11.0
+   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.9.1 / 1.10.0 / 1.11.0
    * versions Comet supports.
    */
   private def getSparkWriteField(sparkWrite: Any, fieldName: String): Option[Any] =
