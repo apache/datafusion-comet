@@ -38,7 +38,7 @@ import org.apache.spark.sql.types.{ByteType, LongType, StringType, StructField, 
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.ExtendedExplainInfo
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometNativeScan
