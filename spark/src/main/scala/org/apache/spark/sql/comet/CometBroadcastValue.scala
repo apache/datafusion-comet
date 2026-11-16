@@ -35,6 +35,7 @@ import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.{ThreadUtils, Utils => SparkUtils}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.CometArrowAllocator
@@ -43,7 +44,7 @@ import org.apache.comet.vector.NativeUtil
 /**
  * The value of a Comet broadcast: the Arrow IPC streams that [[Utils.serializeBatches]] wrote,
  * compressed with Spark's codec. It lets the tasks of an executor that read the broadcast at the
- * same time share one decoded copy of it.
+ * same time, or soon after one another, share one decoded copy of it.
  *
  * Without this, every task that reads the broadcast decompresses and decodes all of it. Spark
  * keeps one deserialized copy of a broadcast's value per executor, so the tasks of an executor
@@ -61,8 +62,11 @@ private[comet] final class CometBroadcastValue(val chunks: Array[ChunkedByteBuff
   @transient private lazy val shared = new SharedDecode(chunks, SharedDecode.decode)
 
   /** See [[SharedDecode.batches]]. */
-  def batches(context: TaskContext, source: String): Iterator[ColumnarBatch] =
-    shared.batches(context, source)
+  def batches(
+      context: TaskContext,
+      source: String,
+      idleTimeoutMs: Long = 0): Iterator[ColumnarBatch] =
+    shared.batches(context, source, idleTimeoutMs)
 
   /** See [[SharedDecode.holders]]. */
   def holders: Int = shared.holders
@@ -76,39 +80,49 @@ private[comet] final class CometBroadcastValue(val chunks: Array[ChunkedByteBuff
  * [[org.apache.spark.sql.comet.execution.arrow.ColumnarBatchArrowReader]] does, without affecting
  * another task.
  *
- * The decode is freed when the last task holding it completes, and a task that reads the value
- * after that decodes it again. A native join keeps a build side of one batch, which is what
- * coalescing makes of a broadcast, for as long as its task runs, so for such a broadcast the
- * decode holds no memory that the tasks would not hold anyway. A native join copies a build side
- * of several batches, so the decode keeps one copy of such a broadcast that the tasks would have
+ * When the last task holding the decode completes, the decode is kept for the idle timeout of
+ * that task's read, so that a task that comes by then, such as one of the next wave of tasks of
+ * the stage, reads it too. The decode is freed once the timeout passes with no task taking it, or
+ * at once if the timeout is 0, and a task that reads the value after that decodes it again. A
+ * native join keeps a build side of one batch, which is what coalescing makes of a broadcast, for
+ * as long as its task runs, so for such a broadcast the decode holds no memory that running tasks
+ * would not hold anyway, apart from while it is idle. A native join copies a build side of
+ * several batches, so the decode keeps one copy of such a broadcast that the tasks would have
  * freed once they built their tables.
  *
  * @param chunks
  *   the compressed Arrow IPC streams of the broadcast value
  * @param decode
  *   decodes the streams; `None` makes each task decode them for itself
+ * @param schedule
+ *   runs a function on a thread of its own once a delay in milliseconds has passed
  */
 private[comet] final class SharedDecode(
     chunks: Array[ChunkedByteBuffer],
-    decode: (Array[ChunkedByteBuffer], String) => Option[SharedDecode.Decoded]) {
+    decode: (Array[ChunkedByteBuffer], String) => Option[SharedDecode.Decoded],
+    schedule: (Long, () => Unit) => Unit = SharedDecode.schedule) {
   import SharedDecode.{Decoded, KillCheckIntervalMs}
 
-  // The decode that running tasks hold, if there are any. Guarded by `this`.
+  // The decode that running tasks hold, or that waits out its idle timeout. Guarded by `this`.
   private var current: Entry = _
 
   /**
    * The batches of the broadcast value for the task of `context`. As with
    * [[Utils.decodeBatches]], each batch is valid until the next call to `hasNext` or `next`, or
    * until the task completes. A task must read them on its own thread, because that is where its
-   * completion listener runs and gives back the buffers.
+   * completion listener runs and gives back the buffers. If the task is the last to hold the
+   * decode, the decode is kept for `idleTimeoutMs` after the task completes.
    */
-  def batches(context: TaskContext, source: String): Iterator[ColumnarBatch] =
-    new SharedBatchIterator(context, source)
+  def batches(
+      context: TaskContext,
+      source: String,
+      idleTimeoutMs: Long = 0): Iterator[ColumnarBatch] =
+    new SharedBatchIterator(context, source, idleTimeoutMs)
 
   /** The number of holds on the decode, one for each read by a running task. */
   def holders: Int = synchronized(if (current == null) 0 else current.holders)
 
-  /** Hands out the entry that tasks hold, creating it if none does. True if it did. */
+  /** Hands out the entry, held or idle, creating it if there is none. True if it did. */
   private def acquire(): (Entry, Boolean) = synchronized {
     val loading = current == null
     if (loading) {
@@ -118,17 +132,40 @@ private[comet] final class SharedDecode(
     (current, loading)
   }
 
-  /** Gives back a task's hold on `entry`, and frees the entry once no task holds it. */
-  private def release(entry: Entry): Unit = {
-    val unheld = synchronized {
+  /**
+   * Gives back a task's hold on `entry`. Once no task holds the entry, it is freed when
+   * `idleTimeoutMs` passes with no task taking it again, or at once if that is 0.
+   */
+  private def release(entry: Entry, idleTimeoutMs: Long): Unit = {
+    val free = synchronized {
       entry.holders -= 1
-      val unheld = entry.holders == 0
-      if (unheld) {
+      if (entry.holders > 0) {
+        false
+      } else if (idleTimeoutMs > 0 && (current eq entry)) {
+        entry.idlePeriods += 1
+        val idlePeriod = entry.idlePeriods
+        schedule(idleTimeoutMs, () => expire(entry, idlePeriod))
+        false
+      } else {
+        forget(entry)
+        true
+      }
+    }
+    if (free) {
+      entry.close()
+    }
+  }
+
+  /** Frees `entry` if no task has taken it since the release that began `idlePeriod`. */
+  private def expire(entry: Entry, idlePeriod: Long): Unit = {
+    val free = synchronized {
+      val idle = entry.holders == 0 && entry.idlePeriods == idlePeriod
+      if (idle) {
         forget(entry)
       }
-      unheld
+      idle
     }
-    if (unheld) {
+    if (free) {
       entry.close()
     }
   }
@@ -143,6 +180,10 @@ private[comet] final class SharedDecode(
   private final class Entry {
     // One hold for each read of the broadcast by a running task. Guarded by the outer `this`.
     var holders = 0
+    // How many times the last holder has given the entry back. An expiry frees the entry only if
+    // no task has taken it since the release that scheduled the expiry. Guarded by the outer
+    // `this`.
+    var idlePeriods = 0L
     private val done = new CountDownLatch(1)
     // Written by the task that loads the entry before `done` opens, and read by others after.
     @volatile private var decoded: Option[Decoded] = None
@@ -171,7 +212,7 @@ private[comet] final class SharedDecode(
       decoded
     }
 
-    /** Frees the decoded batches. Called once no task holds the entry. */
+    /** Frees the decoded batches. Called once the entry is no longer handed out. */
     def close(): Unit = decoded.foreach(_.close())
   }
 
@@ -179,7 +220,10 @@ private[comet] final class SharedDecode(
    * One task's read of the broadcast: views of the shared batches when the entry has them, or the
    * task's own decode when it does not.
    */
-  private final class SharedBatchIterator(context: TaskContext, source: String)
+  private final class SharedBatchIterator(
+      context: TaskContext,
+      source: String,
+      idleTimeoutMs: Long)
       extends Iterator[ColumnarBatch] {
 
     // The task takes its hold on the first call to hasNext, which is also when reading the
@@ -213,7 +257,7 @@ private[comet] final class SharedDecode(
       val (entry, loading) = acquire()
       context.addTaskCompletionListener[Unit] { _ =>
         try closeCurrent()
-        finally release(entry)
+        finally release(entry, idleTimeoutMs)
       }
       try {
         batches = (if (loading) entry.load(source) else entry.await(context)) match {
@@ -244,6 +288,20 @@ private[comet] object SharedDecode {
 
   /** How often a task waiting for another task's decode checks whether it has been killed. */
   private val KillCheckIntervalMs = 100L
+
+  /** The thread that frees the decodes that no task has taken for their idle timeouts. */
+  private lazy val expiries =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("comet-broadcast-decode-expiry")
+
+  /** Runs `f` on the thread of [[expiries]] once `delayMs` has passed, logging what it throws. */
+  private def schedule(delayMs: Long, f: () => Unit): Unit = {
+    val _ = expiries.schedule(
+      new Runnable {
+        override def run(): Unit = SparkUtils.tryLogNonFatalError(f())
+      },
+      delayMs,
+      TimeUnit.MILLISECONDS)
+  }
 
   /**
    * Decodes the Arrow IPC streams in `chunks`, which [[Utils.serializeBatches]] wrote through

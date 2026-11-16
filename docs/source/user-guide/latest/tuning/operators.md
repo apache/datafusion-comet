@@ -63,11 +63,14 @@ Extending reduction to those joins or across small batches is separate follow-up
 Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
 decodes before building its hash table. By default, the tasks of an executor that read a broadcast at the same time
 share one decoded copy of it. The first of them decodes the broadcast, and the others wait for that decode and read the
-same buffers. The copy is freed when the last of these tasks completes, so a task that starts after that decodes the
-broadcast again. Each task still builds its own hash table.
+same buffers. When the last of these tasks completes, the executor keeps the copy for
+`spark.comet.exec.broadcastExchange.shareDecoded.idleTimeout`, 1 second by default, so that a task that starts by then,
+such as one of the next wave of tasks of the same stage, reads it instead of decoding the broadcast again. A task that
+starts after that decodes the broadcast again. Each task still builds its own hash table.
 
-Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
-itself.
+The idle copy is JVM-side Arrow memory that neither Spark nor Comet's memory pools account for. Set the timeout to `0`
+to free the copy as soon as no task holds it. Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to
+have every task decode the whole broadcast for itself.
 
 #### Broadcast compression
 
