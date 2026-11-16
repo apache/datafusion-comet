@@ -177,20 +177,22 @@ things:
   GitHub Actions was never enabled on the fork, or no branch that includes the fork workflows has
   been pushed to it. GitHub shows this check as failed because it asks you to act. It does not block
   merging. The check says only that no run of your fork was found for this commit. A pull request
-  opened before the PR tier moved to forks can still have results of the PR tier from here, as
-  [below](#when-the-fork-check-finds-no-run) says, and otherwise a reviewer has no CI result to go
-  on.
+  opened before the PR tier moved to forks can still have results of the PR tier from here, as the
+  last paragraph of this section says. Otherwise the PR tier has not run for this commit, and only
+  the preflight checks and any `run-*` suites have run here.
 - **No fork CI run for this commit.** The workflow exists but has no run for this commit. Either
-  the run has not appeared yet, or the commit was pushed before Actions was enabled.
+  the run has not appeared yet, your branch does not include the fork workflows, or the commit was
+  pushed before Actions was enabled.
 
-Either way, the fix is the three steps above, followed by a new push:
+If your fork's Actions tab has no run for this commit, the fix is the three steps above, followed
+by a new push:
 
 ```shell
 # 1. Enable Actions in your fork's Actions tab, then:
 git fetch upstream
 git push origin upstream/main:main   # 2. sync your fork's main (or use "Sync fork" on GitHub)
 git merge upstream/main              # 3. bring the fork workflows into your branch (or rebase)
-git push                             # starts a Comet CI (fork run) in your fork
+git push                             # starts a Comet CI (fork run); use --force-with-lease after a rebase
 ```
 
 These commands assume the remote named `upstream` is `apache/datafusion-comet` and `origin` is your
