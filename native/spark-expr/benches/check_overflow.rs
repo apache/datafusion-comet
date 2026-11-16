@@ -67,6 +67,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // The common TPC-DS shape: decimal arithmetic result that fits the declared precision.
     let no_overflow = build(size, 0, 0);
     let no_overflow_nulls = build(size, 17, 0);
+    let no_overflow_dense_nulls = build(size, 2, 0);
     let sparse_overflow = build(size, 0, 17);
     let dense_overflow = build(size, 0, 2);
 
@@ -76,6 +77,15 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("check_overflow: no overflow, with nulls", |b| {
         b.iter(|| black_box(legacy.evaluate(black_box(&no_overflow_nulls)).unwrap()))
     });
+    c.bench_function("check_overflow: no overflow, dense nulls", |b| {
+        b.iter(|| {
+            black_box(
+                legacy
+                    .evaluate(black_box(&no_overflow_dense_nulls))
+                    .unwrap(),
+            )
+        })
+    });
     c.bench_function("check_overflow: sparse overflow", |b| {
         b.iter(|| black_box(legacy.evaluate(black_box(&sparse_overflow)).unwrap()))
     });
@@ -84,6 +94,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     c.bench_function("check_overflow: ansi no overflow", |b| {
         b.iter(|| black_box(ansi.evaluate(black_box(&no_overflow)).unwrap()))
+    });
+    c.bench_function("check_overflow: ansi no overflow, with nulls", |b| {
+        b.iter(|| black_box(ansi.evaluate(black_box(&no_overflow_nulls)).unwrap()))
     });
 }
 

@@ -18,7 +18,10 @@
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
-    datatypes::{Decimal128Type, DecimalType},
+    datatypes::{
+        Decimal128Type, DecimalType, MAX_DECIMAL128_FOR_EACH_PRECISION,
+        MIN_DECIMAL128_FOR_EACH_PRECISION,
+    },
     record_batch::RecordBatch,
 };
 use datafusion::common::{DataFusionError, ScalarValue};
@@ -119,16 +122,12 @@ impl PhysicalExpr for CheckOverflow {
 
                 let decimal_array = as_primitive_array::<Decimal128Type>(&array);
 
-                // Fast path shared by both ANSI and non-ANSI: `is_valid_decimal_precision` is a
-                // small, inlined bounds check and `all` short-circuits at the first overflow. When
-                // nothing overflows (the common shape for decimal arithmetic in TPC-DS) we reuse the
-                // input buffers via `to_data()`, which only clones cheap Arc metadata. This avoids
-                // the heavier per-value `validate_decimal_precision` scan (ANSI) or the allocating
+                // Fast path shared by both ANSI and non-ANSI. When nothing overflows (the common
+                // shape for decimal arithmetic in TPC-DS) we reuse the input buffers via
+                // `to_data()`, which only clones cheap Arc metadata. This avoids the heavier
+                // per-value `validate_decimal_precision` scan (ANSI) or the allocating
                 // `null_if_overflow_precision` (non-ANSI) below.
-                let no_overflow = decimal_array
-                    .iter()
-                    .flatten()
-                    .all(|v| Decimal128Type::is_valid_decimal_precision(v, *precision));
+                let no_overflow = fits_precision(decimal_array, *precision);
 
                 let casted_array = if no_overflow {
                     Decimal128Array::from(decimal_array.to_data())
@@ -246,6 +245,38 @@ impl PhysicalExpr for CheckOverflow {
             self.expr_id,
             self.query_context.clone(),
         )))
+    }
+}
+
+/// Values per chunk in the no-null scan of [`fits_precision`].
+const FITS_PRECISION_CHUNK: usize = 64;
+
+/// Whether every non-null value of `array` fits `precision`, the check that
+/// `Decimal128Type::is_valid_decimal_precision` makes for one value.
+#[inline]
+fn fits_precision(array: &Decimal128Array, precision: u8) -> bool {
+    let bounds = (
+        MIN_DECIMAL128_FOR_EACH_PRECISION.get(precision as usize),
+        MAX_DECIMAL128_FOR_EACH_PRECISION.get(precision as usize),
+    );
+    match bounds {
+        (Some(&min), Some(&max)) if array.null_count() == 0 => {
+            // Without nulls every slot holds a value, so scan the values buffer directly instead
+            // of reading the null bitmap per slot. Shifting by `min` turns the two bounds checks
+            // into one unsigned comparison. The check is branchless within a chunk, which lets
+            // the compiler unroll it, and the scan still stops at the first chunk that holds an
+            // overflow.
+            let range = max.wrapping_sub(min) as u128;
+            array.values().chunks(FITS_PRECISION_CHUNK).all(|chunk| {
+                chunk.iter().fold(true, |fits, &v| {
+                    fits & (v.wrapping_sub(min) as u128 <= range)
+                })
+            })
+        }
+        _ => array
+            .iter()
+            .flatten()
+            .all(|v| Decimal128Type::is_valid_decimal_precision(v, precision)),
     }
 }
 
@@ -508,5 +539,23 @@ mod tests {
         let batch = array_batch(vec![Some(999), Some(9999)], 38, 0);
         let out = eval_array(&array_check_overflow(3, 0, false), &batch);
         assert_eq!(out.iter().collect::<Vec<_>>(), vec![Some(999), None]);
+    }
+
+    #[test]
+    fn test_array_no_nulls_overflow_past_first_chunk_and_sliced() {
+        // The no-null scan reads the values buffer in chunks, so an overflow in a later chunk
+        // must still be found, and a sliced array must only be checked within its slice.
+        let mut values = vec![Some(5); 200];
+        values[130] = Some(1000);
+        let batch = array_batch(values, 38, 0);
+        let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+        assert_eq!(out.null_count(), 1);
+        assert!(out.is_null(130));
+
+        // Starts right after the overflowing value, so the slice has a non-zero offset.
+        let sliced = batch.slice(131, 69);
+        let out = eval_array(&array_check_overflow(3, 0, true), &sliced);
+        assert_eq!(out.len(), 69);
+        assert_eq!(out.null_count(), 0);
     }
 }
