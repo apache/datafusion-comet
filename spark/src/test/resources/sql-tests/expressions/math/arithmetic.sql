@@ -75,7 +75,7 @@ query
 SELECT negative(5), negative(-5), negative(0), -(5)
 
 -- unary negative of the minimum of each signed integer type wraps when ANSI is off
-query
+query expect_native(unaryminus)
 SELECT -(-128Y), -(-32768S), -(-2147483648), -(-9223372036854775808L)
 
 -- division by zero
