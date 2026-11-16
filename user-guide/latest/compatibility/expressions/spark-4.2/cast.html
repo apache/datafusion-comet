@@ -967,6 +967,14 @@ Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by
 under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
 reports an older version but includes SPARK-60118, Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> (or raises) where Spark
 returns <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p>
+<p>Likewise, a string far below the target scale’s unit in the last place casts to <code class="docutils literal notranslate"><span class="pre">0</span></code> on those
+releases when the difference to the target scale does not fit in an int (SPARK-60119), for example
+<code class="docutils literal notranslate"><span class="pre">'1e-2147483647'</span></code> cast to <code class="docutils literal notranslate"><span class="pre">DECIMAL(10,-2)</span></code>, which needs
+<code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.allowNegativeScaleOfDecimal=true</span></code>. Earlier releases raise a raw
+<code class="docutils literal notranslate"><span class="pre">ArithmeticException</span></code> in every eval mode, which Comet cannot reproduce: it returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, or
+raises <code class="docutils literal notranslate"><span class="pre">CAST_INVALID_INPUT</span></code> under ANSI mode. Comet again chooses the behavior by the Spark version
+number, so on a vendor build that reports an older version but includes SPARK-60119, Comet returns
+<code class="docutils literal notranslate"><span class="pre">NULL</span></code> (or raises) where Spark returns <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p>
 <p>A string whose integral part has more than 38 digits, such as <code class="docutils literal notranslate"><span class="pre">'6E+38'</span></code>, is rejected before Spark
 checks the value against the target type. Comet does the same: the result is <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, or
 <code class="docutils literal notranslate"><span class="pre">NUMERIC_OUT_OF_SUPPORTED_RANGE</span></code> under ANSI mode, whatever the target type. With
