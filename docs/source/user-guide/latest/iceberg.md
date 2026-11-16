@@ -132,8 +132,9 @@ different rows than Spark:
 - `NOT` over equality on a nullable column, as in `NOT (id <=> 1)`, unless it is ANDed with an
   `IS NOT NULL` check on that column, written in the query or inferred by Spark as for `b = false`.
   `!=` reaches iceberg-rust as a separate comparison and is not affected.
-- Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`,
-  `DOUBLE`, `DECIMAL` and `TIMESTAMP_NTZ` column when expiring snapshots removed older schemas.
+- Comparisons other than `=`, and `=` under `NOT`, on a column whose type was promoted. This
+  applies to every `BIGINT`, `DOUBLE`, `DECIMAL` and `TIMESTAMP_NTZ` column when expiring
+  snapshots removed older schemas.
 
 Iceberg still skips data files by their column bounds for these predicates, but the native scan
 does not prune row groups for them or for conjunctions containing them. Restoring range pruning
@@ -822,9 +823,9 @@ Which entries apply depends on which native paths are enabled:
 - **Data files that store a narrower type than their column.** Files written before a type
   promotion, such as `INT` to `BIGINT`, keep the older type, and files imported by `add_files`,
   `migrate` or `snapshot` can store any narrower type. iceberg-rust compares such a file with a
-  filter literal incorrectly, so comparisons other than `=` pushed to the native scan can drop
-  matching rows. Comet avoids this for promotions that the schema history records, but not for
-  imported files or promotions made before Iceberg 0.12
+  filter literal incorrectly, so comparisons other than `=`, and `=` under `NOT`, pushed to the
+  native scan can drop matching rows. Comet avoids this for promotions that the schema history
+  records, but not for imported files or promotions made before Iceberg 0.12
   ([#7138](https://github.com/apache/datafusion-comet/issues/7138)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values

@@ -1089,8 +1089,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
     // Columns whose type changed over the table's history; residual predicates comparing them
-    // with a literal are dropped, except equality. The scan schema covers VERSION AS OF reads,
-    // where a name can still mean a column the table has since replaced with a new one.
+    // with a literal are dropped, except equality outside NOT. The scan schema covers
+    // VERSION AS OF reads, where a name can still mean a column the table has since replaced
+    // with a new one.
     val promotedColumns = Seq(metadata.tableSchema, metadata.scanSchema)
       .flatMap(IcebergReflection.promotedColumns(metadata.table, _))
       .toSet
