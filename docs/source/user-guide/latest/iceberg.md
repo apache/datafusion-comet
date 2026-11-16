@@ -549,9 +549,8 @@ A write is eligible only when ALL of the following hold:
 | partition spec                                                                                                                              | any, except a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                                                                                      |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
 
-<<<<<<< HEAD
 Within `write.parquet.*`, everything not listed above must be absent: unvetted keys (e.g.
-`bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions) fall
+`stats-enabled.column.*`, keys added by future Iceberg versions) fall
 back. iceberg-java builds its Parquet writer's settings from `write.parquet.*` keys. Of the
 `parquet.*` keys, only `parquet.columnindex.truncate.length` changes its data files beyond their
 compressed bytes, whether it is set as a table or write property or in the Hadoop configuration
@@ -564,16 +563,6 @@ Hadoop configuration checked is the session's and, for a `HadoopFileIO`, the Fil
 carries the catalog's `hadoop.*` overrides. Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, and `write.location-provider.impl`. An `io-impl` table
 property is ignored, because iceberg-java reads `io-impl` from catalog properties only.
-=======
-Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
-everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
-`stats-enabled.column.*`, keys added by future Iceberg versions),
-any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
-key in the session Hadoop configuration other than the reader-only
-`parquet.hadoop.vectored.io.enabled` (with `HadoopFileIO`-backed output those reach
-iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
-`write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
->>>>>>> fe5683d31 (fix: integrate Bloom write opt-in with current Iceberg writer)
 
 Three checks look past properties at the table's instantiated state, because they can be
 configured at the catalog level (or by a custom `TableOperations`) without any table or write
@@ -788,7 +777,7 @@ serialized space by shrinking toward the target FPP; Java retains the larger fil
 retains the original buffer capacity, so this does not imply lower peak writer memory.
 
 In addition to the [general native-write eligibility conditions](#native-parquet-write-eligibility),
-native writes for configured Bloom columns require all of the following:
+native writes with enabled Bloom filters require all of the following:
 
 - `spark.comet.write.iceberg.enabled=true`.
 - `spark.comet.write.iceberg.bloomFilterFolding.enabled=true`.
@@ -818,6 +807,7 @@ version determines eligibility; Spark's version alone does not enable this featu
 | 3.5           | 1.8.1          | Native eligible; field names and aliases; FPP interpreted, NDV ignored |
 | 4.0           | 1.10.0         | Native eligible; FPP interpreted, NDV ignored                          |
 | 4.1           | 1.11.0         | Native eligible; FPP and NDV interpreted                               |
+| 4.2           | 1.10.0         | Native eligible; FPP interpreted, NDV ignored                          |
 
 Before Iceberg 1.8, Bloom names are raw Parquet paths; trailing empty components such as `id.`
 are normalized as Java does. Iceberg 1.8/1.9 resolves field names and collection aliases by field
@@ -828,6 +818,10 @@ The cap range applies whenever a `write.parquet.bloom-filter-enabled.column.*` p
 present, even if set to `false`. With no such properties, the cap is unused: unset or any
 positive Java int, such as `100`, keeps an otherwise eligible write native. Malformed, zero,
 or negative caps select Java, which rejects them through its normal validation.
+
+Setting only `write.parquet.bloom-filter-enabled.column.<col>=false` keeps an otherwise
+eligible write on the native writer, whether the folding option is enabled or disabled.
+No filter is requested in that case.
 
 The Bloom option defaults to `false`, selecting Java's writer for Bloom-enabled tables. Enabling
 it accepts byte differences and the pruning tradeoff below; it cannot turn folding off inside
