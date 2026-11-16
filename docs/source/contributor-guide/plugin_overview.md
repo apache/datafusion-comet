@@ -120,9 +120,7 @@ if it has more columnar-to-row transitions than `spark.comet.exec.transitionReve
 of the transitions can outweigh the benefits of running part of the stage in Comet. It keeps the stage in Comet when
 reverting it is not safe, for example when Spark and Comet would have to exchange aggregate state. Then
 `EliminateRedundantTransitions` removes transitions that are not needed and replaces the rest that read Comet output
-with `CometColumnarToRowExec`. It uses the Rust-implemented `CometNativeColumnarToRowExec` instead when
-`spark.comet.exec.columnarToRow.native.enabled=true` (off by default) and that converter supports the schema. A schema
-that contains `VariantType` keeps Spark's `ColumnarToRowExec`.
+with `CometColumnarToRowExec`. A schema that contains `VariantType` keeps Spark's `ColumnarToRowExec`.
 
 ## Query Execution
 

@@ -992,6 +992,19 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * The table's UUID, from `Table.uuid()` or its current metadata. A table dropped and created
+   * again at the same location gets a new one.
+   */
+  def getTableUuid(table: Any): Option[String] = {
+    def uuidOf(target: Any): Option[String] =
+      findMethodInHierarchy(target.getClass, "uuid").flatMap { method =>
+        try Option(method.invoke(target)).map(_.toString)
+        catch { case NonFatal(_) => None }
+      }
+    uuidOf(table).orElse(getTableMetadata(table).flatMap(uuidOf))
+  }
+
+  /**
    * Gets the metadata file location from an Iceberg table.
    *
    * Returns None for Iceberg metadata-table instances (e.g. POSITION_DELETES, the table that
@@ -1226,7 +1239,8 @@ object IcebergReflection extends Logging {
    * Expiring snapshots with `cleanExpiredMetadata` removes schemas that no retained snapshot
    * uses, even though files written under them can remain. Iceberg numbers schemas consecutively
    * from 0, so a gap means the history is incomplete, and every column of a type that a promotion
-   * can produce (long, double, decimal) is returned. The history cannot reveal a file whose type
+   * can produce is returned: long, double, decimal, and, from format v3, timestamp and
+   * timestamp_ns, which a date can be promoted to. The history cannot reveal a file whose type
    * differs without a recorded schema change, such as one imported by `add_files`, `migrate` or
    * `snapshot`, or one promoted under metadata from before Iceberg 0.12, which kept only the
    * current schema. Called at serialization time, so it throws on reflection failure.
@@ -1234,7 +1248,7 @@ object IcebergReflection extends Logging {
   def promotedColumns(table: Any, schema: Any): Set[String] = {
     import scala.jdk.CollectionConverters._
     val findField = getMethod(schema.getClass, "findField", classOf[Int])
-    def typeOf(field: Any): String = getMethod(field.getClass, "type").invoke(field).toString
+    def typeOf(field: Any): String = fieldTypeOf(field).toString
     val schemasById = getMethod(table.getClass, "schemas")
       .invoke(table)
       .asInstanceOf[java.util.Map[_, _]]
@@ -1249,8 +1263,8 @@ object IcebergReflection extends Logging {
       .filter { column =>
         val id = fieldIdOf(column).asInstanceOf[AnyRef]
         val current = typeOf(column)
-        val promotable =
-          current == "long" || current == "double" || current.startsWith("decimal(")
+        val promotable = current.startsWith("decimal(") ||
+          Set("long", "double", "timestamp", "timestamp_ns").contains(current)
         (promotable && !historyComplete) ||
         history.exists(older => Option(findField.invoke(older, id)).exists(typeOf(_) != current))
       }
