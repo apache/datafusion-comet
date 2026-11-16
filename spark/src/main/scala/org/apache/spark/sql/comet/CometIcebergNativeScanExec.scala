@@ -26,7 +26,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -136,16 +136,23 @@ case class CometIcebergNativeScanExec(
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.
   //
-  // Spark 3.4's BatchScanExec reports SinglePartition for one input partition, which it counts
-  // before any DPP filtering, and Spark plans no exchange above it on that basis. The scan reports
-  // the same. Otherwise EnsureRequirements, which AQE runs again over a DPP subquery's converted
-  // plan, inserts an exchange inside a native block that is already serialized (#7422).
-  // serializePartitions keeps that one partition when DPP prunes it, as Spark does.
+  // Spark 3.4's BatchScanExec reports SinglePartition for one input partition, and every supported
+  // version reports a key-grouped partitioning (KeyGroupedPartitioning, called KeyedPartitioning
+  // from Spark 4.2) for a storage-partitioned scan. Spark takes both from the partitions it plans,
+  // before any DPP filtering, and plans the operators above the scan on that basis, with no
+  // exchange for a join or aggregate that the partitioning already satisfies. The scan reports the
+  // same, so reading it resolves no DPP subquery. Otherwise EnsureRequirements, which AQE runs
+  // again over a DPP subquery's converted plan, inserts exchanges inside a native block that is
+  // already serialized (#7422, #7441). serializePartitions keeps one partition for each of Spark's
+  // partitions when DPP prunes some, as Spark does.
   override lazy val outputPartitioning: Partitioning =
-    if (originalPlan != null && originalPlan.outputPartitioning == SinglePartition) {
-      SinglePartition
-    } else {
+    if (originalPlan == null) {
       UnknownPartitioning(0)
+    } else {
+      originalPlan.outputPartitioning match {
+        case _: UnknownPartitioning => UnknownPartitioning(0)
+        case reported => reported
+      }
     }
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
