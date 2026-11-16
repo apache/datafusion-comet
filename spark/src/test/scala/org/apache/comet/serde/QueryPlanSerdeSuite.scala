@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, Expression, GetStructField, In, Length, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, EvalMode, Expression, GetStructField, In, Length, Literal, MakeDate, Not, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -273,6 +273,17 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     assert(!skippable(Add(months, months)))
     // An expression that cannot raise but holds one that does is kept as well
     assert(!skippable(Length(Cast(risky, StringType))))
+    // Outside ANSI a cast from a string to an int is NULL on bad input, but a cast from a date to
+    // a timestamp overflows for a date past about the year 294247 in every eval mode
+    val date = AttributeReference("d", DateType)()
+    def legacyCast(child: Expression, to: DataType): Cast =
+      Cast(child, to, Some("UTC"), EvalMode.LEGACY)
+    assert(skippable(legacyCast(text, IntegerType)))
+    assert(!skippable(legacyCast(date, TimestampType)))
+    assert(!skippable(legacyCast(date, TimestampNTZType)))
+    assert(
+      !skippable(
+        legacyCast(AttributeReference("ad", ArrayType(DateType))(), ArrayType(TimestampType))))
 
     // A shared subexpression that raises does not keep a consumer of another one from being skipped
     val safe = Length(text)

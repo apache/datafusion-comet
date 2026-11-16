@@ -1360,9 +1360,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   /**
    * Whether evaluating `expr` on a row cannot raise, whatever the row holds. This fails closed:
-   * an expression is assumed to raise unless it is listed. Casts and numeric arithmetic raise
-   * only in the ANSI eval mode they carry, but some expressions raise in any mode, such as
-   * `element_at` with the index 0 and the arithmetic of intervals, so those stay out.
+   * an expression is assumed to raise unless it is listed. Numeric arithmetic and casts between
+   * the types `plainCastType` lists raise only in the ANSI eval mode they carry, but some
+   * expressions raise in any mode, such as `element_at` with the index 0, the arithmetic of
+   * intervals and a date cast to a timestamp, so those stay out.
    */
   private def cannotRaise(expr: Expression): Boolean =
     !expr.exists(!nodeCannotRaise(_))
@@ -1378,7 +1379,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
           _: Contains =>
         true
-      case c: Cast => evalMode(c) != CometEvalMode.ANSI
+      case c: Cast =>
+        evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
+        plainCastType(c.dataType)
       case a: Add => plainArithmetic(a, a.evalMode)
       case a: Subtract => plainArithmetic(a, a.evalMode)
       case a: Multiply => plainArithmetic(a, a.evalMode)
@@ -1387,6 +1390,20 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case a: Remainder => plainArithmetic(a, a.evalMode)
       case _ => false
     }
+  }
+
+  /**
+   * Whether a cast to or from `dataType` outside the ANSI eval mode cannot raise. This fails
+   * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
+   * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
+   * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
+   * too, since a cast key can become NULL.
+   */
+  private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
+    case ArrayType(elementType, _) => plainCastType(elementType)
+    case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
+    case _ => false
   }
 
   /**
