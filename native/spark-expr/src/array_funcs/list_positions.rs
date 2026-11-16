@@ -104,8 +104,8 @@ impl PhysicalExpr for ListPositionsExpr {
         // original length. We build a fresh values array of length
         // `offsets.last() - offsets.first()`, so we must rebase offsets to zero to line them up.
         // See https://github.com/apache/datafusion-comet/issues/5224.
-        let base = offsets.first().copied().unwrap_or(0);
-        let total_len = (*offsets.last().unwrap() - base) as usize;
+        let base = offsets.first();
+        let total_len = (offsets.last() - base) as usize;
 
         let mut values: Vec<i32> = Vec::with_capacity(total_len);
         for window in offsets.windows(2) {
