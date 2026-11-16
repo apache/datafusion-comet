@@ -243,7 +243,7 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
       runBenchmark(s"MapSort projection -- ${shape.description}") {
         val benchmark = new Benchmark(
           s"MapSort projection -- ${shape.description}",
-          ProjectionRows,
+          ProjectionRows.toLong,
           output = output)
         addMatchedCases(benchmark, shape, shuffle = false, fallback, dispatcher)
         benchmark.run()
@@ -269,7 +269,7 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
       runBenchmark(s"MapSort native shuffle -- ${shape.description}") {
         val benchmark = new Benchmark(
           s"MapSort native shuffle -- ${shape.description}",
-          ShuffleRows,
+          ShuffleRows.toLong,
           output = output)
         addMatchedCases(benchmark, shape, shuffle = true, fallback, dispatcher)
         benchmark.run()
