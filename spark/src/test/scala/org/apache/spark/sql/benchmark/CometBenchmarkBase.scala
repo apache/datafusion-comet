@@ -454,6 +454,14 @@ trait CometBenchmarkBase
 
 object CometBenchmarkBase {
 
+  private[benchmark] def onOffModes(onFirst: Boolean): Seq[(String, Boolean)] = {
+    if (onFirst) {
+      Seq("ON" -> true, "OFF" -> false, "ON (repeat)" -> true)
+    } else {
+      Seq("OFF" -> false, "ON" -> true, "OFF (repeat)" -> false)
+    }
+  }
+
   /**
    * SplitMix64 finalizer, used to turn a row id into a well distributed pseudo-random value.
    *

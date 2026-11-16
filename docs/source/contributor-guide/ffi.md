@@ -97,7 +97,7 @@ implementation depends on the source of the data:
 
 - `RowArrowReader`: a Spark `Iterator[InternalRow]` (row input)
 - `SparkColumnarArrowReader`: a non-Arrow Spark `ColumnarBatch`
-- `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (transfers `VectorSchemaRoot` ownership)
+- `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (retains its buffers before closing the input batch)
 
 The exported `ArrowArrayStream`s are boxed into the `Array[Object]` that `CometExecIterator` / `CometExecRDD` pass
 to native `createPlan`, one slot per scan input.
@@ -165,6 +165,12 @@ Off-heap Memory:                            │
 **Key Point**: The actual data buffers are shared zero-copy; native only takes pointers to the off-heap buffers.
 
 ### Ownership and Lifecycle
+
+For JVM columnar consumers, `CometNativeArrowSource` uses `CometArrowStream.readerBatchIter` to return batches
+with independent vectors that retain the reader's buffers without copying the data. Closing a batch or its
+columns leaves the source reader's reusable vector structure intact for its next batch. The iterator releases
+the batch vectors when it advances, and closes the final batch, reader and allocator at task completion. A later
+native consumer's `ColumnarBatchArrowReader` retains the buffers before closing its input batch.
 
 The Arrow C Stream Interface transfers ownership by reference count: native takes ownership of each imported batch,
 so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWriterExec` without a deep copy.

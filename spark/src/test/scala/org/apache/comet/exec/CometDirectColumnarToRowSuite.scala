@@ -34,7 +34,6 @@ class CometDirectColumnarToRowSuite extends CometTestBase {
 
   private def withDirectConverter(minBatchSize: Int = 0)(f: => Unit): Unit = {
     withSQLConf(
-      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false",
       CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED.key -> "true",
       CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.key -> minBatchSize.toString,
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")(f)

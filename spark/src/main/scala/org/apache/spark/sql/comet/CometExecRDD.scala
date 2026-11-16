@@ -93,6 +93,8 @@ private[spark] class CometExecRDD(
     s"All per-partition arrays must have length $numPartitions, but found: " +
       perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
 
+  private val sqlConf = CapturedSQLConf.capture()
+
   override protected def getPartitions: Array[Partition] = {
     (0 until numPartitions).map { idx =>
       val inputParts = inputRDDs.map(_.partitions(idx)).toArray
@@ -103,7 +105,10 @@ private[spark] class CometExecRDD(
     }.toArray
   }
 
-  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] =
+    sqlConf.withConf(computeNative(split, context))
+
+  private def computeNative(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     // Must precede resolveInputObjects and the CometExecIterator: completion listeners run in
     // reverse registration order, so registering first means this listener runs last, after
     // nested native blocks and the iterator have published their final metric values.

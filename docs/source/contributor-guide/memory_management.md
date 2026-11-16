@@ -54,7 +54,11 @@ for, so that failure is confined to the task and the executor keeps running. An 
 `OutOfMemoryError` is not exempt: the executor hands it to `SparkUncaughtExceptionHandler`, which
 calls `System.exit(SparkExitCode.OOM)` (exit code 52). Real heap exhaustion therefore usually costs
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
-exceeded; the exit code does.
+exceeded, and neither does the exit code alone. Exit 137 means the process was sent `SIGKILL`, for
+memory or not. On non-Windows YARN executors, Spark adds `-XX:OnOutOfMemoryError='kill %p'` unless
+their Java options already set `-XX:OnOutOfMemoryError`, so a heap OOM there usually ends with
+`SIGTERM` (143) before the handler exits with 52. The cluster manager's diagnostics and the executor
+log say which budget it was.
 
 Comet's difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
@@ -119,6 +123,12 @@ backpressure. A broadcast is the largest case: a task that reads one holds all o
 the tasks of an executor that read it at the same time share one such copy. The executor's memory
 usage log reports the allocator's total, and the part of it charged to the import allocator
 described below, so that the overhead can be sized for it.
+
+The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
+the execution pool. Each group is bounded by `min(spark.comet.batchSize, 65536)` rows, 8 MiB of
+retained/copy estimates, and 1,024 input batches, then concatenated once before Arrow export.
+Inputs and output coexist during that copy, and one decoded lookahead can be retained. The grouping
+limit therefore does not cap total reader RSS, and oversized input batches pass through unchanged.
 
 Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's native
 join reserves its whole build side, because DataFusion skips only the buffers that the same plan
@@ -741,11 +751,13 @@ much they matter:
 
 A checklist for triaging an executor OOM kill:
 
-1. Confirm which budget was exceeded. Exit code 137 / `OOMKilled` on the pod is the cgroup. Exit
-   code 52 with `java.lang.OutOfMemoryError` in the executor log is JVM heap exhaustion; Spark
-   treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
-   them. A failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed
-   memory pool, which is the only one of the three that is recoverable at task level.
+1. Confirm which budget was exceeded, from the cluster manager's diagnostics and the executor log
+   rather than the exit code alone. `OOMKilled` on the pod, or YARN reporting that the container
+   exceeded its memory limit, is the cgroup. A `java.lang.OutOfMemoryError` with a heap message
+   such as `Java heap space` in the executor log is JVM heap exhaustion. Spark treats it as fatal,
+   so the executor is lost either way, usually with exit code 52, or 143 on non-Windows YARN. A
+   failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed memory pool,
+   which is the only one of the three that is recoverable at task level.
 2. Compare `allocated` against `reserved` in the executor's `Comet native memory usage` log lines
    leading up to the kill, or `nativeAllocated` against `poolsReserved` in its
    `CometExecutorMemoryUsage` events when the event log records them, or `native_allocated`

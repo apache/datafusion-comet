@@ -23,7 +23,7 @@ import org.apache.spark.{HashPartitioner, Partition, TaskContext}
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -176,7 +176,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
 
       inputRDD.iterator(inputRDD.partitions.head, taskContext)
       new CometNativeShuffleWriter[Int, Any](
-        NativeShuffleSpec(null, childMetrics, null),
+        NativeShuffleSpec(null, childMetrics, null, CapturedSQLConf.capture()),
         null,
         Nil,
         writerMetrics,
@@ -232,7 +232,11 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         perPartitionFilePaths = Array.tabulate(numPartitions) { idx =>
           Seq(s"file:/tmp/part-$idx.parquet")
         })
-      val spec = NativeShuffleSpec(Operator.getDefaultInstance, childMetricNode, execContext)
+      val spec = NativeShuffleSpec(
+        Operator.getDefaultInstance,
+        childMetricNode,
+        execContext,
+        CapturedSQLConf.capture())
       val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         _rdd = rdd,
         partitioner = new HashPartitioner(numPartitions),
