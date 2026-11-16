@@ -38,7 +38,8 @@ pub enum SparkError {
     },
 
     /// Like CastInvalidValue but maps to SparkDateTimeException instead of SparkNumberFormatException.
-    /// Used for string → timestamp/date cast failures.
+    /// Used for string → timestamp/date cast failures and for NaN or an infinity cast to
+    /// timestamp.
     #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
         Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
