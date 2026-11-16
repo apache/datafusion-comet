@@ -297,9 +297,9 @@ impl Iterator for RowIterator<'_> {
 
 /// The shortest average run that [`RowIterator`] slices out of a chunk rather than gathering row
 /// by row. Slicing costs a fixed amount per run and array, gathering a fixed amount per row and
-/// array. Slicing starts to win at runs of about 32 rows on flat schemas and about 64 on nested
-/// ones, so 128 keeps it ahead on both.
-const MIN_AVG_RUN_ROWS: usize = 128;
+/// array. Slicing wins from runs of about 32 rows on flat schemas and breaks even at about 64 on
+/// nested ones.
+const MIN_AVG_RUN_ROWS: usize = 64;
 
 /// The maximal runs of consecutive rows of one buffered batch in `chunk`, in order.
 fn contiguous_runs(chunk: &[(u32, u32)]) -> impl Iterator<Item = &[(u32, u32)]> {
@@ -308,11 +308,28 @@ fn contiguous_runs(chunk: &[(u32, u32)]) -> impl Iterator<Item = &[(u32, u32)]> 
     })
 }
 
-/// Whether the runs of `chunk` average at least [`MIN_AVG_RUN_ROWS`] rows. Counting stops one run
-/// past that budget and before anything is sliced, so scattered rows cost only a short scan.
+/// Whether the runs of `chunk` average at least [`MIN_AVG_RUN_ROWS`] rows.
+///
+/// The exact count stops one run past the budget, which for runs just under the minimum is most
+/// of the chunk, all of it wasted before the gather. So a lower bound comes first. A stretch of
+/// `MIN_AVG_RUN_ROWS` steps whose ends are not that many rows apart in one batch holds a run
+/// boundary, and the stretches are disjoint, so one probe per stretch rules out any chunk whose
+/// runs are all shorter than the minimum.
 fn has_long_runs(chunk: &[(u32, u32)]) -> bool {
     let max_runs = chunk.len() / MIN_AVG_RUN_ROWS;
-    max_runs > 0 && contiguous_runs(chunk).take(max_runs + 1).count() <= max_runs
+    if max_runs == 0 {
+        return false;
+    }
+    let last = chunk.len() - 1;
+    let broken = (0..last)
+        .step_by(MIN_AVG_RUN_ROWS)
+        .filter(|&start| {
+            let end = (start + MIN_AVG_RUN_ROWS).min(last);
+            let (batch, row) = chunk[start];
+            chunk[end] != (batch, row + (end - start) as u32)
+        })
+        .count();
+    broken < max_runs && contiguous_runs(chunk).take(max_runs + 1).count() <= max_runs
 }
 
 /// One output batch from the slices making up a chunk.
@@ -915,5 +932,31 @@ mod tests {
             views.data_ptr().as_ptr() as usize,
             "expected the views to be gathered, not sliced"
         );
+    }
+
+    /// The probe-per-stretch lower bound in `has_long_runs` never changes the exact count's
+    /// decision, on random mixes of short and long runs that need not follow each other in row
+    /// order.
+    #[test]
+    fn long_run_bound_matches_exact_count() {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..500 {
+            let len = 1 + (next() % 9_000) as usize;
+            let mut chunk = Vec::with_capacity(len);
+            while chunk.len() < len {
+                let run = 1 + (next() % [2, 40, 70, 200, 9_000][case % 5]) as usize;
+                let (batch, row) = ((next() % 16) as u32, (next() % 4_096) as u32);
+                chunk.extend((0..run.min(len - chunk.len())).map(|k| (batch, row + k as u32)));
+            }
+            let max_runs = chunk.len() / MIN_AVG_RUN_ROWS;
+            let exact = max_runs > 0 && contiguous_runs(&chunk).count() <= max_runs;
+            assert_eq!(has_long_runs(&chunk), exact, "case {case}");
+        }
     }
 }
