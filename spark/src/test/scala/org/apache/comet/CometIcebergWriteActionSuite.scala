@@ -1767,6 +1767,25 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native acceleration: all-NULL plain columns beside an unknown column are written") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withIcebergCatalog { _ =>
+      val t = "all_null_beside_unknown"
+      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      // Spark casts the untyped NULLs for `region` and `amount`, so only `u` arrives as Null.
+      assertNativeWriteEngages(t, Seq(1, 2)) {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.$t SELECT CAST(id + 1 AS INT), NULL, NULL, NULL FROM range(2)")
+      }
+      assert(
+        spark.sql(s"SELECT region, amount, u FROM $catalog.$ns.$t").collect().toSeq ==
+          Seq.fill(2)(Row(null, null, null)))
+    }
+  }
+
   test("native acceleration: a partition sourced from an unknown column falls back") {
     assumeNativeAcceleration()
     assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
