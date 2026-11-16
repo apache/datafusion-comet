@@ -3443,7 +3443,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "id % 12000 AS k",
             "CASE WHEN id % 5 = 0 THEN NULL ELSE CAST(id % 17 AS INT) END AS i",
             "CASE WHEN id % 7 = 0 THEN NULL ELSE CAST(id % 11 AS DOUBLE) / 3 END AS d",
-            "CASE WHEN id % 3 = 0 THEN NULL ELSE CAST(id % 13 AS DECIMAL(10, 2)) / 7 END AS small",
+            "CASE WHEN id % 3 = 0 THEN NULL ELSE CAST(id % 13 AS DECIMAL(10, 2)) END AS small",
             "CASE WHEN id % 4 = 0 THEN NULL ELSE CAST(id % 19 AS DECIMAL(38, 10)) / 7 END AS big")
           .write
           .parquet(path)
@@ -3468,17 +3468,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           def avgQuery(expressions: String): String =
             s"SELECT k, $expressions FROM skip_partial_avg GROUP BY k"
 
-          // AVG over integral and floating-point inputs stops aggregating.
-          for (expressions <- Seq("avg(i)", "avg(d)", "avg(i), avg(d), count(i)")) {
+          // AVG over integral and floating-point inputs stops aggregating, as does AVG over a
+          // decimal with precision 11 or lower, which Spark rewrites to a DOUBLE AVG over the
+          // unscaled value. A FILTER whose predicate is null wherever `d` is null excludes
+          // those rows.
+          for (expressions <- Seq(
+              "avg(i)",
+              "avg(d)",
+              "avg(small)",
+              "avg(i), avg(d), count(i)",
+              "avg(i) FILTER (WHERE d > 1)")) {
             assert(skipped(avgQuery(expressions)) > 0L, s"Expected skipping for $expressions")
           }
-          // AVG over a decimal input that Comet aggregates as a decimal cannot convert rows to
-          // partial states, so it never stops aggregating.
+          // AVG over a wider decimal, which Comet aggregates as a decimal, cannot convert rows
+          // to partial states, so it never stops aggregating.
           for (expressions <- Seq("avg(big)", "avg(i), avg(big)")) {
             assert(skipped(avgQuery(expressions)) == 0L, s"Unexpected skipping for $expressions")
           }
-          // Whether or not a small decimal skips, the answer matches Spark's.
-          skipped(avgQuery("avg(small)"))
         }
       }
     }
