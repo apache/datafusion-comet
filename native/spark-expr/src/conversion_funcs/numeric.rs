@@ -109,37 +109,41 @@ fn float_timestamp_micros(val: f64) -> Option<i64> {
 }
 
 /// ANSI error for a value [`float_timestamp_micros`] rejected. NaN and infinity
-/// are `CAST_INVALID_INPUT` into TIMESTAMP. A finite value whose product does
-/// not fit is `CAST_OVERFLOW` into BIGINT. The source type is DOUBLE even when
-/// the array was float32, because the check runs after the widening.
+/// are `CAST_INVALID_INPUT` into TIMESTAMP, raised as `SparkDateTimeException`
+/// and spelled the way Spark prints a double (`NaN`, `Infinity`). A finite value
+/// whose product does not fit is `CAST_OVERFLOW` into BIGINT. The source type is
+/// DOUBLE even when the array was float32, because the check runs after the
+/// widening.
 fn float_timestamp_error(val: f64) -> SparkError {
     if val.is_nan() || val.is_infinite() {
-        SparkError::CastInvalidValue {
-            value: val.to_string(),
+        SparkError::InvalidInputInCastToDatetime {
+            value: double_sql_text(val),
             from_type: "DOUBLE".to_string(),
             to_type: "TIMESTAMP".to_string(),
         }
     } else {
         let micros = val * MICROS_PER_SECOND as f64;
         SparkError::CastOverFlow {
-            value: float_timestamp_overflow_text(micros),
+            value: double_sql_text(micros),
             from_type: "DOUBLE".to_string(),
             to_type: "BIGINT".to_string(),
         }
     }
 }
 
-fn float_timestamp_overflow_text(micros: f64) -> String {
-    if micros.is_infinite() {
-        if micros.is_sign_positive() {
+/// Text for a double in an error, which the JVM side parses back to a double. NaN and the
+/// infinities use Spark's spelling.
+fn double_sql_text(value: f64) -> String {
+    if value.is_infinite() {
+        if value.is_sign_positive() {
             "Infinity".to_string()
         } else {
             "-Infinity".to_string()
         }
-    } else if micros.is_nan() {
+    } else if value.is_nan() {
         "NaN".to_string()
     } else {
-        format!("{:e}", micros).to_uppercase() + "D"
+        format!("{:e}", value).to_uppercase() + "D"
     }
 }
 
@@ -2946,17 +2950,36 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_float_invalid_from_type_is_double() {
+    fn test_cast_float_invalid_is_datetime_error() {
         let tz = Some(Arc::from("UTC"));
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(value)]));
-            let err = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err();
-            let from_type = match err {
-                SparkError::CastInvalidValue { from_type, .. }
-                | SparkError::InvalidInputInCastToDatetime { from_type, .. } => from_type,
-                other => panic!("expected an invalid-input error, got {other:?}"),
-            };
-            assert_eq!(from_type, "DOUBLE");
+        let cases: [(ArrayRef, &str); 4] = [
+            (Arc::new(Float64Array::from(vec![f64::NAN])), "NaN"),
+            (
+                Arc::new(Float64Array::from(vec![f64::INFINITY])),
+                "Infinity",
+            ),
+            (
+                Arc::new(Float64Array::from(vec![f64::NEG_INFINITY])),
+                "-Infinity",
+            ),
+            (
+                Arc::new(Float32Array::from(vec![f32::INFINITY])),
+                "Infinity",
+            ),
+        ];
+        for (array, expected) in cases {
+            match cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err() {
+                SparkError::InvalidInputInCastToDatetime {
+                    value,
+                    from_type,
+                    to_type,
+                } => {
+                    assert_eq!(value, expected);
+                    assert_eq!(from_type, "DOUBLE");
+                    assert_eq!(to_type, "TIMESTAMP");
+                }
+                other => panic!("expected InvalidInputInCastToDatetime, got {other:?}"),
+            }
         }
     }
 
