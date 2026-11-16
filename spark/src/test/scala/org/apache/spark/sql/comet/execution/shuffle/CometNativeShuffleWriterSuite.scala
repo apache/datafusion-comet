@@ -92,4 +92,30 @@ class CometNativeShuffleWriterSuite extends CometTestBase {
       assert(!temp.getPath.contains("local.data.tmp"))
     }
   }
+
+  test("native shuffle stop(false) deletes a tracked temp file") {
+    withTempDir { dir =>
+      val failed = new File(dir, "shuffle_0_0_0.data.failed")
+      assert(failed.createNewFile())
+      val writer = new CometNativeShuffleWriter[Int, ColumnarBatch](
+        null,
+        null,
+        null,
+        null,
+        0,
+        0,
+        0L,
+        null,
+        null)
+      writer.localTempData = Some(failed)
+      assert(writer.stop(false).isEmpty)
+      assert(!failed.exists())
+
+      val committed = new File(dir, "shuffle_0_0_0.data.committed")
+      assert(committed.createNewFile())
+      writer.localTempData = Some(committed)
+      assert(writer.stop(true).isDefined)
+      assert(committed.exists())
+    }
+  }
 }
