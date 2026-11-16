@@ -356,17 +356,18 @@ limit      = (task_share - unspillable) / num_spill
 ```
 
 Here `unspillable` is the bytes held by consumers that cannot spill, and `num_spill` is the number
-of active consumers that can spill, counting the one asking. A consumer is active while it holds
-more than its low-water mark, the least it has held since its first reservation. DataFusion
-registers each operator's consumer when it builds the stream tree, before any batch flows, so the
-operators above a blocking one, such as a sort, are registered while it reads its input. From
-DataFusion 56 an aggregate also reserves its initial table then
-([apache/datafusion#25900](https://github.com/apache/datafusion/pull/25900)). Neither shows that
+of active consumers that can spill, counting the one asking and, unless it is a sort, the sorts that
+have not started. A consumer is active while it holds more than its low-water mark, the least it has
+held since its first reservation. DataFusion registers each operator's consumer when it builds the
+stream tree, before any batch flows, so the operators above a blocking one, such as a sort, are
+registered while it reads its input. From DataFusion 56 an aggregate also reserves its initial table
+then ([apache/datafusion#25900](https://github.com/apache/datafusion/pull/25900)). Neither shows that
 the operator has started work, so it takes no share until it is active, which leaves its share to
 the operator doing the work
 ([issue #7628](https://github.com/apache/datafusion-comet/issues/7628)). An operator that emptied,
 such as an aggregate that emitted early, is active again once it holds memory, and one that only
-gives memory back, such as a sort emitting what it buffered, takes no share.
+gives memory back, such as a sort emitting what it buffered, takes no share. A sort that has not
+started is the exception, for the reason given under the tuning details below.
 
 Like Spark's own divisor, the number of running tasks follows tasks as they start and finish, so a
 task that runs alone has the whole pool. It is still not Spark's number or Spark's pool, and the
@@ -430,7 +431,14 @@ Three details matter for tuning:
   of every native plan in the task, not just the plan making the request. A consumer that can
   spill lowers the share of every other one once it is active, not when it registers, but does not
   take back memory they already hold, so a consumer that starts after another has filled the task's
-  share is refused until that one gives memory back. One that cannot spill changes the shares only
+  share is refused until that one gives memory back. Most consumers spill or emit early then, but
+  DataFusion 55.2's `ExternalSorter` fails with "Not enough memory to continue external sort" when
+  its first request is refused, since it has nothing to spill yet. So a sort that has registered
+  but not reserved keeps a share from every consumer but another sort. A hash aggregate below it,
+  which keeps its output reserved until it has emitted all of it and emits slices whose buffers the
+  sort is charged for in full, is held to its share and leaves the sort room. A sort below it gives
+  memory back before it emits and emits compact batches, so it needs to leave none. One that cannot
+  spill changes the shares only
   through the bytes it holds.
 - A consumer at its share is refused, and spills, even when the rest of the task's share is free.
   That keeps the memory for the task's other consumers, and is why `fair_unified` can spill earlier

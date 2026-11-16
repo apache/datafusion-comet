@@ -126,7 +126,10 @@ configuration, from the inside out:
       DataFusion 56 an aggregate also reserves its initial table then. A PR that divides by the
       registered consumers, or counts a consumer for its first reservation, again holds a blocking
       operator, such as a sort, to a fraction of the task's share while the operators above it have
-      not started (#7628).
+      not started (#7628). The exception is a sort that has not started, which counts for every
+      consumer but another sort: `ExternalSorter` fails when its first request is refused, and a hash
+      aggregate below it keeps its output reserved until it has emitted all of it. A PR that drops the
+      exception lets an aggregate fill the share and fails the sort above it.
 - [ ] **Task-shared pool lifetime.** `acquire_task_shared_pool` keeps a process-wide
       `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. The returned `Arc` is the only
       lifetime handle, so there is no explicit release to forget and a `createPlan` that fails

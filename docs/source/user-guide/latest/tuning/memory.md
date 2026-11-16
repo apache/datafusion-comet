@@ -84,7 +84,9 @@ build side of a hash join. Spark limits each task to an even share of `spark.mem
 using it, and the pool divides `spark.memory.offHeap.size` the same way among the tasks running native plans. Within
 a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
 task's share, counting the operators of all of the task's native plans that are doing work. An operator that has
-not started yet, such as one above a sort that is still reading its input, takes no share. The operators that cannot
+not started yet, such as one above a sort that is still reading its input, takes no share, except a sort: it fails
+rather than spills when it cannot reserve its first batch, so a sort that has not started keeps a share from the
+other operators, such as an aggregate below it. The operators that cannot
 spill take what Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in
 order to leave it for the task's other operators. A limit that small can be less than one batch of wide rows, and a
 sort cannot spill a batch it has not yet reserved, so it then fails with "Not enough memory to continue external

@@ -85,7 +85,9 @@ that cannot spill, such as the final merge of a sort, then failed the task
 ([#7088](https://github.com/apache/datafusion-comet/issues/7088)). Spark retried such tasks, and the
 retries usually succeeded. Comet 1.3.0 divides `spark.memory.offHeap.size` among the tasks running
 native plans, as Spark does, and within a task limits only the operators that can spill, each to an
-even share of what the operators that cannot spill leave, among those that are doing work. So sorts,
+even share of what the operators that cannot spill leave, among those that are doing work and the
+sorts that have not started. A sort fails rather than spills when it cannot reserve its first batch,
+so it keeps a share from the operators below it other than a sort, such as an aggregate. So sorts,
 aggregations and the shuffle writer can spill sooner when several of them work at once in one task,
 and the operators that cannot spill are limited only by Spark, unless the deprecated
 `spark.comet.exec.memoryPool.fraction` is below `1.0`. The native Iceberg fanout writer is one of
