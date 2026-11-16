@@ -22,7 +22,7 @@ package org.apache.comet.expressions
 import scala.util.Try
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, CheckOverflowInTableInsert, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DateType, DecimalType, MapType, NullType, NumericType, StringType, StructType, TimestampNTZType, TimestampType}
 
@@ -686,5 +686,32 @@ object CometCast
       .collectFirst { case u: Unsupported => u }
       .orElse(levels.collectFirst { case i: Incompatible => i })
       .getOrElse(Compatible())
+  }
+}
+
+/**
+ * Spark rethrows the child's error unchanged when the optimizer has replaced the cast
+ * (SPARK-42286), so only a `Cast` child is wrapped.
+ */
+object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflowInTableInsert] {
+
+  override def convert(
+      expr: CheckOverflowInTableInsert,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.child match {
+      case cast: Cast =>
+        exprToProtoInternal(cast, inputs, binding).map { child =>
+          val builder = ExprOuterClass.CheckOverflowInTableInsert
+            .newBuilder()
+            .setChild(child)
+            .setFromType(cast.child.dataType.sql)
+            .setToType(cast.dataType.sql)
+            .setColumnName(expr.columnName)
+          ExprOuterClass.Expr.newBuilder().setCheckOverflowInTableInsert(builder).build()
+        }
+      case child =>
+        exprToProtoInternal(child, inputs, binding)
+    }
   }
 }
