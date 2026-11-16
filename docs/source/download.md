@@ -15,6 +15,7 @@
   KIND, either express or implied.  See the License for the
   specific language governing permissions and limitations
   under the License.
+-->
 
 # Download
 
@@ -31,14 +32,14 @@ Foundation and must not be taken from a mirror. The public keys of the release m
 [KEYS](https://downloads.apache.org/datafusion/KEYS) file.
 
 The release notes are in the [changelog](changelog/1.2.0.md).
-See [Building Comet From Source](user-guide/latest/source.md) for how to build the tarball.
+See [Building Comet From Source](user-guide/1.2/source.md) for how to build the tarball.
 
 ## Verifying the download
 
 It is essential that you verify the integrity of the downloaded file using the PGP signature and the checksum.
 
 ```console
-# Import the release managers' public keys
+# Import the public keys of the release managers
 curl -O "https://downloads.apache.org/datafusion/KEYS"
 gpg --import KEYS
 # Verify the signature and the checksum
@@ -53,7 +54,7 @@ The `gpg --verify` command should report a good signature. See the
 
 Pre-built Comet jar files for Linux are published to
 [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) as a convenience. They are built from
-the source release above. See the [installation guide](user-guide/latest/installation.md) for the links and for the
+the source release above. See the [installation guide](user-guide/1.2/installation.md) for the links and for the
 supported Spark versions.
 
 ## Older releases

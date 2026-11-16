@@ -603,7 +603,7 @@ git push apache 0.13.0
 
 ASF release policy requires the project website to have a download page for the source release, and the
 announcement to link to it. Update `docs/source/download.md` to point at the new release: change the version in the
-links and commands and the changelog link, and create a pull request against `main`.
+links and commands, the changelog link and the user guide links, and create a pull request against `main`.
 
 Wait at least one hour after the tarball is uploaded to the release repository, so that it has reached
 `downloads.apache.org` and the mirrors, before merging the pull request. Do not merge it before the release is
