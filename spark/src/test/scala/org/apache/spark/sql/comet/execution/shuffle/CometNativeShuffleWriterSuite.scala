@@ -97,16 +97,8 @@ class CometNativeShuffleWriterSuite extends CometTestBase {
     withTempDir { dir =>
       val failed = new File(dir, "shuffle_0_0_0.data.failed")
       assert(failed.createNewFile())
-      val writer = new CometNativeShuffleWriter[Int, ColumnarBatch](
-        null,
-        null,
-        null,
-        null,
-        0,
-        0,
-        0L,
-        null,
-        null)
+      val writer = new CometNativeShuffleWriter[Int, ColumnarBatch](null, null, null, null, 0, 0,
+        0L, null, null)
       writer.localTempData = Some(failed)
       assert(writer.stop(false).isEmpty)
       assert(!failed.exists())
