@@ -104,6 +104,39 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/7622
+  test("split-plan write nodes do not report their own output as missing input") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val rows = "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)"
+      createTable("produced_attrs_jvm", partitionSpec = "")
+      createTable("produced_attrs_native", partitionSpec = "")
+
+      val jvm = captureWrite("produced_attrs_jvm") {
+        spark.sql(s"INSERT INTO cat.db.produced_attrs_jvm VALUES $rows")
+      }
+      val native = withNativeEnabled {
+        captureWrite("produced_attrs_native") {
+          spark.sql(s"INSERT INTO cat.db.produced_attrs_native VALUES $rows")
+        }
+      }
+
+      val (_, jvmWrites) = collectIcebergWriteOps(jvm.plans)
+      val nativeWrites = native.plans.flatMap { p =>
+        collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }
+      }
+      assert(
+        jvmWrites.nonEmpty,
+        s"expected an IcebergWriteExec. Plans:\n${jvm.plans.mkString("\n--\n")}")
+      assert(
+        nativeWrites.nonEmpty,
+        s"expected a CometIcebergWriteExec. Plans:\n${native.plans.mkString("\n--\n")}")
+      (jvmWrites ++ nativeWrites).foreach { w =>
+        assert(w.missingInput.isEmpty, s"${w.nodeName} reports missing input ${w.missingInput}")
+      }
+    }
+  }
+
   // Turning off Comet, or only its native execution as an application that uses Comet just for
   // scans or shuffle does, keeps Spark's own write operator.
   Seq(CometConf.COMET_ENABLED, CometConf.COMET_EXEC_ENABLED).foreach { flag =>
@@ -5041,6 +5074,7 @@ class CometIcebergWriteActionSuite
     // exercise it: a Comet rewrite that hides part of a subtree from Spark's transition-insertion
     // pass is a whole class of bug (issue #5689) and the check is free once the plans are here.
     plans.foreach(assertColumnarContract)
+    plans.foreach(assertWriteNodesProduceOutput)
     WriteSnapshot(countSnapshots(tableName) - before, plans)
   }
 
@@ -5176,6 +5210,21 @@ class CometIcebergWriteActionSuite
       violations.isEmpty,
       "row-based operators consuming columnar-only children (missing ColumnarToRow): " +
         s"${violations.map(_.nodeName).mkString(", ")}. Plan:\n$plan")
+  }
+
+  /**
+   * The split plan's write nodes create the commit-message attribute they output, so they must
+   * declare it in `producedAttributes`. Otherwise Spark counts it as missing input and EXPLAIN
+   * prints the node with a `!` prefix (issue #7622).
+   */
+  private def assertWriteNodesProduceOutput(plan: SparkPlan): Unit = {
+    val violations = collectWithSubqueries(plan) {
+      case w @ (_: IcebergWriteExec | _: CometIcebergWriteExec) if w.missingInput.nonEmpty => w
+    }
+    assert(
+      violations.isEmpty,
+      "write nodes with missing input: " +
+        s"${violations.map(w => s"${w.nodeName} ${w.missingInput}").mkString(", ")}. Plan:\n$plan")
   }
 
   /**
