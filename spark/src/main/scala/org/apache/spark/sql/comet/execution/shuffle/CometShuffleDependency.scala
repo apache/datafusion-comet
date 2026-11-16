@@ -100,6 +100,10 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
       mapSideCombine,
       shuffleWriterProcessor) {
 
+  /** The Comet settings used by JVM shuffle writers on executor task threads. */
+  private[shuffle] val writerSQLConf: CapturedSQLConf =
+    nativeShuffleSpec.map(_.sqlConf).getOrElse(CapturedSQLConf.capture())
+
   @transient @volatile private var materializationInstance
       : CometCelebornShuffleMaterialization[K, V, C] = _
 
