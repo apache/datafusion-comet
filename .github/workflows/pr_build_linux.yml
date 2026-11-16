@@ -535,6 +535,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergHdfsSuite
               org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
@@ -546,6 +547,7 @@ jobs:
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
+              org.apache.comet.text.CometTextNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.DataGeneratorSuite
