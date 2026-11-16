@@ -61,8 +61,6 @@ struct RuntimeAggregate {
 }
 
 impl MinMaxReaderFilterExec {
-    // Spark planner integration is a separate step of apache/datafusion-comet#5774.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn try_new(
         aggregate: &AggregateExec,
         config: &ConfigOptions,

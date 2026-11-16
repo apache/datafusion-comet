@@ -2335,6 +2335,8 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     // handles that shape.
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+      hashAggBuilder.setDynamicFilterEnabled(
+        CometConf.COMET_EXEC_AGGREGATE_DYNAMIC_FILTER_ENABLED.get(aggregate.conf))
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
       hashAggBuilder.setOrderedByGroupingKeys(orderedByGroupingKeys)
       // Spark has no expression mode to serialize here. An empty aggregate with a required child
@@ -2398,6 +2400,8 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
         aggExprs.forall(_.isDefined)) {
         val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+        hashAggBuilder.setDynamicFilterEnabled(
+          CometConf.COMET_EXEC_AGGREGATE_DYNAMIC_FILTER_ENABLED.get(aggregate.conf))
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
         hashAggBuilder.setModeValue(mode.getNumber)
@@ -2736,6 +2740,12 @@ abstract class CometBaseAggregateExec
   def resultExpressions: Seq[NamedExpression]
   def input: Seq[Attribute]
 
+  def dynamicFilterEnabled: Boolean = {
+    // Result expressions can wrap the serialized aggregate in a Projection.
+    val aggregateOp = if (nativeOp.hasProjection) nativeOp.getChildren(0) else nativeOp
+    aggregateOp.getHashAgg.getDynamicFilterEnabled
+  }
+
   // The aggExprs could be empty. For example, if the aggregate functions only have
   // distinct aggregate functions or only have group by, the aggExprs is empty and
   // modes is empty too.
@@ -2775,6 +2785,7 @@ abstract class CometBaseAggregateExec
         this.resultExpressions == other.resultExpressions &&
         this.input == other.input &&
         this.modes == other.modes &&
+        this.dynamicFilterEnabled == other.dynamicFilterEnabled &&
         this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -2791,10 +2802,15 @@ abstract class CometBaseAggregateExec
       resultExpressions,
       input,
       modes,
+      Boolean.box(dynamicFilterEnabled),
       child)
 
   override lazy val metrics: Map[String, SQLMetric] = {
-    val baseline = CometMetricNode.baselineMetrics(sparkContext)
+    val baseline = CometMetricNode.baselineMetrics(sparkContext) ++ Map(
+      "dynamic_filter_minmax_filters_attached" ->
+        SQLMetrics.createMetric(sparkContext, "MIN/MAX reader filters attached"),
+      "dynamic_filter_minmax_filters_skipped" ->
+        SQLMetrics.createMetric(sparkContext, "MIN/MAX reader filters skipped"))
     if (groupingExpressions.nonEmpty) {
       baseline ++ CometMetricNode.aggregateMetrics(sparkContext)
     } else {

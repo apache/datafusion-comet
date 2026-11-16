@@ -752,6 +752,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_AGGREGATE_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: use a partial MIN or MAX's improving bound to prune native " +
+          "Parquet row groups. Supports one unfiltered, non-distinct aggregate over a direct " +
+          "signed integer column, without grouping. Bounds remain local to each task. " +
+          "Expressions, filters, limits, Spark exchanges and JVM/Arrow boundaries stop reader " +
+          "attachment. Unsupported plans and encrypted scans retain ordinary aggregation. " +
+          "Inspects footers before execution and skips pruning when any file has more than " +
+          "64 row groups or when retained footer metadata exceeds 8 MiB.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
       .category(CATEGORY_EXEC)
