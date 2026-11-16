@@ -337,7 +337,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ParseUrl] -> CometParseUrl)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Cast] -> CometCast)
+    classOf[Cast] -> CometCast,
+    classOf[CheckOverflowInTableInsert] -> CometCheckOverflowInTableInsert)
 
   private val jsonExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[LengthOfJsonArray] -> CometLengthOfJsonArray,

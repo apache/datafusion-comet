@@ -17,11 +17,13 @@
 
 mod boolean;
 pub mod cast;
+mod check_overflow_in_table_insert;
 mod numeric;
 mod string;
 mod temporal;
 pub(crate) mod trim;
 mod utils;
 
+pub use check_overflow_in_table_insert::CheckOverflowInTableInsert;
 pub use numeric::{java_float_string, write_java_float_string, JavaFloatString};
 pub(crate) use string::ymd_to_epoch_day;

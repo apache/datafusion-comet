@@ -69,6 +69,15 @@ pub enum SparkError {
         to_type: String,
     },
 
+    #[error("[CAST_OVERFLOW_IN_TABLE_INSERT] Fail to assign a value of \"{from_type}\" type to the \
+        \"{to_type}\" type column or variable `{column_name}` due to an overflow. Use `try_cast` on \
+        the input value to tolerate overflow and return NULL instead.")]
+    CastOverflowInTableInsert {
+        from_type: String,
+        to_type: String,
+        column_name: String,
+    },
+
     #[error("[CANNOT_PARSE_DECIMAL] Cannot parse decimal.")]
     CannotParseDecimal,
 
@@ -358,6 +367,7 @@ impl SparkError {
             SparkError::NumericValueOutOfRange { .. } => "NumericValueOutOfRange",
             SparkError::NumericOutOfRange { .. } => "NumericOutOfRange",
             SparkError::CastOverFlow { .. } => "CastOverFlow",
+            SparkError::CastOverflowInTableInsert { .. } => "CastOverflowInTableInsert",
             SparkError::CannotParseDecimal => "CannotParseDecimal",
             SparkError::ArithmeticOverflow { .. } => "ArithmeticOverflow",
             SparkError::IntegralDivideOverflow => "IntegralDivideOverflow",
@@ -462,6 +472,17 @@ impl SparkError {
                     "value": value,
                     "fromType": from_type,
                     "toType": to_type,
+                })
+            }
+            SparkError::CastOverflowInTableInsert {
+                from_type,
+                to_type,
+                column_name,
+            } => {
+                serde_json::json!({
+                    "fromType": from_type,
+                    "toType": to_type,
+                    "columnName": column_name,
                 })
             }
             SparkError::ArithmeticOverflow {
@@ -717,6 +738,15 @@ impl SparkError {
         }
     }
 
+    /// Whether Spark raises this error as a `SparkArithmeticException`.
+    pub fn is_arithmetic(&self) -> bool {
+        matches!(
+            self.exception_class(),
+            "org/apache/spark/SparkArithmeticException"
+                | "org/apache/spark/sql/comet/CastOverflowException"
+        )
+    }
+
     /// Returns the appropriate Spark exception class for this error
     pub fn exception_class(&self) -> &'static str {
         match self {
@@ -732,7 +762,10 @@ impl SparkError {
             | SparkError::BinaryArithmeticOverflow { .. }
             | SparkError::IntervalArithmeticOverflowWithSuggestion { .. }
             | SparkError::IntervalArithmeticOverflowWithoutSuggestion
-            | SparkError::DatetimeOverflow => "org/apache/spark/SparkArithmeticException",
+            | SparkError::DatetimeOverflow
+            | SparkError::CastOverflowInTableInsert { .. } => {
+                "org/apache/spark/SparkArithmeticException"
+            }
 
             // CastOverflow gets special handling with CastOverflowException
             SparkError::CastOverFlow { .. } => "org/apache/spark/sql/comet/CastOverflowException",
@@ -829,6 +862,7 @@ impl SparkError {
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::InvalidInputInCastToDatetime { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::CastOverFlow { .. } => Some("CAST_OVERFLOW"),
+            SparkError::CastOverflowInTableInsert { .. } => Some("CAST_OVERFLOW_IN_TABLE_INSERT"),
             SparkError::NumericValueOutOfRange { .. } => {
                 Some("NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION")
             }

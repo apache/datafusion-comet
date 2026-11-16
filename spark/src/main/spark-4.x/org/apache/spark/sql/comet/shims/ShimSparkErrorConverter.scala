@@ -299,6 +299,13 @@ trait ShimSparkErrorConverter {
 
         Some(QueryExecutionErrors.castingCauseOverflowError(typedValue, fromType, toType))
 
+      case "CastOverflowInTableInsert" =>
+        Some(
+          QueryExecutionErrors.castingCauseOverflowErrorInTableInsert(
+            getDataType(params("fromType").toString),
+            getDataType(params("toType").toString),
+            params("columnName").toString))
+
       case "CannotParseDecimal" =>
         Some(QueryExecutionErrors.cannotParseDecimalError())
 
