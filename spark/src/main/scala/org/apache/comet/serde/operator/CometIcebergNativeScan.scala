@@ -942,8 +942,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // A residual that converts whole is pushed as before. Otherwise this pushes the conjuncts
     // that convert, which were previously left to the post-scan filter, so it cannot rely on
     // the schema history to rule out a promotion: one made before Iceberg 0.12 left no older
-    // schema. It treats every column of a type that a promotion can produce as promoted, as
-    // IcebergReflection.promotedColumns does when expiring snapshots removed older schemas.
+    // schema. Such a promotion can only produce long, double or decimal, so every column of
+    // those types is treated as promoted. A date to timestamp promotion needs format v3, so the
+    // schema history records it, and IcebergReflection.promotedColumns covers it even after
+    // expiring snapshots removed older schemas.
     def partialPromoted = promotedColumns ++ output.collect {
       case attr if isPromotionTarget(attr.dataType) => attr.name
     }
@@ -953,8 +955,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Whether a type promotion can produce `dataType`: int to long, float to double, or a wider
-   * decimal precision.
+   * Whether a type promotion made before Iceberg 0.12 can produce `dataType`: int to long, float
+   * to double, or a wider decimal precision.
    */
   private def isPromotionTarget(dataType: DataType): Boolean = dataType match {
     case LongType | DoubleType | _: DecimalType => true
