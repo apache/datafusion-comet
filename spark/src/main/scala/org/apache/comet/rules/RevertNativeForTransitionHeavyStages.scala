@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometCollectMetricsExec, CometColumnarToRowExec, CometExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -65,8 +65,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       case exchange: ShuffleExchangeLike =>
         revertShuffleStageIfNeeded(exchange).getOrElse(plan)
       case _ =>
-        // Result stage: its output is collected as rows.
-        revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
+        revertResultStageIfNeeded(plan).getOrElse(plan)
     }
   }
 
@@ -74,8 +73,35 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
       revertShuffleStageIfNeeded(exchange).getOrElse(exchange)
     }
-    revertStageIfNeeded(withRevertedStages, outputColumnar = false)
-      .getOrElse(withRevertedStages)
+    revertResultStageIfNeeded(withRevertedStages).getOrElse(withRevertedStages)
+  }
+
+  /**
+   * Reverts the result stage if needed, keeping the output format its consumer reads. That is
+   * usually rows, but on Spark 4.0+, when the cache serializer accepts columnar input, as Comet's
+   * does, Spark marks a cached `AdaptiveSparkPlanExec` columnar and AQE plans its final stage to
+   * output columnar batches. Only then does Spark's transition insertion leave a columnar-only
+   * root; when rows are wanted it puts a columnar-to-row transition on top.
+   *
+   * Spark leaves a root that supports both formats as it is in either case, so under AQE such a
+   * root, for example `ArrowEvalPythonExec` over a columnar child on Spark 4.2, does not say
+   * which format its consumer reads. No transition provides both, so that stage is reverted only
+   * if the reverted root supports both formats too. Without AQE the consumer reads rows, or, for
+   * a cache, picks the format from the root this rule leaves, so such a root is reverted to row
+   * output like any other. The check reads the AQE conf rather than `wholePlan`, so that the
+   * plan-only preview under AQE shows what AQE executes.
+   */
+  private def revertResultStageIfNeeded(plan: SparkPlan): Option[SparkPlan] = {
+    val bothFormats = plan.supportsColumnar && plan.supportsRowBased
+    if (bothFormats && session.sessionState.conf.adaptiveExecutionEnabled) {
+      // Unlike row output, columnar output adds no transition over a reverted root that
+      // supports both formats.
+      revertStageIfNeeded(plan, outputColumnar = true)
+        .filter(reverted => reverted.supportsColumnar && reverted.supportsRowBased)
+    } else {
+      // Only a root that cannot output rows was planned for columnar output.
+      revertStageIfNeeded(plan, outputColumnar = !plan.supportsRowBased)
+    }
   }
 
   /**
@@ -110,7 +136,6 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
    */
   private def convertsSparkRows(plan: SparkPlan): Boolean = plan match {
     case conversion: CometSparkToColumnarExec =>
-      !conversion.child.isInstanceOf[CometNativeColumnarToRowExec] &&
       !conversion.child.isInstanceOf[CometColumnarToRowExec]
     case _ => false
   }
@@ -199,10 +224,10 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   /**
    * Like `transformDown`, never descends stage-boundary children. If the rule rewrites the
    * current node, re-apply it to the result so stacked transitions such as
-   * `CometSparkToColumnarExec(CometNativeColumnarToRowExec(x))` are fully unwrapped before
-   * children are visited. Spark's `transformDown` does not do this; leaving the inner C2R in
-   * place later calls `CometNativeColumnarToRowExec.withNewChildren` with a reverted row-based
-   * child, which asserts `child.supportsColumnar`.
+   * `CometSparkToColumnarExec(CometColumnarToRowExec(x))` are fully unwrapped before children are
+   * visited. Spark's `transformDown` does not do this; leaving the inner C2R in place later calls
+   * `CometColumnarToRowExec.withNewChildren` with a reverted row-based child, which asserts
+   * `child.supportsColumnar`.
    *
    * A rewrite can itself be the stage boundary. Unwrapping a transition that sits directly on a
    * shuffle yields that shuffle, and descending into it strips transitions in the next stage.
@@ -272,7 +297,6 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   private[rules] def revertToSpark(plan: SparkPlan): SparkPlan = {
     validateOriginalPlanAliases(plan)
     val stripped = transformStageDown(plan) {
-      case CometNativeColumnarToRowExec(child) => child
       case CometColumnarToRowExec(child) => child
       case ColumnarToRowExec(child) => child
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
@@ -282,8 +306,9 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       throw new CometExec.InvalidSparkFallbackException(
         "Cannot revert a stage whose stripped root is a stage boundary")
     }
-    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
-      cometExec.sparkFallback(cometExec.children)
+    val reverted = transformStageUp(stripped) {
+      case collector: CometCollectMetricsExec => collector.toSpark
+      case cometExec: CometExec => cometExec.sparkFallback(cometExec.children)
     }
     insertTransitions(reverted)
   }

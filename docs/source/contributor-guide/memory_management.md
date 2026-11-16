@@ -54,7 +54,11 @@ for, so that failure is confined to the task and the executor keeps running. An 
 `OutOfMemoryError` is not exempt: the executor hands it to `SparkUncaughtExceptionHandler`, which
 calls `System.exit(SparkExitCode.OOM)` (exit code 52). Real heap exhaustion therefore usually costs
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
-exceeded; the exit code does.
+exceeded, and neither does the exit code alone. Exit 137 means the process was sent `SIGKILL`, for
+memory or not. On non-Windows YARN executors, Spark adds `-XX:OnOutOfMemoryError='kill %p'` unless
+their Java options already set `-XX:OnOutOfMemoryError`, so a heap OOM there usually ends with
+`SIGTERM` (143) before the handler exits with 52. The cluster manager's diagnostics and the executor
+log say which budget it was.
 
 Comet's difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
@@ -119,6 +123,12 @@ backpressure. A broadcast is the largest case: a task that reads one holds all o
 the tasks of an executor that read it at the same time share one such copy. The executor's memory
 usage log reports the allocator's total, and the part of it charged to the import allocator
 described below, so that the overhead can be sized for it.
+
+The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
+the execution pool. Each group is bounded by `min(spark.comet.batchSize, 65536)` rows, 8 MiB of
+retained/copy estimates, and 1,024 input batches, then concatenated once before Arrow export.
+Inputs and output coexist during that copy, and one decoded lookahead can be retained. The grouping
+limit therefore does not cap total reader RSS, and oversized input batches pass through unchanged.
 
 Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's native
 join reserves its whole build side, because DataFusion skips only the buffers that the same plan
@@ -396,7 +406,12 @@ over a native sort, a refusal fails the query, so the pool checks its requests o
 pool, as it does those of a consumer that cannot spill (`limited_to_its_share` in `fair_pool.rs`).
 It still counts as a consumer that can spill when the pool divides the task's share, so a sort
 below it stays at half of the share and leaves the aggregate the other half. The partially sorted
-stream still spills when Spark refuses it.
+stream still spills when Spark refuses it. The exemption goes by the stream's name, so it also
+covers a `PartialMerge` that the planner runs as a final aggregate because its input is sorted on
+some of its grouping keys. That one is not a `CometSortAggregateExec` and its input is only
+partially sorted, but it is likewise checked only against the pool and Spark's grant. A
+`PartialMerge` over input sorted on every grouping key stays on the hash aggregate, since the final
+aggregate has no spill path there and would only halve the limit of a sort below it.
 
 Three details matter for tuning:
 
@@ -494,7 +509,11 @@ the executor.
   in-progress row group (`ArrowWriter::memory_size`). The estimate counts encoded pages, encoder
   buffers, dictionaries and Bloom filters. The writer keeps parquet-rs's default row-group limit of
   1Mi rows and sets no byte limit, so a wide schema can hold a large row group
-  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
+  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)). A file that is neither local
+  nor on HDFS, such as one the S3A magic committer hands out, is written through a Hadoop output
+  stream, and the reservation then also includes the 1 MiB buffer that batches the writes to it.
+  The stream's own buffers, such as S3A's upload buffers (`fs.s3a.fast.upload.buffer`), are not
+  Comet's and sit outside its pool, as they do for Spark's writer.
 - The Iceberg writer keeps one file open per partition in a fanout write, so its reservation grows
   with the number of partitions a task writes. iceberg-rust's `ParquetWriter` does not expose
   parquet-rs's `memory_size`, only every byte the file has written, its in-progress row group's
@@ -732,11 +751,13 @@ much they matter:
 
 A checklist for triaging an executor OOM kill:
 
-1. Confirm which budget was exceeded. Exit code 137 / `OOMKilled` on the pod is the cgroup. Exit
-   code 52 with `java.lang.OutOfMemoryError` in the executor log is JVM heap exhaustion; Spark
-   treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
-   them. A failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed
-   memory pool, which is the only one of the three that is recoverable at task level.
+1. Confirm which budget was exceeded, from the cluster manager's diagnostics and the executor log
+   rather than the exit code alone. `OOMKilled` on the pod, or YARN reporting that the container
+   exceeded its memory limit, is the cgroup. A `java.lang.OutOfMemoryError` with a heap message
+   such as `Java heap space` in the executor log is JVM heap exhaustion. Spark treats it as fatal,
+   so the executor is lost either way, usually with exit code 52, or 143 on non-Windows YARN. A
+   failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed memory pool,
+   which is the only one of the three that is recoverable at task level.
 2. Compare `allocated` against `reserved` in the executor's `Comet native memory usage` log lines
    leading up to the kill, or `nativeAllocated` against `poolsReserved` in its
    `CometExecutorMemoryUsage` events when the event log records them, or `native_allocated`

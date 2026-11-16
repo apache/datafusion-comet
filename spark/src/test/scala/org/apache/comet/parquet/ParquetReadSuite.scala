@@ -147,6 +147,96 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan decodes invalid UTF-8 in nested BINARY read as string") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "nested-binary.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group arr (LIST) {
+          |    repeated group list {
+          |      optional binary element;
+          |    }
+          |  }
+          |  optional group st {
+          |    optional binary name;
+          |  }
+          |  optional group m (MAP) {
+          |    repeated group key_value {
+          |      required binary key;
+          |      optional binary value;
+          |    }
+          |  }
+          |  optional int32 id;
+          |}
+          |""".stripMargin)
+      val valid = Binary.fromString("one")
+      val invalid = Binary.fromConstantByteArray(Array[Byte](0x41, 0xff.toByte, 0x42))
+      // The same bytes with U+FFFD in place of FF: a second map key that decoding would
+      // collapse onto the invalid one.
+      val replaced = Binary.fromString("A\uFFFDB")
+      val writer = createParquetWriter(parquetSchema, path)
+      try {
+        // Valid values, then a null list element, struct field and map value, then invalid
+        // values, then null containers, so one batch mixes nulls, valid and invalid values.
+        Seq(Some(valid), None, Some(invalid)).zipWithIndex.foreach { case (value, id) =>
+          val row = new SimpleGroup(parquetSchema)
+          val arr = row.addGroup("arr")
+          arr.addGroup("list").append("element", valid)
+          val element = arr.addGroup("list")
+          val st = row.addGroup("st")
+          val m = row.addGroup("m")
+          val entry = m.addGroup("key_value").append("key", value.getOrElse(valid))
+          value.foreach { value =>
+            element.append("element", value)
+            st.append("name", value)
+            entry.append("value", value)
+          }
+          if (value.contains(invalid)) {
+            m.addGroup("key_value").append("key", replaced).append("value", valid)
+          }
+          row.add("id", id)
+          writer.write(row)
+        }
+        val nullContainers = new SimpleGroup(parquetSchema)
+        nullContainers.add("id", 3)
+        writer.write(nullContainers)
+      } finally {
+        writer.close()
+      }
+
+      val readSchema = "arr array<string>, st struct<name: string>, m map<string, string>, id int"
+      // Reads with binaryAsString, then with a read schema that declares the strings.
+      Seq(("true", None), ("false", Some(readSchema))).foreach { case (binaryAsString, schema) =>
+        withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> binaryAsString) {
+          val reader = schema.map(spark.read.schema(_)).getOrElse(spark.read)
+          val df = reader.parquet(path.toString)
+          assert(
+            df.schema.catalogString ===
+              "struct<arr:array<string>,st:struct<name:string>,m:map<string,string>,id:int>")
+
+          // Collected values match Spark, and the scan runs natively.
+          val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+          assert(
+            collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+            s"Expected a CometNativeScanExec:\n${cometPlan.treeString}")
+
+          // Each invalid nested value holds U+FFFD (EF BF BD) in place of FF, except a map
+          // key, which keeps its bytes as Spark does: the two keys stay distinct, and looking
+          // up the replaced one returns its own value.
+          checkAnswer(
+            df.where("id = 2")
+              .selectExpr(
+                "hex(arr[1])",
+                "hex(st.name)",
+                "hex(map_keys(m)[0])",
+                "hex(map_values(m)[0])",
+                "size(map_from_entries(map_entries(m)))",
+                "m['A\uFFFDB']"),
+            Row("41EFBFBD42", "41EFBFBD42", "41FF42", "41EFBFBD42", 2, "one"))
+        }
+      }
+    }
+  }
+
   test("basic data types") {
     Seq(7, 1024).foreach { batchSize =>
       withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {

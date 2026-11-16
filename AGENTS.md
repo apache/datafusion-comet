@@ -30,6 +30,9 @@ Relevant entry points:
 - [Adding a New Expression](docs/source/contributor-guide/adding_a_new_expression.md) /
   [Adding a New Operator](docs/source/contributor-guide/adding_a_new_operator.md).
 - [Debugging Guide](docs/source/contributor-guide/debugging.md).
+- [Documentation Style Guide](docs/source/contributor-guide/style_guide.md): the terms to use for
+  how Comet runs a query, and the conventions for docs pages. Read it before editing `docs/source`,
+  `README.md`, or the `.doc(...)` strings in config classes.
 - [Backporting to Release Branches](docs/source/contributor-guide/backporting.md): a fix that
   goes to one release branch also goes to every newer one. Cherry-pick with `-x`, and never add
   an unrelated change to a backport pull request.
@@ -43,23 +46,46 @@ another maintainer's commits. If the lease check rejects the push, inspect and i
 remote changes before retrying; do not bypass it with `--force`. See
 [Submitting a Pull Request](docs/source/contributor-guide/development.md#submitting-a-pull-request).
 
+## Code guidelines
+
+- A PR merges as one squashed commit titled with the PR title, so it should do only what that title says. Put unrelated renames, reformatting, refactors, and drive-by fixes in a
+  separate PR.
+- Default to no comment. Comment only what the code cannot say: invariants, non-obvious constraints, and
+  why a choice that looks wrong is right. Do not restate the code or describe how it changed.
+- A panic that escapes a JNI or `extern "C"` entry point is undefined behavior. Return an error instead,
+  and see the `review-comet-ffi-pr` skill for the checklist.
+- Config keys, their defaults, and user-visible behavior are public API. Renaming or removing a key
+  covered by the versioning policy needs a deprecated alias and a major release. Keys in the `testing`
+  category and keys marked `internal()` are exempt. See
+  [Renaming an Existing Config](docs/source/contributor-guide/config_conventions.md#renaming-an-existing-config).
+  In a review, name every new or changed config and public class.
+- A performance PR shows which change produces the gain and covers both well-predicted input (constant
+  lengths, all valid) and poorly predicted input (random). A shape may get slower when the common case
+  gets faster and the PR names its cost and how often real workloads reach it. See
+  [Optimizing Expressions](docs/source/contributor-guide/optimizing_expressions.md).
+
 ## Checking a change against CI
 
 A green pull request does not mean a change is safe to queue. The pull request tier runs the Comet
-suites against the default Spark profile only. Spark's own SQL suite and the Iceberg suites first
-report in the merge queue, where a failure evicts the pull request and blocks everyone else's
-merges, or in the nightly run, after the change has already landed.
+suites, Spark's own SQL suite (catalyst and `sql_core`) and the Iceberg 1.11 suite against the
+default Spark profile only. For a pull request from a fork it runs on the fork, where `CI (fork)`
+reports it as advisory, and `Required Checks` here passes without a build. Everything else first
+reports in the merge queue (Spark SQL `sql_hive`), where a failure evicts the pull request and
+blocks everyone else's merges, or in the nightly run (the other Spark and Iceberg versions), after
+the change has already landed.
 
-So when a change touches the serde, the planner, a native operator, a Spark shim, an Iceberg code
-path, or anything under `dev/diffs/`, get a verdict first. Either run the suite locally:
+So when a change touches code those suites cover but the pull request tier does not run, such as
+Hive table support, a Spark shim for a version other than 4.1, or an Iceberg code path that differs
+across versions, get a verdict first. Either run the suite locally:
 
 ```shell
-dev/local-ci.sh spark sql_core-1     # one matrix row, or `spark` for all of them
-dev/local-ci.sh iceberg shard-2      # one shard, or `iceberg` for every target
+dev/local-ci.sh spark 3.5 sql_core-1  # a nightly-tier version, named explicitly
+dev/local-ci.sh iceberg 1.10 shard-2  # one shard, or `iceberg` for every target
 ```
 
-or apply the matching `run-*` label so CI runs it instead. Which changes warrant which suite, the
-label names, and the script's caveats are in
+or apply the matching `run-*` label so CI runs it instead. Do not do either for Spark SQL 4.1
+(catalyst and `sql_core`) or Iceberg 1.11, which every pull request already runs. Which changes
+warrant which suite, the label names, and the script's caveats are in
 [Continuous Integration](docs/source/contributor-guide/ci.md).
 
 Pick one rather than both. A full local job is hours of compute and tens of GB of disk, so prefer
