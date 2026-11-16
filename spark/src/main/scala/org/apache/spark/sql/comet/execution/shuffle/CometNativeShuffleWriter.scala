@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import java.io.File
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.{ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
@@ -116,9 +117,8 @@ class CometNativeShuffleWriter[K, V](
       val resolver =
         SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
       val dataFile = resolver.getDataFile(shuffleId, mapId)
-      Some(
-        CometNativeShuffleWriter
-          .LocalShuffleOutput(resolver, dataFile.getPath.replace(".data", ".data.tmp")))
+      val tempDataFile = CometNativeShuffleWriter.localTempDataFile(resolver, dataFile)
+      Some(CometNativeShuffleWriter.LocalShuffleOutput(resolver, tempDataFile.getPath))
     } else {
       None
     }
@@ -515,6 +515,14 @@ class CometNativeShuffleWriter[K, V](
 }
 
 private[shuffle] object CometNativeShuffleWriter {
+
+  // A directory named `local.data` must stay intact. `String.replace` rewrites every `.data`.
+  private[shuffle] def localTempDataFile(
+      resolver: IndexShuffleBlockResolver,
+      dataFile: File): File = {
+    require(resolver != null)
+    new File(dataFile.getPath.replace(".data", ".data.tmp"))
+  }
 
   /**
    * Declared here rather than inside the class: as an inner case class every type test against it

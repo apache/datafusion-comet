@@ -19,7 +19,10 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import org.apache.spark.TaskContext
+import java.io.File
+
+import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.shuffle.IndexShuffleBlockResolver
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -74,6 +77,19 @@ class CometNativeShuffleWriterSuite extends CometTestBase {
           assert(writeBufferSize == 65536)
         }
       }
+    }
+  }
+
+  test("native shuffle temp file stays in a local dir named local.data") {
+    withTempDir { dir =>
+      val base = new File(dir, "local.data")
+      assert(base.mkdir())
+      val dataFile = new File(base, "shuffle_0_3_0.data")
+      val resolver = SparkEnv.get.shuffleManager.shuffleBlockResolver
+        .asInstanceOf[IndexShuffleBlockResolver]
+      val temp = CometNativeShuffleWriter.localTempDataFile(resolver, dataFile)
+      assert(temp.getParentFile.getName == "local.data")
+      assert(!temp.getPath.contains("local.data.tmp"))
     }
   }
 }
