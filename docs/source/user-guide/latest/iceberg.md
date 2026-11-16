@@ -698,7 +698,10 @@ write over many partitions, pays it for every one of them.
 UUID columns, including struct fields, array elements and map keys/values, are normalized
 from Spark strings using Java's `UUID.fromString` rules. This accepts uppercase, shortened
 groups and the other non-canonical forms accepted by Java; an invalid visible value fails the
-task and triggers ordinary write cleanup. `fixed(16)` columns retain binary semantics.
+task and triggers ordinary write cleanup. UUID leaves use `FIXED_LEN_BYTE_ARRAY(16)` with
+Iceberg field ids, big-endian UUID bytes and the Parquet `UUID` logical annotation, matching
+iceberg-java for top-level and nested columns. `fixed(16)` columns retain binary semantics
+and have no UUID annotation.
 UUID columns used as partition or sort sources currently fall back, because Spark distributes
 and orders the input strings before UUID normalization. UUID data columns remain eligible in
 unpartitioned, clustered and fanout writes partitioned or sorted by other columns.
@@ -779,18 +782,7 @@ individually below).
 #### Physical file layout
 
 Iceberg readers use the table schema and recover the same values from these layouts.
-Tools that inspect Parquet files without the Iceberg schema can observe the UUID annotation
-difference below; the remaining differences are cosmetic:
 
-- UUID leaves use `FIXED_LEN_BYTE_ARRAY(16)` with Iceberg field ids and big-endian UUID bytes,
-  but the pinned iceberg-rust writer omits the Parquet `UUID` logical annotation that
-  iceberg-java emits. This applies to nested UUIDs too. Iceberg readers interpret these fields
-  using the table schema; a standalone Parquet reader relying on the logical annotation sees
-  fixed-length binary instead of UUID. Native writes therefore do not provide full UUID footer
-  parity ([#6959](https://github.com/apache/datafusion-comet/issues/6959)).
-  [iceberg-rust #2930](https://github.com/apache/iceberg-rust/pull/2930) adds the UUID annotation;
-  when upgrading to a pin that includes it, verify the annotation for top-level and nested UUIDs,
-  update the footer assertions in `CometIcebergWriteActionSuite`, and remove this divergence note.
 - Footer key-value metadata differs: native files carry an `ARROW:schema` entry and no
   `iceberg.schema` entry; iceberg-java files are the opposite.
 - The Parquet root schema element is named `arrow_schema` (iceberg-java: `table`).

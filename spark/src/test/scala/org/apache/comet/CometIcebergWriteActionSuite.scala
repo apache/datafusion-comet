@@ -40,6 +40,7 @@ import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.ParquetMetadata
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.parquet.schema.LogicalTypeAnnotation
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
@@ -4441,9 +4442,8 @@ class CometIcebergWriteActionSuite
             expectedRows = spark.table(s"$catalog.$ns.$jvm").collect().toSeq
             checkAnswer(spark.table(s"$catalog.$ns.$native"), expectedRows)
           }
-          // Native-written UUID leaves lack the UUID logical annotation at the current pin.
-          // Prove the native reader uses the Iceberg schema for those files, and also reads the
-          // annotated leaves written by iceberg-java, without silently falling back.
+          // Prove the native reader reads top-level and nested UUIDs written by both writers
+          // without silently falling back.
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
@@ -4490,13 +4490,14 @@ class CometIcebergWriteActionSuite
                     val icebergPath = path.replace(".list.", ".").replace(".key_value.", ".")
                     assert(
                       leaf.getId.intValue() == table.schema().findField(icebergPath).fieldId())
-                    // The pinned iceberg-rust writer does not emit the UUID logical annotation.
-                    // Pin that documented physical divergence rather than claiming footer parity.
-                    // A pin including apache/iceberg-rust#2930 should emit it; update this assertion
-                    // and remove the UUID annotation divergence in iceberg.md after verifying it.
-                    if (name == native) assert(leaf.getLogicalTypeAnnotation == null)
-                    else assert(leaf.getLogicalTypeAnnotation.toString == "UUID")
+                    assert(leaf.getLogicalTypeAnnotation == LogicalTypeAnnotation.uuidType())
                   }
+                  // fixed(16) has the same physical type as UUID, but must remain unannotated.
+                  val fixed = schema.getType(Array("fx"): _*).asPrimitiveType()
+                  assert(fixed.getPrimitiveTypeName == PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY)
+                  assert(fixed.getTypeLength == 16)
+                  assert(fixed.getId.intValue() == table.schema().findField("fx").fieldId())
+                  assert(fixed.getLogicalTypeAnnotation == null)
                 } finally reader.close()
             }
           }
