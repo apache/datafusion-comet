@@ -673,6 +673,17 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         convertToComet(s, CometExchangeSink).getOrElse(s)
 
+      // For an AQE shuffle read over a Comet shuffle stage, while AQE prepares a plan. Spark's
+      // OptimizeSkewedJoin runs before this rule in the same pass and splits a skewed partition
+      // by putting such a read between the stage and the join, so the join and everything above
+      // it can only be converted if the read is a native input too (issue #6530). The read then
+      // feeds the native plan in place of the stage, and reads only the partitions it specifies.
+      // AQE adds its other reads after the operators above them have been converted.
+      case read @ AQEShuffleReadExec(CometSinkPlaceHolder(_, _, stage: ShuffleQueryStageExec), _)
+          if queryStagePrep && stage.shuffle.isInstanceOf[CometShuffleExchangeExec] =>
+        val stageRead = read.withNewChildren(Seq(stage))
+        convertToComet(stageRead, CometExchangeSink).getOrElse(stageRead)
+
       case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
         preserveSparkAggregateBuffers(s)
 

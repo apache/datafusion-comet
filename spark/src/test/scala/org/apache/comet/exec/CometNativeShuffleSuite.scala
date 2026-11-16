@@ -43,14 +43,14 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference,
 import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometExec, CometHashAggregateExec, CometHashJoinExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, spark_partition_id, sum}
+import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, lit, spark_partition_id, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -2010,6 +2010,56 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               |WHERE d.x = 1 GROUP BY f.p""".stripMargin)
           val (_, plan) = checkSparkAnswer(df)
           assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead), plan)
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6530
+  for {
+    (hint, joinClass) <- Seq(
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec])
+    coalesce <- Seq(false, true)
+  } {
+    test(s"AQE skew join split stays native: $hint, coalescing=$coalesce") {
+      // Nine in ten left rows have key 0, so its shuffle partition is skewed, and AQE splits it
+      // along the left side's map tasks. The partial aggregate above the join shares its stage.
+      def skewedJoin: DataFrame = {
+        val left = spark
+          .range(0, 100000, 1, 20)
+          .select(
+            when(col("id") % 10 < 9, lit(0L)).otherwise(col("id") % 20000).as("k"),
+            col("id").as("v"))
+        val right = spark.range(0, 20000, 1, 4).select(col("id").as("k"), (col("id") * 3).as("w"))
+        left.join(right.hint(hint), "k").agg(count("*"), sum(col("v") + col("w")))
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.SKEW_JOIN_ENABLED.key -> "true",
+        SQLConf.SKEW_JOIN_SKEWED_PARTITION_THRESHOLD.key -> "1KB",
+        SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "1KB",
+        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> coalesce.toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+        Seq(true, false).foreach { directRead =>
+          withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+            val (_, plan) = checkSparkAnswerAndOperator(skewedJoin)
+            withClue(s"direct read $directRead:\n$plan\n") {
+              assert(
+                collect(plan) {
+                  case r: AQEShuffleReadExec if r.hasSkewedPartition => r
+                }.nonEmpty,
+                "AQE did not split the skewed partition")
+              assert(collect(plan) { case j if joinClass.isInstance(j) => j }.nonEmpty)
+              checkCometOperatorsInFinalPlan(plan)
+              // Both sides of the join read their split partitions as a native shuffle input.
+              val leaf = if (directRead) "SHUFFLE_SCAN" else "SCAN"
+              val joinBlock = Seq.fill(2)("AQEShuffleReadExec" -> leaf)
+              assert(shuffleReadingBlocks(plan).contains(joinBlock))
+            }
+          }
         }
       }
     }
