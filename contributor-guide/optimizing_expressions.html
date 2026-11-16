@@ -589,8 +589,9 @@ on <code class="docutils literal notranslate"><span class="pre">main</span></cod
 <li><p><strong>Apply the optimization</strong>, preserving exact semantics (see <a class="reference internal" href="#correctness-is-non-negotiable">Correctness</a>).</p></li>
 <li><p><strong>Run the existing unit tests</strong> for the function. They must pass unchanged. Output must be
 bit-identical to <code class="docutils literal notranslate"><span class="pre">main</span></code>, including null placement and error behavior.</p></li>
-<li><p><strong>Re-run the benchmark</strong> against the baseline. Confirm a meaningful speedup on at least one
-shape <strong>and no meaningful regression on any shape</strong>.</p></li>
+<li><p><strong>Re-run the benchmark</strong> against the baseline. Confirm a meaningful speedup on the common
+shapes, and account for every shape that got slower (see
+<a class="reference internal" href="#slower-shapes-need-a-justification">Slower shapes need a justification</a>).</p></li>
 <li><p><strong>Submit</strong> with the criterion output pasted into the PR description.</p></li>
 </ol>
 </section>
@@ -633,6 +634,9 @@ contiguous non-null runs, can be slower than the base loop when nulls are dense.
 <li><p><strong>Short vs. long values.</strong> Allocation savings shrink and copy costs grow as values get longer.</p></li>
 <li><p><strong>Valid vs. invalid inputs.</strong> Error and fallback paths have different costs.</p></li>
 <li><p><strong>ASCII vs. non-ASCII</strong> for string functions with an ASCII fast path.</p></li>
+<li><p><strong>Well-predicted vs. poorly predicted branches.</strong> Constant lengths or all-valid input against
+random lengths or values. Branchless code wins on the second and can lose on the first, and
+branchy code does the reverse.</p></li>
 </ul>
 </section>
 <section id="running-benchmarks">
@@ -747,13 +751,18 @@ operations, but verify the dense-null case does not regress.</p></li>
 over-allocates; fix these when you find them.</p></li>
 </ul>
 </section>
-<section id="the-no-regression-rule">
-<h2>The no-regression rule<a class="headerlink" href="#the-no-regression-rule" title="Link to this heading">#</a></h2>
-<p><strong>Do not submit an optimization if any benchmark shape is meaningfully slower</strong>, even if another
-shape is dramatically faster. A change that is 90% faster with no nulls but 30% slower with dense
-nulls is a trade-off, not a win, and should either be gated behind a runtime check that picks the
-right path per batch or not submitted at all. A Comet optimization PR was closed for exactly this
-reason (a 30% dense-null regression alongside a 90% no-null win).</p>
+<section id="slower-shapes-need-a-justification">
+<h2>Slower shapes need a justification<a class="headerlink" href="#slower-shapes-need-a-justification" title="Link to this heading">#</a></h2>
+<p>Optimize for the common case. A shape may get slower when the common case gets faster and the PR
+justifies it. For each shape that is meaningfully and reproducibly slower, the PR description gives
+the measured cost, how often real workloads reach that shape and why, and the gain on the common
+case. For example, an error path that fails the query runs at most once per partition, so a slower
+error path can be acceptable.</p>
+<p>A shape that real workloads reach often is not an exception. A change that is 90% faster with no
+nulls but 30% slower with dense nulls costs the many real columns that have dense nulls, so either
+gate the fast path behind a runtime check that picks the right path per batch, or do not submit it.
+A Comet optimization PR was closed for exactly this reason. A claim that a shape is rare needs
+evidence about real workloads, not an assertion.</p>
 </section>
 <section id="record-the-performance-audit">
 <h2>Record the performance audit<a class="headerlink" href="#record-the-performance-audit" title="Link to this heading">#</a></h2>
@@ -768,8 +777,8 @@ expression has no audit entry yet):</p>
   preallocated <span class="sb">`BinaryBuilder`</span>; up to 31% faster on long strings. Benchmark: <span class="sb">`benches/unhex.rs`</span>.
 </pre></div>
 </div>
-<p>Name the technique, the measured speedup, the PR, and the benchmark file. Keep it to one line
-per tuning pass so the history stays scannable.</p>
+<p>Name the technique, the measured speedup, the PR, the benchmark file, and any shape that got
+slower with its cost. Keep it to one line per tuning pass so the history stays scannable.</p>
 </section>
 <section id="pr-conventions">
 <h2>PR conventions<a class="headerlink" href="#pr-conventions" title="Link to this heading">#</a></h2>
@@ -778,7 +787,8 @@ per tuning pass so the history stays scannable.</p>
 <li><p>Title: <code class="docutils literal notranslate"><span class="pre">perf:</span> <span class="pre">optimize</span> <span class="pre">`function_name`</span> <span class="pre">(Nx</span> <span class="pre">faster)</span></code> with the headline speedup.</p></li>
 <li><p>Rationale: “Optimize existing expression.”</p></li>
 <li><p>Changes: one or two sentences naming the specific technique and what per-row cost it removes.</p></li>
-<li><p>Testing: “Existing tests.” plus the pasted criterion output for every shape.</p></li>
+<li><p>Testing: “Existing tests.” plus the pasted criterion output for every shape, and any shape that
+got slower with its cost and justification.</p></li>
 <li><p>Keep the diff focused on one expression. Do not bundle unrelated changes.</p></li>
 </ul>
 <p>Follow the standard <a class="reference internal" href="development.html"><span class="std std-doc">Pre-PR checklist</span></a>: <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code>, build, and
@@ -842,7 +852,7 @@ per tuning pass so the history stays scannable.</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#correctness-is-non-negotiable">Correctness is non-negotiable</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#proven-techniques">Proven techniques</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-no-regression-rule">The no-regression rule</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#slower-shapes-need-a-justification">Slower shapes need a justification</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#record-the-performance-audit">Record the performance audit</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-conventions">PR conventions</a></li>
 </ul>
