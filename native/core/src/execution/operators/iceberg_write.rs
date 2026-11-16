@@ -74,10 +74,11 @@ use iceberg::writer::partitioning::unpartitioned_writer::UnpartitionedWriter;
 use iceberg::writer::partitioning::PartitioningWriter;
 use iceberg::writer::{CurrentFileStatus, IcebergWriter, IcebergWriterBuilder};
 use iceberg::ErrorKind;
+use parquet::arrow::ArrowSchemaConverter;
 #[cfg(test)]
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
-use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use parquet::file::properties::{BloomFilterPosition, EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +124,7 @@ struct PartitionWriterBuilder {
     location_generator: TrackingLocationGenerator,
     file_name_generator: DefaultFileNameGenerator,
     properties: Arc<PartitionProperties>,
+    bloom_filter_bytes: usize,
     open_files: OpenFileMemory,
     storage: StorageWrites,
 }
@@ -138,6 +140,7 @@ impl PartitionWriterBuilder {
     ) -> iceberg::Result<PartitionDataFileWriter> {
         let parquet_builder = MeteredParquetWriterBuilder {
             inner: ParquetWriterBuilder::new(properties, Arc::clone(&self.schema)),
+            bloom_filter_bytes: self.bloom_filter_bytes,
             open_files,
             storage: self.storage,
         };
@@ -282,11 +285,30 @@ impl Drop for OpenFileShare {
     }
 }
 
+/// The full Bloom bitsets allocated for one row group, using the same physical leaf paths and
+/// sizing as parquet-rs. Dictionary choices do not change these properties, so every partition
+/// and rolled file can use the allowance computed once for the task.
+fn bloom_filter_memory_bytes(
+    properties: &WriterProperties,
+    schema: &ArrowSchema,
+) -> DFResult<usize> {
+    let parquet_schema = ArrowSchemaConverter::new()
+        .with_coerce_types(properties.coerce_types())
+        .convert(schema)?;
+    Ok(parquet_schema
+        .columns()
+        .iter()
+        .filter_map(|column| properties.bloom_filter_properties(column.path()))
+        .map(|bloom| parquet_rs_bloom_filter_bytes(bloom.ndv(), bloom.fpp()))
+        .sum())
+}
+
 /// [`ParquetWriterBuilder`] whose files report what they hold in memory to an
 /// [`OpenFileMemory`].
 #[derive(Clone, Debug)]
 struct MeteredParquetWriterBuilder {
     inner: ParquetWriterBuilder,
+    bloom_filter_bytes: usize,
     open_files: OpenFileMemory,
     /// How the files' storage takes the row groups they flush.
     storage: StorageWrites,
@@ -298,9 +320,12 @@ impl FileWriterBuilder for MeteredParquetWriterBuilder {
     async fn build(&self, output_file: OutputFile) -> iceberg::Result<Self::R> {
         let released = Arc::new(AtomicUsize::new(0));
         let output_file = CountedOutput::wrap(output_file, self.storage, Arc::clone(&released));
+        let mut share = self.open_files.share();
+        share.set(self.bloom_filter_bytes);
         Ok(MeteredParquetWriter {
             inner: self.inner.build(output_file).await?,
-            share: self.open_files.share(),
+            share,
+            bloom_filter_bytes: self.bloom_filter_bytes,
             released,
         })
     }
@@ -317,13 +342,17 @@ impl FileWriterBuilder for MeteredParquetWriterBuilder {
 /// those: its in-progress row group, the few KiB parquet-rs buffers in front of storage, and what
 /// the storage still holds of the row groups the file has flushed (see [`StorageWrites`]).
 ///
-/// The share does not see what parquet-rs keeps beyond the encoded estimate: dictionary
-/// encoders' hash tables and unencoded indices, and buffer capacity past what is used. Nor would
-/// it see Bloom filters, which parquet-rs sizes when a file opens and the eligibility gate
-/// declines today.
+/// The share also includes a fixed allowance for all configured Bloom bitsets, which the encoded
+/// estimate excludes. Each row group's column writers allocate their full targets on creation.
+/// With `AfterRowGroup` placement, those filters are dropped when the row group flushes, so one
+/// set of targets per open file suffices. The allowance stays reserved between row groups and
+/// until close or drop; serialized filters still buffered for storage are counted separately.
+/// Dictionary encoders' hash tables and unencoded indices, and buffer capacity past what is used,
+/// remain outside the estimate.
 struct MeteredParquetWriter {
     inner: ParquetWriter,
     share: OpenFileShare,
+    bloom_filter_bytes: usize,
     /// The bytes of the file that have left memory, counted by its [`CountingFileWrite`].
     released: Arc<AtomicUsize>,
 }
@@ -332,8 +361,12 @@ impl FileWriter for MeteredParquetWriter {
     async fn write(&mut self, batch: &RecordBatch) -> iceberg::Result<()> {
         self.inner.write(batch).await?;
         let released = self.released.load(Ordering::Relaxed);
-        self.share
-            .set(self.inner.current_written_size().saturating_sub(released));
+        self.share.set(
+            self.inner
+                .current_written_size()
+                .saturating_sub(released)
+                .saturating_add(self.bloom_filter_bytes),
+        );
         Ok(())
     }
 
@@ -1031,6 +1064,7 @@ async fn run_write_task(
         .fields()
         .iter()
         .any(|field| float_in_container(field.data_type()));
+    let bloom_filter_bytes = bloom_filter_memory_bytes(&writer_properties, &target_schema)?;
     let properties = Arc::new(PartitionProperties::new(DictionaryChooser::try_new(
         writer_properties,
         &target_schema,
@@ -1043,6 +1077,7 @@ async fn run_write_task(
         location_generator: location_generator.clone(),
         file_name_generator,
         properties: Arc::clone(&properties),
+        bloom_filter_bytes,
         open_files: open_files.clone(),
         storage: StorageWrites::for_location(&common.data_location),
     };
@@ -2324,6 +2359,9 @@ fn build_output_batch(
 fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<WriterProperties> {
     let compression = compression_from_proto(settings.compression, settings.compression_level)?;
     let mut builder = WriterProperties::builder()
+        // Bound the live Bloom allowance to one row group per file, even if parquet-rs changes
+        // its default placement in a future release.
+        .set_bloom_filter_position(BloomFilterPosition::AfterRowGroup)
         .set_compression(compression)
         .set_created_by(settings.created_by.clone())
         .set_max_row_group_bytes(Some(settings.row_group_size_bytes as usize))
@@ -2772,6 +2810,44 @@ mod tests {
     }
 
     #[test]
+    fn bloom_memory_counts_physical_leaves_and_ignores_unmatched_paths() {
+        let schema = ArrowSchema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("element", DataType::Utf8, true))),
+                true,
+            ),
+        ]);
+        let mut builder = WriterProperties::builder();
+        for (path, bytes) in [
+            ("id", 1024),
+            ("tags.list.element", 4096),
+            ("missing", 1048576),
+        ] {
+            builder = builder
+                .set_column_bloom_filter_enabled(parquet_column_path(path), true)
+                .set_column_bloom_filter_fpp(
+                    parquet_column_path(path),
+                    ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                )
+                .set_column_bloom_filter_max_ndv(
+                    parquet_column_path(path),
+                    synthetic_ndv_for_bloom_filter_bytes(bytes, ICEBERG_DEFAULT_BLOOM_FILTER_FPP)
+                        .unwrap(),
+                );
+        }
+        assert_eq!(
+            bloom_filter_memory_bytes(&builder.build(), &schema).unwrap(),
+            5120
+        );
+        assert_eq!(
+            bloom_filter_memory_bytes(&WriterProperties::builder().build(), &schema).unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn bloom_filter_defaults_match_iceberg() {
         // Iceberg's documented write-property defaults:
         // https://iceberg.apache.org/docs/latest/configuration/#write-properties
@@ -2782,6 +2858,10 @@ mod tests {
             ndv: None,
         }];
         let props = build_writer_properties(&settings).unwrap();
+        assert_eq!(
+            props.bloom_filter_position(),
+            BloomFilterPosition::AfterRowGroup
+        );
         let bloom = props.bloom_filter_properties(&"id".into()).unwrap();
         assert_eq!(bloom.fpp(), ICEBERG_DEFAULT_BLOOM_FILTER_FPP);
         assert_eq!(
@@ -5178,6 +5258,22 @@ mod tests {
 
         const TARGET_FILE_SIZE: u64 = 512 * 1024 * 1024;
 
+        const BLOOM_MEMORY_BYTES_PER_COLUMN: usize = 1024 * 1024;
+
+        fn bloom_memory_properties() -> WriterProperties {
+            WriterProperties::builder()
+                .set_bloom_filter_enabled(true)
+                .set_bloom_filter_fpp(ICEBERG_DEFAULT_BLOOM_FILTER_FPP)
+                .set_bloom_filter_max_ndv(
+                    synthetic_ndv_for_bloom_filter_bytes(
+                        BLOOM_MEMORY_BYTES_PER_COLUMN,
+                        ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                    )
+                    .unwrap(),
+                )
+                .build()
+        }
+
         /// parquet-rs writes a file through a `BufWriter` of the default capacity, so up to this
         /// much of a row group it has flushed can still be in memory after the flush.
         const PARQUET_WRITE_BUFFER_BYTES: usize = 8 * 1024;
@@ -5593,6 +5689,67 @@ mod tests {
             (roomy_files, tight_files, dir)
         }
 
+        /// Bloom bitsets dominate these tiny row groups. Even after every unit flushes, each
+        /// open file keeps its allowance so the pool can find and close Bloom-heavy partitions.
+        #[tokio::test]
+        async fn bloom_memory_forces_fanout_files_to_close_without_losing_rows() {
+            let partitions = 8;
+            let batches = || {
+                (0..3)
+                    .map(|batch| {
+                        round_robin_batch_from(
+                            batch * partitions * ROWS_DIVISOR,
+                            partitions * ROWS_DIVISOR,
+                            partitions,
+                        )
+                    })
+                    .collect()
+            };
+            let properties = || {
+                bloom_memory_properties()
+                    .into_builder()
+                    .set_data_page_row_count_limit(ROWS_DIVISOR)
+                    .set_max_row_group_row_count(Some(ROWS_DIVISOR))
+                    .build()
+            };
+            let roomy = Arc::new(PeakMemoryPool::new(usize::MAX));
+            let (_dir, written) = write_reserving_from(
+                &roomy,
+                WriteMetrics::default(),
+                iceberg_user_schema(),
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+                batches(),
+                properties(),
+                TARGET_FILE_SIZE,
+            )
+            .await;
+            let roomy_files = written.unwrap();
+            assert_eq!(roomy_files.len(), partitions);
+            assert!(roomy.peak() >= partitions * 2 * BLOOM_MEMORY_BYTES_PER_COLUMN);
+            assert_eq!(roomy.reserved(), 0);
+
+            let tight = Arc::new(PeakMemoryPool::new(4 * BLOOM_MEMORY_BYTES_PER_COLUMN));
+            let metrics = WriteMetrics::default();
+            let (_dir, written) = write_reserving_from(
+                &tight,
+                metrics.clone(),
+                iceberg_user_schema(),
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+                batches(),
+                properties(),
+                TARGET_FILE_SIZE,
+            )
+            .await;
+            let tight_files = written.expect("closing Bloom-heavy files must let the write finish");
+            assert!(metrics.files_closed_early.value() > 0);
+            assert!(tight_files.len() > roomy_files.len());
+            assert_eq!(
+                rows_per_partition(&tight_files),
+                rows_per_partition(&roomy_files)
+            );
+            assert_eq!(tight.reserved(), 0);
+        }
+
         /// A fanout write whose partitions outgrow what the pool grants writes out and closes the
         /// ones holding the most until what is left fits, and carries on: a closed partition's
         /// next rows open a new file. Every row still lands, in more files than partitions.
@@ -5885,52 +6042,90 @@ mod tests {
             let rows =
                 decorate_batch_with_field_ids(round_robin_batch(ROWS_DIVISOR, 1), &target).unwrap();
             let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Memory)).build();
-            let open_files = OpenFileMemory::default();
-            let builder = MeteredParquetWriterBuilder {
-                inner: ParquetWriterBuilder::new(WriterProperties::builder().build(), schema),
-                open_files: open_files.clone(),
-                storage: StorageWrites::Through,
-            };
-            let mut closed = builder
-                .build(file_io.new_output("memory:/t/closed.parquet").unwrap())
-                .await
-                .unwrap();
-            let mut dropped = builder
-                .build(file_io.new_output("memory:/t/dropped.parquet").unwrap())
-                .await
-                .unwrap();
+            for bloom_enabled in [false, true] {
+                let properties = if bloom_enabled {
+                    bloom_memory_properties()
+                } else {
+                    WriterProperties::builder().build()
+                };
+                let bloom_filter_bytes = bloom_filter_memory_bytes(&properties, &target).unwrap();
+                assert_eq!(
+                    bloom_filter_bytes,
+                    if bloom_enabled {
+                        2 * BLOOM_MEMORY_BYTES_PER_COLUMN
+                    } else {
+                        0
+                    }
+                );
+                let open_files = OpenFileMemory::default();
+                let builder = MeteredParquetWriterBuilder {
+                    inner: ParquetWriterBuilder::new(properties, Arc::clone(&schema)),
+                    bloom_filter_bytes,
+                    open_files: open_files.clone(),
+                    storage: StorageWrites::Through,
+                };
+                let mut closed = builder
+                    .build(file_io.new_output("memory:/t/closed.parquet").unwrap())
+                    .await
+                    .unwrap();
+                let mut dropped = builder
+                    .build(file_io.new_output("memory:/t/dropped.parquet").unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(open_files.bytes(), 2 * bloom_filter_bytes);
 
-            closed.write(&rows).await.unwrap();
-            let one = open_files.bytes();
-            assert!(one > 0, "a written file reported nothing");
-            dropped.write(&rows).await.unwrap();
-            assert_eq!(open_files.bytes(), 2 * one);
+                closed.write(&rows).await.unwrap();
+                let one = closed.share.bytes;
+                assert!(
+                    one > bloom_filter_bytes,
+                    "a written file reported no encoded bytes"
+                );
+                dropped.write(&rows).await.unwrap();
+                assert_eq!(open_files.bytes(), 2 * one);
 
-            closed.close().await.unwrap();
-            assert_eq!(open_files.bytes(), one);
-            drop(dropped);
-            assert_eq!(open_files.bytes(), 0);
+                closed.close().await.unwrap();
+                assert_eq!(open_files.bytes(), one);
+                drop(dropped);
+                assert_eq!(open_files.bytes(), 0);
+            }
         }
 
         /// A file's share is what it has written and still holds. A local file keeps nothing it
         /// has flushed, so its share falls back whenever a row group flushes and never passes a
-        /// row group and parquet-rs's write buffer. A file taken in parts keeps what it flushes
-        /// until that makes a part, so here, short of a part, it holds everything it has written.
+        /// row group, parquet-rs's write buffer and one set of Bloom targets. A file taken in parts
+        /// keeps what it flushes until that makes a part, so here, short of a part, it holds
+        /// everything it has written, in addition to its Bloom allowance.
         #[tokio::test]
         async fn a_files_share_is_what_it_still_holds() {
             let row_group_bytes = 128 * 1024;
             let schema = Arc::new(iceberg_payload_schema());
             let target = Arc::new(iceberg::arrow::schema_to_arrow_schema(&schema).unwrap());
             let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Memory)).build();
-            for storage in [StorageWrites::Through, StorageWrites::InParts] {
+            for (storage, bloom_enabled) in [StorageWrites::Through, StorageWrites::InParts]
+                .into_iter()
+                .flat_map(|storage| [false, true].map(|enabled| (storage, enabled)))
+            {
+                let properties = if bloom_enabled {
+                    bloom_memory_properties()
+                } else {
+                    WriterProperties::builder().build()
+                }
+                .into_builder()
+                .set_max_row_group_bytes(Some(row_group_bytes))
+                .build();
+                let bloom_filter_bytes = bloom_filter_memory_bytes(&properties, &target).unwrap();
+                assert_eq!(
+                    bloom_filter_bytes,
+                    if bloom_enabled {
+                        3 * BLOOM_MEMORY_BYTES_PER_COLUMN
+                    } else {
+                        0
+                    }
+                );
                 let open_files = OpenFileMemory::default();
                 let builder = MeteredParquetWriterBuilder {
-                    inner: ParquetWriterBuilder::new(
-                        WriterProperties::builder()
-                            .set_max_row_group_bytes(Some(row_group_bytes))
-                            .build(),
-                        Arc::clone(&schema),
-                    ),
+                    inner: ParquetWriterBuilder::new(properties, Arc::clone(&schema)),
+                    bloom_filter_bytes,
                     open_files: open_files.clone(),
                     storage,
                 };
@@ -5947,13 +6142,24 @@ mod tests {
                     let rows = decorate_batch_with_field_ids(rows, &target).unwrap();
                     file.write(&rows).await.unwrap();
                     let share = open_files.bytes();
+                    assert!(
+                        share >= bloom_filter_bytes,
+                        "unit {unit}: Bloom allowance disappeared"
+                    );
                     match storage {
                         StorageWrites::Through => assert!(
-                            share <= row_group_bytes + PARQUET_WRITE_BUFFER_BYTES,
+                            share
+                                <= bloom_filter_bytes
+                                    + row_group_bytes
+                                    + PARQUET_WRITE_BUFFER_BYTES,
                             "unit {unit}: a local file reserved {share} bytes"
                         ),
                         StorageWrites::InParts => {
-                            assert_eq!(share, file.current_written_size(), "unit {unit}")
+                            assert_eq!(
+                                share,
+                                file.current_written_size() + bloom_filter_bytes,
+                                "unit {unit}"
+                            )
                         }
                     }
                     fell_back |= share < previous;

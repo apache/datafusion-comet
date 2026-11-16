@@ -801,10 +801,14 @@ The native writer's buffers are charged to Comet's memory pool, the off-heap bud
 native operators draw on, where iceberg-java's buffers sit on the JVM heap. A fanout write keeps a
 data file open for every partition a task writes to. Each open file holds the row group it is
 writing in memory, up to `write.parquet.row-group-size-bytes`, and on S3 or GCS also the last row
-group it flushed, which is uploaded once the next one is complete or the file closes. Each
-partition also holds the rows that have not reached its file yet. So a task writing to many
-partitions needs memory in proportion to them. When the pool cannot grant it, the task writes out
-and closes the partitions holding the most memory until what is left fits, and a closed
+group it flushed, which is uploaded once the next one is complete or the file closes. Each open
+file also reserves the sum of its configured Bloom filter targets: 1 MiB per enabled column by
+default, up to 128 MiB per column with supported settings. This fixed allowance remains until the
+file closes, including between row groups; it covers one row group's live filters because Rust
+writes and releases them after that row group. Each partition also holds the rows that have not
+reached its file yet. So a task writing to many partitions needs memory in proportion to them.
+When the pool cannot grant it, the task writes out and closes the partitions holding the most
+memory until what is left fits, and a closed
 partition's next rows open a new file. The write then finishes with more, smaller files than
 iceberg-java's would. When every partition keeps getting rows, a task given an eighth of the memory
 its partitions need writes four to five files per partition instead of one, however many partitions
