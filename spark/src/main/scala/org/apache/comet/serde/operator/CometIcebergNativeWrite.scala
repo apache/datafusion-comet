@@ -94,6 +94,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // Supported schemes whose native backend is local and needs no host. Every other supported
   // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
+  private val S3StorageSchemes: Set[String] = Set("s3", "s3a")
   private val MaxSupportedFormatVersion = 3
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val CometS3CredentialProviderClassProperty =
@@ -119,8 +120,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // S3 write ineligible. Spark seeds the vectored-read and syncable settings into every session,
   // and clusters commonly set the rest cluster-wide. The data bucket's per-bucket spellings are
   // admitted too. Anything that can change a request stays unsupported: endpoint and region
-  // selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers,
-  // encryption and access points, and so do the credential settings. Audited against
+  // selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers and
+  // access points. Encryption and credential settings are admitted only where the write proto
+  // reproduces them (see S3AEncryptionSuffixes and S3ACredentialSuffixes). Audited against
   // `org.apache.hadoop.fs.s3a.Constants` in hadoop-aws 3.3.4 and 3.4.2.
   private val IgnoredHadoopS3Suffixes: Set[String] = Set(
     // Connection pool, threads and timeouts.
@@ -194,11 +196,52 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // native writer starts a multipart upload once a file passes 5 MiB and cannot be told not to.
   private val MultipartUploadsSuffix = "multipart.uploads.enabled"
 
+  // S3A server-side encryption, newer key names first. These are admitted when
+  // hadoopS3EncryptionProperties translates them into the `s3.sse.*` keys iceberg-rust reads.
+  private val S3AEncryptionAlgorithmSuffixes =
+    Seq("encryption.algorithm", "server-side-encryption-algorithm")
+  private val S3AEncryptionKeySuffixes = Seq("encryption.key", "server-side-encryption.key")
+  private val S3AEncryptionSuffixes: Set[String] =
+    (S3AEncryptionAlgorithmSuffixes ++ S3AEncryptionKeySuffixes).toSet
+
+  // S3A credential settings. With an explicit provider list, iceberg-java's S3A writer signs with
+  // exactly the listed providers, which the native writer's own credential chain cannot reproduce.
+  // Such a write takes its credentials from that list through HadoopS3ACredentialProviderAdapter
+  // (see usesS3ACredentialAdapter), and these settings are admitted then. Delegation tokens stay
+  // unsupported, because the adapter refuses them.
+  private val S3ACredentialProviderSuffix = "aws.credentials.provider"
+  private val S3ACredentialProviderMappingSuffix = "aws.credentials.provider.mapping"
+  private val S3ACredentialStoreSuffix = "security.credential.provider.path"
+  private val S3ACredentialSuffixes: Set[String] = Set(
+    S3ACredentialProviderSuffix,
+    S3ACredentialProviderMappingSuffix,
+    "assumed.role.arn",
+    "assumed.role.session.name",
+    "assumed.role.session.duration",
+    "assumed.role.policy",
+    "assumed.role.external.id",
+    "assumed.role.sts.endpoint",
+    "assumed.role.sts.endpoint.region",
+    "assumed.role.credentials.provider",
+    S3ACredentialStoreSuffix)
+
+  private val HadoopS3ACredentialAdapterClass =
+    "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter"
+
+  // The adapter cannot serve anonymous access, so a list that names an anonymous provider,
+  // directly or through the provider mapping, keeps falling back.
+  private val AnonymousS3ACredentialProviders: Set[String] = Set(
+    "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider",
+    "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider",
+    "com.amazonaws.auth.AnonymousAWSCredentials")
+
+  private val HadoopCredentialStoreKey = "hadoop.security.credential.provider.path"
+
   // Every suffix the gate can admit. Their per-bucket spellings resolve through this set even
   // where the runtime Hadoop version does not declare the property.
   private val AdmittedHadoopS3Suffixes: Set[String] =
-    SupportedHadoopS3Suffixes ++ IgnoredHadoopS3Suffixes + FileSystemImplSuffix +
-      MultipartUploadsSuffix
+    SupportedHadoopS3Suffixes ++ IgnoredHadoopS3Suffixes ++ S3AEncryptionSuffixes ++
+      S3ACredentialSuffixes + FileSystemImplSuffix + MultipartUploadsSuffix
 
   private val FsS3aPrefix = "fs.s3a."
   private val FsS3aBucketPrefix = "fs.s3a.bucket."
@@ -430,6 +473,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       hadoopConfs: LazyHadoopConfs) {
     def hadoopConf: Configuration = hadoopConfs.session
     def s3HadoopConf: Configuration = hadoopConfs.effective
+    lazy val fileIOProperties: Map[String, String] =
+      IcebergReflection.getFileIOProperties(table).getOrElse(Map.empty)
   }
 
   private[comet] final class LazyHadoopConfs(
@@ -488,6 +533,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
   }
 
+  // A key counts as set only when a source other than Hadoop's built-in core-default.xml set it.
+  // Hadoop's iterator includes the many fs.s3a.* defaults loaded from there, which are library
+  // defaults rather than settings a user selected, and counting them would reject every ordinary
+  // S3 write. Site XML and programmatic or Spark sources count, and so does a user resource
+  // merely named `tenant-default.xml`.
   private def hasExplicitSource(conf: Configuration, key: String): Boolean =
     Option(conf.getPropertySources(key)) match {
       case Some(sources) if sources.nonEmpty => !sources.forall(isCoreDefaultResource)
@@ -807,10 +857,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         }
     }
 
+  private def isS3Location(location: String): Boolean =
+    S3StorageSchemes.contains(storageScheme(location))
+
   private def s3DataLocation(ctx: TriggerContext): Option[String] =
-    IcebergReflection
-      .getDataLocation(ctx.table)
-      .filter(location => Set("s3", "s3a").contains(storageScheme(location)))
+    IcebergReflection.getDataLocation(ctx.table).filter(isS3Location)
 
   private def unsupportedSettingsReason(namespace: String, keys: Seq[String]): Option[String] =
     keys match {
@@ -825,29 +876,27 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    * not. The data bucket must match in full: `fs.s3a.bucket.target.other.endpoint` is bucket
    * `target.other` and suffix `endpoint`, so it does not affect a write to `target`. Values are
    * deliberately never returned because this result is used in EXPLAIN fallback reasons and may
-   * include credentials.
+   * include credentials. `s3aCredentialAdapter` admits the credential settings, for a write that
+   * takes its credentials from S3A's provider chain (see [[usesS3ACredentialAdapter]]).
    */
   private[comet] def unsupportedHadoopS3Settings(
       hadoopConf: Configuration,
-      targetBucket: Option[String]): Seq[String] = {
+      targetBucket: Option[String],
+      s3aCredentialAdapter: Boolean = false): Seq[String] = {
+    val encryption =
+      if (hadoopS3EncryptionProperties(hadoopConf, targetBucket).isDefined) S3AEncryptionSuffixes
+      else Set.empty[String]
+    val credentials = if (s3aCredentialAdapter) S3ACredentialSuffixes else Set.empty[String]
+    val translated = encryption ++ credentials
     val keys = hadoopConf
       .iterator()
       .asScala
       .map(_.getKey)
       .filter(_.startsWith("fs.s3a."))
-      // Hadoop's iterator includes the many fs.s3a.* defaults loaded from core-default.xml.
-      // Those are library implementation defaults, not settings selected by the user, and
-      // treating them as explicit would reject every ordinary S3 write. Preserve settings from
-      // site XML and programmatic/Spark sources; exclude a key only when every recorded source is
-      // Hadoop's built-in core-default.xml resource. A user resource merely named
-      // `tenant-default.xml` is still explicit configuration.
-      .filter { key =>
-        Option(hadoopConf.getPropertySources(key))
-          .forall(sources => sources.isEmpty || !sources.forall(isCoreDefaultResource))
-      }
+      .filter(hasExplicitSource(hadoopConf, _))
       .toSeq
 
-    keys.filter(key => isUnsupportedHadoopS3Key(hadoopConf, key, targetBucket)).sorted
+    keys.filter(key => isUnsupportedHadoopS3Key(hadoopConf, key, targetBucket, translated)).sorted
   }
 
   private def isCoreDefaultResource(source: String): Boolean =
@@ -873,27 +922,141 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private def isUnsupportedHadoopS3Key(
       hadoopConf: Configuration,
       key: String,
-      targetBucket: Option[String]): Boolean =
+      targetBucket: Option[String],
+      translated: Set[String]): Boolean =
     if (key.startsWith(FsS3aBucketPrefix)) {
       perBucketProperty(key) match {
         case Some((bucket, suffix)) =>
-          targetBucket.contains(bucket) && !isAdmittedHadoopS3Setting(hadoopConf, key, suffix)
+          targetBucket.contains(bucket) &&
+          !isAdmittedHadoopS3Setting(hadoopConf, key, suffix, translated)
         case None =>
           // Preserve fail-closed behavior for a property unknown to the runtime Hadoop version.
           targetBucket.exists(bucket => key.startsWith(s"$FsS3aBucketPrefix$bucket."))
       }
     } else {
-      !isAdmittedHadoopS3Setting(hadoopConf, key, key.stripPrefix(FsS3aPrefix))
+      !isAdmittedHadoopS3Setting(hadoopConf, key, key.stripPrefix(FsS3aPrefix), translated)
     }
 
   private def isAdmittedHadoopS3Setting(
       hadoopConf: Configuration,
       key: String,
-      suffix: String): Boolean =
+      suffix: String,
+      translated: Set[String]): Boolean =
     SupportedHadoopS3Suffixes.contains(suffix) || IgnoredHadoopS3Suffixes.contains(suffix) ||
+      translated.contains(suffix) ||
       (suffix == FileSystemImplSuffix &&
         Option(hadoopConf.getTrimmed(key)).contains(S3AFileSystemClass)) ||
       (suffix == MultipartUploadsSuffix && "true".equalsIgnoreCase(hadoopConf.getTrimmed(key)))
+
+  // The data bucket's spellings of `suffixes`, then the global ones, in the order S3A reads them.
+  private def s3aKeys(bucket: Option[String], suffixes: Seq[String]): Seq[String] =
+    bucket.toSeq.flatMap(b => suffixes.map(s => s"$FsS3aBucketPrefix$b.$s")) ++
+      suffixes.map(FsS3aPrefix + _)
+
+  /**
+   * The `s3.sse.*` properties for the server-side encryption iceberg-java's S3A writer applies to
+   * `bucket`, or None when the native writer cannot apply the same encryption. Mirrors
+   * `S3AUtils.buildEncryptionSecrets`: the first key that is set wins, the bucket's before the
+   * global one and the newer name before the deprecated one, even when its value is empty, which
+   * is how a bucket turns off a global setting. The value is trimmed and matched ignoring case,
+   * and SSE-S3 with a key or SSE-C without one fails the S3A write, so it falls back here. A
+   * Hadoop credential store can override the configured values, so they fall back while one is
+   * configured. Client-side and dual-layer encryption have no iceberg-rust equivalent.
+   */
+  private[comet] def hadoopS3EncryptionProperties(
+      hadoopConf: Configuration,
+      bucket: Option[String]): Option[Map[String, String]] = {
+    def setting(suffixes: Seq[String]): String =
+      s3aKeys(bucket, suffixes).iterator
+        .map(key => hadoopConf.get(key))
+        .find(_ != null)
+        .fold("")(_.trim)
+    val algorithm = setting(S3AEncryptionAlgorithmSuffixes)
+    val key = setting(S3AEncryptionKeySuffixes)
+    val credentialStore =
+      (HadoopCredentialStoreKey +: s3aKeys(bucket, Seq(S3ACredentialStoreSuffix))).exists(k =>
+        Option(hadoopConf.getTrimmed(k)).exists(_.nonEmpty))
+    if (credentialStore && (algorithm.nonEmpty || key.nonEmpty)) {
+      None
+    } else {
+      algorithm.toUpperCase(Locale.ROOT) match {
+        case "" => Some(Map.empty)
+        case "AES256" if key.isEmpty => Some(Map("s3.sse.type" -> "s3"))
+        case "SSE-KMS" =>
+          Some(Map("s3.sse.type" -> "kms") ++ Some(key).filter(_.nonEmpty).map("s3.sse.key" -> _))
+        case "SSE-C" if key.nonEmpty =>
+          sseCustomerKeyMd5(key).map(md5 =>
+            Map("s3.sse.type" -> "custom", "s3.sse.key" -> key, "s3.sse.md5" -> md5))
+        case _ => None
+      }
+    }
+  }
+
+  // S3A sends SSE-C keys as base64 with the base64 MD5 of the decoded key, which iceberg-rust
+  // takes as `s3.sse.md5` and does not derive itself.
+  private def sseCustomerKeyMd5(key: String): Option[String] =
+    scala.util.Try(java.util.Base64.getDecoder.decode(key)).toOption.map { raw =>
+      java.util.Base64.getEncoder
+        .encodeToString(java.security.MessageDigest.getInstance("MD5").digest(raw))
+    }
+
+  /**
+   * True when the native write must take its S3 credentials from Hadoop's S3A provider chain:
+   * `hadoopConf`, the table FileIO's effective Hadoop configuration, explicitly names the
+   * providers for `bucket`, and `fileIOProperties` name no Comet credential provider of their
+   * own. iceberg-java's S3A writer signs with exactly the listed providers, so the write proto
+   * then names HadoopS3ACredentialProviderAdapter, which builds that list with S3A's own factory
+   * on the executor. A FileIO without a Hadoop configuration, such as S3FileIO, has an empty one
+   * here.
+   */
+  private[comet] def usesS3ACredentialAdapter(
+      hadoopConf: Configuration,
+      fileIOProperties: Map[String, String],
+      bucket: Option[String]): Boolean = {
+    // S3A copies a bucket's settings over the global ones before it builds the list.
+    def setting(suffix: String): Option[Seq[String]] =
+      s3aKeys(bucket, Seq(suffix))
+        .find(hasExplicitSource(hadoopConf, _))
+        .map(hadoopConf.getTrimmedStrings(_).toSeq.filter(_.nonEmpty))
+    // Hadoop 3.4 resolves each name through this mapping, and fails the write on an entry that
+    // is not one non-empty name and value.
+    val mapping = setting(S3ACredentialProviderMappingSuffix)
+      .getOrElse(Nil)
+      .map(_.split("=", -1).map(_.trim))
+    !fileIOProperties.get(CometS3CredentialProviderClassProperty).exists(_.trim.nonEmpty) &&
+    mapping.forall(pair => pair.length == 2 && pair.forall(_.nonEmpty)) &&
+    setting(S3ACredentialProviderSuffix).exists { names =>
+      val mapped = mapping.map(pair => pair(0) -> pair(1)).toMap
+      names.nonEmpty && !names.exists(name =>
+        AnonymousS3ACredentialProviders.contains(name) ||
+          mapped.get(name).exists(AnonymousS3ACredentialProviders.contains))
+    }
+  }
+
+  // The keys S3A's providers read: their own `fs.s3a.*` settings, and the credential-store
+  // settings Hadoop's password lookup reads for them. Other `hadoop.security.*` keys, such as an
+  // LDAP bind password, stay out of the write proto.
+  private val S3ACredentialAdapterPrefixes =
+    Seq(FsS3aPrefix, "hadoop.security.credential.", "hadoop.security.credstore.")
+
+  /**
+   * The catalog properties that route a native write's S3 credentials through
+   * HadoopS3ACredentialProviderAdapter. The adapter rebuilds the S3A configuration on the
+   * executor from that JVM's `spark.hadoop.*` settings, so it also gets the FileIO's explicit
+   * settings under `S3ACredentialAdapterPrefixes`, which carry the catalog's `hadoop.*`
+   * overrides. The native side passes the whole property bag to the adapter. It hands
+   * iceberg-rust none of the `fs.s3a.*` keys, and its S3 storage ignores the `hadoop.*` ones.
+   */
+  private[comet] def s3aCredentialAdapterProperties(
+      hadoopConf: Configuration): Map[String, String] =
+    hadoopConf
+      .iterator()
+      .asScala
+      .map(_.getKey)
+      .filter(key =>
+        S3ACredentialAdapterPrefixes.exists(key.startsWith) && hasExplicitSource(hadoopConf, key))
+      .flatMap(key => Option(hadoopConf.get(key)).map(key -> _))
+      .toMap + (CometS3CredentialProviderClassProperty -> HadoopS3ACredentialAdapterClass)
 
   /** Return unsupported FileIO S3/client property names in deterministic order. */
   private[comet] def unsupportedS3FileIOProperties(properties: Map[String, String]): Seq[String] =
@@ -927,15 +1090,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val requireSupportedHadoopS3Settings: TriggerRule = ctx =>
     s3DataLocation(ctx).flatMap { location =>
       val dataBucket = NativeConfig.bucketForUri(new java.net.URI(location), Set.empty)
+      val s3aCredentials =
+        usesS3ACredentialAdapter(ctx.s3HadoopConf, ctx.fileIOProperties, dataBucket)
       unsupportedSettingsReason(
         "Hadoop S3A",
-        unsupportedHadoopS3Settings(ctx.s3HadoopConf, dataBucket))
+        unsupportedHadoopS3Settings(ctx.s3HadoopConf, dataBucket, s3aCredentials))
     }
 
   private val requireSupportedS3FileIOProperties: TriggerRule = ctx =>
     s3DataLocation(ctx).flatMap { _ =>
-      val properties = IcebergReflection.getFileIOProperties(ctx.table).getOrElse(Map.empty)
-      unsupportedSettingsReason("S3 FileIO", unsupportedS3FileIOProperties(properties))
+      unsupportedSettingsReason("S3 FileIO", unsupportedS3FileIOProperties(ctx.fileIOProperties))
     }
 
   // HadoopFileIO takes its GCS configuration from `fs.gs.*`, which is not forwarded to the
@@ -1319,8 +1483,33 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)
-    val catalogProperties =
-      hadoopDerivedProperties ++ fileIOProperties + CometIcebergNativeScan.ioTimeoutProperty()
+    // iceberg-java writes an S3 data location through S3A, so the native write also takes the
+    // server-side encryption S3A applies and, when S3A's provider chain supplies the credentials,
+    // the adapter that runs that chain. The gate checked both. A core-default.xml value, which
+    // the gate does not count as a setting, is translated too, and declines here if it cannot be.
+    val isS3DataLocation = isS3Location(dataLocation)
+    val s3aEncryption =
+      if (isS3DataLocation) {
+        hadoopS3EncryptionProperties(writeHadoopConf, dataBucket).getOrElse(
+          throw new IllegalStateException(
+            "S3A server-side encryption that the native writer cannot apply"))
+      } else {
+        Map.empty[String, String]
+      }
+    val s3aCredentials =
+      if (isS3DataLocation &&
+        usesS3ACredentialAdapter(writeHadoopConf, fileIOProperties, dataBucket)) {
+        s3aCredentialAdapterProperties(writeHadoopConf)
+      } else {
+        Map.empty[String, String]
+      }
+    // Only a FileIO with a Hadoop configuration yields S3A encryption, and such a FileIO ignores
+    // its own `s3.sse.*` properties, so S3A's encryption replaces them.
+    val storageFileIOProperties =
+      if (s3aEncryption.isEmpty) fileIOProperties
+      else fileIOProperties.filter { case (k, _) => !k.startsWith("s3.sse.") }
+    val catalogProperties = hadoopDerivedProperties ++ storageFileIOProperties ++
+      s3aEncryption ++ s3aCredentials + CometIcebergNativeScan.ioTimeoutProperty()
 
     val common = IcebergWriteProtoTranslation.buildCommon(
       catalogProperties = catalogProperties,
