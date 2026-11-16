@@ -319,7 +319,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       .setColumn("id")
       .setOp(OperatorOuterClass.IcebergPredicateOperator.In)
     (0 until 2000).foreach { v =>
-      inList.addValues(OperatorOuterClass.IcebergLiteral.newBuilder().setLongVal(v))
+      inList.addValues(OperatorOuterClass.IcebergLiteral.newBuilder().setLongVal(v.toLong))
     }
     val residual =
       OperatorOuterClass.IcebergPredicate.newBuilder().setSet(inList).build().toByteArray
