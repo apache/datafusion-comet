@@ -66,9 +66,9 @@ being a no-op or a regression.**
    shape.
 9. **Record the performance audit.** Add a dated `Performance (tuned ...)` line under the
    expression's heading on the relevant page in
-   `docs/source/contributor-guide/expression-audits/` (naming the technique, speedup, PR, and
-   benchmark file) so contributors can see what has already been tuned. Check this page before
-   starting, too — it tells you whether the expression was already optimized.
+   `docs/source/contributor-guide/expression-audits/` (naming the technique, speedup, PR,
+   benchmark file, and any shape that got slower with its cost) so contributors can see what has
+   already been tuned. Check this page before starting, too — it tells you whether the expression was already optimized.
 
 ## The gate: what blocks a submission
 

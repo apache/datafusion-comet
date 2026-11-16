@@ -199,8 +199,8 @@ expression has no audit entry yet):
   preallocated `BinaryBuilder`; up to 31% faster on long strings. Benchmark: `benches/unhex.rs`.
 ```
 
-Name the technique, the measured speedup, the PR, and the benchmark file. Keep it to one line
-per tuning pass so the history stays scannable.
+Name the technique, the measured speedup, the PR, the benchmark file, and any shape that got
+slower with its cost. Keep it to one line per tuning pass so the history stays scannable.
 
 ## PR conventions
 
@@ -209,7 +209,8 @@ Optimization PRs are small and follow a consistent shape:
 - Title: ``perf: optimize `function_name` (Nx faster)`` with the headline speedup.
 - Rationale: "Optimize existing expression."
 - Changes: one or two sentences naming the specific technique and what per-row cost it removes.
-- Testing: "Existing tests." plus the pasted criterion output for every shape.
+- Testing: "Existing tests." plus the pasted criterion output for every shape, and any shape that
+  got slower with its cost and justification.
 - Keep the diff focused on one expression. Do not bundle unrelated changes.
 
 Follow the standard [Pre-PR checklist](development.md): `make format`, build, and

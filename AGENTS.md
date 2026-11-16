@@ -54,10 +54,11 @@ remote changes before retrying; do not bypass it with `--force`. See
   why a choice that looks wrong is right. Do not restate the code or describe how it changed.
 - A panic that escapes a JNI or `extern "C"` entry point is undefined behavior. Return an error instead,
   and see the `review-comet-ffi-pr` skill for the checklist.
-- Config keys, their defaults, and user-visible behavior are public API. Follow
-  [Config Conventions](docs/source/contributor-guide/config_conventions.md) for renames and removals,
-  which need a deprecated alias and a major release. In a review, name every new or changed config and
-  public class.
+- Config keys, their defaults, and user-visible behavior are public API. Renaming or removing a key
+  covered by the versioning policy needs a deprecated alias and a major release. Keys in the `testing`
+  category and keys marked `internal()` are exempt. See
+  [Renaming an Existing Config](docs/source/contributor-guide/config_conventions.md#renaming-an-existing-config).
+  In a review, name every new or changed config and public class.
 - A performance PR shows which change produces the gain and covers both well-predicted input (constant
   lengths, all valid) and poorly predicted input (random). A shape may get slower when the common case
   gets faster and the PR names its cost and how often real workloads reach it. See
