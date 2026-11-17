@@ -1483,7 +1483,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     case e: ElementAt => e.failOnError
     case g: GetArrayItem => g.failOnError
     case e: Elt => e.failOnError
-    // arithmetic and casts carry an `EvalMode`
+    // Spark 4.1 keeps the arithmetic eval mode inside a `NumericEvalContext`, so read it by name
+    case a: Add => a.evalMode == EvalMode.ANSI
+    case s: Subtract => s.evalMode == EvalMode.ANSI
+    case m: Multiply => m.evalMode == EvalMode.ANSI
+    case d: Divide => d.evalMode == EvalMode.ANSI
+    case d: IntegralDivide => d.evalMode == EvalMode.ANSI
+    case r: Remainder => r.evalMode == EvalMode.ANSI
+    case p: Pmod => p.evalMode == EvalMode.ANSI
+    case c: Cast => c.evalMode == EvalMode.ANSI
     case _ => expr.productIterator.contains(EvalMode.ANSI)
   }
 
