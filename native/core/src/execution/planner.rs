@@ -79,7 +79,9 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_operators::{range_exec, range_sort_expr, ExpandExec, SampleExec};
+use datafusion_comet_operators::{
+    range_exec, range_sort_expr, ExpandExec, SampleExec, SortInputCoalesceExec,
+};
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
@@ -1860,12 +1862,32 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
+                let ordering = LexOrdering::new(exprs?).unwrap();
 
-                let sort_plan = SortExec::new(
-                    LexOrdering::new(exprs?).unwrap(),
-                    Arc::clone(&child.native_plan),
-                )
-                .with_fetch(fetch);
+                // Only a full sort over unordered input merges: TopK never does, and a sort passes
+                // ordered input through.
+                let (sort_input, coalescer): (Arc<dyn ExecutionPlan>, Vec<_>) =
+                    if sort.coalesce_input
+                        && fetch.is_none()
+                        && !child
+                            .native_plan
+                            .properties()
+                            .equivalence_properties()
+                            .ordering_satisfy(ordering.clone())?
+                    {
+                        let config = self.session_ctx.copied_config();
+                        let coalescer: Arc<dyn ExecutionPlan> =
+                            Arc::new(SortInputCoalesceExec::new(
+                                Arc::clone(&child.native_plan),
+                                config.batch_size(),
+                                config.options().execution.sort_in_place_threshold_bytes,
+                            ));
+                        (Arc::clone(&coalescer), vec![coalescer])
+                    } else {
+                        (Arc::clone(&child.native_plan), vec![])
+                    };
+
+                let sort_plan = SortExec::new(ordering, sort_input).with_fetch(fetch);
                 let mut sort_exec: Arc<dyn ExecutionPlan> = if sort.dynamic_filter_enabled {
                     match TopKReaderFilterExec::try_new(
                         &sort_plan,
@@ -1885,10 +1907,11 @@ impl PhysicalPlanner {
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(
+                    Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         sort_exec,
                         vec![Arc::clone(&child)],
+                        coalescer,
                     )),
                 ))
             }
@@ -3184,6 +3207,7 @@ mod tests {
     mod min_max_reader_filter;
     mod multi_store_scan;
     mod semi_join_reduction;
+    mod sort_input_coalesce;
 
     use futures::{poll, StreamExt};
     use std::{
