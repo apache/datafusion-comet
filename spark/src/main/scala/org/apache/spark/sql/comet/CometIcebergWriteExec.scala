@@ -25,6 +25,7 @@ import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.AttributeSet
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
@@ -114,6 +115,10 @@ case class CometIcebergWriteExec(
   override def withNewChildInternal(newChild: SparkPlan): SparkPlan = copy(child = newChild)
 
   override def nodeName: String = "CometIcebergWrite"
+
+  // As in IcebergWriteExec: `output` is the commit-message attribute this node creates, so it is
+  // produced here rather than missing from the child.
+  override def producedAttributes: AttributeSet = outputSet
 
   // Never let TreeNode.argString fall through to the protobuf's toString: the TextFormat dump
   // carries catalog_properties -- including fs.s3a.* credentials translated from the Hadoop

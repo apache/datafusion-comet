@@ -370,8 +370,12 @@ returned up to 31.8 GiB, trims took 424 ms at the median, and the queries that h
 ran about 4% slower. A longer interval trims less often for less cost, but lets more memory build
 up between trims.
 
-Trimming only applies to glibc. In builds that use the `jemalloc` or `mimalloc` feature, Comet's
-native memory does not come from glibc, and those allocators manage freed memory themselves.
+Trimming only applies to glibc. In builds that use the `jemalloc` or `mimalloc` feature, the Rust
+allocations in Comet's native library do not come from glibc, and those allocators manage freed
+memory themselves. C code linked into the library, such as zstd, and the JVM still allocate through
+glibc, so trimming still helps with that memory. The `jemalloc` Maven profile makes such a build.
+See
+[Building with the jemalloc allocator](../source.md#building-with-the-jemalloc-allocator).
 Limiting the number of glibc arenas with the `MALLOC_ARENA_MAX` environment variable also keeps
 resident memory down, but it was markedly slower in the measurements in
 [#7108](https://github.com/apache/datafusion-comet/issues/7108).

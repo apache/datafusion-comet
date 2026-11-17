@@ -3610,4 +3610,27 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+
+  test("Spark error on the hash join build side keeps its exception class") {
+    // The aggregate output is already partitioned on the join key, so the build side runs in
+    // the same native plan as the join. DataFusion hands the build-side error to the probe
+    // side wrapped in `DataFusionError::Shared`, and the JNI bridge has to look through it.
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTable("ta", "tb") {
+        sql("CREATE TABLE ta (k INT) USING parquet")
+        sql("INSERT INTO ta VALUES (1), (2)")
+        sql("CREATE TABLE tb (k INT, v INT) USING parquet")
+        sql("INSERT INTO tb VALUES (1, 0), (2, 0)")
+        val df = sql("""SELECT /*+ SHUFFLE_HASH(b) */ a.k, b.x
+            |FROM ta a JOIN (SELECT k, 1 / sum(v) AS x FROM tb GROUP BY k) b
+            |ON a.k = b.k""".stripMargin)
+        checkSparkError(df, "DIVIDE_BY_ZERO")
+        val joins = df.queryExecution.executedPlan.collect { case j: CometHashJoinExec => j }
+        assert(joins.size == 1, df.queryExecution.executedPlan)
+      }
+    }
+  }
 }

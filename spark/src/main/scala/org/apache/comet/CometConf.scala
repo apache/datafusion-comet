@@ -372,6 +372,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_LOCAL_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.exec.local.enabled")
+    .category(CATEGORY_EXEC)
+    .internal()
+    .doc(
+      "Experimental. When the Spark application runs with a local master, run a whole query " +
+        "that Comet executes natively without JVM input as one native graph in a single " +
+        "Spark task. Other queries use ordinary Comet execution.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.makeDate.operatorFallback.enabled")
       .category(CATEGORY_EXEC)
@@ -650,7 +660,8 @@ object CometConf extends ShimCometConf {
           "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
           "Celeborn requires explicit native mode and compatible application settings. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
-          "cannot be changed during the application.")
+          "cannot be changed during the application. On Spark 4.0 and later, " +
+          "`org.apache.spark.CometPlugin` sets it to `CometShuffleManager` if it is unset.")
       .booleanConf
       .createWithDefault(true)
 

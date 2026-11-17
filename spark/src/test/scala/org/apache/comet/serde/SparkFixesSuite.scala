@@ -34,7 +34,7 @@ class SparkFixesSuite extends AnyFunSuite {
     }
 
   test("fixes by Spark version") {
-    // SPARK-58821 and SPARK-60118 are in 4.0.5, 4.1.4 and 4.2.1.
+    // SPARK-58821, SPARK-60118 and SPARK-60119 are in 4.0.5, 4.1.4 and 4.2.1.
     Seq(
       "3.4.3" -> false,
       "3.5.9" -> false,
@@ -49,6 +49,7 @@ class SparkFixesSuite extends AnyFunSuite {
       "5.0.0" -> true).foreach { case (version, fixed) =>
       assert(SparkFixes.sequenceRecomputesOverflowedLength(version) == fixed, version)
       assert(SparkFixes.castsZeroWithAnyExponentToDecimal(version) == fixed, version)
+      assert(SparkFixes.castsTinyStringToDecimalZero(version) == fixed, version)
       val sequence = if (fixed) "spark_sequence_recomputed" else "spark_sequence"
       assert(CometSequence.nativeFunction(version) == sequence, version)
     }
@@ -137,6 +138,7 @@ class SparkFixesSuite extends AnyFunSuite {
     Seq("4.1.4-amzn-1", "4.0.5.7.3.2.30000-15", "4.2.1-SNAPSHOT").foreach { version =>
       assert(SparkFixes.sequenceRecomputesOverflowedLength(version), version)
       assert(SparkFixes.castsZeroWithAnyExponentToDecimal(version), version)
+      assert(SparkFixes.castsTinyStringToDecimalZero(version), version)
       assert(SparkFixes.arraySetFunctionsNormalizeFloats(version), version)
       assert(SparkFixes.slopeFiltersVarByPairNulls(version), version)
       assert(SparkFixes.r2DegenerateCasesSwapped(version), version)
@@ -150,6 +152,7 @@ class SparkFixesSuite extends AnyFunSuite {
     val fixes: Seq[(String, String => Boolean)] = Seq(
       "sequenceRecomputesOverflowedLength" -> SparkFixes.sequenceRecomputesOverflowedLength,
       "castsZeroWithAnyExponentToDecimal" -> SparkFixes.castsZeroWithAnyExponentToDecimal,
+      "castsTinyStringToDecimalZero" -> SparkFixes.castsTinyStringToDecimalZero,
       "arraySetFunctionsNormalizeFloats" -> SparkFixes.arraySetFunctionsNormalizeFloats,
       "slopeFiltersVarByPairNulls" -> SparkFixes.slopeFiltersVarByPairNulls,
       "r2DegenerateCasesSwapped" -> SparkFixes.r2DegenerateCasesSwapped,
