@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.shims.CometTypeShim
@@ -193,6 +194,12 @@ object CometMapFromArrays
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Declined in convert rather than as Unsupported, which would route it to the codegen
+    // dispatcher instead of falling back to Spark.
+    if (expr.children.exists(!_.deterministic)) {
+      withFallbackReason(expr, NullGuardSupport.nondeterministicReason)
+      return None
+    }
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
     val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
