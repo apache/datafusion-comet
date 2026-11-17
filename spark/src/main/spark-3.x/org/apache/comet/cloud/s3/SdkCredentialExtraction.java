@@ -52,8 +52,8 @@ final class SdkCredentialExtraction {
       sessionToken = ((AWSSessionCredentials) creds).getSessionToken();
     }
     // The v1 base interface exposes no expiration, so report 0 (unknown). Comet then asks for a
-    // credential on every request, and the Iceberg path assumes it lasts 5 minutes, which can be
-    // longer than a short-lived session credential has left.
+    // credential on every request. An Iceberg read assumes it lasts 5 minutes, which can be longer
+    // than a short-lived session credential has left, and an Iceberg write asks for every request.
     return new CometS3Credentials(accessKeyId, secretKey, sessionToken, 0L);
   }
 }
