@@ -179,7 +179,8 @@ pub enum AccessMode {
 
 /// A reference to a provider registered with the JVM dispatcher. `ensureInitialized` takes it, and
 /// dropping the last bridge that shares it gives it back with `release`, so the dispatcher can
-/// close a provider once nothing reads through it, such as after a catalog re-vends credentials.
+/// close a provider once nothing reads through it, such as after a catalog re-vends credentials
+/// with a later expiry.
 struct ProviderHandle(i64);
 
 impl Drop for ProviderHandle {

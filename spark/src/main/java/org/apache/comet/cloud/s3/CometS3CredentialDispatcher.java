@@ -51,8 +51,9 @@ import org.apache.comet.util.ClassLoaders;
  * gives one back. When the last reference is released, the dispatcher closes the provider and
  * forgets its key, so a later {@link #ensureInitialized} for the same key creates a new one. This
  * is what retires a provider whose catalog properties were superseded, such as when an Iceberg REST
- * catalog vends new credentials for a table: native code releases the old handle when it drops the
- * last reader built on it. Providers still referenced at JVM shutdown are closed then.
+ * catalog vends credentials with a later expiry for a table: native code releases the old handle
+ * when it drops the last reader built on it. Providers still referenced at JVM shutdown are closed
+ * then.
  *
  * <p>A release can come from any thread that drops a native reader, including a Tokio worker or a
  * task thread inside a scan, so the dispatcher closes released providers on its own daemon thread.
