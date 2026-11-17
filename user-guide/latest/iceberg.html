@@ -1572,6 +1572,81 @@ length and one for the footer itself, made one file after another before the tas
 or GCS each read is a GET request, so the task waits two request round trips per file. That is
 small next to uploading a large file, but a write that produces many small files, such as a fanout
 write over many partitions, pays it for every one of them.</p>
+<section id="plans-for-each-fallback">
+<h4>Plans for each fallback<a class="headerlink" href="#plans-for-each-fallback" title="Link to this heading">#</a></h4>
+<p>Each eligibility rule above is planned to be lifted, waiting on work in another project, or not
+planned. A rule is lifted only once the native writer matches iceberg-java’s output for the
+setting it guards.</p>
+<p>Planned to be lifted:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">write.object-storage.enabled=true</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6956">#6956</a>)</p></li>
+<li><p>S3 credential providers other than an explicit S3A provider list, among them anonymous
+providers and S3A delegation tokens; S3A server-side encryption settings when a Hadoop
+credential store is configured; and ACL, storage class, requester-pays and <code class="docutils literal notranslate"><span class="pre">dsse-kms</span></code> settings
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6957">#6957</a>)</p></li>
+<li><p>Merge-on-read <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> and <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> on a format version 2 table
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6240">#6240</a>)</p></li>
+<li><p>Bloom filters (<code class="docutils literal notranslate"><span class="pre">write.parquet.bloom-filter-*</span></code>)
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5724">PR #5724</a>)</p></li>
+<li><p>Copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> and <code class="docutils literal notranslate"><span class="pre">MERGE</span></code>, and <code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code>, on a format version 3
+table with Iceberg 1.10 or newer
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6669">#6669</a>)</p></li>
+<li><p>Azure (<code class="docutils literal notranslate"><span class="pre">abfs</span></code>, <code class="docutils literal notranslate"><span class="pre">abfss</span></code>, <code class="docutils literal notranslate"><span class="pre">wasb</span></code>, <code class="docutils literal notranslate"><span class="pre">wasbs</span></code>) and <code class="docutils literal notranslate"><span class="pre">oss</span></code> data locations, S3-compatible scheme
+aliases, and a <code class="docutils literal notranslate"><span class="pre">gs</span></code> data location opened through <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6958">#6958</a>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">parquet.enable.dictionary</span></code>, <code class="docutils literal notranslate"><span class="pre">parquet.columnindex.truncate.length</span></code>,
+<code class="docutils literal notranslate"><span class="pre">write.parquet.page-version=v2</span></code>, <code class="docutils literal notranslate"><span class="pre">write.parquet.stats-enabled.column.*</span></code>, non-default
+<code class="docutils literal notranslate"><span class="pre">row-group-check-*</span></code> counts, and a zstd level of <code class="docutils literal notranslate"><span class="pre">0</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6954">#6954</a>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">uuid</span></code> and <code class="docutils literal notranslate"><span class="pre">unknown</span></code> columns
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6959">#6959</a>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hdfs</span></code> data locations on a cluster without Kerberos. iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">hdfs-native</span></code> backend
+(<a class="reference external" href="https://github.com/apache/iceberg-rust/pull/3111">apache/iceberg-rust#3111</a>) already serves
+the native scan (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5894">#5894</a>), so the work is
+on Comet’s side (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7637">#7637</a>). On a cluster
+with Kerberos the write waits on the same delegation token support as the native scan.</p></li>
+</ul>
+<p>Waiting on work in another project:</p>
+<ul class="simple">
+<li><p>Merge-on-read on a format version 3 table, which writes deletion vectors, waits on a deletion
+vector writer in iceberg-rust
+(<a class="reference external" href="https://github.com/apache/iceberg-rust/issues/2580">apache/iceberg-rust#2580</a>).</p></li>
+<li><p>Table encryption (<code class="docutils literal notranslate"><span class="pre">encryption.*</span></code> properties, an <code class="docutils literal notranslate"><span class="pre">EncryptingFileIO</span></code>, or Iceberg’s standard
+encryption manager) waits on iceberg-rust’s table encryption support
+(<a class="reference external" href="https://github.com/apache/iceberg-rust/issues/2034">apache/iceberg-rust#2034</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">variant</span></code> columns wait on native <code class="docutils literal notranslate"><span class="pre">VariantType</span></code> support in Comet
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5433">#5433</a>, part of <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5438">#5438</a>).</p></li>
+<li><p>A negative zstd compression level waits on parquet-rs, which accepts zstd levels 1 to 22
+(<a class="reference external" href="https://github.com/apache/arrow-rs/issues/11545">apache/arrow-rs#11545</a>).</p></li>
+<li><p>Format version 4 waits on a final version 4 table specification.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">timestamp_ns</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code> and <code class="docutils literal notranslate"><span class="pre">geography</span></code> columns wait on Iceberg’s Spark integration, which has
+no Spark type for them, so Spark cannot write such a table today.</p></li>
+</ul>
+<p>Not planned:</p>
+<ul class="simple">
+<li><p>Avro and ORC data files. The native writer writes Parquet only, and iceberg-rust has no Avro or
+ORC data file writer.</p></li>
+<li><p>Any other data location scheme, which no iceberg-rust storage backend serves.</p></li>
+<li><p>A custom location provider (<code class="docutils literal notranslate"><span class="pre">write.location-provider.impl</span></code>, or one a custom <code class="docutils literal notranslate"><span class="pre">TableOperations</span></code>
+supplies), a <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> outside the recognized classes, or a custom encryption manager. Each is
+user code that runs in the JVM, which the native writer cannot call.</p></li>
+<li><p>S3 object tags, access points, transfer acceleration, dual-stack and cross-region endpoints,
+remote signing, and custom S3A signers. Comet’s native S3 client has no equivalent for them.</p></li>
+<li><p>Any other <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> key, such as one a newer Iceberg version adds. The allowlist fails
+closed so that no key is silently ignored, and Comet vets each new key when it adds support for
+that Iceberg version.</p></li>
+<li><p>A size or limit that is not a positive Java int, a format version 1 spec that mixes a live field
+with a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped, and an <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">s3a</span></code> or <code class="docutils literal notranslate"><span class="pre">gs</span></code> location with no
+bucket in its authority. iceberg-java rejects these writes, or resolves the location through
+Hadoop, so falling back keeps its behavior and its error.</p></li>
+<li><p>A gzip level outside 0 to 9 or a brotli level outside 0 to 11. parquet-rs rejects them, and
+translating each one is not planned.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">brotli</span></code> compression when Hadoop’s <code class="docutils literal notranslate"><span class="pre">BrotliCodec</span></code> class cannot be loaded. iceberg-java fails the
+write and no JVM reader could read the files, so falling back keeps iceberg-java’s error
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6960">#6960</a>).</p></li>
+</ul>
+</section>
 </section>
 <section id="failure-handling">
 <h3>Failure handling<a class="headerlink" href="#failure-handling" title="Link to this heading">#</a></h3>
@@ -1934,7 +2009,10 @@ partition value is such a constant.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-operations">Supported operations</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#when-comet-falls-back-to-spark-s-write-operator">When Comet falls back to Spark’s write operator</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#plans-for-each-fallback">Plans for each fallback</a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#failure-handling">Failure handling</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#accepted-divergences">Accepted divergences</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#physical-file-layout-only-cosmetic">Physical file layout only (cosmetic)</a></li>
