@@ -142,9 +142,9 @@ With the config set and the JAR on the classpath, executor logs show on first S3
 - Info level: `Instantiated CometS3CredentialProvider <fully.qualified.VendorClassName>`
 - Debug level: `Fetching credentials via <class> (dispatchKey=<key>) for bucket=... path=... mode=...`
 
-The Info line also names `org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter` when Comet picked the adapter for Hadoop's profile provider with no class configured.
+The Info line also names `org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter` when Comet picked the adapter itself, for Hadoop's profile provider or for a native Iceberg write with an explicit S3A provider list.
 
-Without the config set, and with no bucket naming Hadoop's profile provider, no credential-related log lines appear at startup; native readers use the default AWS credential chain.
+Without the config set, with no bucket naming Hadoop's profile provider, and with no native Iceberg write using an explicit S3A provider list, no credential-related log lines appear at startup; native readers use the default AWS credential chain.
 
 ## Troubleshooting
 
