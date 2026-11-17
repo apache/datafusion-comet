@@ -67,6 +67,19 @@ since Comet `1.0.0`. If you run Spark 3.4, stay on the last Comet release that p
 `comet-spark-spark3.4_*`. See [Installing Comet](installation.md) for the supported Java, Scala,
 and Spark versions.
 
+### Shuffle Manager Set by the Plugin on Spark 4.0 and Later
+
+On Spark 4.0 and later, `CometPlugin` sets `spark.shuffle.manager` to `CometShuffleManager` when
+the application leaves it unset. Previously, an application that registered the plugin without a
+shuffle manager ran without Comet, with a warning. It now runs with Comet. To keep the previous
+behavior, set `spark.comet.enabled=false`, or set `spark.shuffle.manager` to the manager you want.
+
+These applications never ran Comet, so they may have left `spark.executor.memoryOverhead` at Spark's
+default. Comet's native memory outside the off-heap pool comes out of that overhead, and YARN or
+Kubernetes can kill an executor that runs out of it. The plugin warns at startup when it is unset,
+but check it before you upgrade; see
+[Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
+
 ### Deprecated and Removed Settings
 
 `spark.comet.exec.columnarToRow.native.enabled` is deprecated and will be removed in a future major

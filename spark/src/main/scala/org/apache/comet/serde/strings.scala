@@ -561,7 +561,7 @@ object CometRLike
 }
 
 private object PadReasons {
-  val literalStrReason = "Scalar values are not supported for the `str` argument."
+  val literalStrReason = "Literal values are not supported for the `str` argument."
   val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
 }
 
