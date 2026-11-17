@@ -189,11 +189,14 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   (`stddev`, `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `covar_samp`). These run
   natively as plain aggregations but not as window functions
   ([#4766](https://github.com/apache/datafusion-comet/issues/4766)).
-- `min` / `max` on timestamp-without-time-zone, interval, or nested (array / struct) input types, and `sum` /
-  `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type support as
-  the batch aggregates, so these fall back in both contexts.
+- `min` / `max` on timestamp-without-time-zone, interval, or array input types, and `sum` / `avg` on year-month
+  or day-time interval input types. Windowed aggregates inherit the same input-type support as the batch
+  aggregates, so these fall back in both contexts.
 - `min` / `max` on string or binary input types. These run natively as plain aggregations but not as window
   functions.
+- `min` / `max` on struct input types. A struct whose fields are all supported `min` / `max` types other than
+  `float` and `double` runs natively as a plain aggregation, but not as a window function. Other structs fall
+  back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
 - `avg` or `try_avg` on `DECIMAL(p, s)` with an expanding frame when `p >= 28`, because Spark can preserve
@@ -219,6 +222,9 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation (e.g.
+  `UTF8_LCASE`). The native window finds partitions and peers by comparing keys byte by byte, which splits values
+  that the collation ties.
 
 A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
 supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the

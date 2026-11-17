@@ -20,11 +20,60 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.{CometTestBase, SparkSessionExtensions}
+import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometSparkSessionExtensions
 import org.apache.comet.rules.CometRule
 
 class CometSessionExtensionsSuite extends CometTestBase {
+
+  test("captured configs do not override a SQL execution after a setting is unset") {
+    val staleKey = "spark.comet.test.captured.stale"
+    val currentKey = "spark.comet.test.captured.current"
+    val captured = SQLConf.withExistingConf(new SQLConf()) {
+      SQLConf.get.setConfString(staleKey, "stale")
+      CapturedSQLConf.capture()
+    }
+    withSQLConf(currentKey -> "current") {
+      spark.conf.unset(staleKey)
+      def readTaskValues(): Seq[(String, String)] = spark.sparkContext
+        .parallelize(Seq(1), 1)
+        .map { _ =>
+          captured.withConf {
+            val conf = SQLConf.get
+            (conf.getConfString(staleKey, "missing"), conf.getConfString(currentKey, "missing"))
+          }
+        }
+        .collect()
+        .toSeq
+
+      // Outside a SQL execution Spark does not propagate these settings, so the captured
+      // settings still fill the gap as before.
+      assert(readTaskValues() == Seq(("stale", "missing")))
+      // A task property without a SQL execution id still wins over the capture.
+      val previous = spark.sparkContext.getLocalProperty(staleKey)
+      try {
+        spark.sparkContext.setLocalProperty(staleKey, "propagated")
+        assert(readTaskValues() == Seq(("propagated", "missing")))
+      } finally {
+        spark.sparkContext.setLocalProperty(staleKey, previous)
+      }
+      val query = spark.range(1)
+      val actual = SQLExecution.withNewExecutionId(query.queryExecution) {
+        readTaskValues()
+      }
+      assert(actual == Seq(("missing", "current")))
+
+      // When the originally captured key is still set, prefer the current value as before.
+      withSQLConf(staleKey -> "new") {
+        val current = SQLExecution.withNewExecutionId(query.queryExecution) {
+          readTaskValues()
+        }
+        assert(current == Seq(("new", "current")))
+      }
+    }
+  }
 
   private def countCometRules(extensions: SparkSessionExtensions): (Int, Int) = {
     val columnar = extensions

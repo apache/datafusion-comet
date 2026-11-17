@@ -176,4 +176,46 @@ class CometCsvNativeReadSuite extends CometTestBase {
       }
     }
   }
+
+  test("Native csv read - a libhdfs scheme set only by a read option falls back") {
+    withTempPath { dir =>
+      spark.range(5).write.csv(dir.toString)
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        // The option routes `file` paths through libhdfs for this read only. Native cannot read
+        // them that way, so the scan must stay on Spark, which ignores the option.
+        val df = spark.read
+          .schema("id LONG")
+          .option("fs.comet.libhdfs.schemes", "file,hdfs")
+          .csv(dir.toString)
+        val (_, plan) =
+          checkSparkAnswerAndFallbackReason(df, "listed for libhdfs only through reader options")
+        assert(
+          collect(plan) { case s: CometCsvNativeScanExec => s }.isEmpty,
+          s"Expected Spark's CSV reader but found CometCsvNativeScanExec. Plan:\n$plan")
+      }
+    }
+  }
+
+  test("Native csv read - scans of the same file compare equal") {
+    withTempPath { dir =>
+      spark.range(5).write.csv(dir.toString)
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        def scan: CometCsvNativeScanExec =
+          spark.read
+            .schema("id LONG")
+            .csv(dir.toString)
+            .queryExecution
+            .executedPlan
+            .collect { case s: CometCsvNativeScanExec => s }
+            .head
+        // Equal canonical forms let Spark reuse the exchanges and stages of a repeated scan.
+        assert(scan.sameResult(scan))
+      }
+    }
+  }
 }
