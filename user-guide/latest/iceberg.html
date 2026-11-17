@@ -1089,6 +1089,15 @@ system user must be that user. Otherwise the scan falls back with a reason that 
 To read HDFS tables with Spark’s Iceberg reader and keep the native scan for other storage, set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.hdfs.enabled=false</span></code>. Writes to HDFS use Iceberg’s own writer.</p>
 </section>
+<section id="plan-data-per-task">
+<h3>Plan data per task<a class="headerlink" href="#plan-data-per-task" title="Link to this heading">#</a></h3>
+<p>The native reader sends each task only the delete files, partition values and residual filters
+that its own files need, the way Spark’s Iceberg reader does. A delete file or residual filter
+that many partitions use, such as an unpartitioned equality delete or a filter on a
+non-partition column, is serialized once and shared by those partitions. The driver keeps one
+copy of it, and a coalesce without a shuffle (<code class="docutils literal notranslate"><span class="pre">coalesce(n)</span></code>, or a write that coalesces its
+input), which combines several input partitions into one task, sends that task one copy.</p>
+</section>
 <section id="current-limitations">
 <h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
 <p>The following scenarios will fall back to the JVM Iceberg reader:</p>
@@ -1912,6 +1921,7 @@ partition value is such a constant.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rest-catalog">REST Catalog</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#object-store-configuration-s3">Object store configuration (S3)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hdfs">HDFS</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#plan-data-per-task">Plan data per task</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current limitations</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-udfs">Iceberg UDFs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-system-functions">Iceberg system functions</a></li>

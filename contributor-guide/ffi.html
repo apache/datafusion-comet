@@ -69,7 +69,7 @@ under the License.
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Timezone Handling" href="timezones.html" />
-    <link rel="prev" title="Comet Plugin Architecture" href="plugin_overview.html" />
+    <link rel="prev" title="Local Execution" href="local-execution.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -399,6 +399,7 @@ under the License.
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
 
+<li class="toctree-l1"><a class="reference internal" href="local-execution.html">Local Execution</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Arrow FFI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timezones.html">Timezone Handling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="floating_point.html">Floating-Point Semantics</a></li>
@@ -566,7 +567,8 @@ under the License.
 <li><p><strong>JVM → Native</strong>: Native code pulls batches from the JVM over the
 <a class="reference external" href="https://arrow.apache.org/docs/format/CStreamInterface.html">Arrow C Stream Interface</a>. The JVM exports each
 per-partition iterator once as an <code class="docutils literal notranslate"><span class="pre">ArrowArrayStream</span></code>, and native pulls every batch through a single C callback.</p></li>
-<li><p><strong>Native → JVM</strong>: JVM pulls batches from native code using <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>, via the
+<li><p><strong>Native → JVM</strong>: JVM pulls batches from native code using <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> (or <code class="docutils literal notranslate"><span class="pre">LocalQueryIterator</span></code> for
+<a class="reference internal" href="local-execution.html"><span class="std std-doc">local execution</span></a>), via the
 <a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface</a> (one <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code>/<code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code>
 pair per column of each batch).</p></li>
 </ol>
@@ -766,6 +768,10 @@ a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</sp
 <p><code class="docutils literal notranslate"><span class="pre">ArrowImporter</span></code> (in <code class="docutils literal notranslate"><span class="pre">spark/src/main/java/org/apache/arrow/c/</span></code>) imports every column through one shared
 <code class="docutils literal notranslate"><span class="pre">SchemaImporter</span></code>. Arrow Java’s own <code class="docutils literal notranslate"><span class="pre">Data.importField</span></code> creates a new <code class="docutils literal notranslate"><span class="pre">SchemaImporter</span></code> for each field, and each one
 numbers dictionaries from 0, so two dictionary-encoded columns would collide in the shared <code class="docutils literal notranslate"><span class="pre">CDataDictionaryProvider</span></code>.</p>
+<p>A <a class="reference internal" href="local-execution.html"><span class="std std-doc">local execution</span></a> query takes the same path through <code class="docutils literal notranslate"><span class="pre">LocalQueryIterator</span></code>, which calls
+<code class="docutils literal notranslate"><span class="pre">NativeLocal.nextBatch</span></code> in place of <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code>. <code class="docutils literal notranslate"><span class="pre">nextBatch</span></code> exports the next batch of the query with the same
+<code class="docutils literal notranslate"><span class="pre">prepare_output</span></code>, and so with <code class="docutils literal notranslate"><span class="pre">move_to_spark</span></code>, and returns <code class="docutils literal notranslate"><span class="pre">-2</span></code> while none is ready yet, so that the task can check
+whether it was killed between pulls.</p>
 </section>
 <section id="array-offsets">
 <h3>Array Offsets<a class="headerlink" href="#array-offsets" title="Link to this heading">#</a></h3>
@@ -802,6 +808,8 @@ column runs its release callback, and native frees the buffers once no Rust refe
 <li><p><code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> closes the batch it returned when the consumer next calls <code class="docutils literal notranslate"><span class="pre">hasNext</span></code> or <code class="docutils literal notranslate"><span class="pre">next</span></code>, and on
 <code class="docutils literal notranslate"><span class="pre">close()</span></code>. A batch is therefore valid only until the consumer asks for the next one, and a consumer that keeps the
 data longer has to copy it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">LocalQueryIterator</span></code> closes its batches the same way. A batch it returned stays valid after the native query is
+closed, until the JVM closes the batch.</p></li>
 </ul>
 <p>By the time the JVM receives a batch, native has usually stopped reserving it in the memory pool, but it stays
 resident until the JVM closes it. See <a class="reference internal" href="memory_management.html#crossing-the-ffi-boundary"><span class="std std-ref">Crossing the FFI boundary</span></a>.</p>
@@ -868,12 +876,12 @@ resident until the JVM closes it. See <a class="reference internal" href="memory
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="plugin_overview.html"
+       href="local-execution.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet Plugin Architecture</p>
+        <p class="prev-next-title">Local Execution</p>
       </div>
     </a>
     <a class="right-next"

@@ -68,7 +68,7 @@ under the License.
     <script src="../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Arrow FFI Usage in Comet" href="ffi.html" />
+    <link rel="next" title="Local Execution" href="local-execution.html" />
     <link rel="prev" title="Comet Development Guide" href="development.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -399,6 +399,7 @@ under the License.
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Comet Plugin Architecture</a></li>
 
+<li class="toctree-l1"><a class="reference internal" href="local-execution.html">Local Execution</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timezones.html">Timezone Handling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="floating_point.html">Floating-Point Semantics</a></li>
@@ -626,6 +627,9 @@ rules on Spark 3.5 and later, and the <code class="docutils literal notranslate"
 <p><code class="docutils literal notranslate"><span class="pre">CometRule</span></code> is two phases, applied in order: scan conversion (<code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code>), then operator conversion
 (<code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>). The order matters, because operator conversion builds its native plan up from the nodes that scan
 conversion produces. Each phase is described below.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.local.enabled</span></code>, the columnar <code class="docutils literal notranslate"><span class="pre">CometRule</span></code> first offers the converted plan to
+local execution, which runs a whole qualifying query as one native graph in a single Spark task
+when the application uses a local master. See <a class="reference internal" href="local-execution.html"><span class="std std-doc">Local Execution</span></a>.</p>
 <section id="phase-1-cometscanrule">
 <h3>Phase 1: CometScanRule<a class="headerlink" href="#phase-1-cometscanrule" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.</p>
@@ -754,11 +758,11 @@ FFI imports the result into the JVM as a <code class="docutils literal notransla
       </div>
     </a>
     <a class="right-next"
-       href="ffi.html"
+       href="local-execution.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Arrow FFI Usage in Comet</p>
+        <p class="prev-next-title">Local Execution</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
