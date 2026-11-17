@@ -51,3 +51,7 @@ harness = false
 [[bench]]
 name = "window"
 harness = false
+
+[[bench]]
+name = "sort_small_batches"
+harness = false

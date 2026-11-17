@@ -87,6 +87,20 @@ Native aggregates with grouping keys report these additional metrics:
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
 
+### CometSort
+
+Native sorts report these additional metrics:
+
+| Metric                                                        | Description                                                                                         |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `number of spills`                                            | Number of times the sort spilled to disk.                                                           |
+| `total spilled bytes`                                         | Bytes written to sort spill files.                                                                  |
+| `number of small input batches combined into larger ones`     | Small input batches, such as shuffle blocks from many map tasks, combined before the sort.          |
+| `number of batches produced by combining small input batches` | Batches the sort received from that combining. Zero means the sort got its input batches unchanged. |
+
+The combining is controlled by `spark.comet.exec.sort.coalesceInput.enabled`. Its time is included in
+the sort's `total time`.
+
 ### Hash Joins
 
 With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins

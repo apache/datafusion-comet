@@ -1601,6 +1601,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       val sortBuilder = OperatorOuterClass.Sort
         .newBuilder()
         .addAllSortOrders(sortOrders.map(_.get).asJava)
+        .setCoalesceInput(CometConf.COMET_EXEC_SORT_COALESCE_INPUT_ENABLED.get(op.conf))
       Some(builder.setSort(sortBuilder).build())
     } else {
       withFallbackReason(op, "sort order not supported")
@@ -1655,7 +1656,13 @@ case class CometSortExec(
     CometMetricNode.baselineMetrics(sparkContext) ++
       Map(
         "spill_count" -> SQLMetrics.createMetric(sparkContext, "number of spills"),
-        "spilled_bytes" -> SQLMetrics.createSizeMetric(sparkContext, "total spilled bytes"))
+        "spilled_bytes" -> SQLMetrics.createSizeMetric(sparkContext, "total spilled bytes"),
+        "coalesced_input_batches" -> SQLMetrics.createMetric(
+          sparkContext,
+          "number of small input batches combined into larger ones"),
+        "coalesced_output_batches" -> SQLMetrics.createMetric(
+          sparkContext,
+          "number of batches produced by combining small input batches"))
 }
 
 object CometLocalLimitExec extends CometOperatorSerde[LocalLimitExec] {
