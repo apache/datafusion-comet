@@ -583,9 +583,9 @@ object CometCast
    * Whether `cast` cannot raise an error for any value. A TRY cast returns NULL for a value it
    * cannot convert, and so does a LEGACY cast between the atomic types listed here. An ANSI cast
    * cannot fail only where the conversion is always exact, such as a widening one or a string to
-   * its bytes. A cast to or from a timestamp is excluded in every mode: the native kernels go
+   * its bytes. A cast to or from a timestamp is excluded in every mode: the Rust kernels go
    * through chrono, which rejects years Spark accepts, and raise even for TRY. So is a cast from
-   * a date to a string, whose native formatting raises in every mode for such a year. Both are
+   * a date to a string, whose Rust formatting raises in every mode for such a year. Both are
    * checked at any depth, since a nested cast applies the same kernels to each element, field,
    * key and value (https://github.com/apache/datafusion-comet/issues/7471).
    */
@@ -604,7 +604,7 @@ object CometCast
    * Whether `cast` can raise whatever its eval mode: a cast to or from a timestamp, or from a
    * date to a string, at any depth, as `cannotFail` describes.
    */
-  private[comet] def failsInAnyMode(cast: Cast): Boolean = {
+  private def failsInAnyMode(cast: Cast): Boolean = {
     val from = cast.child.dataType
     val to = cast.dataType
     val hasTimestamp = Seq(from, to).exists(

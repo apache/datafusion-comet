@@ -1396,8 +1396,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Whether `expr` cannot raise an error for any row, so native execution may evaluate it for
-   * rows that Spark skips. It answers from Spark's semantics, independently of the native
+   * Whether `expr` cannot raise an error for any row, so Comet may evaluate it for rows that
+   * Spark skips. It answers from Spark's semantics, independently of the Rust function
    * `cannot_fail` in `case_when.rs`, which judges the physical expressions it is given. It is
    * conservative: an allowed expression whose children also cannot fail. Anything not listed is
    * treated as able to fail.
@@ -1455,33 +1455,71 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   /**
    * The first sort key after the first that can fail. Spark's ordering evaluates a sort key only
-   * for the rows whose earlier keys tie, but native execution evaluates every key over the whole
-   * batch, so such a key may raise on a row that Spark skips (#7246). Under ANSI any key that
-   * `cannotFail` does not accept counts; otherwise only one that `raisesInAnyMode` flags.
+   * for the rows whose earlier keys tie, but Comet evaluates every key over the whole batch, so
+   * such a key may raise on a row that Spark skips
+   * (https://github.com/apache/datafusion-comet/issues/7246). Under ANSI any key that
+   * `cannotFail` does not accept counts. Otherwise a key counts when `raisesInAnyMode` flags it,
+   * or when it holds a node still in ANSI mode that `cannotFail` does not accept, such as `b + 1`
+   * in the ordering of a view created with ANSI on.
    */
   def laterSortKeyThatCanFail(sortOrder: Seq[SortOrder]): Option[SortOrder] = {
     val canFail: Expression => Boolean =
-      if (SQLConf.get.ansiEnabled) e => !cannotFail(e) else raisesInAnyMode
+      if (SQLConf.get.ansiEnabled) e => !cannotFail(e)
+      else e => raisesInAnyMode(e) || e.exists(n => hasAnsiEvalMode(n) && !cannotFail(n))
     sortOrder.drop(1).find(s => canFail(s.child))
   }
 
   /**
-   * With ANSI off, whether `expr` can still raise on a row that Spark's ordering skips. Comet 1.2
-   * ran every top-K natively, so this only adds safety over that release even though the list is
-   * best-effort (https://github.com/apache/datafusion-comet/issues/7585).
+   * Whether `expr` was resolved in ANSI mode, whatever the session's setting is now. A view keeps
+   * the configs it was created with, so its expressions keep their ANSI eval mode when it is
+   * queried with ANSI off. Like `raisesInAnyMode`, it is best-effort: it covers arithmetic, casts
+   * and the expressions listed here (https://github.com/apache/datafusion-comet/issues/7585).
    */
-  private def raisesInAnyMode(expr: Expression): Boolean = expr.find {
-    // assert_true is replaced by If(_, null, RaiseError) before planning
-    case _: RaiseError | _: UserDefinedExpression => true
-    // element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
-    case e: ElementAt =>
-      e.left.dataType.isInstanceOf[ArrayType] && !(e.right.foldable && e.right.eval() != 0)
-    // an invalid pattern raises in every mode
-    case r: RLike => !r.right.foldable
-    // the native timestamp and date to string kernels raise even for TRY (#7471)
-    case c: Cast => CometCast.failsInAnyMode(c)
-    case _ => false
-  }.isDefined
+  private def hasAnsiEvalMode(expr: Expression): Boolean = expr match {
+    case u: UnaryMinus => u.failOnError
+    case a: Abs => a.failOnError
+    case r: Round => r.ansiEnabled
+    case r: BRound => r.ansiEnabled
+    case e: ElementAt => e.failOnError
+    case g: GetArrayItem => g.failOnError
+    case e: Elt => e.failOnError
+    // arithmetic and casts carry an `EvalMode`
+    case _ => expr.productIterator.contains(EvalMode.ANSI)
+  }
+
+  /**
+   * With ANSI off, whether `expr` can still raise on a row that Spark's ordering skips, because
+   * Spark raises for it in every mode. Comet 1.2 ran every TopK in Comet, so this only adds
+   * safety over that release even though the list is best-effort
+   * (https://github.com/apache/datafusion-comet/issues/7585). A Rust kernel that raises where
+   * Spark does not, such as a timestamp cast of a year beyond chrono's range, raises in a
+   * projection too and is left to its own issue
+   * (https://github.com/apache/datafusion-comet/issues/7471).
+   */
+  private def raisesInAnyMode(expr: Expression): Boolean = {
+    def constantWhere(e: Expression)(ok: Int => Boolean): Boolean =
+      e.foldable && (e.eval() match {
+        case null => true
+        case v: Int => ok(v)
+        case _ => false
+      })
+    expr.find {
+      // assert_true is replaced by If(_, null, RaiseError) before planning
+      case _: RaiseError | _: UserDefinedExpression => true
+      // element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
+      case e: ElementAt =>
+        e.left.dataType.isInstanceOf[ArrayType] && !(e.right.foldable && e.right.eval() != 0)
+      // an invalid pattern raises in every mode
+      case r: RLike => !r.right.foldable
+      // slice raises for a start of 0 or a negative length in every mode
+      case s: Slice => !(constantWhere(s.start)(_ != 0) && constantWhere(s.length)(_ >= 0))
+      // array_insert raises INVALID_INDEX_OF_ZERO in every mode
+      case a: ArrayInsert => !constantWhere(a.posExpr)(_ != 0)
+      // sequence raises for bounds that do not match the step in every mode
+      case s: Sequence => !s.children.forall(_.foldable)
+      case _ => false
+    }.isDefined
+  }
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way

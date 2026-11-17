@@ -315,6 +315,20 @@ class CometCodegenSuite
     }
   }
 
+  test("a ScalaUDF later sort key runs a TopK on Spark with ANSI off") {
+    // Spark's TopK ordering evaluates a later sort key only for the rows whose earlier keys
+    // tie, and a user-defined function can raise in any mode, so Comet must not evaluate it for
+    // every row (https://github.com/apache/datafusion-comet/issues/7246).
+    spark.udf.register("strictLen", (s: String) => s.length)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withSubjects("a", "bb", "ccc") {
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT s FROM t ORDER BY s, strictLen(s) LIMIT 2"),
+          "can fail on rows that Spark's ordering skips")
+      }
+    }
+  }
+
   test("disabled mode bypasses the dispatcher") {
     // When the per-feature config is off, `CometScalaUDF.convert` returns None and the enclosing
     // operator falls back to Spark. The dispatcher's counters must not move.

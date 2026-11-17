@@ -15,9 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Spark's top-K ordering evaluates a later sort key only for rows whose earlier keys tie, so a
--- later key that fails under ANSI mode does not fail on a row Spark skips. Comet evaluates every
--- key over the whole batch, so a top-K whose later key can fail runs on Spark (#7246).
+-- Spark's TopK ordering evaluates a later sort key only for rows whose earlier keys tie, so a
+-- later key that can fail does not fail on a row Spark skips. Comet evaluates every key over the
+-- whole batch, so a TopK whose later key can fail runs on Spark
+-- (https://github.com/apache/datafusion-comet/issues/7246).
 -- Each table is one batch.
 
 -- Config: spark.sql.ansi.enabled=true
@@ -41,7 +42,7 @@ SELECT a, b FROM topk ORDER BY a DESC, CAST(CAST(b AS STRING) AS INT) * 2 LIMIT 
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a, b FROM topk ORDER BY a, abs(b) LIMIT 2
 
--- Later keys that cannot fail stay native
+-- Later keys that cannot fail stay in Comet
 query
 SELECT a, b FROM topk ORDER BY a, b LIMIT 2
 
@@ -81,7 +82,7 @@ INSERT INTO topk_types SELECT /*+ REPARTITION(1) */ * FROM VALUES
   (5, 0, 0, -1.0E308D, '', date'9999-12-31', timestamp'9999-12-31 23:59:59')
   AS t(a, b, l, d, s, dt, ts)
 
--- Later keys built from functions that cannot fail stay native
+-- Later keys built from functions that cannot fail stay in Comet
 query
 SELECT a, s FROM topk_types ORDER BY a, trim(s), ltrim(s), rtrim(s), replace(s, 'a', 'b'),
   reverse(s), octet_length(s), bit_length(s), concat(s, 'x'), concat_ws('-', s, s) LIMIT 3
@@ -101,7 +102,7 @@ SELECT a, s FROM topk_types ORDER BY a, hash(b, s), xxhash64(s), md5(s), sha1(s)
 query
 SELECT a, s FROM topk_types ORDER BY a, initcap(s) LIMIT 3
 
--- Native timestamp casts reject years that Spark accepts, even for TRY
+-- Comet's Rust timestamp casts reject years that Spark accepts, even for TRY
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a, ts FROM topk_types ORDER BY a, CAST(ts AS STRING) LIMIT 3
 
@@ -111,7 +112,7 @@ SELECT a, ts FROM topk_types ORDER BY a, try_cast(ts AS DATE) LIMIT 3
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a, dt FROM topk_types ORDER BY a, try_cast(dt AS TIMESTAMP) LIMIT 3
 
--- Native date formatting rejects years that Spark accepts, in every mode
+-- Comet's Rust date formatting rejects years that Spark accepts, in every mode
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a, dt FROM topk_types ORDER BY a, CAST(dt AS STRING) LIMIT 3
 
@@ -127,7 +128,7 @@ INSERT INTO topk_nested SELECT /*+ REPARTITION(1) */ a, array(ts), array(dt), na
   (1, timestamp'2024-01-31 23:59:59', date'2024-01-31'),
   (2, timestamp'1970-01-01 00:00:00', date'1970-01-01') AS t(a, ts, dt)
 
--- The same native kernels cast each element, field, key and value of a nested type
+-- The same Rust kernels cast each element, field, key and value of a nested type
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a FROM topk_nested ORDER BY a, try_cast(tsa AS STRING) LIMIT 3
 
@@ -196,7 +197,7 @@ INSERT INTO topk_ties SELECT /*+ REPARTITION(1) */ * FROM VALUES
 query expect_error(ARITHMETIC_OVERFLOW)
 SELECT a, b FROM topk_ties ORDER BY a, b + 1 LIMIT 2
 
--- Without ANSI mode the key cannot fail and stays native
+-- Without ANSI mode the key cannot fail and stays in Comet
 statement
 SET spark.sql.ansi.enabled=false
 
@@ -225,6 +226,14 @@ SELECT a, dt FROM topk_types ORDER BY a, date_add(dt, 1) LIMIT 3
 query
 SELECT a, s FROM topk_types ORDER BY a, lpad(s, 5) LIMIT 3
 
+-- Spark adds casts to and from a timestamp quietly, and with ANSI off they give NULL rather
+-- than raise, so these keys stay in Comet
+query
+SELECT a, ts FROM topk_types ORDER BY a, date_add(ts, 1) LIMIT 3
+
+query
+SELECT a, ts FROM topk_types ORDER BY a, concat(s, ts) LIMIT 3
+
 statement
 CREATE TABLE topk_arrays(a int, arr array<int>) USING parquet
 
@@ -235,3 +244,38 @@ INSERT INTO topk_arrays SELECT /*+ REPARTITION(1) */ * FROM VALUES
 -- element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a FROM topk_arrays ORDER BY a, element_at(arr, 0) LIMIT 3
+
+-- A constant index other than 0 gives NULL when out of bounds
+query
+SELECT a FROM topk_arrays ORDER BY a, element_at(arr, 1) LIMIT 3
+
+-- slice raises for a start of 0, array_insert for a position of 0, and sequence for bounds that
+-- do not match the step, in every mode. No two rows tie on a, so Spark never evaluates them.
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_arrays ORDER BY a, size(slice(arr, a - 1, 1)) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_arrays ORDER BY a, size(array_insert(arr, a - 1, 0)) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_arrays ORDER BY a, size(sequence(a, 1, 1)) LIMIT 3
+
+query
+SELECT a FROM topk_arrays ORDER BY a, size(slice(arr, 1, 1)), size(array_insert(arr, 1, 0))
+LIMIT 3
+
+-- A view keeps the configs it was created with, so the b + 1 in its ordering stays in ANSI mode
+statement
+SET spark.sql.ansi.enabled=true
+
+statement
+CREATE TEMPORARY VIEW topk_ansi_view AS SELECT a, b FROM topk ORDER BY a, b + 1 LIMIT 2
+
+statement
+SET spark.sql.ansi.enabled=false
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, b FROM topk_ansi_view
+
+statement
+DROP VIEW topk_ansi_view
