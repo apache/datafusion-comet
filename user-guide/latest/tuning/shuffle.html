@@ -899,8 +899,9 @@ under the License.
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> is a Spark static configuration which cannot be changed at runtime.
-It must be set before the Spark context is created. You can enable or disable Comet shuffle
-at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
+It must be set before the Spark context is created, except that on Spark 4.0 and later <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code>
+sets it to <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code> if the application leaves it unset. You can enable or disable
+Comet shuffle at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
 Once it is disabled, the configured shuffle manager handles ordinary Spark shuffle dependencies
 without Comet’s shuffle implementation.</p>
 <p>Applications that use Apache Celeborn set a different shuffle manager. See

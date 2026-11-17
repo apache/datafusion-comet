@@ -583,6 +583,13 @@ version. If neither <code class="docutils literal notranslate"><span class="pre"
 and skips the remaining steps. Otherwise it:</p>
 <ul class="simple">
 <li><p>Appends <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> to <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code>, unless it is already listed.</p></li>
+<li><p>On Spark 4.0 and later, sets <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> to Comet’s <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code>, when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code> and Comet shuffle are on and the application has not set <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code>. An
+application’s own value is always kept. It is not set where Comet would disable itself anyway, such as on a
+big-endian platform, with <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.int96TimestampConversion=true</span></code>, or when the native library fails to
+load. Before Spark 4.0 the plugin cannot do this, because Spark has created the shuffle manager by the time plugins
+run. It runs before the cache serializer step, since that serializer is installed only with one of Comet’s shuffle
+managers.</p></li>
 <li><p>Sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> to Comet’s <code class="docutils literal notranslate"><span class="pre">ArrowCachedBatchSerializer</span></code> when
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code>, unless the application has chosen a different serializer.
 It leaves Spark’s serializer in place where Comet could not scan its format in the Comet pipeline or Kryo would
@@ -690,7 +697,9 @@ executing, the resulting Arrow batches are imported into the JVM using Arrow FFI
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
 <p>Comet integrates with Spark’s shuffle mechanism, optimizing both shuffle writes and reads. Comet’s shuffle manager
-must be registered with Spark using the following configuration:</p>
+must be registered with Spark using the following configuration. On Spark 4.0 and later, <code class="docutils literal notranslate"><span class="pre">CometDriverPlugin</span></code>
+registers it when the application leaves <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> unset (see above); on earlier versions, the
+application must set it:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">manager</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">execution</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">CometShuffleManager</span>
 </pre></div>
 </div>

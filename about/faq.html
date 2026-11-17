@@ -587,7 +587,9 @@ and row formats, which can cost more than Comet saves. See
 <a class="reference internal" href="../user-guide/latest/tuning/transitions.html"><span class="std std-doc">Reducing Row/Columnar Conversion Overhead</span></a>.</p></li>
 <li><p><strong>Comet’s shuffle manager is not set.</strong> If <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> does not name Comet’s shuffle
 manager, Comet disables itself and logs a warning, unless <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled=false</span></code>, in
-which case Comet runs but every shuffle runs in Spark. See
+which case Comet runs but every shuffle runs in Spark. On Spark 4.0 and later, <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> sets
+the manager when the application leaves <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> unset, so this applies there only
+when the application names another manager. On Spark 3.5 the application must set it. See
 <a class="reference internal" href="../user-guide/latest/tuning/shuffle.html"><span class="std std-doc">Shuffle Tuning</span></a>.</p></li>
 <li><p><strong>Too little memory.</strong> Native operators spill to disk when the off-heap pool is too small. See
 <a class="reference internal" href="../user-guide/latest/tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a>.</p></li>

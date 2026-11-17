@@ -723,8 +723,7 @@ shows a result is rechecked only by a sweep that takes 25 open pull requests eve
 is about two hours to go round 200 of them. So after you re-run a failed job in your fork, the pull
 request can keep showing the old result for hours. Your fork’s <strong>Actions</strong> tab is the source of truth:
 read the details and re-run failed jobs there. If the check says <strong>Enable CI on your fork</strong> or <strong>No fork CI
-run for this commit</strong>, no run was found for the pull request’s head commit: Actions is disabled, the
-branch does not include the fork workflows, or the run has not appeared yet.</p>
+run for this commit</strong>, see <a class="reference internal" href="#when-the-fork-check-finds-no-run">When the fork check finds no run</a>.</p>
 <p>Some things to know:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">(fork)</span></code> is informational.</strong> <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> does not depend on it, because a contributor
@@ -757,6 +756,41 @@ same commit is not tested twice. A <code class="docutils literal notranslate"><s
 <p>If you cannot enable Actions on your fork, say so on the pull request. Nothing else will run the PR
 tier for you before the queue does, so a maintainer may ask you to reproduce a failure with
 <a class="reference internal" href="#reproducing-a-suite-failure-locally"><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code></a> first.</p>
+<section id="when-the-fork-check-finds-no-run">
+<h3>When the fork check finds no run<a class="headerlink" href="#when-the-fork-check-finds-no-run" title="Link to this heading">#</a></h3>
+<p>When no run of your fork exists for the pull request’s head commit, <code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">(fork)</span></code> says one of two
+things:</p>
+<ul class="simple">
+<li><p><strong>Enable CI on your fork.</strong> Your fork has no enabled <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">CI</span> <span class="pre">(fork</span> <span class="pre">run)</span></code> workflow. Usually
+GitHub Actions was never enabled on the fork, or no branch that includes the fork workflows has
+been pushed to it. GitHub shows this check as failed because it asks you to act. It does not block
+merging. The check says only that no run of your fork was found for this commit. A pull request
+opened before the PR tier moved to forks can still have results of the PR tier from here, as the
+last paragraph of this section says. Otherwise the PR tier has not run for this commit, and only
+the preflight checks and any <code class="docutils literal notranslate"><span class="pre">run-*</span></code> suites have run here.</p></li>
+<li><p><strong>No fork CI run for this commit.</strong> The workflow exists but has no run for this commit. Either
+the run has not appeared yet, your branch does not include the fork workflows, or the commit was
+pushed before Actions was enabled.</p></li>
+</ul>
+<p>If your fork’s Actions tab has no run for this commit, the fix is the three steps above, followed
+by a new push:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Enable Actions in your fork's Actions tab, then:</span>
+git<span class="w"> </span>fetch<span class="w"> </span>upstream
+git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>upstream/main:main<span class="w">   </span><span class="c1"># 2. sync your fork's main (or use "Sync fork" on GitHub)</span>
+git<span class="w"> </span>merge<span class="w"> </span>upstream/main<span class="w">              </span><span class="c1"># 3. bring the fork workflows into your branch (or rebase)</span>
+git<span class="w"> </span>push<span class="w">                             </span><span class="c1"># starts a Comet CI (fork run); use --force-with-lease after a rebase</span>
+</pre></div>
+</div>
+<p>These commands assume the remote named <code class="docutils literal notranslate"><span class="pre">upstream</span></code> is <code class="docutils literal notranslate"><span class="pre">apache/datafusion-comet</span></code> and <code class="docutils literal notranslate"><span class="pre">origin</span></code> is your
+fork. Enabling Actions does not start a run for commits already pushed, so a push is needed even
+when your branch already includes the fork workflows. If <code class="docutils literal notranslate"><span class="pre">main</span></code> has nothing new to merge, an empty
+commit (<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">commit</span> <span class="pre">--allow-empty</span></code>) will do. The check picks up the new run within a few minutes.</p>
+<p>A pull request opened before the PR tier moved to forks on 30 October 2026 had the PR tier run here
+for the commits pushed up to then, and those results still show on it. The sweep still adds a
+<code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">(fork)</span></code> check to it. It is the failed <strong>Enable CI on your fork</strong> one if your fork has no
+enabled workflow, and the neutral <strong>No fork CI run for this commit</strong> one if it has, so set up your
+fork as above before your next push.</p>
+</section>
 </section>
 <section id="opting-a-pull-request-into-a-suite-the-pr-tier-skips">
 <h2>Opting a pull request into a suite the PR tier skips<a class="headerlink" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips" title="Link to this heading">#</a></h2>
@@ -1167,7 +1201,10 @@ list first.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#three-tiers">Three tiers</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-requests-from-forks">Pull requests from forks</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-requests-from-forks">Pull requests from forks</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-fork-check-finds-no-run">When the fork check finds no run</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips">Opting a pull request into a suite the PR tier skips</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merging-through-the-queue">Merging through the queue</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-queue-run-fails">When a queue run fails</a></li>
