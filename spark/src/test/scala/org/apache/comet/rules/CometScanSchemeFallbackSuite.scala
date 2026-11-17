@@ -922,6 +922,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
 
   test(
     "iceberg scan: HDFS client settings of the session reach the FileIO, behind the catalog's") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
     val (claimed, reasons) = planIcebergScanOverHdfs(
       Seq("hdfs://nn.example.com:8020/warehouse/t/data/f.parquet"),
       hadoopConf =
