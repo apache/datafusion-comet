@@ -25,6 +25,7 @@ import java.util.Locale
 import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.comet.shims.ShimFileSourceScanExec
 import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.types.StructType
@@ -37,15 +38,31 @@ object CometScanUtils {
       scan: FileSourceScanExec,
       partitionFilters: Seq[Expression],
       dataFilters: Seq[Expression]): FileSourceScanExec = {
-    // Keep the runtime's full constructor, including fields added by Spark distributions.
+    // Rebuild through makeCopy rather than the compiled case-class copy, so that a runtime
+    // whose FileSourceScanExec appends constructor fields, such as Amazon EMR, keeps them.
     val args = scan.productIterator.map(_.asInstanceOf[AnyRef]).toArray
-    // Spark 4 adds a stream argument before the schema; the filters keep the same offsets
-    // after it. Locate the existing schema rather than assuming a Spark-specific arity.
-    val schemaIndex = args.indexWhere(_ eq scan.requiredSchema)
-    require(schemaIndex >= 0, "FileSourceScanExec is missing its required schema")
-    args(schemaIndex + 1) = partitionFilters
-    args(schemaIndex + 4) = dataFilters
+    replaceArg(
+      args,
+      ShimFileSourceScanExec.partitionFiltersIndex,
+      scan.partitionFilters,
+      partitionFilters)
+    replaceArg(args, ShimFileSourceScanExec.dataFiltersIndex, scan.dataFilters, dataFilters)
     scan.makeCopy(args).asInstanceOf[FileSourceScanExec]
+  }
+
+  // Fail loudly if the runtime constructor does not have the expected value at `index`,
+  // rather than rebuilding the scan with an argument in the wrong position.
+  private def replaceArg(
+      args: Array[AnyRef],
+      index: Int,
+      expected: AnyRef,
+      replacement: AnyRef): Unit = {
+    if (index >= args.length || args(index) != expected) {
+      throw new IllegalStateException(
+        s"Unexpected FileSourceScanExec constructor layout: argument $index is not the " +
+          "expected filter list")
+    }
+    args(index) = replacement
   }
 
   /**
