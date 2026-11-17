@@ -54,7 +54,11 @@ for, so that failure is confined to the task and the executor keeps running. An 
 `OutOfMemoryError` is not exempt: the executor hands it to `SparkUncaughtExceptionHandler`, which
 calls `System.exit(SparkExitCode.OOM)` (exit code 52). Real heap exhaustion therefore usually costs
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
-exceeded; the exit code does.
+exceeded, and neither does the exit code alone. Exit 137 means the process was sent `SIGKILL`, for
+memory or not. On non-Windows YARN executors, Spark adds `-XX:OnOutOfMemoryError='kill %p'` unless
+their Java options already set `-XX:OnOutOfMemoryError`, so a heap OOM there usually ends with
+`SIGTERM` (143) before the handler exits with 52. The cluster manager's diagnostics and the executor
+log say which budget it was.
 
 Comet's difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
@@ -613,6 +617,9 @@ diverge for several structural reasons:
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
+- **Local execution's read-ahead.** The partitions of a local query hold the batches they produce
+  ahead of delivery, up to `spark.driver.maxResultSize` in all, without reserving them (see
+  [Local Execution](local-execution.md)).
 - **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
   `grow` asked for, Comet holds the difference anyway and deliberately does not tell Spark about it
   (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
@@ -747,11 +754,13 @@ much they matter:
 
 A checklist for triaging an executor OOM kill:
 
-1. Confirm which budget was exceeded. Exit code 137 / `OOMKilled` on the pod is the cgroup. Exit
-   code 52 with `java.lang.OutOfMemoryError` in the executor log is JVM heap exhaustion; Spark
-   treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
-   them. A failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed
-   memory pool, which is the only one of the three that is recoverable at task level.
+1. Confirm which budget was exceeded, from the cluster manager's diagnostics and the executor log
+   rather than the exit code alone. `OOMKilled` on the pod, or YARN reporting that the container
+   exceeded its memory limit, is the cgroup. A `java.lang.OutOfMemoryError` with a heap message
+   such as `Java heap space` in the executor log is JVM heap exhaustion. Spark treats it as fatal,
+   so the executor is lost either way, usually with exit code 52, or 143 on non-Windows YARN. A
+   failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed memory pool,
+   which is the only one of the three that is recoverable at task level.
 2. Compare `allocated` against `reserved` in the executor's `Comet native memory usage` log lines
    leading up to the kill, or `nativeAllocated` against `poolsReserved` in its
    `CometExecutorMemoryUsage` events when the event log records them, or `native_allocated`
