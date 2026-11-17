@@ -658,6 +658,14 @@ runs on a pull request against a release branch.</p>
 rather than template markers (see
 <a class="reference internal" href="release_process.html#generate-release-documentation"><span class="std std-ref">Generate Release Documentation</span></a>). A backport
 that changes a configuration’s description or default has to update its row there.</p></li>
+<li><p>The per-Spark-version compatibility pages in
+<code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/compatibility/expressions/spark-&lt;version&gt;/</span></code> are frozen the same
+way. A backport that changes the notes or reasons an expression serde reports
+(<code class="docutils literal notranslate"><span class="pre">getCompatibleNotes</span></code>, <code class="docutils literal notranslate"><span class="pre">getIncompatibleReasons</span></code> or <code class="docutils literal notranslate"><span class="pre">getUnsupportedReasons</span></code>), or the support level
+of a cast, has to update the matching section in each page it affects. Rerunning
+<code class="docutils literal notranslate"><span class="pre">./dev/generate-release-docs.sh</span></code> and reading <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">diff</span></code> shows the exact text, at the cost of one
+Maven build per Spark version. The script rewrites every frozen page, so keep only the hunks the
+backport changes.</p></li>
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/</span></code> is published from a release branch, so changes to the
 contributor guide or <code class="docutils literal notranslate"><span class="pre">docs/source/conf.py</span></code> need no backport.</p></li>
 <li><p>CI builds with the latest stable Rust. When a new Rust release adds Clippy lints, <code class="docutils literal notranslate"><span class="pre">main</span></code> gets a
