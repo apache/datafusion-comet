@@ -59,3 +59,36 @@ SELECT rpad('hi', 5, 'x'), rpad('hello', 3, 'x'), rpad('', 3, 'a'), rpad(NULL, 5
 
 query expect_dispatch(rpad)
 SELECT rpad('hi', 5, 'xy') FROM test_rpad
+
+-- The string argument references a column but is a scalar for the whole batch when
+-- every row takes the subquery branch (issue #7245). max(s) is 'é', which is not ASCII,
+-- and the predicate holds for every row without being folded.
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), len, 'xy') FROM test_rpad
+
+query expect_native(rpad)
+SELECT rpad(CASE WHEN coalesce(len, 0) > -1000 THEN (SELECT max(s) FROM test_rpad) ELSE s END, len, 'xy') FROM test_rpad
+
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), len) FROM test_rpad
+
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), 3, 'x') FROM test_rpad
+
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad WHERE len > 100), s), len, 'x') FROM test_rpad
+
+-- Only some rows take the subquery branch, so the string argument stays an array.
+query expect_native(rpad)
+SELECT rpad(IF(len > 3, (SELECT max(s) FROM test_rpad), s), len, 'x') FROM test_rpad
+
+-- A scalar subquery that returns no rows gives a NULL length (issue #7452).
+query expect_native(rpad)
+SELECT rpad(s, (SELECT max(len) FROM test_rpad WHERE len > 100)) FROM test_rpad
+
+query expect_native(rpad)
+SELECT rpad(s, (SELECT max(len) FROM test_rpad WHERE len > 100), 'x') FROM test_rpad
+
+-- A scalar string with a NULL scalar length gives a NULL scalar.
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), (SELECT max(len) FROM test_rpad WHERE len > 100), 'x') FROM test_rpad

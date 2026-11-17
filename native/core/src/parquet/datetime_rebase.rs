@@ -100,6 +100,7 @@ use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::days_from_civil;
 use parquet::basic::Type as ParquetPhysicalType;
 use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaData};
 use parquet::schema::types::SchemaDescriptor;
@@ -154,21 +155,6 @@ const JULIAN_GREG_DIFF_SWITCH_DAY: [i32; 14] = [
     -244645, -208120, -171595, -141427,
 ];
 
-/// Proleptic-Gregorian days since 1970-01-01 for a nominal civil date, via Howard Hinnant's
-/// `days_from_civil`. `d` may exceed the month's length; the excess rolls into the following
-/// month exactly like `LocalDate.of(y, m, 1).plusDays(d - 1)` in Spark's
-/// `localRebaseJulianToGregorianDays` (how the non-existent proleptic date `1000-02-29`,
-/// valid in the Julian calendar, lands on `1000-03-01`).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400; // [0, 399]
-    let mp = (m + 9) % 12; // [0, 11], March = 0
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
 /// Julian-calendar civil date `(year, month, day)` for a day count since 1970-01-01 that labels
 /// days in the Julian calendar (astronomical year numbering: 1 BCE is year 0). Standard
 /// Julian-day-number conversion (E.G. Richards' algorithm), exact for any day.
@@ -193,6 +179,7 @@ fn julian_day_to_civil(days: i64) -> (i64, i64, i64) {
 pub(crate) fn rebase_julian_to_gregorian_days(days: i32) -> i32 {
     if days < JULIAN_GREG_DIFF_SWITCH_DAY[0] {
         let (y, m, d) = julian_day_to_civil(days as i64);
+        // Spark's `LocalDate.of(y, m, 1).plusDays(d - 1)`, so Julian 1000-02-29 is 1000-03-01.
         (days_from_civil(y, m, 1) + (d - 1)) as i32
     } else {
         // Spark's rebaseDays: linear search from the most recent switch day.

@@ -81,6 +81,15 @@ under ANSI mode. Comet chooses the behavior by the Spark version number. On a ve
 reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
 returns `0`.
 
+Likewise, a string far below the target scale's unit in the last place casts to `0` on those
+releases when the difference to the target scale does not fit in an int (SPARK-60119), for example
+`'1e-2147483647'` cast to `DECIMAL(10,-2)`, which needs
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`. Earlier releases raise a raw
+`ArithmeticException` in every eval mode, which Comet cannot reproduce: it returns `NULL`, or
+raises `CAST_INVALID_INPUT` under ANSI mode. Comet again chooses the behavior by the Spark version
+number, so on a vendor build that reports an older version but includes SPARK-60119, Comet returns
+`NULL` (or raises) where Spark returns `0`.
+
 A string whose integral part has more than 38 digits, such as `'6E+38'`, is rejected before Spark
 checks the value against the target type. Comet does the same: the result is `NULL`, or
 `NUMERIC_OUT_OF_SUPPORTED_RANGE` under ANSI mode, whatever the target type. With
