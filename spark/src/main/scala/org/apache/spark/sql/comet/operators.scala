@@ -779,8 +779,7 @@ object CometExec {
   private[comet] def isStoragePartitioned(plan: SparkPlan): Boolean =
     !plan.exists(_.isInstanceOf[ShuffleExchangeLike]) &&
       plan.collectLeaves().forall {
-        // Spark's own scans. Comet's non-native V2 scan, CometBatchScanExec, is a leaf under a
-        // CometScanWrapper that this does not unwrap, so a join over it keeps its requirement.
+        // Spark's own scans, and CometBatchScanExec, which extends DataSourceV2ScanExecBase.
         case scan: DataSourceV2ScanExecBase => scan.keyGroupedPartitioning.isDefined
         // originalPlan is null on a canonicalized copy
         case scan: CometIcebergNativeScanExec =>
