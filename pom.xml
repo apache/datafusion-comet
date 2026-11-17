@@ -93,7 +93,7 @@ under the License.
          hadoop-azure.version does: MiniDFSCluster cannot start when the minicluster is older than
          the hadoop-client-api/runtime Spark supplies. The default matches spark-4.1. -->
     <hadoop.version>3.4.2</hadoop.version>
-    <arrow.version>18.3.0</arrow.version>
+    <arrow.version>20.0.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <!-- semanticdb-scalac is published per Scala patch version, so the 2.13 profiles need a
@@ -273,11 +273,17 @@ under the License.
         <version>${arrow.version}</version>
         <!-- Arrow's per-buffer IPC compression codecs. Their backing libraries ship with Spark,
              so take them from there rather than bundling a second copy: commons-compress (LZ4
-             frame) and zstd-jni are both on every Spark version Comet supports. -->
+             frame), lz4-java and zstd-jni are all on every Spark version Comet supports. Arrow
+             depends on the at.yawk.lz4 fork of lz4-java, which has the same net.jpountz classes
+             as the org.lz4 artifact Spark ships, so excluding it avoids duplicate classes. -->
         <exclusions>
           <exclusion>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>at.yawk.lz4</groupId>
+            <artifactId>lz4-java</artifactId>
           </exclusion>
           <exclusion>
             <groupId>com.github.luben</groupId>
