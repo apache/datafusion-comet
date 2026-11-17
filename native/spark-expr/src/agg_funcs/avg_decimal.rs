@@ -30,7 +30,7 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::format_state_name;
 use std::sync::Arc;
 
-use crate::utils::{build_bool_state, unlikely};
+use crate::utils::{build_bool_state, unlikely, Decimal128Bounds};
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::ArrowNativeTypeOp;
 use arrow::datatypes::{
@@ -367,8 +367,8 @@ struct AvgDecimalGroupsAccumulator {
 
     /// The type of the sum
     sum_data_type: DataType,
-    /// This is input_precision + 10 to be consistent with Spark
-    sum_precision: u8,
+    /// The values a sum holds. Its precision is input_precision + 10 to be consistent with Spark
+    sum_bounds: Decimal128Bounds,
     sum_scale: i8,
 
     /// Evaluation mode for error handling
@@ -398,7 +398,7 @@ impl AvgDecimalGroupsAccumulator {
             target_precision,
             target_scale,
             sum_data_type: sum_data_type.clone(),
-            sum_precision,
+            sum_bounds: Decimal128Bounds::new(sum_precision),
             sum_scale,
             counts: vec![],
             sums: vec![],
@@ -428,9 +428,7 @@ impl AvgDecimalGroupsAccumulator {
         self.counts[group_index] += 1;
         self.sums[group_index] = new_sum;
 
-        if unlikely(
-            is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.sum_precision),
-        ) {
+        if unlikely(is_overflow || !self.sum_bounds.contains(new_sum)) {
             // Overflow: set to null. Error will be thrown during evaluate in ANSI mode.
             // This matches Spark's DecimalAddNoOverflowCheck behavior.
             self.is_not_null.set_bit(group_index, false);
@@ -519,9 +517,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
             let sum = self.sums[group_index];
             let (new_sum, is_overflow) = sum.overflowing_add(new_value);
 
-            if is_overflow
-                || !Decimal128Type::is_valid_decimal_precision(new_sum, self.sum_precision)
-            {
+            if is_overflow || !self.sum_bounds.contains(new_sum) {
                 // Preserve overflow in intermediate/spilled state without throwing. Like
                 // Spark's decimal AVG, report ANSI overflow only when evaluate emits the
                 // affected group; a prefix emission may not need this group yet.
