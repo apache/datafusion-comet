@@ -1374,6 +1374,29 @@ under the License.
             </configuration>
           </execution>
           <execution>
+            <!-- Comet does not ship Guava. It stays at test scope for the Hive and Delta test
+                 integrations, so a compile or runtime path back to it fails the build here. -->
+            <id>ban-guava-outside-tests</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <searchTransitive>true</searchTransitive>
+                  <excludes>
+                    <exclude>com.google.guava:guava:*:*:compile</exclude>
+                    <exclude>com.google.guava:guava:*:*:runtime</exclude>
+                    <exclude>com.google.guava:failureaccess:*:*:compile</exclude>
+                    <exclude>com.google.guava:failureaccess:*:*:runtime</exclude>
+                  </excludes>
+                  <message>Comet does not ship Guava. Use the JDK equivalent instead, or keep the
+                    dependency at test scope.</message>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+          <execution>
             <id>no-duplicate-declared-dependencies</id>
             <goals>
               <goal>enforce</goal>

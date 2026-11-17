@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
@@ -29,8 +31,6 @@ import org.apache.spark.sql.execution.datasources.text.TextOptions
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -92,7 +92,7 @@ case class CometTextNativeScanExec(
   }
 
   override def hashCode(): Int = {
-    Objects.hashCode(output, serializedPlanOpt, originalPlan)
+    Objects.hash(output, serializedPlanOpt, originalPlan)
   }
 }
 
