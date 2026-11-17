@@ -219,15 +219,18 @@ it at the start of the cycle gives the new versions the full cycle of nightly an
 release branch is cut. The release branch keeps the lockfile it was cut with, so it ships the dependency set that CI
 has been testing. Keep this PR apart from the version bump so that a regression is easy to bisect and revert.
 
-Run `cargo update` in `native/` and in each contrib crate that has its own `Cargo.lock`, then check the build:
+Run `cargo update` in `native/`, in `native/native-executors/` and in each contrib crate that has its own
+`Cargo.lock`, then check the build. `native/native-executors/` builds the `native/` crates by path but keeps its own
+lockfile, so refreshing `native/` alone leaves it on the old transitive versions.
 
 ```shell
 cd native && cargo update && cargo check --all-targets --locked
-cd ../contrib/delta/native && cargo update && cargo check --all-targets --locked
+cd native-executors && cargo update && cargo check --all-targets --locked
+cd ../../contrib/delta/native && cargo update && cargo check --all-targets --locked
 ```
 
-Dependabot already opens weekly PRs for `native/`, but it does not cover the contrib crates or the transitive
-dependencies that `cargo update` moves within their semver range. This refresh does not bump the major versions of
+Dependabot already opens weekly PRs for `native/` and `native/native-executors/`, but it does not cover the contrib
+crates or the transitive dependencies that `cargo update` moves within their semver range. This refresh does not bump the major versions of
 `arrow*`, `parquet` and `datafusion*`, or git-pinned dependencies such as `iceberg-rust`, whose `rev` is in
 `native/Cargo.toml`. Those are upgrades that are planned and tested on their own, so leave them as they are.
 
