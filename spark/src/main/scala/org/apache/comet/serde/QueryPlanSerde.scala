@@ -1456,10 +1456,32 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * The first sort key after the first that can fail. Spark's ordering evaluates a sort key only
    * for the rows whose earlier keys tie, but native execution evaluates every key over the whole
-   * batch, so such a key may raise on a row that Spark skips (#7246).
+   * batch, so such a key may raise on a row that Spark skips (#7246). Under ANSI any key that
+   * `cannotFail` does not accept counts; otherwise only one that `raisesInAnyMode` flags.
    */
-  def laterSortKeyThatCanFail(sortOrder: Seq[SortOrder]): Option[SortOrder] =
-    sortOrder.drop(1).find(s => !cannotFail(s.child))
+  def laterSortKeyThatCanFail(sortOrder: Seq[SortOrder]): Option[SortOrder] = {
+    val canFail: Expression => Boolean =
+      if (SQLConf.get.ansiEnabled) e => !cannotFail(e) else raisesInAnyMode
+    sortOrder.drop(1).find(s => canFail(s.child))
+  }
+
+  /**
+   * With ANSI off, whether `expr` can still raise on a row that Spark's ordering skips. Comet 1.2
+   * ran every top-K natively, so this only adds safety over that release even though the list is
+   * best-effort (https://github.com/apache/datafusion-comet/issues/7585).
+   */
+  private def raisesInAnyMode(expr: Expression): Boolean = expr.find {
+    // assert_true is replaced by If(_, null, RaiseError) before planning
+    case _: RaiseError | _: UserDefinedExpression => true
+    // element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
+    case e: ElementAt =>
+      e.left.dataType.isInstanceOf[ArrayType] && !(e.right.foldable && e.right.eval() != 0)
+    // an invalid pattern raises in every mode
+    case r: RLike => !r.right.foldable
+    // the native timestamp and date to string kernels raise even for TRY (#7471)
+    case c: Cast => CometCast.failsInAnyMode(c)
+    case _ => false
+  }.isDefined
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way

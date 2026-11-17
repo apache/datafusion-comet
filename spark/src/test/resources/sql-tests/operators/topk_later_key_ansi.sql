@@ -217,3 +217,21 @@ SELECT a, b FROM topk_types ORDER BY a, b / 0, b % 0, b DIV 0, l + 1, l * 2 LIMI
 
 query
 SELECT a, s FROM topk_struct ORDER BY a, s.x, s.y LIMIT 3
+
+-- Without ANSI mode a later key fails over to Spark only when it can raise in any mode
+query
+SELECT a, dt FROM topk_types ORDER BY a, date_add(dt, 1) LIMIT 3
+
+query
+SELECT a, s FROM topk_types ORDER BY a, lpad(s, 5) LIMIT 3
+
+statement
+CREATE TABLE topk_arrays(a int, arr array<int>) USING parquet
+
+statement
+INSERT INTO topk_arrays SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (1, array(1, 2)), (2, array(3)), (3, NULL), (4, array()) AS t(a, arr)
+
+-- element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_arrays ORDER BY a, element_at(arr, 0) LIMIT 3

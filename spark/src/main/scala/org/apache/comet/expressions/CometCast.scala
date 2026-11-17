@@ -592,16 +592,26 @@ object CometCast
   private[comet] def cannotFail(cast: Cast): Boolean = {
     val from = cast.child.dataType
     val to = cast.dataType
-    val hasTimestamp = Seq(from, to).exists(
-      SupportLevel.containsType(_, classOf[TimestampType], classOf[TimestampNTZType]))
-    val dateToString = SupportLevel.containsType(from, classOf[DateType]) &&
-      SupportLevel.containsType(to, classOf[StringType])
-    !hasTimestamp && !dateToString && (evalMode(cast) match {
+    !failsInAnyMode(cast) && (evalMode(cast) match {
       case CometEvalMode.TRY => true
       case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
       case _ if from.isInstanceOf[StringType] && to == DataTypes.BinaryType => true
       case _ => keyCastCannotFail(from, to)
     })
+  }
+
+  /**
+   * Whether `cast` can raise whatever its eval mode: a cast to or from a timestamp, or from a
+   * date to a string, at any depth, as `cannotFail` describes.
+   */
+  private[comet] def failsInAnyMode(cast: Cast): Boolean = {
+    val from = cast.child.dataType
+    val to = cast.dataType
+    val hasTimestamp = Seq(from, to).exists(
+      SupportLevel.containsType(_, classOf[TimestampType], classOf[TimestampNTZType]))
+    val dateToString = SupportLevel.containsType(from, classOf[DateType]) &&
+      SupportLevel.containsType(to, classOf[StringType])
+    hasTimestamp || dateToString
   }
 
   // Timestamps are left out because `cannotFail` rejects them before reaching this check.
