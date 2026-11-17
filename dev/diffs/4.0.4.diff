@@ -308,6 +308,20 @@ index fac23b4a26f..98b12ae5ccc 100644
  CREATE TABLE INT8_TBL(q1 bigint, q2 bigint) USING parquet;
  
  -- PostgreSQL implicitly casts string literals to data with integral types, but
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/numeric.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/numeric.sql
+index cbc9c2a26f6..e690156a325 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/numeric.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/numeric.sql
+@@ -6,6 +6,9 @@
+ -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/numeric.sql
+ --
+ 
++-- TODO: https://github.com/apache/datafusion-comet/issues/6797
++--SET spark.comet.enabled = false
++
+ -- [SPARK-28318] Decimal can only support precision up to 38. We rewrite numeric(210,10) to decimal(38,10).
+ CREATE TABLE num_data (id int, val decimal(38,10)) USING parquet;
+ CREATE TABLE num_exp_add (id1 int, id2 int, expected decimal(38,10)) USING parquet;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
 index 0efe0877e9b..f9df0400c99 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
