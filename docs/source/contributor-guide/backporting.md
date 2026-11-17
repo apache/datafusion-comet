@@ -124,6 +124,14 @@ Some differences between a release branch and `main` are easy to miss:
   rather than template markers (see
   [Generate Release Documentation](release_process.md#generate-release-documentation)). A backport
   that changes a configuration's description or default has to update its row there.
+- The per-Spark-version compatibility pages in
+  `docs/source/user-guide/latest/compatibility/expressions/spark-<version>/` are frozen the same
+  way. A backport that changes the notes or reasons an expression serde reports
+  (`getCompatibleNotes`, `getIncompatibleReasons` or `getUnsupportedReasons`), or the support level
+  of a cast, has to update the matching section in each page it affects. Rerunning
+  `./dev/generate-release-docs.sh` and reading `git diff` shows the exact text, at the cost of one
+  Maven build per Spark version. The script rewrites every frozen page, so keep only the hunks the
+  backport changes.
 - Only `docs/source/user-guide/latest/` is published from a release branch, so changes to the
   contributor guide or `docs/source/conf.py` need no backport.
 - CI builds with the latest stable Rust. When a new Rust release adds Clippy lints, `main` gets a
