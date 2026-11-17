@@ -102,6 +102,8 @@ An explicit setting takes precedence. An empty value turns the provider off for 
 spark.sql.catalog.<catalog>.s3.comet.credential.provider.class=
 ```
 
+Each instance of the provider holds its own HTTP client for the refresh endpoint. Comet closes an instance once the table's cached `FileIO` is replaced, which happens only when the catalog vends credentials whose `s3.session-token-expires-at-ms` is later than the cached ones (see [Lifecycle](#lifecycle)). Catalogs that vend S3 credentials, such as Apache Polaris and Unity Catalog, send that expiry. A catalog that rotates the `s3.*` keys without it gives each table reload another instance, and its HTTP client, until the executor's cache of 64 `FileIO`s evicts the older entries.
+
 Spark 3.x builds do not include this provider. On Spark 3.x, a native Iceberg scan that outlives its vended credentials fails with `ExpiredToken` unless you configure a provider of your own. The native Iceberg writer does not select it automatically: a catalog that returns `client.refresh-credentials-endpoint` makes the write fall back to Spark.
 
 ## Enabling a bridge
