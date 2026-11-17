@@ -627,7 +627,9 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(Kurtosis::new(
                     "kurtosis",
                     expr.null_on_divide_by_zero,
-                    expr.ansi_enabled,
+                    from_protobuf_eval_mode(expr.eval_mode)?,
+                    spark_expr.expr_id,
+                    Arc::clone(&self.query_context_registry),
                 ));
                 Self::create_aggr_func_expr("kurtosis", schema, vec![child], func)
             }

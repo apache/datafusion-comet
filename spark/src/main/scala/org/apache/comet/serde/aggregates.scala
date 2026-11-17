@@ -1415,7 +1415,7 @@ object CometKurtosis extends CometAggregateExpressionSerde[Kurtosis] {
       val builder = ExprOuterClass.Kurtosis.newBuilder()
       builder.setChild(childExpr.get)
       builder.setNullOnDivideByZero(kurtosis.nullOnDivideByZero)
-      builder.setAnsiEnabled(evalMode == CometEvalMode.ANSI)
+      builder.setEvalMode(evalModeToProto(evalMode))
 
       Some(
         ExprOuterClass.AggExpr

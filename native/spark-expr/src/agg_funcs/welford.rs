@@ -28,9 +28,10 @@ use std::sync::Arc;
 
 use crate::{divide_by_zero_error, EvalMode, QueryContextMap, SparkErrorWithContext};
 
-/// How the `Divide` in Spark's `ck / sqrt(xMk * yMk)`, shared by `corr` and
-/// `regr_r2`, treats a zero denominator. It returns null in LEGACY mode and
-/// raises DIVIDE_BY_ZERO, carrying the aggregate call's query context, in ANSI mode.
+/// How a `Divide` in a statistical aggregate treats a zero denominator: `ck / sqrt(xMk * yMk)`,
+/// shared by `corr` and `regr_r2`, and `n * m4 / (m2 * m2) - 3.0` in `kurtosis`. It returns null
+/// in LEGACY mode and raises DIVIDE_BY_ZERO, carrying the aggregate call's query context, in ANSI
+/// mode.
 #[derive(Debug, Clone)]
 pub(crate) struct ZeroDivisor {
     eval_mode: EvalMode,

@@ -41,15 +41,15 @@ use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::format_state_name;
 
-use crate::agg_funcs::welford::{moments4_merge, moments4_update};
-use crate::divide_by_zero_error;
+use crate::agg_funcs::welford::{moments4_merge, moments4_update, ZeroDivisor};
+use crate::{EvalMode, QueryContextMap};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Kurtosis {
     name: String,
     signature: Signature,
     null_on_divide_by_zero: bool,
-    ansi_enabled: bool,
+    zero_divisor: ZeroDivisor,
 }
 
 impl std::hash::Hash for Kurtosis {
@@ -57,17 +57,23 @@ impl std::hash::Hash for Kurtosis {
         self.name.hash(state);
         self.signature.hash(state);
         self.null_on_divide_by_zero.hash(state);
-        self.ansi_enabled.hash(state);
+        self.zero_divisor.hash(state);
     }
 }
 
 impl Kurtosis {
-    pub fn new(name: impl Into<String>, null_on_divide_by_zero: bool, ansi_enabled: bool) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        null_on_divide_by_zero: bool,
+        eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<QueryContextMap>,
+    ) -> Self {
         Self {
             name: name.into(),
             signature: Signature::numeric(1, Immutable),
             null_on_divide_by_zero,
-            ansi_enabled,
+            zero_divisor: ZeroDivisor::new(eval_mode, expr_id, registry),
         }
     }
 }
@@ -88,7 +94,7 @@ impl AggregateUDFImpl for Kurtosis {
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(KurtosisAccumulator::new(
             self.null_on_divide_by_zero,
-            self.ansi_enabled,
+            self.zero_divisor.clone(),
         )))
     }
 
@@ -143,11 +149,11 @@ pub struct KurtosisAccumulator {
     m3: f64,
     m4: f64,
     null_on_divide_by_zero: bool,
-    ansi_enabled: bool,
+    zero_divisor: ZeroDivisor,
 }
 
 impl KurtosisAccumulator {
-    pub fn new(null_on_divide_by_zero: bool, ansi_enabled: bool) -> Self {
+    pub(crate) fn new(null_on_divide_by_zero: bool, zero_divisor: ZeroDivisor) -> Self {
         Self {
             n: 0.0,
             avg: 0.0,
@@ -155,7 +161,7 @@ impl KurtosisAccumulator {
             m3: 0.0,
             m4: 0.0,
             null_on_divide_by_zero,
-            ansi_enabled,
+            zero_divisor,
         }
     }
 }
@@ -193,19 +199,14 @@ impl Accumulator for KurtosisAccumulator {
         let m4s = downcast_value!(states[4], Float64Array);
 
         for i in 0..ns.len() {
-            let n2 = ns.value(i);
-            if n2 == 0.0 {
-                // Empty partial state contributes nothing and would produce
-                // divide-by-zero garbage in `delta_n`; skip it.
-                continue;
-            }
+            // Even empty partials affect Spark's NaN propagation during merge.
             let (n, avg, m2, m3, m4) = moments4_merge(
                 self.n,
                 self.avg,
                 self.m2,
                 self.m3,
                 self.m4,
-                n2,
+                ns.value(i),
                 avgs.value(i),
                 m2s.value(i),
                 m3s.value(i),
@@ -234,14 +235,13 @@ impl Accumulator for KurtosisAccumulator {
         // Spark's guard above is on `m2`, but the division is by `m2 * m2`, and that product can
         // underflow to zero while `m2` itself is finite and non-zero (`1e-100` and `2e-100` give
         // an `m2` of 5e-201, whose square is 0). Spark's `Divide` then sees a zero divisor and
-        // applies its own rule, which is the session's ANSI setting rather than
+        // applies its own rule, which is the eval mode it captured rather than
         // `null_on_divide_by_zero`. Plain IEEE division here would return NaN instead.
         let divisor = self.m2 * self.m2;
         if divisor == 0.0 {
-            return if self.ansi_enabled {
-                Err(divide_by_zero_error().into())
-            } else {
-                Ok(ScalarValue::Float64(None))
+            return match self.zero_divisor.error() {
+                Some(error) => Err(error),
+                None => Ok(ScalarValue::Float64(None)),
             };
         }
         Ok(ScalarValue::Float64(Some(self.n * self.m4 / divisor - 3.0)))
@@ -255,15 +255,49 @@ impl Accumulator for KurtosisAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{create_query_context_map, QueryContext, SparkErrorWithContext};
+    use datafusion::common::DataFusionError;
+    use datafusion_comet_common::SparkError;
 
-    fn eval(values: &[f64], null_on_divide_by_zero: bool) -> Option<f64> {
-        let mut acc = KurtosisAccumulator::new(null_on_divide_by_zero, false);
+    fn zero_divisor(eval_mode: EvalMode) -> ZeroDivisor {
+        ZeroDivisor::new(eval_mode, None, create_query_context_map())
+    }
+
+    fn accumulator(
+        values: &[f64],
+        null_on_divide_by_zero: bool,
+        zero_divisor: ZeroDivisor,
+    ) -> KurtosisAccumulator {
+        let mut acc = KurtosisAccumulator::new(null_on_divide_by_zero, zero_divisor);
         let arr: ArrayRef = Arc::new(Float64Array::from(values.to_vec()));
         acc.update_batch(&[arr]).unwrap();
+        acc
+    }
+
+    fn eval(values: &[f64], null_on_divide_by_zero: bool) -> Option<f64> {
+        let mut acc = accumulator(
+            values,
+            null_on_divide_by_zero,
+            zero_divisor(EvalMode::Legacy),
+        );
         match acc.evaluate().unwrap() {
             ScalarValue::Float64(v) => v,
             other => panic!("expected Float64, got {other:?}"),
         }
+    }
+
+    /// The accumulator's state as five single-row Float64 arrays, the shape `merge_batch` takes.
+    fn state_arrays(acc: &mut KurtosisAccumulator) -> Vec<ArrayRef> {
+        acc.state()
+            .unwrap()
+            .into_iter()
+            .map(|sv| match sv {
+                ScalarValue::Float64(v) => {
+                    Arc::new(Float64Array::from(vec![v.unwrap()])) as ArrayRef
+                }
+                other => panic!("unexpected state scalar {other:?}"),
+            })
+            .collect()
     }
 
     #[test]
@@ -302,27 +336,9 @@ mod tests {
         let values = [-10.0_f64, -20.0, 100.0, 1000.0];
         let full = eval(&values, true).unwrap();
 
-        let arr_a: ArrayRef = Arc::new(Float64Array::from(values[..2].to_vec()));
-        let arr_b: ArrayRef = Arc::new(Float64Array::from(values[2..].to_vec()));
-
-        let mut a = KurtosisAccumulator::new(true, false);
-        a.update_batch(&[arr_a]).unwrap();
-        let state_a = a.state().unwrap();
-
-        let mut b = KurtosisAccumulator::new(true, false);
-        b.update_batch(&[arr_b]).unwrap();
-
-        // Represent partition-A state as five single-row Float64 arrays and merge.
-        let state_arrays: Vec<ArrayRef> = state_a
-            .into_iter()
-            .map(|sv| match sv {
-                ScalarValue::Float64(v) => {
-                    Arc::new(Float64Array::from(vec![v.unwrap()])) as ArrayRef
-                }
-                other => panic!("unexpected state scalar {other:?}"),
-            })
-            .collect();
-        b.merge_batch(&state_arrays).unwrap();
+        let mut a = accumulator(&values[..2], true, zero_divisor(EvalMode::Legacy));
+        let mut b = accumulator(&values[2..], true, zero_divisor(EvalMode::Legacy));
+        b.merge_batch(&state_arrays(&mut a)).unwrap();
 
         let merged = match b.evaluate().unwrap() {
             ScalarValue::Float64(Some(v)) => v,
@@ -331,35 +347,67 @@ mod tests {
         assert!((merged - full).abs() < 1e-9, "merged={merged}, full={full}");
     }
 
+    /// Spark merges an empty partial like any other, and with values this large the merge
+    /// overflows to NaN. Skipping the empty partial returned a finite -1.22 instead.
+    #[test]
+    fn merging_an_empty_partial_keeps_spark_nan_propagation() {
+        let values: Vec<f64> = (0..10).map(|i| 5e77 * (1.0 + i as f64 * 1e-9)).collect();
+        let mut data = accumulator(&values, true, zero_divisor(EvalMode::Legacy));
+        let mut empty = accumulator(&[], true, zero_divisor(EvalMode::Legacy));
+
+        let mut merged = accumulator(&[], true, zero_divisor(EvalMode::Legacy));
+        merged.merge_batch(&state_arrays(&mut data)).unwrap();
+        merged.merge_batch(&state_arrays(&mut empty)).unwrap();
+
+        let ScalarValue::Float64(Some(got)) = merged.evaluate().unwrap() else {
+            panic!("expected a Float64 value");
+        };
+        assert!(got.is_nan(), "expected NaN, got {got}");
+    }
+
     /// `m2` is finite and non-zero here, so Spark's `m2 === 0` guard does not fire, but
-    /// `m2 * m2` underflows to zero and Spark's `Divide` takes over. That means the session's
-    /// ANSI setting decides, not `null_on_divide_by_zero`. Plain IEEE division returned NaN.
+    /// `m2 * m2` underflows to zero and Spark's `Divide` takes over. That means the eval mode
+    /// decides, not `null_on_divide_by_zero`. Plain IEEE division returned NaN.
     #[test]
     fn divisor_underflow_follows_spark_division_semantics() {
         let values = [1e-100, 2e-100];
 
         // Confirm the premise rather than assuming it: m2 != 0 but m2 * m2 == 0.
-        let mut probe = KurtosisAccumulator::new(true, false);
-        probe
-            .update_batch(&[Arc::new(Float64Array::from(values.to_vec())) as ArrayRef])
-            .unwrap();
+        let probe = accumulator(&values, true, zero_divisor(EvalMode::Legacy));
         assert_ne!(probe.m2, 0.0, "m2 must be non-zero for this case to bite");
         assert_eq!(probe.m2 * probe.m2, 0.0, "m2 * m2 must underflow to zero");
 
-        // ANSI off: NULL, for either value of null_on_divide_by_zero, because this path is
+        // LEGACY: NULL, for either value of null_on_divide_by_zero, because this path is
         // governed by the Divide and not by the m2 == 0 branch.
         for null_on_divide_by_zero in [true, false] {
             assert_eq!(eval(&values, null_on_divide_by_zero), None);
         }
 
-        // ANSI on: DIVIDE_BY_ZERO.
-        let mut ansi = KurtosisAccumulator::new(true, true);
-        ansi.update_batch(&[Arc::new(Float64Array::from(values.to_vec())) as ArrayRef])
-            .unwrap();
+        // ANSI: DIVIDE_BY_ZERO.
+        let mut ansi = accumulator(&values, true, zero_divisor(EvalMode::Ansi));
         let err = ansi.evaluate().unwrap_err().to_string();
         assert!(
             err.contains("DIVIDE_BY_ZERO"),
             "expected a DIVIDE_BY_ZERO error, got {err}"
         );
+    }
+
+    #[test]
+    fn ansi_error_carries_query_context() {
+        let sql = "SELECT kurtosis(v) FROM t";
+        let registry = create_query_context_map();
+        registry.register(
+            7,
+            QueryContext::new(sql.to_string(), 7, 17, None, None, 1, 7),
+        );
+        let zero_divisor = ZeroDivisor::new(EvalMode::Ansi, Some(7), registry);
+        let mut acc = accumulator(&[1e-100, 2e-100], true, zero_divisor);
+
+        let Err(DataFusionError::External(error)) = acc.evaluate() else {
+            panic!("expected a Spark error with query context");
+        };
+        let error = error.downcast_ref::<SparkErrorWithContext>().unwrap();
+        assert!(matches!(error.error, SparkError::DivideByZero));
+        assert_eq!(error.context.as_ref().unwrap().sql_text.as_str(), sql);
     }
 }

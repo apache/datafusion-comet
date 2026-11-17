@@ -78,7 +78,7 @@
 - Spark 3.5.8 (audited 2026-07-03): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-07-03): identical to 3.4.3. No collation involvement.
 - Spark 4.1.1 (audited 2026-07-03): identical to 3.4.3.
-- `CometKurtosis` maps the aggregate to a Comet-owned `Kurtosis` UDAF whose intermediate state (`[n, avg, m2, m3, m4]` Float64) mirrors Spark's `CentralMomentAgg` buffer for `momentOrder = 4`, so Partial output produced by either engine has the same wire format. The Rust update/merge kernels are a direct port of Spark's `updateExpressionsDef` and `mergeExpressions`. `supportsMixedPartialFinal` is left at the default `false`, matching the conservative policy the other `CentralMomentAgg` serdes (`Variance`, `Stddev`) already use in the same file.
+- `CometKurtosis` maps the aggregate to a Comet-owned `Kurtosis` UDAF whose intermediate state (`[n, avg, m2, m3, m4]` Float64) mirrors Spark's `CentralMomentAgg` buffer for `momentOrder = 4`, so Partial output produced by either engine has the same wire format. The Rust update/merge kernels are a direct port of Spark's `updateExpressionsDef` and `mergeExpressions`. `supportsSparkPartialToNativeFinal` and `supportsNativePartialToSparkFinal` are left at the default `false`, matching the conservative policy the other `CentralMomentAgg` serdes (`Variance`, `Stddev`) already use in the same file.
 - Window use (`kurtosis(x) OVER (...)`) currently falls back to Spark: the window path doesn't wire the Comet aggregate for kurtosis today.
 
 ## listagg

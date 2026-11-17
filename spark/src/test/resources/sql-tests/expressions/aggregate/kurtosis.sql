@@ -210,10 +210,6 @@ FROM k_wnd ORDER BY k
 -- Numerical stress: NaN/Infinity/-Infinity in a group. Spark
 -- propagates these through arithmetic, so the aggregate is
 -- expected to produce NaN or NULL rather than a finite value.
--- Use spark_answer_only because our Welford recurrence produces
--- byte-identical NaN payloads with a different bit pattern from
--- Spark's DeclarativeAggregate compilation; result-value equality
--- via Spark's own comparison is what the harness needs to see.
 -- ============================================================
 
 statement
@@ -237,19 +233,17 @@ statement
 INSERT INTO k_neg_inf VALUES
   (1.0), (2.0), (CAST('-Infinity' AS DOUBLE)), (3.0)
 
-query spark_answer_only
+query
 SELECT kurtosis(v) FROM k_nan
 
-query spark_answer_only
+query
 SELECT kurtosis(v) FROM k_inf
 
-query spark_answer_only
+query
 SELECT kurtosis(v) FROM k_neg_inf
 
 -- ============================================================
--- Large-magnitude inputs: Welford is numerically stable but the
--- final `n * m4 / (m2 * m2) - 3.0` can still differ from Spark's
--- codegen at high magnitudes. Use spark_answer_only.
+-- Large-magnitude inputs.
 -- ============================================================
 
 statement
@@ -259,7 +253,7 @@ statement
 INSERT INTO k_big VALUES
   (1.0e15), (2.0e15), (3.0e15), (4.0e15), (5.0e15)
 
-query spark_answer_only
+query
 SELECT kurtosis(v) FROM k_big
 
 -- The division by m2 * m2 follows the ANSI setting the aggregate was analyzed under, not the one
@@ -291,5 +285,5 @@ statement
 SET spark.sql.ansi.enabled=false
 
 -- Analyzed with ANSI on and run with it off: raises.
-query expect_error(DIVIDE_BY_ZERO)
+query expect_error_class(DIVIDE_BY_ZERO)
 SELECT k FROM kurtosis_analyzed_ansi
