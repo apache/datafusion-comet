@@ -299,6 +299,7 @@ by role. Names match what is shown in the plan output.
 | `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                     |
 | `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                             |
 | `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                          |
+| `CometTextNativeScan`    | Text scan (single `value` string column) that runs entirely in Rust via DataFusion (experimental).          |
 | `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                |
 | `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                              |
 | `CometEmptyRelation`     | Empty input to a Rust plan that replaces `EmptyRelationExec` (Spark 4.0 and later).                         |
@@ -368,12 +369,14 @@ use:
   batches are serialized via the Arrow IPC writer.
 - **`CometColumnarExchange`** is the **JVM columnar shuffle** path. It accepts
   either Spark row-based input or Comet columnar input, which makes it the
-  fallback when the child is not a Comet operator or when a hash/range key
+  fallback when the child is not a Comet operator, when a hash/range key
   type is not supported by native shuffle (for example, a struct or array
-  hash key while nested hash keys are disabled). It is still preferred over
-  Spark's built-in shuffle when Comet shuffle is enabled. Keys with a
-  non-default string collation are supported by neither path and use Spark's
-  shuffle.
+  hash key while nested hash keys are disabled), or when native shuffle
+  cannot serialize the key expression (for example the `mapsort` wrapper
+  Spark 4.0 and later adds around an array or struct map key). It is still
+  preferred over Spark's built-in shuffle when Comet shuffle is enabled. Keys
+  with a non-default string collation are supported by neither path and use
+  Spark's shuffle.
 
 Both paths support the same set of partitioning schemes
 (`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning`,

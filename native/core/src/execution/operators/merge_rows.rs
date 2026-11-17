@@ -17,7 +17,7 @@
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::kernels::boolean::{and, and_not, not};
+use arrow::compute::kernels::boolean::{and, not};
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -622,8 +622,10 @@ fn process_batch_with_metrics(
     let target_present = eval_bool(&config.is_target_row_present, &batch)?;
 
     let matched_mask = and(&target_present, &source_present)?;
-    let not_matched_mask = and_not(&source_present, &target_present)?;
-    let not_matched_by_source_mask = and_not(&target_present, &source_present)?;
+    // arrow 59's and_not is wrong for inputs with a non-zero offset (apache/arrow-rs#10698).
+    // Go back to and_not once Comet is on arrow 60.
+    let not_matched_mask = and(&source_present, &not(&target_present)?)?;
+    let not_matched_by_source_mask = and(&target_present, &not(&source_present)?)?;
 
     // Vectorized cardinality validation can surface before an unrelated per-row expression error;
     // both paths fail the query, but the error selected can differ from Spark in that rare case.
@@ -861,6 +863,74 @@ mod tests {
             not_matched_by_source_instructions,
             row_id_ordinal,
             semantic_metrics_required: false,
+        }
+    }
+
+    /// A marker column that starts `offset` bits into its buffer.
+    fn sliced_marker(values: &[bool], offset: usize) -> BooleanArray {
+        let padded = [vec![false; offset], values.to_vec()].concat();
+        BooleanArray::from(padded).slice(offset, values.len())
+    }
+
+    #[test]
+    fn not_matched_masks_with_sliced_markers() {
+        // The markers are IsNotNull over join output columns. On a sliced batch IsNotNull keeps
+        // the slice's offset for a column with nulls and returns offset 0 for one without, so
+        // the two masks can start at the same non-zero offset or at different offsets.
+        // 1001 rows span several 64-bit words and end in a partial byte.
+        let len = 1001;
+        let target: Vec<bool> = (0..len).map(|i| i % 3 != 0).collect();
+        let source: Vec<bool> = (0..len).map(|i| i % 5 == 0).collect();
+        let rows = |keep: fn(bool, bool) -> bool| -> Vec<i32> {
+            (0..len)
+                .filter(|&i| keep(target[i], source[i]))
+                .map(|i| i as i32)
+                .collect()
+        };
+        let not_matched = test_config(
+            vec![discard_all()],
+            vec![keep_all()],
+            vec![discard_all()],
+            None,
+        );
+        let not_matched_by_source = test_config(
+            vec![discard_all()],
+            vec![discard_all()],
+            vec![keep_all()],
+            None,
+        );
+        let cases = [
+            (&not_matched, rows(|t, s| s && !t)),
+            (&not_matched_by_source, rows(|t, s| t && !s)),
+        ];
+        for (target_offset, source_offset) in [(0, 3), (3, 0), (7, 7), (64, 64)] {
+            for (config, expected) in &cases {
+                let batch = RecordBatch::try_new(
+                    test_schema(),
+                    vec![
+                        Arc::new(Int64Array::from_iter_values(0..len as i64)),
+                        Arc::new(Int32Array::from_iter_values(0..len as i32)),
+                        Arc::new(sliced_marker(&target, target_offset)),
+                        Arc::new(sliced_marker(&source, source_offset)),
+                    ],
+                )
+                .unwrap();
+                let out = process_batch(
+                    batch,
+                    config,
+                    &mut HashSet::new(),
+                    Some(&mut test_reservation()),
+                    &out_schema(),
+                )
+                .unwrap();
+                let vals = out.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+                let mut got: Vec<i32> = vals.iter().flatten().collect();
+                got.sort();
+                assert_eq!(
+                    &got, expected,
+                    "target offset {target_offset}, source offset {source_offset}"
+                );
+            }
         }
     }
 

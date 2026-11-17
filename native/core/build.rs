@@ -46,13 +46,15 @@ fn main() {
     // DEP_<...>_OUT_DIR for non-rlib crates, so we compute the path
     // from OUT_DIR.
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
-        let out_path = std::path::PathBuf::from(out_dir);
-        // OUT_DIR is .../target/<profile>/build/<pkg-hash>/out
-        let target_profile_dir = out_path
+        // OUT_DIR is .../target/<profile>/build/<pkg-hash>/out with Cargo's
+        // classic layout and .../target/<profile>/build/<pkg>/<hash>/out with
+        // the layout that became the default in Rust 1.100. The depth differs,
+        // so find the profile directory as the parent of the nearest `build`.
+        let target_profile_dir = Path::new(&out_dir)
             .ancestors()
-            .nth(3)
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+            .find(|p| p.file_name().is_some_and(|name| name == "build"))
+            .and_then(Path::parent)
+            .unwrap_or_else(|| panic!("OUT_DIR {out_dir} is not inside a `build` directory"));
         let dylib_ext = if cfg!(target_os = "macos") {
             "dylib"
         } else if cfg!(target_os = "windows") {
