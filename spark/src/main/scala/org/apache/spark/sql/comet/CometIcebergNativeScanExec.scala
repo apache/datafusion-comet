@@ -26,7 +26,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -135,7 +135,18 @@ case class CometIcebergNativeScanExec(
   // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
+  //
+  // Spark 3.4's BatchScanExec reports SinglePartition for one input partition, which it counts
+  // before any DPP filtering, and Spark plans no exchange above it on that basis. The scan reports
+  // the same. Otherwise EnsureRequirements, which AQE runs again over a DPP subquery's converted
+  // plan, inserts an exchange inside a native block that is already serialized (#7422).
+  // serializePartitions keeps that one partition when DPP prunes it, as Spark does.
+  override lazy val outputPartitioning: Partitioning =
+    if (originalPlan != null && originalPlan.outputPartitioning == SinglePartition) {
+      SinglePartition
+    } else {
+      UnknownPartitioning(0)
+    }
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
