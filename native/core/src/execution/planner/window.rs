@@ -131,17 +131,21 @@ impl OperatorBuilder for WindowBuilder {
         // trigger a retract call.
         let window_expr = window_expr?;
         let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
+
+        // Both window operators reject an input that does not declare its partition keys' order.
+        let input =
+            planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
         let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
             Arc::new(BoundedWindowAggExec::try_new(
                 window_expr,
-                Arc::clone(&child.native_plan),
+                input,
                 InputOrderMode::Sorted,
                 !partition_exprs.is_empty(),
             )?)
         } else {
             Arc::new(WindowAggExec::try_new(
                 window_expr,
-                Arc::clone(&child.native_plan),
+                input,
                 !partition_exprs.is_empty(),
             )?)
         };

@@ -220,6 +220,14 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, sqlCtx(context)))
 
+      case "InvalidInputInCastToDatetime" if params("fromType").toString == "DOUBLE" =>
+        val targetType = getDataType(params("toType").toString)
+        Some(
+          QueryExecutionErrors.invalidInputInCastToDatetimeError(
+            parseDoubleLiteral(params("value").toString),
+            targetType,
+            sqlCtx(context)))
+
       case "InvalidInputInCastToDatetime" =>
         val expression =
           s"'${params("value").toString.replace("\\", "\\\\").replace("'", "\\'")}'"

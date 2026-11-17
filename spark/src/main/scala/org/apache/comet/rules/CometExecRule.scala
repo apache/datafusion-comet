@@ -53,7 +53,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -473,6 +473,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // A declined native CSV scan falls back to Spark's scan, which produces rows.
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
         convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
+
+      // A declined native Text scan falls back to Spark's scan, which produces rows.
+      case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[TextScan] =>
+        convertToComet(scan, CometTextNativeScanExec).getOrElse(scan.wrapped)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
@@ -909,8 +913,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
   /**
-   * Whether `op` is a writer whose native plan builds its own `Scan` over its child, so that the
-   * child runs as a separate native block instead of inside that plan.
+   * Whether `op` is a writer whose native plan reads its child through a leaf of its own, an FFI
+   * `Scan` or the `ShuffleScan` of a shuffle it reads directly, so that the child runs as a
+   * separate native block instead of inside that plan.
    */
   private def scansChildAsSeparateBlock(op: SparkPlan): Boolean = op match {
     case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => true
@@ -955,10 +960,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
             // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
             // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
-            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
-            // sits directly under the exchange.
+            // InputAdapter(cometPlan))).
             val cometChild = b.child match {
-              case c2r: CometNativeColumnarToRowExec => c2r.child
               case c2r: CometColumnarToRowExec => c2r.child
               case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
                 c2r.child match {
@@ -1083,6 +1086,28 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     visit(plan, requiresRowConsumption = true)
   }
 
+  /**
+   * Sorts the input of a window that runs in Spark, a Python one included, when its order may be
+   * false. Spark plans no sort below a window whose child reports the order it needs, and its
+   * window trusts that order. A Comet operator that may not keep the order it reports, such as a
+   * native nested loop join (#6898), then hands the window rows out of order, and it groups them
+   * wrongly.
+   *
+   * The sort is by the whole order the child reports, not only by the part the window needs, or
+   * by the window's own keys when the reported order does not cover them. The window passes that
+   * order on as its own, and Spark planned the operators above around it: a window or a sort
+   * above that needs a longer order got no sort of its own.
+   */
+  private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
+    case window: WindowExecBase
+        if window.requiredChildOrdering.head.nonEmpty &&
+          CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
+      val required = window.requiredChildOrdering.head
+      val reported = window.child.outputOrdering
+      val keys = if (SortOrder.orderingSatisfies(reported, required)) reported else required
+      window.withNewChildren(Seq(SortExec(keys, global = false, child = window.child)))
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -1134,7 +1159,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       if (clearWastedBuildSideBridges(transformed)) {
         transformed = transform(planWithJoinRewritten)
       }
-      var newPlan = revertUnsafePartialAggregates(transformed)
+      var newPlan = sortDoubtedWindowInputs(revertUnsafePartialAggregates(transformed))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
