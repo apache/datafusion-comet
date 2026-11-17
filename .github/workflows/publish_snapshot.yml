@@ -241,11 +241,10 @@ jobs:
             done
           }
 
-          # One build per published variant. Spark 3.4 and 3.5 are published for
+          # One build per published variant. Spark 3.5 is published for
           # Scala 2.12, which downstream benchmarks still use; 4.0, 4.1 and 4.2
           # default to Scala 2.13.
           variants=(
-            "-Pspark-3.4 -Pscala-2.12"
             "-Pspark-3.5 -Pscala-2.12"
             "-Pspark-4.0"
             "-Pspark-4.1"

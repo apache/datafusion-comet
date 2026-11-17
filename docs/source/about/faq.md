@@ -52,7 +52,7 @@ not documented, please [file an issue](https://github.com/apache/datafusion-come
 
 ### Which Spark and Java versions does Comet support?
 
-Spark 3.4, 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. Spark 3.4 is deprecated. The
+Spark 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. The
 [installation guide](../user-guide/latest/installation.md#supported-spark-versions) lists the exact
 Spark, Java, and Scala versions, and the
 [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page lists known
@@ -83,6 +83,10 @@ includes AVX2, on amd64, and Arm Neoverse N1 or newer cores on arm64. If Comet c
 (illegal instruction), the CPU is older than that. Build Comet from source for it, and please
 [open an issue](https://github.com/apache/datafusion-comet/issues) describing your environment.
 
+The jars with the `jemalloc` classifier are built for 4 KiB memory pages and fail on arm64 kernels that use
+64 KiB pages, such as the kernel of RHEL 8. On those machines, use the jar with the system allocator or
+[build Comet from source](../user-guide/latest/source.md#building-with-the-jemalloc-allocator).
+
 A jar you build yourself is smaller than the published one because it contains the native library
 for one platform only.
 
@@ -90,7 +94,7 @@ for one platform only.
 
 ### Why do I get a `ClassNotFoundException` for `CometShuffleManager`?
 
-Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.4 and 3.5,
+Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.5,
 executors create the shuffle manager before they load jars passed with `--jars` or `--packages`, so
 the jar must be on the startup classpath. Either copy it into `$SPARK_HOME/jars` on every machine, or
 set `spark.driver.extraClassPath` and `spark.executor.extraClassPath` to its path, as the

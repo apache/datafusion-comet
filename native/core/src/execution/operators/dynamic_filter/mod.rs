@@ -19,8 +19,12 @@
 
 mod early;
 mod join;
+mod min_max;
 mod parquet_reader;
 mod topk;
+
+#[cfg(test)]
+mod test_utils;
 
 pub(crate) use join::DynamicFilterJoinExec;
 pub(crate) use topk::TopKReaderFilterExec;
@@ -44,6 +48,34 @@ use datafusion::physical_plan::{
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
 use futures::StreamExt;
+
+/// Execute an owned runtime plan, retaining its metric handles but releasing its
+/// predicates and buffers when the returned stream finishes or is dropped.
+fn execute_runtime_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    partition: usize,
+    context: Arc<TaskContext>,
+    metrics: &ExecutionPlanMetricsSet,
+) -> Result<SendableRecordBatchStream> {
+    let schema = plan.schema();
+    let result = plan.execute(partition, context);
+    // Runtime operators register their metrics synchronously in execute(). Keep
+    // the live counters, including on error, without retaining the runtime plan.
+    for metric in plan.metrics().unwrap_or_default().iter() {
+        metrics.register(Arc::clone(metric));
+    }
+    drop(plan);
+    let input = result?;
+    // Release the input at EOF or error even if the caller retains the exhausted
+    // stream. Cancellation drops this stream and its input together.
+    let stream = futures::stream::unfold(Some(input), |input| async move {
+        let mut input = input?;
+        let batch = input.next().await?;
+        let remaining = if batch.is_ok() { Some(input) } else { None };
+        Some((batch, remaining))
+    });
+    Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+}
 
 /// A task-local consumer of a live runtime predicate.
 #[derive(Debug, Clone)]

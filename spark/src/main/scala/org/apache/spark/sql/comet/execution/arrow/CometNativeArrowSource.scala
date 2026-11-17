@@ -26,7 +26,7 @@ import scala.reflect.ClassTag
 
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
@@ -337,10 +337,12 @@ object CometArrowStream extends Logging {
   }
 
   /**
-   * Drive an `ArrowReader` from a per-task body and emit `ColumnarBatch`es wrapping the reader's
-   * stable VSR. Lifecycle: the supplied factory builds the reader against a fresh child
-   * allocator; both close at task completion. This is the non-native consumer path
-   * (`doExecuteColumnar`) -- the native consumer path uses [[stream]] to export instead.
+   * Drive an `ArrowReader` from a per-task body and emit `ColumnarBatch`es with independent
+   * vectors retaining the reader's buffers. Batches remain valid until the iterator advances;
+   * closing a batch does not close the reader's reusable vectors. The supplied factory builds the
+   * reader against a fresh child allocator; both close at task completion. This is the non-native
+   * consumer path (`doExecuteColumnar`) -- the native consumer path uses [[stream]] to export
+   * instead.
    */
   def readerBatchIter(
       name: String,
@@ -354,10 +356,20 @@ object CometArrowStream extends Logging {
           closeQuietly(allocator)
           throw t
       }
+    var batchRoot: VectorSchemaRoot = null
+    def closeBatchRoot(): Unit = {
+      if (batchRoot != null) {
+        batchRoot.close()
+        batchRoot = null
+      }
+    }
     if (context != null) {
       context.addTaskCompletionListener[Unit] { _ =>
-        reader.close()
-        allocator.close()
+        try closeBatchRoot()
+        finally {
+          try reader.close()
+          finally allocator.close()
+        }
       }
     }
     new Iterator[ColumnarBatch] {
@@ -367,6 +379,7 @@ object CometArrowStream extends Logging {
 
       private def ensureLoaded(): Unit = {
         if (!loaded) {
+          closeBatchRoot()
           hasMore = reader.loadNextBatch()
           loaded = true
         }
@@ -383,7 +396,12 @@ object CometArrowStream extends Logging {
           throw new NoSuchElementException("No more batches")
         }
         loaded = false
-        NativeUtil.rootAsBatch(reader.getVectorSchemaRoot)
+        val root = reader.getVectorSchemaRoot
+        batchRoot = VectorSchemaRoot.create(root.getSchema, allocator)
+        val recordBatch = new VectorUnloader(root).getRecordBatch
+        try new VectorLoader(batchRoot).load(recordBatch)
+        finally recordBatch.close()
+        NativeUtil.rootAsBatch(batchRoot)
       }
     }
   }
