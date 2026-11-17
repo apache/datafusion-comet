@@ -29,7 +29,8 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -256,17 +257,28 @@ class CometScanRuleSuite extends CometTestBase {
   }
 
   test("an integer column read as a negative-scale decimal falls back to Spark") {
-    // Spark reads multiples of 100 as DECIMAL(12,-2) and keeps nulls. The native scan sent this
-    // read through the integer to decimal cast kernel, which cannot take a negative scale.
+    // The native scan sent this read through the integer to decimal cast kernel, which cannot
+    // take a negative scale. Spark 4.0+ reads multiples of 100 as DECIMAL(12,-2) and keeps nulls.
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
       withTempPath { path =>
         val ints = StructType(Array(StructField("a", IntegerType)))
         val rows = spark.sparkContext.parallelize(Seq(Row(100), Row(200), Row(null)), 1)
         spark.createDataFrame(rows, ints).write.parquet(path.toString)
         val schema = StructType(Array(StructField("a", DecimalType(12, -2))))
-        checkSparkAnswerAndFallbackReason(
-          spark.read.schema(schema).parquet(path.toString),
-          "native Parquet scan does not support negative-scale decimals")
+        val reason = "native Parquet scan does not support negative-scale decimals"
+        val df = spark.read.schema(schema).parquet(path.toString)
+        if (isSpark40Plus) {
+          checkSparkAnswerAndFallbackReason(df, reason)
+        } else {
+          // Spark 3.5 cannot read an integer column as a decimal, so there is no answer to compare.
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(reasons.exists(_.contains(reason)), reasons)
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(_), Some(_)) =>
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+        }
       }
     }
   }
