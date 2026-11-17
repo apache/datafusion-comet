@@ -1945,16 +1945,21 @@ class CometIcebergNativeSuite
     withTempIcebergDir { warehouseDir =>
       val t = "case_cat.db.case_nested"
       withCaseCatalog(warehouseDir, caseSensitive = true) {
-        spark.sql(s"CREATE TABLE $t (id INT, s STRUCT<x: INT, y: INT>) USING iceberg")
         spark.sql(
-          s"INSERT INTO $t VALUES (1, named_struct('x', 10, 'y', 100)), " +
-            "(2, named_struct('x', 20, 'y', 200))")
+          s"CREATE TABLE $t (id INT, s STRUCT<x: INT, ts: TIMESTAMP, y: INT>) USING iceberg")
+        spark.sql(
+          s"INSERT INTO $t VALUES " +
+            "(1, named_struct('x', 10, 'ts', TIMESTAMP '2024-01-15 10:30:00.123', 'y', 100)), " +
+            "(2, named_struct('x', 20, 'ts', TIMESTAMP '2025-06-30 23:59:59.654', 'y', 200))")
         spark.sql(s"ALTER TABLE $t RENAME COLUMN s.x TO X")
       }
       withCaseCatalog(warehouseDir, caseSensitive = false) {
         Seq(
           s"SELECT id, s FROM $t ORDER BY id",
           s"SELECT id, s.X FROM $t ORDER BY id",
+          s"SELECT id, s.ts FROM $t ORDER BY id",
+          s"SELECT id, s.X, s.ts FROM $t ORDER BY id",
+          s"SELECT id, s.ts FROM $t WHERE s.X = 20",
           s"SELECT id FROM $t WHERE s.X = 20").foreach { query =>
           checkIcebergNativeScan(query)
         }
