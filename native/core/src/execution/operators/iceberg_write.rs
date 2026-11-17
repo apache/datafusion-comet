@@ -5321,7 +5321,7 @@ mod tests {
         /// refusal fails, are limited only by Spark.
         #[test]
         fn only_a_fanout_write_is_held_to_a_share_of_the_pool() {
-            use crate::execution::memory_pools::testing::spillable;
+            use crate::execution::memory_pools::testing::{hold, spillable};
             use crate::execution::memory_pools::{
                 create_memory_pool_with_fake_spark, MemoryPoolConfig, MemoryPoolType,
             };
@@ -5339,10 +5339,11 @@ mod tests {
                 let pool = create_memory_pool_with_fake_spark(&config, task_attempt_id, usize::MAX);
                 let sort = spillable("ExternalSorter[0]", &pool);
                 let write = write_consumer(0, writer_mode).register(&pool);
+                hold(&sort, 10);
 
-                // A write that can spill divides the task's 100 bytes with the sort, so it is
-                // refused at its half. One that cannot takes more, and what it holds comes out of
-                // the sort's share.
+                // A write that can spill divides the task's 100 bytes with the sort, which is
+                // active, so it is refused at its half. One that cannot takes more, and what it
+                // holds comes out of the sort's share.
                 write.try_grow(50).unwrap();
                 assert_eq!(
                     write.try_grow(1).is_err(),
@@ -5350,7 +5351,7 @@ mod tests {
                     "{writer_mode:?}"
                 );
                 assert_eq!(
-                    sort.try_grow(50).is_ok(),
+                    sort.try_grow(40).is_ok(),
                     held_to_a_share,
                     "{writer_mode:?}"
                 );
