@@ -337,8 +337,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 ## generator_funcs
 
 `explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
-`CometExplodeExec` (operator-level, not expression-level) for array input; map input falls back
-to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
+`CometExplodeExec` for array and map inputs (operator-level, not expression-level). Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
@@ -769,4 +768,4 @@ still falls back when needed.
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.
-- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.
+- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.5 / 4.0 / 4.1) audit notes for audited expressions.
