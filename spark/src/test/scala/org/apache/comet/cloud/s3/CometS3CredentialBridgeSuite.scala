@@ -262,26 +262,31 @@ class CometS3CredentialBridgeSuite
     spark.sql("CREATE TABLE s3_catalog.db.bridge_release (id INT) USING iceberg")
     spark.sql("INSERT INTO s3_catalog.db.bridge_release VALUES (1), (2), (3)")
 
-    // Each session builds its own catalog, so a different instance tag gives the same table
-    // different FileIO properties, as a catalog that re-vends credentials does.
-    def readWithTag(tag: String): Unit = {
+    // Each session builds its own catalog, so a different instance tag and a later expiry give
+    // the same table the FileIO properties of a catalog that re-vends credentials. Only a later
+    // expiry supersedes, so each read's expiry is later than the one before.
+    val firstExpiry = System.currentTimeMillis() + 3600000L
+    def readWithTag(tag: String, expiresAtMs: Long): Unit = {
       val session = spark.newSession()
       session.conf.set(
         s"spark.sql.catalog.s3_catalog.${MinioCometS3CredentialProvider.TEST_INSTANCE_TAG}",
         tag)
+      session.conf.set(
+        "spark.sql.catalog.s3_catalog.s3.session-token-expires-at-ms",
+        expiresAtMs.toString)
       val df = session.sql("SELECT * FROM s3_catalog.db.bridge_release")
       assertHasCometIcebergScan(df.queryExecution.executedPlan)
       // collect, not count: Iceberg can answer a count from metadata without reading files.
       assert(df.collect().length == 3)
     }
 
-    readWithTag("release-a")
+    readWithTag("release-a", firstExpiry)
     val afterFirst = CometS3CredentialDispatcher.registeredCount()
     assert(MinioCometS3CredentialProvider.initPropertiesForTag("release-a") != null)
 
     // The second read registers a provider for its own FileIO, and evicting the first FileIO
     // drops the last bridge holding the first provider, which releases it.
-    readWithTag("release-b")
+    readWithTag("release-b", firstExpiry + 3600000L)
     assert(MinioCometS3CredentialProvider.initPropertiesForTag("release-b") != null)
     assert(
       CometS3CredentialDispatcher.registeredCount() == afterFirst,

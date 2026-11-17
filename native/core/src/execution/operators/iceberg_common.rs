@@ -150,24 +150,26 @@ impl FileIoCacheKey {
         })
     }
 
-    /// Whether `other` is a `FileIO` for the same table, access mode and catalog built from
-    /// different properties, which this key's `FileIO` supersedes. A catalog that re-vends
-    /// credentials gives a table new properties, and a commit moves its metadata file, so the table
-    /// is compared by [`Self::table_location`]. A commit that keeps the properties supersedes
-    /// nothing, so neighboring snapshots share one provider.
+    /// Whether `other` is a `FileIO` for the same table, access mode and catalog, built from
+    /// credentials that this key's `FileIO` replaces. A catalog that re-vends credentials gives a
+    /// table new properties, and a commit moves its metadata file, so the table is compared by
+    /// [`Self::table_location`]. A commit that keeps the properties supersedes nothing, so
+    /// neighboring snapshots share one provider.
     ///
-    /// When both carry `s3.session-token-expires-at-ms`, only a later expiry supersedes. Two
-    /// sessions reading one table with different vended tokens then keep both entries instead of
-    /// evicting each other on every insert; the LRU bound retires the older one.
+    /// Only a later `s3.session-token-expires-at-ms` supersedes, so both entries must carry one.
+    /// Properties can differ for reasons that say nothing about which is newer: two sessions or
+    /// tenants that share a catalog name can hold different tokens, OAuth credentials or tenant
+    /// ids for one table. Evicting on any difference would make them evict each other on every
+    /// task. Without a later expiry both entries stay, and the LRU bound retires the older one.
     fn supersedes(&self, other: &Self) -> bool {
         self.access_mode == other.access_mode
             && self.catalog_name == other.catalog_name
             && self.table_location() == other.table_location()
             && self.properties != other.properties
-            && match (self.token_expires_at_ms(), other.token_expires_at_ms()) {
-                (Some(new), Some(old)) => new > old,
-                _ => true,
-            }
+            && matches!(
+                (self.token_expires_at_ms(), other.token_expires_at_ms()),
+                (Some(new), Some(old)) if new > old
+            )
     }
 
     /// What identifies the table across commits. A read's reference path is a metadata file, and
@@ -880,21 +882,28 @@ mod tests {
         assert_eq!(cache.entries.len(), 2);
     }
 
-    /// A catalog that re-vends credentials for a table gives it new properties, so the table's new
-    /// `FileIO` evicts the old one, and the old one's credential provider is released once its
+    /// Properties as a REST catalog vends them: a token and its expiry. `t1` expires before `t2`,
+    /// which expires before `t3`.
+    fn vended(token: &str) -> HashMap<String, String> {
+        let n: u64 = token.trim_start_matches('t').parse().unwrap();
+        HashMap::from([
+            ("s3.session-token".to_string(), token.to_string()),
+            (
+                "s3.session-token-expires-at-ms".to_string(),
+                (n * 1000).to_string(),
+            ),
+        ])
+    }
+
+    /// A catalog that re-vends credentials for a table gives it new properties with a later
+    /// expiry, so the table's new `FileIO` evicts the old one, and the old one's credential provider is released once its
     /// readers finish. That holds whether the metadata file moved or not. Other tables, catalogs
     /// and access modes keep theirs.
     #[test]
     fn cache_evicts_the_file_io_a_table_supersedes() {
         let mut cache = FileIoCache::new(8);
         let key = |token: &str, path: &str, catalog: &str, mode: AccessMode| {
-            FileIoCacheKey::new(
-                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
-                path,
-                catalog,
-                mode,
-            )
-            .unwrap()
+            FileIoCacheKey::new(&vended(token), path, catalog, mode).unwrap()
         };
         let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
         let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
@@ -959,13 +968,7 @@ mod tests {
     fn cache_compares_reads_by_metadata_directory() {
         let mut cache = FileIoCache::new(8);
         let key = |token: &str, path: &str| {
-            FileIoCacheKey::new(
-                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
-                path,
-                "cat",
-                AccessMode::Read,
-            )
-            .unwrap()
+            FileIoCacheKey::new(&vended(token), path, "cat", AccessMode::Read).unwrap()
         };
         let custom_v1 = "s3://b/meta/db/t1/00001-a.metadata.json";
         let custom_v2 = "s3://b/meta/db/t1/00002-b.metadata.json";
@@ -1044,13 +1047,7 @@ mod tests {
     fn cache_compares_writes_by_data_location() {
         let mut cache = FileIoCache::new(8);
         let key = |token: &str, path: &str| {
-            FileIoCacheKey::new(
-                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
-                path,
-                "cat",
-                AccessMode::Write,
-            )
-            .unwrap()
+            FileIoCacheKey::new(&vended(token), path, "cat", AccessMode::Write).unwrap()
         };
         let t = "s3://b/warehouse/db/t";
         let u = "s3://b/warehouse/db/u";
@@ -1062,36 +1059,46 @@ mod tests {
         assert_eq!(cache.entries.len(), 2);
     }
 
-    /// The expiry only decides when both entries carry one. Re-vended properties with an expiry
-    /// supersede an entry without one, and the other way round.
+    /// Properties that differ without a later expiry on both sides don't say which entry is newer,
+    /// for example two tenants sharing a catalog name with different OAuth tokens, or a token
+    /// vended without an expiry. Both entries stay, so neither side evicts the other on each task,
+    /// and the LRU bound retires the least recently used one.
     #[test]
-    fn cache_evicts_when_only_one_entry_has_an_expiry() {
-        let mut cache = FileIoCache::new(8);
-        let key = |token: &str, expires_at_ms: Option<&str>| {
-            let mut properties =
-                HashMap::from([("s3.session-token".to_string(), token.to_string())]);
-            if let Some(expires_at_ms) = expires_at_ms {
-                properties.insert(
-                    "s3.session-token-expires-at-ms".to_string(),
-                    expires_at_ms.to_string(),
-                );
-            }
+    fn cache_keeps_entries_without_a_later_expiry() {
+        let mut cache = FileIoCache::new(3);
+        let key = |properties: &[(&str, &str)]| {
             FileIoCacheKey::new(
-                &properties,
+                &properties
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
                 "s3://b/db/t/metadata/00001-a.metadata.json",
                 "cat",
                 AccessMode::Read,
             )
             .unwrap()
         };
-        assert!(cache.insert(key("t1", None), local_file_io()).is_empty());
-        assert_eq!(
-            cache.insert(key("t2", Some("1000")), local_file_io()).len(),
-            1
-        );
-        assert_eq!(cache.insert(key("t3", None), local_file_io()).len(), 1);
-        assert!(cache.get(&key("t3", None)).is_some());
-        assert_eq!(cache.entries.len(), 1);
+        let tenant_a = key(&[("token", "oauth-a"), ("header.X-Tenant", "a")]);
+        let tenant_b = key(&[("token", "oauth-b"), ("header.X-Tenant", "b")]);
+        let expiring = key(&[
+            ("s3.session-token", "t1"),
+            ("s3.session-token-expires-at-ms", "1000"),
+        ]);
+        assert!(cache.insert(tenant_a.clone(), local_file_io()).is_empty());
+        assert!(cache.insert(tenant_b.clone(), local_file_io()).is_empty());
+        // An expiry on one side only doesn't order the two either way.
+        assert!(cache.insert(expiring.clone(), local_file_io()).is_empty());
+        assert!(cache.get(&tenant_a).is_some());
+        assert!(cache.get(&tenant_b).is_some());
+        assert!(cache.get(&expiring).is_some());
+
+        // The LRU bound still applies: tenant_a is now the least recently used.
+        let unexpiring = key(&[("s3.session-token", "t2")]);
+        assert_eq!(cache.insert(unexpiring.clone(), local_file_io()).len(), 1);
+        assert!(cache.get(&tenant_a).is_none());
+        assert!(cache.get(&tenant_b).is_some());
+        assert!(cache.get(&unexpiring).is_some());
+        assert_eq!(cache.entries.len(), 3);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {

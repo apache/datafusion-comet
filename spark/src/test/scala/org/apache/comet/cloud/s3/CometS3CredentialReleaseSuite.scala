@@ -32,10 +32,11 @@ class CometS3CredentialReleaseSuite extends CometTestBase {
 
   private val table = "s3://release-bucket/warehouse/db/t/metadata"
 
-  private def load(metadataFile: String, tag: String): Unit = {
+  private def load(metadataFile: String, tag: String, expiresAtMs: Long): Unit = {
     val properties = Seq(
       "s3.comet.credential.provider.class" -> classOf[TestCometS3CredentialProvider].getName,
-      "test.instance-tag" -> tag)
+      "test.instance-tag" -> tag,
+      "s3.session-token-expires-at-ms" -> expiresAtMs.toString)
     NativeBase.loadIcebergFileIOForTesting(
       s"$table/$metadataFile",
       "release_catalog",
@@ -52,13 +53,13 @@ class CometS3CredentialReleaseSuite extends CometTestBase {
     try {
       val before = CometS3CredentialDispatcher.registeredCount()
 
-      load("00001.metadata.json", "a")
+      load("00001.metadata.json", "a", expiresAtMs = 1000)
       assert(CometS3CredentialDispatcher.registeredCount() == before + 1)
       assert(TestCometS3CredentialProvider.initCount.get() == 1)
 
-      // A later commit of the same table with new properties evicts the first FileIO, and with
-      // it the last reference to the first provider.
-      load("00002.metadata.json", "b")
+      // A later commit of the same table, with credentials that expire later, evicts the first
+      // FileIO, and with it the last reference to the first provider.
+      load("00002.metadata.json", "b", expiresAtMs = 2000)
       assert(TestCometS3CredentialProvider.initCount.get() == 2)
       assert(CometS3CredentialDispatcher.registeredCount() == before + 1)
       assert(TestCometS3CredentialProvider.closeCount.get() == 1)
