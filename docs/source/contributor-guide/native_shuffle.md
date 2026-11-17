@@ -89,6 +89,16 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
 
+5. **Partition key expressions convert to protobuf**: native shuffle serializes the partitioning
+   into its protobuf plan, so every `HashPartitioning` expression and every `RangePartitioning`
+   sort order has to convert through `QueryPlanSerde.exprToProto`. An expression Comet has no
+   serde for, or whose serde reports it incompatible, disqualifies native shuffle even when the
+   key's type is supported. One example is the `mapsort(...)` wrapper Spark 4.0 and later adds
+   around a map used as a shuffle key: `CometMapSort` supports scalar map keys only, so a map with
+   array or struct keys fails this check and the exchange falls back to JVM shuffle even with
+   nested hash keys enabled. JVM shuffle has no such requirement because it evaluates the key on
+   the JVM; see [When JVM Shuffle is Used](jvm_shuffle.md#when-jvm-shuffle-is-used).
+
 ## Architecture
 
 ```
@@ -259,6 +269,11 @@ Under AQE, an operator that shares its logical node with a shuffle stage, such a
 of a two-phase aggregate, comes back from re-planning as the node already planned, whose input was
 serialized as a `Scan` before the stage existed. `CometExecRule` refreshes such a node: once its input
 is a sink that emits a `ShuffleScan`, that `ShuffleScan` replaces the stale `Scan` leaf.
+
+The native Iceberg writer builds its own native plan rather than joining its child's block, and it
+follows the same decision: when its child is a sink that emits a `ShuffleScan`,
+`CometIcebergNativeWrite` takes that `ShuffleScan` as the leaf of the write's plan. See
+[Iceberg Writes](iceberg-writes.md).
 
 The two are not alternatives on failure. If any output type fails `QueryPlanSerde.supportedDataType`,
 `convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`

@@ -53,25 +53,37 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
     ) -> Result<Arc<dyn PhysicalExprAdapter>> {
         let inner = self
             .inner
-            .create(logical_schema, Arc::clone(&physical_schema))?;
+            .create(Arc::clone(&logical_schema), Arc::clone(&physical_schema))?;
         // DataFusion adapts predicates before projections and row-group pruning.
-        // Direct remapping and missing/default literals are safe. Other adaptations
-        // can reject nonempty batches or overflow, so let normal decoding run first.
+        // Direct remapping and default literals must preserve required-field validation.
+        // Other adaptations can reject nonempty batches or overflow, so let normal
+        // decoding run first.
         // Spark's adapter can leave unresolved columns unchanged. Require rewritten
         // column names to resolve in the original physical schema; case and field-ID
         // remapping restore those names before returning the expression.
         // Safe-adaptation and matching-schema optimizations are tracked in
         // https://github.com/apache/datafusion-comet/issues/6123.
-        let allow_runtime_filter =
-            self.read_columns
-                .iter()
-                .all(|column| match inner.rewrite(Arc::new(column.clone())) {
-                    Ok(expr) if expr.is::<Literal>() => true,
-                    Ok(expr) => expr
-                        .downcast_ref::<Column>()
-                        .is_some_and(|column| physical_schema.index_of(column.name()).is_ok()),
-                    Err(_) => false,
-                });
+        let allow_runtime_filter = self.read_columns.iter().all(|column| {
+            let Ok(logical_field) = logical_schema.field_with_name(column.name()) else {
+                return false;
+            };
+            let Ok(expr) = inner.rewrite(Arc::new(column.clone())) else {
+                return false;
+            };
+            if let Some(literal) = expr.downcast_ref::<Literal>() {
+                return logical_field.is_nullable() || !literal.value().is_null();
+            }
+            expr.downcast_ref::<Column>()
+                .is_some_and(|physical_column| {
+                    physical_schema
+                        .field_with_name(physical_column.name())
+                        .is_ok_and(|physical_field| {
+                            // The adapter can erase a same-type nullability cast.
+                            // Pruning must not skip the decoder's required-field check.
+                            logical_field.is_nullable() || !physical_field.is_nullable()
+                        })
+                })
+        });
         Ok(Arc::new(RuntimeFilterSchemaAdapter {
             inner,
             allow_runtime_filter,
