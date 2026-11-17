@@ -26,7 +26,7 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.arrow.compression.CommonsCompressionFactory
+import org.apache.arrow.compression.{CommonsCompressionFactory, ZstdCompressionCodec}
 import org.apache.arrow.flatbuf.{RecordBatch => FlatBufRecordBatch}
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{FieldVector, TypeLayout, ValueVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
@@ -70,11 +70,9 @@ private[comet] object CachedBatchIpc {
    */
   def compressionCodec(codecName: String, zstdLevel: Int): CompressionCodec = codecName match {
     case "none" => NoCompressionCodec.INSTANCE
-    // Comet's subclass of Arrow's codec, which corrects the capacity handed to zstd; see
-    // CometZstdCompressionCodec. Constructed directly rather than through
-    // CompressionCodec.Factory, which ignores the level and always builds a codec at zstd's
-    // default.
-    case "zstd" => new CometZstdCompressionCodec(zstdLevel)
+    // Constructed directly rather than through CompressionCodec.Factory, which ignores the level
+    // and always builds a codec at zstd's default.
+    case "zstd" => new ZstdCompressionCodec(zstdLevel)
     // Arrow's LZ4_FRAME format, written with lz4-java rather than Arrow's own pure-Java codec;
     // see Lz4FrameCompressionCodec.
     case "lz4" => Lz4FrameCompressionCodec
@@ -567,13 +565,14 @@ private[comet] object CachedBatchIpc {
   /**
    * The same record batch with every buffer decompressed, as a new batch the caller owns.
    *
-   * `VectorLoader` would do this itself, but arrow-java 18.3.0 leaks on the failure path:
-   * `VectorLoader.loadBuffers` decompresses a field's buffers into a local list and only releases
-   * them after the whole field has loaded, so if one buffer of a field fails to decompress, every
-   * buffer of that field decompressed before it is unreachable and never freed. A string column
-   * is enough to reach it -- its offsets buffer decompresses, then its data buffer throws -- so a
-   * single corrupt cached batch leaks off-heap for the life of the executor. Doing the
-   * decompression here keeps every allocation reachable from this method's own error path.
+   * `VectorLoader` would do this itself, but arrow-java (through 20.0.0) leaks on the failure
+   * path: `VectorLoader.loadBuffers` decompresses a field's buffers into a local list and only
+   * releases them after the whole field has loaded, so if one buffer of a field fails to
+   * decompress, every buffer of that field decompressed before it is unreachable and never freed.
+   * A string column is enough to reach it -- its offsets buffer decompresses, then its data
+   * buffer throws -- so a single corrupt cached batch leaks off-heap for the life of the
+   * executor. Doing the decompression here keeps every allocation reachable from this method's
+   * own error path.
    *
    * Buffers are retained before decompressing rather than after, which is the other half of the
    * difference. `decompress` consumes a reference to its input on the paths where it allocates,
