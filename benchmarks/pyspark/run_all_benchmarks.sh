@@ -90,7 +90,6 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.exec.forceShuffledHashJoin.maxBuildSize=-1 \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-  --conf spark.comet.cast.allowIncompatible=true \
   "$SCRIPT_DIR/run_benchmark.py" \
   --data "$DATA_PATH" \
   --mode jvm
@@ -120,7 +119,6 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.exec.forceShuffledHashJoin.maxBuildSize=-1 \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-  --conf spark.comet.cast.allowIncompatible=true \
   "$SCRIPT_DIR/run_benchmark.py" \
   --data "$DATA_PATH" \
   --mode native

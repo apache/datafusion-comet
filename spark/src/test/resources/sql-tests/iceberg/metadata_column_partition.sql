@@ -26,7 +26,7 @@
 -- Config: spark.sql.catalog.test_cat.warehouse=/tmp/comet-iceberg-sql-test
 -- Config: spark.comet.enabled=true
 -- Config: spark.comet.exec.enabled=true
--- Config: spark.comet.iceberg.native.enabled=true
+-- Config: spark.comet.scan.icebergNative.enabled=true
 
 -- All `query` assertions below implicitly validate that Comet's partition type
 -- computation (from partition_type_pool JSON) matches Spark's (from Iceberg Java's
