@@ -1448,11 +1448,11 @@ impl SparkPhysicalExprAdapter {
     }
 
     /// A `binaryAsString` scan reads string columns as Binary and decodes them to strings with a
-    /// Spark cast, in its output projection and in the filters it pushes. For a file that
-    /// annotates such a column as a string, the default adapter makes that
-    /// `CAST(CAST(s AS BINARY) AS STRING)`. arrow-rs has already validated an annotated column's
-    /// bytes, and decoding valid UTF-8 returns it unchanged, so use the column itself. The file
-    /// then skips both casts, and a filter on the decoded value prunes on the column.
+    /// Spark cast, in its output projection and in the filters it pushes. Where arrow-rs reads
+    /// the column as Utf8, the default adapter makes that `CAST(CAST(s AS BINARY) AS STRING)`.
+    /// Use the column itself to skip both casts and let filters prune. This preserves the
+    /// setting-off behavior: arrow-rs validates UTF8-annotated columns, but JSON annotations and
+    /// Utf8 `ARROW:schema` hints can still yield unchecked string arrays.
     fn unwrap_binary_round_trip(
         &self,
         expr: Arc<dyn PhysicalExpr>,

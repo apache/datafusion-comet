@@ -167,14 +167,16 @@ configuration does not change the types inferred for those files. The inference 
 Spark version listed above.
 
 **Comet status.** Comet honors the configuration in the native Parquet scan. When it is
-enabled, the scan plans every top-level string column as Arrow `Binary` and decodes it to valid
-UTF-8 at the scan boundary using Spark-compatible replacement semantics. arrow-rs validates UTF-8
-only for Parquet columns annotated as strings, so decoding unannotated columns straight into Arrow
-`Utf8` would put invalid UTF-8 into a string array, which is undefined behavior. Spark's schema
-doesn't say which file columns carry the UTF8 annotation, so the expression adapter decides per
-file: where arrow-rs reads the column as `Utf8`, it reads the column directly, without the cast to
-`Binary` and back. A column that an embedded `ARROW:schema` types as a string is read that way too,
-as it is with the configuration off. The default `false` value continues to return unannotated
+enabled, the scan plans every top-level string column as Arrow `Binary`. Columns that arrow-rs reads
+as `Binary` are decoded to valid UTF-8 at the scan boundary using Spark-compatible replacement
+semantics. arrow-rs validates UTF-8 only for Parquet columns with the `UTF8` annotation. Reading
+malformed unannotated bytes directly as Arrow `Utf8` would create an invalid string array, which is
+undefined behavior.
+Spark's schema doesn't say which file columns carry the `UTF8` annotation, so the expression adapter
+decides per file: where arrow-rs reads the column as `Utf8`, it reads the column directly, without
+the cast to `Binary` and back. This includes JSON-annotated `BINARY` columns and unannotated columns
+that an embedded `ARROW:schema` types as `Utf8`. Both are read without UTF-8 validation, as they are
+with the configuration off. The default `false` value continues to return unannotated
 `BINARY` columns as `BinaryType`.
 
 **Filter pushdown.** While the configuration is enabled, the scan rewrites `=`, `IN` and
@@ -203,7 +205,9 @@ only a non-string column. A second test reads two partition directories holding 
 `0xff` and a null, and a Spark-written file, with row-filter pushdown off and on. It compares `=`,
 `IN`, `NOT IN`, `IS [NOT] NULL`, ranges, `LIKE`, an `OR`, a self-join on the string column and an
 `ORDER BY ... LIMIT` against Spark, and checks that `value = 'one'` and a range on the annotated
-file reach the row filter. Native tests in `parquet_exec.rs` check which row groups each filter
+file reach the row filter. `CometSqlFileTestSuite` compares equality, range, `LIKE`, `NOT IN` and
+null checks on a Spark-written table against Spark, with row-filter pushdown off and on.
+Native tests in `parquet_exec.rs` check which row groups each filter
 prunes and which rows it keeps, for an unannotated and an annotated column. On the unannotated
 column `NOT IN`, a range and `U+FFFD` literals must not prune, and on the annotated column ranges,
 `LIKE` and `NOT IN` must. Another checks that the scan outputs an annotated column without a cast.

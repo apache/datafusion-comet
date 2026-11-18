@@ -440,12 +440,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             "SELECT * FROM t WHERE value IS NOT NULL",
             "SELECT * FROM t WHERE value > 'o'",
             "SELECT * FROM t WHERE value LIKE 'o%'",
-            "SELECT * FROM t WHERE value = 'one' OR id = 21",
-            "SELECT * FROM annotated WHERE value = 'one'",
-            "SELECT * FROM annotated WHERE value < 'two'",
-            "SELECT * FROM annotated WHERE value LIKE 't%'",
-            "SELECT * FROM annotated WHERE value NOT IN ('one')",
-            "SELECT * FROM annotated WHERE value IS NULL").foreach { query =>
+            "SELECT * FROM t WHERE value = 'one' OR id = 21").foreach { query =>
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             assertNativeScan(plan)
           }
