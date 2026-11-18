@@ -68,8 +68,11 @@ same buffers. When the last of these tasks completes, the executor keeps the cop
 such as one of the next wave of tasks of the same stage, reads it instead of decoding the broadcast again. A task that
 starts after that decodes the broadcast again. Each task still builds its own hash table.
 
-The idle copy is JVM-side Arrow memory that neither Spark nor Comet's memory pools account for. Set the timeout to `0`
-to free the copy as soon as no task holds it. Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to
+The idle copy is JVM-side Arrow memory that neither Spark nor Comet's memory pools account for. The idle copies of all
+broadcasts on an executor are capped by `spark.comet.exec.broadcastExchange.shareDecoded.maxIdleSize`, 128 MiB by
+default. A copy larger than the cap is freed as soon as no task holds it, and keeping a copy frees the copies that have
+been idle longest until the rest fit. Raise the cap to keep larger broadcasts between waves, if the executor's memory
+overhead has room for them. Set the timeout to `0` to free the copy as soon as no task holds it. Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to
 have every task decode the whole broadcast for itself.
 
 #### Broadcast compression

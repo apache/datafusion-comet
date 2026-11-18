@@ -235,7 +235,7 @@ case class CometBroadcastExchangeExec(
       getNumPartitions(),
       broadcasted,
       shareDecoded,
-      shareDecodedIdleTimeoutMs)
+      shareDecodedRetention)
   }
 
   // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
@@ -252,14 +252,16 @@ case class CometBroadcastExchangeExec(
       numPartitions,
       broadcasted,
       shareDecoded,
-      shareDecodedIdleTimeoutMs)
+      shareDecodedRetention)
   }
 
   private def shareDecoded: Boolean =
     CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.get(conf)
 
-  private def shareDecodedIdleTimeoutMs: Long =
-    CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_IDLE_TIMEOUT.get(conf)
+  private def shareDecodedRetention: SharedDecode.Retention =
+    SharedDecode.Retention(
+      CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_IDLE_TIMEOUT.get(conf),
+      CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_MAX_IDLE_SIZE.get(conf))
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
     try {
@@ -323,15 +325,16 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
  * @param shareDecoded
  *   whether the tasks of an executor that read the broadcast at the same time share one decoded
  *   copy of it, through [[CometBroadcastValue]]
- * @param idleTimeoutMs
- *   how long an executor keeps that copy after the last task reading it completes
+ * @param retention
+ *   how long an executor keeps that copy after the last task reading it completes, and the cap on
+ *   the bytes of the idle copies that it keeps
  */
 class CometBatchRDD(
     sc: SparkContext,
     val numPartitions: Int,
     value: broadcast.Broadcast[CometBroadcastValue],
     shareDecoded: Boolean,
-    idleTimeoutMs: Long)
+    retention: SharedDecode.Retention)
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override def getPartitions: Array[Partition] = (0 until numPartitions).toArray.map { i =>
@@ -342,7 +345,7 @@ class CometBatchRDD(
     val partition = split.asInstanceOf[CometBatchPartition]
     val source = this.getClass.getSimpleName
     if (shareDecoded && context != null) {
-      partition.value.value.batches(context, source, idleTimeoutMs)
+      partition.value.value.batches(context, source, retention)
     } else {
       partition.value.value.chunks.iterator.flatMap(Utils.decodeBatches(_, source))
     }

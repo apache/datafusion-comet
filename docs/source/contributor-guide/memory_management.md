@@ -122,7 +122,8 @@ practice the volume is modest, a batch at a time per stream, but there is no cei
 backpressure. A broadcast is the largest case: a task that reads one holds all of it decoded, and
 the tasks of an executor that read it at the same time share one such copy. The executor keeps that
 copy for `spark.comet.exec.broadcastExchange.shareDecoded.idleTimeout` after the last of those
-tasks completes, so that the next wave of tasks reads it too. The executor's memory
+tasks completes, so that the next wave of tasks reads it too, and caps the idle copies of all
+broadcasts at `spark.comet.exec.broadcastExchange.shareDecoded.maxIdleSize`. The executor's memory
 usage log reports the allocator's total, and the part of it charged to the import allocator
 described below, so that the overhead can be sized for it.
 

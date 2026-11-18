@@ -712,11 +712,25 @@ object CometConf extends ShimCometConf {
           s"${COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.key} is true. A task that starts by " +
           "then, such as one of the next wave of tasks of the same stage, reads the copy " +
           "instead of decoding the broadcast again. The idle copy is JVM-side Arrow memory " +
-          "that neither Spark nor Comet's memory pools account for. Set to 0 to free the copy " +
-          s"as soon as no task holds it. $TUNING_GUIDE.")
+          "that neither Spark nor Comet's memory pools account for, and " +
+          s"$COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.maxIdleSize caps it. Set " +
+          s"to 0 to free the copy as soon as no task holds it. $TUNING_GUIDE.")
       .timeConf(TimeUnit.MILLISECONDS)
       .checkValue(_ >= 0, "The idle timeout of a shared broadcast decode must not be negative")
       .createWithDefault(TimeUnit.SECONDS.toMillis(1))
+
+  val COMET_EXEC_BROADCAST_SHARE_DECODED_MAX_IDLE_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.maxIdleSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "The most bytes of idle shared decoded broadcast copies that an executor keeps, over " +
+          "all broadcasts, under " +
+          s"${COMET_EXEC_BROADCAST_SHARE_DECODED_IDLE_TIMEOUT.key}. A copy larger than this " +
+          "is freed as soon as no task holds it. Keeping a copy frees the copies that have " +
+          s"been idle longest until the rest fit. $TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(_ >= 0, "The idle size of shared broadcast decodes must not be negative")
+      .createWithDefault(128L * 1024 * 1024)
 
   val COMET_BROADCAST_PRODUCER_COALESCE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.broadcastExchange.producerCoalesce.enabled")
