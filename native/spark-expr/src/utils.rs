@@ -327,7 +327,7 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, Arr
 /// The values that `Decimal128Type::is_valid_decimal_precision` accepts for one precision, looked
 /// up once so that a per-row check is two comparisons, with no precision guard or table lookup.
 /// Arrow does not mark that method `#[inline]`, so release builds also call it out of line on
-/// every row.
+/// every row. See <https://github.com/apache/arrow-rs/issues/12326>.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Decimal128Bounds {
     min: i128,
