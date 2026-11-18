@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometWindowExecSuite extends CometTestBase {
 
@@ -126,8 +126,6 @@ class CometWindowExecSuite extends CometTestBase {
     test(
       s"window group limit: $orderColumn NaN and signed zero peers at the cutoff " +
         s"(strictFloatingPoint=$strictFloatingPoint)") {
-      assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
-
       val positiveFloatNaN = java.lang.Float.intBitsToFloat(0x7fc00001)
       val negativeFloatNaN = java.lang.Float.intBitsToFloat(0xffc00002)
       val positiveDoubleNaN = java.lang.Double.longBitsToDouble(0x7ff8000000000001L)
@@ -208,7 +206,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window group limit: floating-point values nested in the order key") {
-    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
     // The native RANK and DENSE_RANK find ties by byte equality, on order keys that the native
     // planner has normalized, nested floats included. So [-0.0] and [0.0] are peers, and the
     // cutoff keeps both rows, as Spark does (#5507). These keys, read back from Parquet, can hold
@@ -269,7 +266,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window group limit: nested null peers with non-default root null ordering") {
-    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
@@ -340,8 +336,6 @@ class CometWindowExecSuite extends CometTestBase {
   } {
     test(
       s"window: floating partition keys ($partitionColumn, $function, group limit=$groupLimit)") {
-      assume(!groupLimit || isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
-
       val partitionKeys = Seq(
         (Some(1.0f), Some(1.0d)),
         (Some(2.0f), Some(2.0d)),

@@ -38,7 +38,7 @@ import org.apache.spark.sql.types.{ByteType, LongType, StringType, StructField, 
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.ExtendedExplainInfo
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometNativeScan
@@ -1751,7 +1751,6 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     test(
       "DPP stays executable when transition reversion restores the delta scan: " +
         s"AQE=$adaptive") {
-      assume(isSpark35Plus, "Comet AQE DPP query-stage optimizer rules require Spark 3.5+")
       withTempPath { factDir =>
         withTempPath { dimDir =>
           val factPath = factDir.getAbsolutePath

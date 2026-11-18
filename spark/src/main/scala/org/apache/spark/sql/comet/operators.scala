@@ -59,7 +59,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.{CometParquetUtils, HadoopFileOutput}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
@@ -454,7 +454,7 @@ private[comet] object PlanDataInjector extends Logging {
    *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
    */
   private[comet] def findAllPlanData(
-      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[PartitionPlanData]]) = {
     plan match {
       case iceberg: CometIcebergNativeScanExec =>
         // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
@@ -496,7 +496,9 @@ private[comet] object PlanDataInjector extends Logging {
         s.ensureSubqueriesResolved()
         s.sendDriverMetrics()
         if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
-          (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
+          (
+            Map(s.sourceKey -> s.commonData),
+            Map(s.sourceKey -> PartitionPlanData.wrap(s.perPartitionData)))
         } else {
           (Map.empty, Map.empty)
         }
@@ -518,12 +520,9 @@ private[comet] object PlanDataInjector extends Logging {
         val results = plan.children.map(findAllPlanData)
         (
           mergeByKey(results.map(_._1))(java.util.Arrays.equals(_, _)),
-          mergeByKey(results.map(_._2))(samePartitionData))
+          mergeByKey(results.map(_._2))(PartitionPlanData.same))
     }
   }
-
-  private def samePartitionData(a: Array[Array[Byte]], b: Array[Array[Byte]]): Boolean =
-    a.length == b.length && a.indices.forall(i => java.util.Arrays.equals(a(i), b(i)))
 
   /**
    * Merges the planning data found under sibling subtrees. The injector looks data up by key, so
@@ -573,11 +572,18 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
   override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
     val scan = op.getIcebergScan
 
-    val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
+    val partition = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
 
     val scanBuilder = scan.toBuilder
-    scanBuilder.setCommon(common)
-    scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
+    // The partition carries the per-file pool entries its tasks use, which the common block does
+    // not hold. mergeFrom appends repeated fields, so the tasks' indices, which start at 0, stay
+    // valid.
+    if (partition.hasCommon) {
+      scanBuilder.setCommon(common.toBuilder.mergeFrom(partition.getCommon))
+    } else {
+      scanBuilder.setCommon(common)
+    }
+    scanBuilder.addAllFileScanTasks(partition.getFileScanTasksList)
 
     op.toBuilder.setIcebergScan(scanBuilder).build()
   }
@@ -887,7 +893,7 @@ private[comet] case class NativeExecContext(
     // Partition object - see CometNativeShuffleInputRDD / CometExecRDD); the executor reads its own
     // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
+    @transient perPartitionByKey: Map[String, Array[PartitionPlanData]],
     shuffleScanIndices: Set[Int],
     hasScanInput: Boolean,
     // Like plan data, file paths are sliced onto each task's Partition on the driver.
@@ -2580,11 +2586,11 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
     // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
     // CodegenFallback expression, or when the output or an input exceeds its field limit. The
-    // NO_CODEGEN factory mode turns whole-stage codegen off only from Spark 3.5 (SPARK-44236).
+    // NO_CODEGEN factory mode also turns whole-stage codegen off (SPARK-44236).
     val codegenOff = !op.conf.wholeStageEnabled ||
-      (isSpark35Plus && op.conf
+      op.conf
         .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
-        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)) ||
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString) ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
       op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||
