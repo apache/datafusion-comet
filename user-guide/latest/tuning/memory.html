@@ -942,12 +942,15 @@ coalesce. The shared pool ensures that their combined memory usage stays within 
 build side of a hash join. Spark limits each task to an even share of <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> among the tasks
 using it, and the pool divides <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> the same way among the tasks running native plans. Within
 a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
-task’s share, counting the operators of all of the task’s native plans. The operators that cannot spill take what
-Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
-for the task’s other operators. A limit that small can be less than one batch of wide rows, and a sort cannot spill a
-batch it has not yet reserved, so it then fails with “Not enough memory to continue external sort”. Give the
-executors more off-heap memory, lower <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>, or use <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>, which leaves every limit to
-Spark.</p>
+task’s share, counting the operators of all of the task’s native plans that are doing work. An operator that has
+not started yet, such as one above a sort that is still reading its input, takes no share, except a sort: it fails
+rather than spills when it cannot reserve its first batch, so a sort that has not started keeps a share from the
+other operators, such as an aggregate below it. The operators that cannot
+spill take what Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in
+order to leave it for the task’s other operators. A limit that small can be less than one batch of wide rows, and a
+sort cannot spill a batch it has not yet reserved, so it then fails with “Not enough memory to continue external
+sort”. Give the executors more off-heap memory, lower <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>, or use <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>, which leaves
+every limit to Spark.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.</p>
 </section>

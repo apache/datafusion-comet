@@ -953,6 +953,34 @@ longer has any effect. Comet always converts Arrow batches to Spark rows on the 
 already the default. The driver logs a warning when the setting is present in the Spark
 configuration.</p>
 </section>
+<section id="memory-pool-limits">
+<h3>Memory Pool Limits<a class="headerlink" href="#memory-pool-limits" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> memory pool, which is the default for <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>, limited each
+of a task’s operators to a share of all of <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, while Spark limits each task
+to an even share of it among the running tasks. Whenever more than one task was running, the share
+was the looser limit, so one operator could take all of its task’s memory, and another operator
+that cannot spill, such as the final merge of a sort, then failed the task
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7088">#7088</a>). Spark retried such tasks, and the
+retries usually succeeded. Comet 1.3.0 divides <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> among the tasks running
+native plans, as Spark does, and within a task limits only the operators that can spill, each to an
+even share of what the operators that cannot spill leave, among those that are doing work and the
+sorts that have not started. A sort fails rather than spills when it cannot reserve its first batch,
+so it keeps a share from the operators below it other than a sort, such as an aggregate. So sorts,
+aggregations and the shuffle writer can spill sooner when several of them work at once in one task,
+and the operators that cannot spill are limited only by Spark, unless the deprecated
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is below <code class="docutils literal notranslate"><span class="pre">1.0</span></code>. The native Iceberg fanout writer is one of
+the operators that can spill: it closes files rather than take memory from the others, so it can
+write more files.</p>
+<p>An operator’s limit can now be well below what Spark would grant its task, and a sort can fail
+where it used to run. A sort fails with “Not enough memory to continue external sort” instead of
+spilling when a single batch is larger than its share, which wide rows, many cores per executor, a
+small <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> and several operators that can spill in one task make likelier.
+It can also fail when operators that cannot spill, such as the build side of a shuffled hash join,
+hold the whole of the task’s share. To avoid either, give the executors more off-heap memory,
+lower <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>, or leave every limit to Spark by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool=greedy_unified</span></code>. See
+<a class="reference internal" href="tuning/memory.html#configuring-comet-memory"><span class="std std-ref">Configuring Comet Memory</span></a>.</p>
+</section>
 </section>
 <section id="upgrading-to-comet-1-2-0">
 <h2>Upgrading to Comet 1.2.0<a class="headerlink" href="#upgrading-to-comet-1-2-0" title="Link to this heading">#</a></h2>
@@ -1019,31 +1047,6 @@ Comet 1.1.0’s Iceberg Writes guide documented it as the switch for the split p
 that still sets it to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps the split plan, with iceberg-java writing the data files, and
 on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark’s
 own operator.</p>
-</section>
-<section id="memory-pool-limits">
-<h3>Memory Pool Limits<a class="headerlink" href="#memory-pool-limits" title="Link to this heading">#</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> memory pool, which is the default for <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>, limited each
-of a task’s operators to a share of all of <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, while Spark limits each task
-to an even share of it among the running tasks. Whenever more than one task was running, the share
-was the looser limit, so one operator could take all of its task’s memory, and another operator
-that cannot spill, such as the final merge of a sort, then failed the task
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7088">#7088</a>). Spark retried such tasks, and the
-retries usually succeeded. Comet 1.2.0 divides <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> among the tasks running
-native plans, as Spark does, and within a task limits only the operators that can spill, each to an
-even share of what the operators that cannot spill leave. So sorts, aggregations and the shuffle
-writer can spill sooner when several of them run in one task, and the operators that cannot spill
-are limited only by Spark, unless the deprecated <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is below
-<code class="docutils literal notranslate"><span class="pre">1.0</span></code>. The native Iceberg fanout writer is one of the operators that can spill: it closes files
-rather than take memory from the others, so it can write more files.</p>
-<p>An operator’s limit can now be well below what Spark would grant its task, and a sort can fail
-where it used to run. A sort fails with “Not enough memory to continue external sort” instead of
-spilling when a single batch is larger than its share, which wide rows, many cores per executor, a
-small <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> and several operators that can spill in one task make likelier.
-It can also fail when operators that cannot spill, such as the build side of a shuffled hash join,
-hold the whole of the task’s share. To avoid either, give the executors more off-heap memory,
-lower <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>, or leave every limit to Spark by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool=greedy_unified</span></code>. See
-<a class="reference internal" href="tuning/memory.html#configuring-comet-memory"><span class="std std-ref">Configuring Comet Memory</span></a>.</p>
 </section>
 <section id="native-iceberg-scan-file-concurrency">
 <h3>Native Iceberg Scan File Concurrency<a class="headerlink" href="#native-iceberg-scan-file-concurrency" title="Link to this heading">#</a></h3>
@@ -1248,12 +1251,12 @@ release, review the release notes for the versions in between.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-3-0">Upgrading to Comet 1.3.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-manager-set-by-the-plugin-on-spark-4-0-and-later">Shuffle Manager Set by the Plugin on Spark 4.0 and Later</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-2-0">Upgrading to Comet 1.2.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Deprecated and Removed Settings</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-writes">Iceberg Writes</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-iceberg-scan-file-concurrency">Native Iceberg Scan File Concurrency</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-differences-from-spark-that-are-new-in-1-2-0">Known Differences From Spark That Are New in 1.2.0</a></li>
 </ul>
