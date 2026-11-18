@@ -1562,13 +1562,13 @@ mod groups_tests {
                 let groups = [0, 1, 2, 3, 0, 1, 2, 3];
                 grouped.update_batch(&values, &groups, None, 4).unwrap();
                 update_scalars(&mut scalars, &values, &groups, None);
-                let vectors = match kind {
+                let fields = match kind {
                     RegrType::SXX | RegrType::SYY => 3,
                     RegrType::SXY => 4,
                     RegrType::Slope | RegrType::Intercept => 7,
                     RegrType::R2 => 6,
                 };
-                assert!(grouped.size() >= 4 * vectors * size_of::<f64>());
+                assert!(grouped.size() >= 4 * fields * size_of::<f64>());
                 assert!(grouped
                     .state(EmitTo::First(0))
                     .unwrap()
@@ -1582,7 +1582,7 @@ mod groups_tests {
                 );
                 let state = grouped.state(EmitTo::First(1)).unwrap();
                 same_state(&state, 0, scalars.remove(0).as_mut());
-                assert!(grouped.size() >= 2 * vectors * size_of::<f64>());
+                assert!(grouped.size() >= 2 * fields * size_of::<f64>());
                 scalars.push(expr.create_accumulator().unwrap());
                 let more = inputs(
                     kind,
@@ -1618,7 +1618,7 @@ mod groups_tests {
     }
 
     #[test]
-    fn r2_factory_selects_regression_result_rules() {
+    fn grouped_r2_applies_regression_result_rules() {
         for modern in [false, true] {
             let expr = expression(RegrType::R2, modern);
             for (y, x, expected) in [
