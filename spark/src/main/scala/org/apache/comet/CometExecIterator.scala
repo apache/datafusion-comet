@@ -261,7 +261,7 @@ class CometExecIterator(
       val result = withTrace(
         s"getNextBatch[JVM] stage=${ctx.stageId()}",
         tracingEnabled, {
-          nativeUtil.getNextBatch(
+          nativeUtil.getNextPlanBatch(
             numOutputCols,
             (arrayAddrs, schemaAddrs) => {
               nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
@@ -916,6 +916,7 @@ object CometExecIterator extends Logging {
       CometConf.COMET_DEBUG_ENABLED,
       CometConf.COMET_DEBUG_MEMORY_ENABLED,
       CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
+      CometConf.COMET_EXEC_CACHE_OUTPUT_SCHEMA_ENABLED,
       CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,

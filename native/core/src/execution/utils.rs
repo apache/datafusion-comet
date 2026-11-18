@@ -27,49 +27,44 @@ use datafusion_comet_common::zero_offsets;
 pub trait SparkArrowConvert {
     /// Move Arrow Arrays to C data interface.
     fn move_to_spark(&self, field: &Field, array: i64, schema: i64) -> Result<(), ExecutionError>;
+
+    /// Move the array, but not its schema, to C data interface, for a JVM that already imported
+    /// the schema `move_to_spark` exported for an array of the same type and field metadata.
+    fn move_array_to_spark(&self, array: i64) -> Result<(), ExecutionError>;
 }
 
 impl SparkArrowConvert for ArrayData {
     /// Move this ArrowData to pointers of Arrow C data interface.
     fn move_to_spark(&self, field: &Field, array: i64, schema: i64) -> Result<(), ExecutionError> {
-        let array_ptr = array as *mut FFI_ArrowArray;
-        let schema_ptr = schema as *mut FFI_ArrowSchema;
-
-        let array_align = std::mem::align_of::<FFI_ArrowArray>();
-        let schema_align = std::mem::align_of::<FFI_ArrowSchema>();
-        // Arrow Java ignores `ArrowArray.offset` on import, so every level has to start at 0.
-        let data = zero_offsets(self)?;
-        let ffi_array = FFI_ArrowArray::new(&data);
         // Spark owns the top-level name and nullability. Preserve the existing anonymous schema
         // shape while carrying logical extension metadata from the RecordBatch field.
         let ffi_schema =
             FFI_ArrowSchema::try_from(self.data_type())?.with_metadata(field.metadata())?;
-
-        // Check if the pointer alignment is correct.
-        if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
-            unsafe {
-                std::ptr::write_unaligned(array_ptr, ffi_array);
-                std::ptr::write_unaligned(schema_ptr, ffi_schema);
-            }
-        } else {
-            // SAFETY: `array_ptr` and `schema_ptr` are aligned correctly.
-            debug_assert_eq!(
-                array_ptr.align_offset(array_align),
-                0,
-                "move_to_spark: array_ptr not aligned"
-            );
-            debug_assert_eq!(
-                schema_ptr.align_offset(schema_align),
-                0,
-                "move_to_spark: schema_ptr not aligned"
-            );
-            unsafe {
-                std::ptr::write(array_ptr, ffi_array);
-                std::ptr::write(schema_ptr, ffi_schema);
-            }
-        }
-
+        self.move_array_to_spark(array)?;
+        // SAFETY: the caller passes the address of an `FFI_ArrowSchema` it owns.
+        unsafe { write_ffi_struct(schema as *mut FFI_ArrowSchema, ffi_schema) };
         Ok(())
+    }
+
+    fn move_array_to_spark(&self, array: i64) -> Result<(), ExecutionError> {
+        // Arrow Java ignores `ArrowArray.offset` on import, so every level has to start at 0.
+        let data = zero_offsets(self)?;
+        // SAFETY: the caller passes the address of an `FFI_ArrowArray` it owns.
+        unsafe { write_ffi_struct(array as *mut FFI_ArrowArray, FFI_ArrowArray::new(&data)) };
+        Ok(())
+    }
+}
+
+/// Writes `value` into the JVM-allocated struct at `ptr`, which Arrow Java may not have aligned
+/// for `T`. Whatever the struct held is overwritten without being released.
+///
+/// # Safety
+/// `ptr` must be valid for writing a `T`.
+unsafe fn write_ffi_struct<T>(ptr: *mut T, value: T) {
+    if ptr.align_offset(std::mem::align_of::<T>()) != 0 {
+        std::ptr::write_unaligned(ptr, value)
+    } else {
+        std::ptr::write(ptr, value)
     }
 }
 
@@ -144,5 +139,35 @@ mod tests {
         assert_eq!(ffi_array.child(0).offset(), 0);
         let imported = unsafe { from_ffi(ffi_array, &ffi_schema) }.unwrap();
         assert_eq!(imported, data);
+    }
+
+    /// An array moved without its schema reads back through the schema `move_to_spark` exported
+    /// for an earlier array of the same type, as the JVM reads it.
+    #[test]
+    fn test_move_array_to_spark_reads_with_an_earlier_schema() {
+        let field = Field::new("v", DataType::Int32, true);
+        let first = Int32Array::from(vec![Some(1), None]).into_data();
+        let mut first_array = MaybeUninit::<FFI_ArrowArray>::uninit();
+        let mut schema = MaybeUninit::<FFI_ArrowSchema>::uninit();
+        first
+            .move_to_spark(
+                &field,
+                first_array.as_mut_ptr() as i64,
+                schema.as_mut_ptr() as i64,
+            )
+            .unwrap();
+        drop(unsafe { first_array.assume_init() });
+        let schema = unsafe { schema.assume_init() };
+
+        // Sliced, so the export also has to fold the offset into the buffers.
+        let second = Int32Array::from(vec![Some(7), Some(8), None, Some(9)]).slice(1, 3);
+        let mut second_array = MaybeUninit::<FFI_ArrowArray>::uninit();
+        second
+            .to_data()
+            .move_array_to_spark(second_array.as_mut_ptr() as i64)
+            .unwrap();
+
+        let imported = unsafe { from_ffi(second_array.assume_init(), &schema) }.unwrap();
+        assert_eq!(Int32Array::from(imported), second);
     }
 }

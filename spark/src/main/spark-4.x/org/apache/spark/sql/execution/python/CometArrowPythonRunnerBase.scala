@@ -706,13 +706,10 @@ private[python] object CometArrowPythonRunnerBase {
    */
   private def describeOutput(expected: DataType, streamFields: Seq[Field]): String = {
     val sparkTypes =
-      if (streamFields.exists(hasDictionary)) None
+      if (streamFields.exists(CometVectorUtils.hasDictionary)) None
       else Try(streamFields.map(Utils.fromArrowField).mkString(", ")).toOption
     sparkTypes.filter(_ != expected.toString).getOrElse(streamFields.mkString(", "))
   }
-
-  private def hasDictionary(field: Field): Boolean =
-    field.getDictionary != null || field.getChildren.asScala.exists(hasDictionary)
 
   /**
    * Serialize source vectors directly beneath the non-null struct advertised in the IPC stream.

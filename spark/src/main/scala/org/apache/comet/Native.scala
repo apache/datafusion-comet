@@ -127,7 +127,9 @@ class Native extends NativeBase {
    * @param schemaAddrs
    *   the addresses of Arrow Schema structures
    * @return
-   *   the number of rows, if -1, it means end of the output.
+   *   the number of rows, if -1, it means end of the output. Native fills the schema structures
+   *   only when the output schema changes, unless `spark.comet.exec.cacheOutputSchema.enabled` is
+   *   off, and sets `NativeUtil.OUTPUT_SCHEMA_EXPORTED` when it does.
    */
   @native def executePlan(
       stage: Int,
