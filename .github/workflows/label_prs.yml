@@ -39,6 +39,7 @@ concurrency:
 jobs:
   label:
     runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
       # Checks out the base branch, never the pull request's code: under pull_request_target the
       # default ref is the base commit, and only dev/ci/pr-type-label.mjs is read from it.

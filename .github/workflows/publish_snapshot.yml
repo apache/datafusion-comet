@@ -64,6 +64,7 @@ jobs:
     # anywhere so the workflow can be exercised before it lands.
     if: github.repository == 'apache/datafusion-comet' || inputs.dry_run
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     outputs:
       publish: ${{ steps.check.outputs.publish }}
     steps:
