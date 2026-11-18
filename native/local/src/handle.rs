@@ -211,7 +211,14 @@ mod tests {
         let result = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(result.err().unwrap().to_string().contains("cancelled"));
         assert!(started.elapsed() < Duration::from_secs(5));
-        assert_eq!(refs.strong_count(), 0);
+        let releasing = Instant::now();
+        while refs.strong_count() != 0 {
+            assert!(
+                releasing.elapsed() < Duration::from_secs(5),
+                "cancelled graph remained live"
+            );
+            std::thread::yield_now();
+        }
         thread.join().unwrap();
     }
 }
