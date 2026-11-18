@@ -449,13 +449,14 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   private def keyMetadataMethod(clazz: Class[_]) = clazz.getMethod("keyMetadata")
 
-  private def serializeDeleteFile(file: AnyRef) =
+  private def serializeDeleteFileWithPath(file: AnyRef) =
     CometIcebergNativeScan.serializeDeleteFile(
       file,
       file.getClass,
       file.getClass,
-      keyMetadataMethod(file.getClass),
-      _ => 0)
+      keyMetadataMethod(file.getClass))
+
+  private def serializeDeleteFile(file: AnyRef) = serializeDeleteFileWithPath(file)._2
 
   test("required Iceberg delete-file accessors are present") {
     Seq("content", "specId", "equalityFieldIds").foreach { accessor =>
@@ -469,11 +470,12 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   }
 
   test("position-delete file with null equality ids serializes without equality ids") {
-    val proto = serializeDeleteFile(new PositionDeleteFile)
+    val (path, proto) = serializeDeleteFileWithPath(new PositionDeleteFile)
+    // The path ships apart from the message, which sets its pool index per partition.
+    path shouldBe "s3://bucket/pos-delete.parquet"
     proto.getContentType shouldBe "POSITION_DELETES"
     proto.getPartitionSpecId shouldBe 7
     proto.getEqualityIdsCount shouldBe 0
-    proto.getFilePathIdx shouldBe 0
   }
 
   test("equality-delete file serializes declared equality ids") {
