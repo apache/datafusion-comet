@@ -371,6 +371,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_LOCAL_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.exec.local.enabled")
+    .category(CATEGORY_EXEC)
+    .internal()
+    .doc(
+      "Experimental. When the Spark application runs with a local master, run a whole query " +
+        "that Comet runs in Rust without JVM input as one Rust plan in a single " +
+        "Spark task. Other queries use ordinary Comet execution.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.makeDate.operatorFallback.enabled")
       .category(CATEGORY_EXEC)
