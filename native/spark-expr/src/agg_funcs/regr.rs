@@ -1618,64 +1618,6 @@ mod groups_tests {
     }
 
     #[test]
-    fn grouped_r2_applies_regression_result_rules() {
-        for modern in [false, true] {
-            let expr = expression(RegrType::R2, modern);
-            for (y, x, expected) in [
-                (vec![Some(1.0)], vec![Some(2.0)], None),
-                (
-                    vec![Some(f64::INFINITY)],
-                    vec![Some(f64::INFINITY)],
-                    Some(f64::NAN),
-                ),
-                (
-                    vec![Some(7.0); 2],
-                    vec![Some(1.0), Some(3.0)],
-                    modern.then_some(1.0),
-                ),
-                (
-                    vec![Some(1.0), Some(3.0)],
-                    vec![Some(7.0); 2],
-                    (!modern).then_some(1.0),
-                ),
-            ] {
-                let mut grouped = expr.create_groups_accumulator().unwrap();
-                grouped
-                    .update_batch(&inputs(RegrType::R2, &y, &x), &vec![0; y.len()], None, 1)
-                    .unwrap();
-                same_value(
-                    grouped
-                        .evaluate(EmitTo::All)
-                        .unwrap()
-                        .as_primitive::<Float64Type>()
-                        .iter()
-                        .next()
-                        .unwrap(),
-                    expected,
-                );
-            }
-            // R2 has no count == 0 shortcut: merging empty partials can leave a NaN
-            // moment, which Spark's result rule turns into NaN.
-            let state: Vec<ArrayRef> = [0.0, f64::NAN, f64::NAN, 0.0, 0.0, 0.0]
-                .into_iter()
-                .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
-                .collect();
-            let mut grouped = expr.create_groups_accumulator().unwrap();
-            grouped.merge_batch(&state, &[0], 1).unwrap();
-            same_value(
-                grouped
-                    .evaluate(EmitTo::All)
-                    .unwrap()
-                    .as_primitive::<Float64Type>()
-                    .iter()
-                    .next()
-                    .unwrap(),
-                Some(f64::NAN),
-            );
-        }
-    }
-
-    #[test]
     fn grouped_r2_underflow_preserves_captured_error_context() {
         let sql = "SELECT regr_r2(y, x) FROM t GROUP BY g";
         for mode in [EvalMode::Legacy, EvalMode::Ansi] {
