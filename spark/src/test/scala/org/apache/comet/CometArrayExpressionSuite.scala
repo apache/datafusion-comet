@@ -34,7 +34,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, LongType, StringType, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, CometSequence, Compatible, ExprOuterClass, Incompatible, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
@@ -46,31 +46,9 @@ object SizeChildCounter {
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  test("array set signed-zero Spark patch versions") {
-    // 4.2.0 normalizes the arguments in the plan (SPARK-54918), and 4.0.5+, 4.1.4+ and 4.2.1+
-    // normalize during evaluation (SPARK-59602). Earlier releases keep flat signed zeros apart.
-    Seq("3.4.3", "3.5.9", "4.0.0", "4.0.4", "4.0.4-SNAPSHOT", "4.1.0", "4.1.3").foreach {
-      version =>
-        assert(!ArraySetSupport.normalizesFloats(version), version)
-    }
-    Seq(
-      "4.0.5",
-      "4.0.10",
-      "4.1.4",
-      "4.1.10",
-      "4.2.0",
-      "4.2.0-SNAPSHOT",
-      "4.2.1",
-      "4.2.10",
-      "4.3.0",
-      "5.0.0").foreach { version =>
-      assert(ArraySetSupport.normalizesFloats(version), version)
-    }
-  }
-
   test("array set signed-zero support levels") {
-    // This test covers element-type detection; the preceding test pins the version boundaries.
-    val fixed = ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)
+    // This test covers element-type detection; SparkFixesSuite pins the version boundaries.
+    val fixed = SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)
     Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
       .foreach { elementType =>
         val child = AttributeReference("a", ArrayType(elementType))()
@@ -120,7 +98,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
           .foreach { case (function, arguments) =>
             val query = s"SELECT $function($arguments)"
-            if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+            if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
               checkSparkAnswerAndOperator(query)
             } else {
               checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -160,7 +138,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array_union(array(named_struct('x', d)), array(named_struct('x', -d)))")
         expressions.foreach { expression =>
           val query = s"SELECT size($expression) FROM array_set_nan"
-          if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+          if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
             checkSparkAnswerAndOperator(query)
           } else {
             checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -191,7 +169,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             s"array_union(array(named_struct('x', $column)), array(named_struct('x', -$column)))")
             .foreach { expression =>
               val query = s"SELECT $expression FROM array_set_zero"
-              if (ArraySetSupport.normalizesFloats(org.apache.spark.SPARK_VERSION)) {
+              if (SparkFixes.arraySetFunctionsNormalizeFloats(org.apache.spark.SPARK_VERSION)) {
                 checkSparkAnswerAndOperator(query)
               } else {
                 checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
@@ -348,7 +326,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_prepend") {
-    assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -1699,7 +1676,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // drops the earlier entry under `LAST_WIN`, so `CometLiteral` declines expansion under either
   // policy and Spark evaluates the projection.
   test("folded map literal with duplicate keys falls back (multirow)") {
-    assume(isSpark35Plus)
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
         withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
@@ -1716,7 +1692,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // check has to compare keys the way `ArrayBasedMapBuilder` does, through
   // `TypeUtils.getInterpretedOrdering`.
   test("folded map literal with duplicate binary keys falls back (multirow)") {
-    assume(isSpark35Plus)
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
         withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
@@ -1760,7 +1735,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_insert on non-null element array from local table scan (#4789)") {
-    assume(isSpark35Plus)
     withLocalTableScanNoFold {
       import testImplicits._
       val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")

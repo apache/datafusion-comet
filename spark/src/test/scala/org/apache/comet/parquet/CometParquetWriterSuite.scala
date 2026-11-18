@@ -42,7 +42,7 @@ import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOu
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, TableIdentifier}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, BasicWriteTaskStatsTracker, FileFormatWriter, SQLHadoopMapReduceCommitProtocol, WriteFilesExec, WriteJobStatsTracker, WriteTaskStats, WriteTaskStatsTracker}
@@ -54,7 +54,7 @@ import org.apache.spark.sql.types.{ArrayType, IntegerType, LongType, MapType, Me
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.hadoop.fs.RecordingFileSystem
 import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
 import org.apache.comet.serde.operator.NativeWriteUtils
@@ -167,8 +167,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
                 case write: CometWriteFilesExec => write
               }
               .getOrElse(fail(s"expected a native parquet writer:\n$nativePlan"))
-            val stageWithTransition = nativeWrite.withNewChildren(Seq(
-              CometSparkToColumnarExec(CometNativeColumnarToRowExec(nativeWrite.children.head))))
+            val stageWithTransition = nativeWrite.withNewChildren(
+              Seq(CometSparkToColumnarExec(CometColumnarToRowExec(nativeWrite.children.head))))
             assert(
               stageWithTransition.collect { case _: ColumnarToRowTransition => true }.nonEmpty,
               s"test requires a C2R transition:\n$stageWithTransition")
@@ -633,7 +633,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("parquet write with a mixed-case unsupported compression codec falls back to Spark") {
-    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
     // The other half of the case bug, and the dangerous half: a case-sensitive read misses the
     // option entirely, finds `snappy` in the SQLConf, decides the codec is supported, and writes
     // SNAPPY bytes into a file Spark named `...-c000.lz4raw.parquet`.
@@ -724,7 +723,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("parquet write with unsupported compression codec falls back to Spark") {
-    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
