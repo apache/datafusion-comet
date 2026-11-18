@@ -34,6 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
+import org.apache.comet.iceberg.compaction.CometIcebergProcedureRule
 import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
@@ -116,6 +117,9 @@ class CometSparkSessionExtensions
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     injectQueryStageOptimizerRuleShim(extensions, CometCoalesceShufflePartitions)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
+    // Spark 4 invokes a CALL's procedure while it analyzes the statement, after optimizing it, so
+    // an optimizer rule is where Comet's rewrite_data_files replaces Iceberg's.
+    extensions.injectOptimizerRule { session => CometIcebergProcedureRule(session) }
   }
 
   case class CometColumnar(session: SparkSession) extends ColumnarRule {
