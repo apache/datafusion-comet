@@ -17,7 +17,7 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- Spark 3.4/3.5's SortArray requires the ascendingOrder argument to be a boolean literal and
+-- Spark 3.5's SortArray requires the ascendingOrder argument to be a boolean literal and
 -- rejects any other expression at analysis time. Spark 4.0 relaxed this to accept any foldable
 -- boolean, so the non-literal-ascendingOrder cases below can only be exercised on Spark 4.0+.
 -- MinSparkVersion: 4.0

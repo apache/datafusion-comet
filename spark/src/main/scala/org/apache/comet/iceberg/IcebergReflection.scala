@@ -74,9 +74,6 @@ object IcebergReflection extends Logging {
     val MANIFEST_FILE = "org.apache.iceberg.ManifestFile"
     val MANIFEST_FILES = "org.apache.iceberg.ManifestFiles"
     val DATA_FILE = "org.apache.iceberg.DataFile"
-
-    // Iceberg 1.5.2 uses its own `ReplaceIcebergData` due to lack of `ReplaceData` in Spark 3.4.
-    val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
   }
 
   /**
@@ -238,9 +235,6 @@ object IcebergReflection extends Logging {
     }
   }
 
-  def isReplaceIcebergData(plan: Any): Boolean =
-    plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
-
   private def reflectField(plan: Any, fieldName: String): Option[AnyRef] =
     try {
       val field = plan.getClass.getDeclaredField(fieldName)
@@ -252,19 +246,6 @@ object IcebergReflection extends Logging {
           s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}: ${e.getMessage}")
         None
     }
-
-  def extractReplaceIcebergDataFields(plan: Any): Option[(AnyRef, AnyRef, AnyRef, AnyRef)] = {
-    if (!isReplaceIcebergData(plan)) return None
-    for {
-      table <- reflectField(plan, "table")
-      query <- reflectField(plan, "query")
-      originalTable <- reflectField(plan, "originalTable")
-      write <- reflectField(
-        plan,
-        "write"
-      ) // Option[Write]; field can be Some(null) so kept AnyRef
-    } yield (table, query, originalTable, write)
-  }
 
   /**
    * Loads a class using the thread context classloader first, then falls back to the system
@@ -1457,8 +1438,8 @@ object IcebergReflection extends Logging {
   /**
    * Reads a `private final` field from a `SparkWrite` instance via reflection. The field names
    * referenced by callers (`queryId`, `targetFileSize`, `useFanoutWriter`, `outputSpecId`,
-   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.5.2 / 1.8.1 / 1.10.0 versions
-   * Comet supports.
+   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.9.1 / 1.10.0 / 1.11.0
+   * versions Comet supports.
    */
   private def getSparkWriteField(sparkWrite: Any, fieldName: String): Option[Any] =
     sparkWriteClassOpt.flatMap { cls =>
@@ -1467,11 +1448,7 @@ object IcebergReflection extends Logging {
         field.setAccessible(true)
         Option(field.get(sparkWrite))
       } catch {
-        case _: NoSuchFieldException =>
-          // Field may have been renamed across Iceberg versions. Callers that probe multiple
-          // candidate names (e.g. `useFanoutWriter` / `partitionedFanoutEnabled`) should expect
-          // this and `.orElse` onto the alternative.
-          None
+        case _: NoSuchFieldException => None
         case e: Exception =>
           logError(
             s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName: ${e.getMessage}")
@@ -1491,16 +1468,10 @@ object IcebergReflection extends Logging {
   /**
    * Whether the planner would use a fanout writer.
    *
-   * Field name changed between Iceberg releases:
-   *   - 1.5.2 (Spark 3.4 profile): `partitionedFanoutEnabled`
-   *   - 1.8.1+ (Spark 3.5 / 4.0 profiles): `useFanoutWriter`
-   *
-   * Same semantic in both versions. Try the newer name first; fall back to the older one so the
-   * helper resolves across all supported Iceberg versions without a per-version shim.
+   * Iceberg 1.8.1 and later store this as `SparkWrite.useFanoutWriter`.
    */
   def getUseFanoutWriterFromSparkWrite(sparkWrite: Any): Option[Boolean] =
     getSparkWriteField(sparkWrite, "useFanoutWriter")
-      .orElse(getSparkWriteField(sparkWrite, "partitionedFanoutEnabled"))
       .map(_.asInstanceOf[java.lang.Boolean].booleanValue())
 
   /** Output partition spec id; sourced from `SparkWrite.outputSpecId`. */
@@ -1548,8 +1519,7 @@ object IcebergReflection extends Logging {
    * Stamping the table sort order id unconditionally (the previous behaviour) writes the wrong
    * value when Java would have used `unsorted`.
    *
-   * Iceberg 1.5.2 (Spark 3.4 profile) lacks this method on `SparkWriteConf`; we return `None` and
-   * let the caller fall back to `Table.sortOrder().orderId()`.
+   * Returns `None` when the pinned Iceberg version does not expose the resolver.
    */
   def getOutputSortOrderIdFromSparkWrite(sparkWrite: Any): Option[Int] = {
     val writeConf =
@@ -2006,52 +1976,19 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Two version-skew
-   * issues to handle:
-   *
-   *   1. Iceberg 1.8 added a constructor that also takes the snapshot id, and 1.10 removed the
-   *      older one:
-   *      - 1.5.2 (Spark 3.4 profile): `(InputFile, int)` -- 2-arg
-   *      - 1.8+ (Spark 3.5 / 4.x profiles): `(InputFile, int, long)` -- 3-arg, the third being
-   *        the snapshot id. Both forms are package-private, and both leave the manifest's
-   *        `first_row_id` null, so the reader assigns no row ids to the decoded `DataFile`s. On a
-   *        format-version 3 table the commit assigns them, as it does for iceberg-java's files.
-   *
-   * 2. `ManifestFiles.read` on Iceberg 1.5.2 refuses to read a `ManifestFile` whose
-   * `snapshotId()` is `null` (`InheritableMetadataFactory.fromManifest` throws "Cannot read from
-   * ManifestFile with null (unassigned) snapshot ID"). Iceberg 1.8+ relaxed that check. We set
-   * `snapshotId = 0L` via reflection so the read path is happy across versions; the real snapshot
-   * id is stamped onto the embedded `DataFile`s later by `BatchWrite.commit(messages)`, so the
-   * placeholder never reaches storage.
+   * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Iceberg 1.8 and
+   * later use the package-private `(InputFile, int, long)` constructor. The placeholder snapshot
+   * id never reaches storage: `BatchWrite.commit(messages)` stamps the real snapshot id onto the
+   * embedded `DataFile`s.
    */
   private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
     val inputFileClass = loadClass(ClassNames.INPUT_FILE)
     val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
-    // `Constructor[AnyRef]` rather than `Constructor[_]`: the two `try`/`catch` branches
-    // would otherwise infer a top-level existential, which `-Xlint:existential` rejects.
-    val (ctor, args): (java.lang.reflect.Constructor[AnyRef], Array[Object]) =
-      try {
-        val c = cls
-          .getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
-          .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
-        (c, Array[Object](inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L)))
-      } catch {
-        case _: NoSuchMethodException =>
-          val c = cls
-            .getDeclaredConstructor(inputFileClass, classOf[Int])
-            .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
-          (c, Array[Object](inputFile, Integer.valueOf(specId)))
-      }
+    val ctor = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
     ctor.setAccessible(true)
-    val manifest = ctor.newInstance(args: _*).asInstanceOf[AnyRef]
-    try {
-      val snapshotIdField = cls.getDeclaredField("snapshotId")
-      snapshotIdField.setAccessible(true)
-      snapshotIdField.set(manifest, java.lang.Long.valueOf(0L))
-    } catch {
-      case _: NoSuchFieldException => () // field renamed in a future release; soft-fail
-    }
-    manifest
+    ctor
+      .newInstance(inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L))
+      .asInstanceOf[AnyRef]
   }
 
   private def readDataFilesFromManifest(

@@ -42,7 +42,7 @@ import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, C
 import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
@@ -115,7 +115,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     withDetectionCatalog { _ =>
       createTable("plan_only", partitionSpec = "")
       // IcebergWriteStrategy runs before CometRule, so it needs its own plan-only guard.
-      // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
+      // withSQLConf returns Unit on Spark 3.5, hence the var.
       var plan: SparkPlan = null
       withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
         plan = captureWritePlan("plan_only", allowWriteFailure = false) {
@@ -247,7 +247,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible for a format-version=3 append") {
-    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
     withDetectionCatalog { _ =>
       createTable("v3", partitionSpec = "", properties = Some("'format-version'='3'"))
       assertSupportLevelIs[Compatible]("v3")
@@ -439,7 +438,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       createTable("brotli_session", partitionSpec = "")
       val tableWrite = planInsertWriteExec(s"$catalog.$ns.brotli_table")
       // The session setting reaches the gate through SparkWrite.writeProperties. withSQLConf
-      // returns Unit on Spark 3.4/3.5, hence the var.
+      // returns Unit on Spark 3.5, hence the var.
       var sessionWrite: IcebergWriteExec = null
       withSQLConf("spark.sql.iceberg.compression-codec" -> "brotli") {
         sessionWrite = planInsertWriteExec(s"$catalog.$ns.brotli_session")
@@ -2099,7 +2098,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       values: String = "(1, 'us', 1.0)"): IcebergWriteExec = {
     val plan =
       spark.sessionState.sqlParser.parsePlan(s"INSERT INTO $qualifiedTable VALUES $values")
-    // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
+    // withSQLConf returns Unit on Spark 3.5, hence the var.
     var executed: SparkPlan = null
     withSplitWrite {
       executed = spark.sessionState.executePlan(plan, CommandExecutionMode.SKIP).executedPlan

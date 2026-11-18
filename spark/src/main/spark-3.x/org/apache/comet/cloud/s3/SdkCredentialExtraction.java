@@ -23,8 +23,8 @@ import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.AWSSessionCredentials;
 
 /**
- * Maps AWS SDK v1 {@link AWSCredentials} onto {@link CometS3Credentials}. Compiled only into
- * spark-3.4 / 3.5 builds (spark-3.x source set), directly against SDK v1.
+ * Maps AWS SDK v1 {@link AWSCredentials} onto {@link CometS3Credentials}. Compiled only into Spark
+ * 3.5 builds (spark-3.x source set), directly against SDK v1.
  */
 final class SdkCredentialExtraction {
 

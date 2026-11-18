@@ -35,22 +35,20 @@ class CometNativeScanSuite extends AnyFunSuite {
 
   import CometNativeScan.{constantMetadataFieldPrefix, uniqueConstantMetadataFields}
 
-  test("native data schema preserves required root field ids and table projection indexes") {
+  test("native data schema preserves table root field ids and projection indexes") {
     val nestedType = StructType(Seq(StructField("a", IntegerType), StructField("b", StringType)))
-    val root = StructField("renamed", nestedType, nullable = false)
-    val dataSchema =
-      StructType(Seq(StructField("unrequested", LongType), root, StructField("id", IntegerType)))
     val partitionSchema = StructType(Seq(StructField("part", StringType)))
 
-    Seq(true, false).foreach { hasRequiredId =>
+    Seq(true, false).foreach { hasFieldId =>
       val metadata = new MetadataBuilder()
-      if (hasRequiredId) {
+      if (hasFieldId) {
         metadata.putLong(ParquetUtils.FIELD_ID_METADATA_KEY, 2L)
       }
-      val requiredRoot = root.copy(
-        dataType = StructType(Seq(nestedType("a"))),
-        nullable = true,
-        metadata = metadata.build())
+      val root = StructField("renamed", nestedType, nullable = false, metadata = metadata.build())
+      val dataSchema =
+        StructType(
+          Seq(StructField("unrequested", LongType), root, StructField("id", IntegerType)))
+      val requiredRoot = root.copy(dataType = StructType(Seq(nestedType("a"))), nullable = true)
       val requiredSchema = StructType(Seq(dataSchema("id"), requiredRoot))
       val output = (requiredSchema.fields ++ partitionSchema.fields).map { field =>
         AttributeReference(field.name, field.dataType, field.nullable, field.metadata)()
@@ -74,8 +72,8 @@ class CometNativeScanSuite extends AnyFunSuite {
 
       val serializedRoot = common.getDataSchema(1)
       val fieldIdKey = CometParquetUtils.PARQUET_FIELD_ID_META_KEY
-      assert(serializedRoot.getMetadataMap.containsKey(fieldIdKey) == hasRequiredId)
-      if (hasRequiredId) {
+      assert(serializedRoot.getMetadataMap.containsKey(fieldIdKey) == hasFieldId)
+      if (hasFieldId) {
         assert(serializedRoot.getMetadataMap.get(fieldIdKey) == "2")
       }
       // Replacing the whole field with requiredRoot would lose the table's type and nullability.

@@ -15,9 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- encode() charset validation on Spark 3.4 and 3.5.
+-- encode() charset validation on Spark 3.5.
 --
--- On those versions `Encode` calls `String.getBytes(charset)` directly, so any charset the JVM
+-- On that version `Encode` calls `String.getBytes(charset)` directly, so any charset the JVM
 -- knows is accepted (including ones outside Spark 4.0's allowlist, e.g. windows-1252) and an
 -- unknown name surfaces as `UnsupportedEncodingException` through `Platform.throwException`.
 -- Spark 4.0+ instead routes through `CharsetProvider.forName`, which rejects anything outside
