@@ -197,7 +197,7 @@ impl QuantileSummaries {
                 0
             } else {
                 // Spark: `math.floor(2 * relativeError * currentCount).toLong`
-                // (verified `.toLong` in 3.4/3.5/4.0/4.1), matching our i64.
+                // (verified `.toLong` in 3.5/4.0/4.1), matching our i64.
                 (2.0 * self.relative_error * current_count as f64).floor() as i64
             };
             scratch.sampled.push(Stats {

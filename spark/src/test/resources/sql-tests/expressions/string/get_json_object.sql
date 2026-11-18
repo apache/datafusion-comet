@@ -243,10 +243,8 @@ SELECT get_json_object('{"a":[{"b":[1,2]},{"b":[3]}]}', '$.a[*].b[*]')
 query
 SELECT get_json_object('[[[1,2],[]]]', '$[*][*][*]'), get_json_object('[[[1,2]]]', '$[*][*][*]')
 
--- Spark 3.5+ rejects numbers whose digit count exceeds Jackson's default
--- 1000-digit limit, including values the path never selects. Spark 3.4's
--- default Jackson version (2.14) does not impose this limit, but Comet follows
--- whichever Jackson version is on the classpath.
+-- Spark rejects numbers whose digit count exceeds Jackson's default
+-- 1000-digit limit, including values the path never selects.
 query
 SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"b":', repeat('9', 1001), '}]'), '$[*].a'),
@@ -262,9 +260,8 @@ SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'
 -- Spark's result can change when a previous parse leaves a larger buffer in
 -- Jackson's thread-local recycler. The opt-in native path uses a fixed rule.
 
--- Spark 3.5+ rejects a document deeper than Jackson's default 1000-level
--- nesting limit, including a subtree skipped by the wildcard path. Spark 3.4
--- has no default limit.
+-- Spark rejects a document deeper than Jackson's default 1000-level
+-- nesting limit, including a subtree skipped by the wildcard path.
 query
 SELECT get_json_object(concat('[{"a":1,"skip":', repeat('[', 998), '0', repeat(']', 998), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"skip":', repeat('[', 999), '0', repeat(']', 999), '}]'), '$[*].a'),

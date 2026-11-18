@@ -120,16 +120,21 @@ impl UuidAlignment {
     }
 
     pub(super) fn convert(&self, batch: RecordBatch, target: &SchemaRef) -> Result<RecordBatch> {
-        if batch.num_columns() != self.0.len() {
+        // `unknown` columns arrive as Null; `parse_iceberg_schema` dropped their fields.
+        let columns: Vec<&ArrayRef> = batch
+            .columns()
+            .iter()
+            .filter(|c| c.data_type() != &DataType::Null)
+            .collect();
+        if columns.len() != self.0.len() {
             return Err(DataFusionError::Execution(format!(
                 "Iceberg write column count mismatch: arrow batch has {} columns but schema has {}",
-                batch.num_columns(),
+                columns.len(),
                 self.0.len()
             )));
         }
-        let columns = batch
-            .columns()
-            .iter()
+        let columns = columns
+            .into_iter()
             .zip(target.fields())
             .zip(&self.0)
             .map(|((array, field), conversion)| conversion.convert(array, field, None))

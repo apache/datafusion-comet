@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import java.time.DateTimeException
+
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.{SparkException, SparkThrowable}
@@ -43,6 +45,37 @@ class SparkErrorConverterSuite extends AnyFunSuite {
         error.getMessage.contains(
           s"Use '$function' to tolerate overflow and return NULL instead."))
     }
+  }
+
+  private def castToDatetimeError(fromType: String, value: String): Throwable =
+    SparkErrorConverter
+      .convertErrorType(
+        "InvalidInputInCastToDatetime",
+        "CAST_INVALID_INPUT",
+        Map("fromType" -> fromType, "toType" -> "TIMESTAMP", "value" -> value),
+        Array.empty,
+        "")
+      .getOrElse(fail("Expected InvalidInputInCastToDatetime to be converted"))
+
+  test("InvalidInputInCastToDatetime prints a double value as Spark does") {
+    for (value <- Seq("NaN", "Infinity", "-Infinity")) {
+      val error = castToDatetimeError("DOUBLE", value)
+      // SparkDateTimeException is private[spark], so check its public parent.
+      assert(error.isInstanceOf[DateTimeException])
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "CAST_INVALID_INPUT")
+      assert(
+        error.getMessage.contains(
+          s"""The value $value of the type "DOUBLE" cannot be cast to "TIMESTAMP""""),
+        error.getMessage)
+    }
+  }
+
+  test("InvalidInputInCastToDatetime still quotes a string value") {
+    val error = castToDatetimeError("STRING", "abc")
+    assert(error.isInstanceOf[DateTimeException])
+    assert(
+      error.getMessage.contains("""The value 'abc' of the type "STRING" cannot be cast"""),
+      error.getMessage)
   }
 
   test("ArithmeticOverflow without a suggested function remains compatible") {
@@ -72,7 +105,7 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       .getOrElse(fail("Expected CannotReadFile to be converted to a Spark exception"))
     // `cannotReadFilesError` IS the FAILED_READ_FILE path. Assert on the version-stable message
     // ("Encountered error while reading file ...") rather than the `FAILED_READ_FILE` literal,
-    // which only Spark 4.x prepends to getMessage as the error-class tag (3.4/3.5 do not).
+    // which only Spark 4.x prepends to getMessage as the error-class tag (3.5 does not).
     assert(ex.getMessage.contains("Encountered error while reading file"))
     assert(ex.getMessage.contains("part-0.parquet"))
   }
