@@ -853,7 +853,10 @@ accounting follows <code class="docutils literal notranslate"><span class="pre">
 held rows then go through <code class="docutils literal notranslate"><span class="pre">RowPacer</span></code>, so the roll grid does not move.</p></li>
 <li><p><strong>Field ids and casting.</strong> <code class="docutils literal notranslate"><span class="pre">decorate_batch_with_field_ids</span></code> casts each batch to the
 field-id-annotated Arrow schema derived from the Iceberg schema, with <code class="docutils literal notranslate"><span class="pre">safe:</span> <span class="pre">false</span></code>, so a type
-mismatch fails the task instead of writing NULLs.</p></li>
+mismatch fails the task instead of writing NULLs. It first drops top-level <code class="docutils literal notranslate"><span class="pre">unknown</span></code> columns,
+whose fields <code class="docutils literal notranslate"><span class="pre">parse_iceberg_schema</span></code> prunes. The gate declines a partition field sourced from an
+<code class="docutils literal notranslate"><span class="pre">unknown</span></code> column: the partition calculator resolves sources by field id in the pruned schema and
+would fail with <code class="docutils literal notranslate"><span class="pre">Field</span> <span class="pre">not</span> <span class="pre">found</span></code>.</p></li>
 <li><p><strong>Deterministic output order.</strong> <code class="docutils literal notranslate"><span class="pre">FanoutPartitions</span></code>, Comet’s version of iceberg-rust’s
 <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code>, closes its files in an order that depends on how the rows arrived and on which
 partitions it closed early, so the fanout path sorts its <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>s by path before returning them

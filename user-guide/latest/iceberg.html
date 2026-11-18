@@ -1430,10 +1430,10 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p>the S3 endpoint, region, static/session credentials, path-style, SSE (<code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">kms</span></code>, or <code class="docutils literal notranslate"><span class="pre">custom</span></code>; not <code class="docutils literal notranslate"><span class="pre">dsse-kms</span></code>), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet’s credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back</p></td>
 </tr>
 <tr class="row-even"><td><p>partition spec</p></td>
-<td><p>any, except a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped beside a live field (see below)</p></td>
+<td><p>any, except a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped beside a live field, or one sourced from an <code class="docutils literal notranslate"><span class="pre">unknown</span></code> column (see below)</p></td>
 </tr>
 <tr class="row-odd"><td><p>column types</p></td>
-<td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>) and the v3 types <code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code>, <code class="docutils literal notranslate"><span class="pre">timestamp_ns</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code> and <code class="docutils literal notranslate"><span class="pre">geography</span></code></p></td>
+<td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>), the v3 types <code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">timestamp_ns</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code> and <code class="docutils literal notranslate"><span class="pre">geography</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code> inside a nested type, and a table whose columns are all <code class="docutils literal notranslate"><span class="pre">unknown</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -1543,6 +1543,8 @@ can be dropped afterwards. A spec that mixes such a field with a live one falls 
 cannot write through it either, so the write fails with iceberg-java’s own error rather than in
 the native writer (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6141">#6141</a>). A spec whose
 fields are all <code class="docutils literal notranslate"><span class="pre">void</span></code> writes unpartitioned and stays eligible.</p>
+<p>A partition field sourced from an <code class="docutils literal notranslate"><span class="pre">unknown</span></code> column also falls back: the native writer drops that
+column.</p>
 <p>A write that compresses with <code class="docutils literal notranslate"><span class="pre">brotli</span></code> falls back unless Hadoop’s
 <code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.io.compress.BrotliCodec</span></code> class can be loaded. parquet-mr compresses and
 decompresses brotli pages with that class, and neither Spark nor Iceberg ships it. Without a brotli
