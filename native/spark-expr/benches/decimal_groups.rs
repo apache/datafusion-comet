@@ -120,7 +120,9 @@ fn criterion_benchmark(c: &mut Criterion) {
         (i % 10 != 0).then(|| ((i % 50) as i128 + 1) * 100)
     });
     // A DECIMAL(38,6) input keeps the sum at the capped precision 38. Values near 1e5 stay far
-    // from it. Values of 1e27 to 5e28 come within a few batches of it without overflowing.
+    // from it. Values of 1e27 to 5e28 have absolute values that sum to 2.1e32 per batch, past
+    // the 1e32 limit, so a bound on a batch's total can't skip the per-row check. Each group's
+    // rows share one sign, and no running sum passes 3% of the limit, so no group latches.
     let wide = decimals(38, 6, |i| Some(((i % 50) as i128 + 1) * 1_000_000_000));
     let near_limit = decimals(38, 6, |i| {
         let v = ((i % 50) as i128 + 1) * 10_i128.pow(33);

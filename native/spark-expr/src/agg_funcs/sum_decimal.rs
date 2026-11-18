@@ -766,6 +766,47 @@ mod tests {
         assert_eq!(result.value(0), 40); // 10 + 30 = 40
     }
 
+    #[test]
+    fn grouped_latches_at_the_result_precision_below_38() {
+        use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+        // Inputs within their declared precision need more than 10^10 rows to reach a sum
+        // precision below 38, so only a unit test can check that the latch uses the result
+        // precision there.
+        let data_type = DataType::Decimal128(25, 2);
+        let max = 10_i128.pow(25) - 1;
+        let decimals = |values: Vec<i128>| -> ArrayRef {
+            Arc::new(Decimal128Array::from(values).with_data_type(data_type.clone()))
+        };
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            let new_acc = || {
+                SumDecimalGroupsAccumulator::new(
+                    data_type.clone(),
+                    25,
+                    eval_mode,
+                    None,
+                    crate::create_query_context_map(),
+                )
+            };
+            // Group 0 reaches the largest value that fits and group 1 goes one past it.
+            let mut updated = new_acc();
+            let update = updated.update_batch(&[decimals(vec![max, max, 1])], &[0, 1, 1], None, 2);
+            let mut merged = new_acc();
+            let is_empty: ArrayRef = Arc::new(BooleanArray::from(vec![false; 3]));
+            let merge = merged.merge_batch(&[decimals(vec![max, max, 1]), is_empty], &[0, 1, 1], 2);
+            for (result, mut acc) in [(update, updated), (merge, merged)] {
+                if eval_mode == EvalMode::Ansi {
+                    assert!(result.is_err());
+                } else {
+                    result.unwrap();
+                    let sums = acc.evaluate(EmitTo::All).unwrap();
+                    let sums = sums.as_primitive::<Decimal128Type>();
+                    assert_eq!(sums.iter().collect::<Vec<_>>(), vec![Some(max), None]);
+                }
+            }
+        }
+    }
+
     /// `merge_batch` must consume every row — previously it asserted
     /// `states[*].len() == 1` and silently dropped the rest.
     #[test]

@@ -880,4 +880,39 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn grouped_latches_at_the_sum_precision_below_38() -> Result<()> {
+        // A DECIMAL(15,2) input sums as DECIMAL(25,2) and averages as DECIMAL(19,6), so a latch
+        // that used the result precision would also null group 0.
+        let max = 10_i128.pow(25) - 1;
+        let new_acc = || {
+            AvgDecimalGroupsAccumulator::new(
+                &DataType::Decimal128(19, 6),
+                &DataType::Decimal128(25, 2),
+                19,
+                6,
+                25,
+                2,
+                EvalMode::Legacy,
+                None,
+                crate::create_query_context_map(),
+            )
+        };
+        let sums = || Decimal128Array::from(vec![max, max, 1]).with_precision_and_scale(25, 2);
+        let mut updated = new_acc();
+        updated.update_batch(&[Arc::new(sums()?)], &[0, 1, 1], None, 2)?;
+        let mut merged = new_acc();
+        merged.merge_batch(
+            &[Arc::new(sums()?), Arc::new(Int64Array::from(vec![1; 3]))],
+            &[0, 1, 1],
+            2,
+        )?;
+        for mut acc in [updated, merged] {
+            let state = acc.state(EmitTo::All)?;
+            let sums = state[0].as_primitive::<Decimal128Type>();
+            assert_eq!(sums.iter().collect::<Vec<_>>(), vec![Some(max), None]);
+        }
+        Ok(())
+    }
 }

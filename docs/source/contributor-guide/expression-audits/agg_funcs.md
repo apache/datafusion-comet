@@ -44,7 +44,7 @@
 - Spark 3.4.3 (2026-05-26)
 - Spark 3.5.8 (2026-05-26): aggregate logic identical to 3.4.3
 - Spark 4.0.1 (2026-05-26): aggregate logic identical to 3.5.8; only `QueryContext` import path differs. `YearMonthIntervalType` and `DayTimeIntervalType` inputs (supported by Spark) fall back to Spark in Comet.
-- Performance (tuned 2026-11-17): the grouped decimal accumulator loads the sum's precision bounds once and compares against them on every update and merge, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. Bench builds already inline that call: 2% to 5% faster on most shapes, the 4-group shape within 1%. Benchmark: `benches/decimal_groups.rs`.
+- Performance (tuned 2026-11-17, PR [#7674](https://github.com/apache/datafusion-comet/pull/7674)): the grouped decimal accumulator loads the sum's precision bounds once and compares against them on every update and merge, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. Benchmark: `benches/decimal_groups.rs`.
 
 ## bit_and
 
@@ -121,6 +121,6 @@
 
 ## sum
 
-- Performance (tuned 2026-11-17): the grouped decimal accumulator loads the result's precision bounds once and compares against them on every update, merge, and evaluate, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. 9% to 12% faster on most shapes even in bench builds, which inline that call. Benchmark: `benches/decimal_groups.rs`.
+- Performance (tuned 2026-11-17, PR [#7674](https://github.com/apache/datafusion-comet/pull/7674)): the grouped decimal accumulator loads the result's precision bounds once and compares against them on every update, merge, and evaluate, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. Benchmark: `benches/decimal_groups.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
