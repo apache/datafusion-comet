@@ -24,6 +24,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::error_chain;
 use datafusion_comet_jni_bridge::errors::CometError;
 
 use crate::{SparkError, SparkErrorWithContext};
@@ -138,18 +139,20 @@ impl PhysicalExpr for CheckOverflowInTableInsert {
 
 /// Whether Spark raises this error as a `SparkArithmeticException`: a native `SparkError`, or an
 /// exception thrown by a child that runs Spark's own code through the JVM codegen dispatcher.
-/// Only the top of a `DataFusionError::External` is checked, because that is where the JNI layer
-/// reads a Spark error from.
+/// Like the JNI layer, it takes the first Spark error in the `source()` chain.
 fn is_arithmetic_error(error: &DataFusionError) -> bool {
-    let DataFusionError::External(e) = error else {
-        return false;
-    };
-    if let Some(CometError::JavaException { class, .. }) = e.downcast_ref::<CometError>() {
-        return class == "org.apache.spark.SparkArithmeticException";
-    }
-    e.downcast_ref::<SparkError>()
-        .or_else(|| e.downcast_ref::<SparkErrorWithContext>().map(|e| &e.error))
-        .is_some_and(SparkError::is_arithmetic)
+    error_chain(error)
+        .find_map(|e| {
+            if let Some(CometError::JavaException { class, .. }) = e.downcast_ref::<CometError>() {
+                Some(class == "org.apache.spark.SparkArithmeticException")
+            } else if let Some(e) = e.downcast_ref::<SparkErrorWithContext>() {
+                Some(e.error.is_arithmetic())
+            } else {
+                e.downcast_ref::<SparkError>()
+                    .map(SparkError::is_arithmetic)
+            }
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -191,11 +194,13 @@ mod tests {
         }
     }
 
-    /// A child that returns column `c`, or fails.
+    /// A child that returns column `c`, or fails. A wrapped error comes inside
+    /// `DataFusionError::Context`, as DataFusion adds it on the way up.
     #[derive(Debug, PartialEq, Eq, Hash)]
     struct Child {
         failure: Option<Failure>,
         with_context: bool,
+        wrapped: bool,
     }
 
     impl Display for Child {
@@ -222,11 +227,19 @@ mod tests {
                 return Column::new("c", 0).evaluate(batch);
             };
             let error = failure.error();
-            if self.with_context {
+            let error = if self.with_context {
                 let context = QueryContext::new("SELECT c".to_string(), 7, 7, None, None, 1, 7);
-                Err(SparkErrorWithContext::with_context(error, Arc::new(context)).into())
+                SparkErrorWithContext::with_context(error, Arc::new(context)).into()
             } else {
-                Err(error.into())
+                error.into()
+            };
+            if self.wrapped {
+                Err(DataFusionError::Context(
+                    "child".to_string(),
+                    Box::new(error),
+                ))
+            } else {
+                Err(error)
             }
         }
 
@@ -242,7 +255,11 @@ mod tests {
         }
     }
 
-    fn evaluate(failure: Option<Failure>, with_context: bool) -> Result<ColumnarValue> {
+    fn evaluate(
+        failure: Option<Failure>,
+        with_context: bool,
+        wrapped: bool,
+    ) -> Result<ColumnarValue> {
         let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int64, true)]));
         let batch = RecordBatch::try_new(
             schema,
@@ -252,6 +269,7 @@ mod tests {
         let child = Child {
             failure,
             with_context,
+            wrapped,
         };
         CheckOverflowInTableInsert::new(
             Arc::new(child),
@@ -262,22 +280,27 @@ mod tests {
         .evaluate(&batch)
     }
 
-    /// The Spark error's message, and whether it carries a query context.
+    /// The first Spark error's message, and whether it carries a query context.
     fn spark_error(result: Result<ColumnarValue>) -> (String, bool) {
-        let Err(DataFusionError::External(e)) = result else {
+        let Err(error) = result else {
             panic!("expected a SparkError, got {result:?}");
         };
-        if let Some(e) = e.downcast_ref::<SparkErrorWithContext>() {
-            (e.error.to_string(), e.context.is_some())
-        } else {
-            let e = e.downcast_ref::<SparkError>().expect("a SparkError");
-            (e.to_string(), false)
-        }
+        let found = error_chain(&error)
+            .find_map(|e| {
+                if let Some(e) = e.downcast_ref::<SparkErrorWithContext>() {
+                    Some((e.error.to_string(), e.context.is_some()))
+                } else {
+                    e.downcast_ref::<SparkError>()
+                        .map(|e| (e.to_string(), false))
+                }
+            })
+            .expect("a SparkError");
+        found
     }
 
     #[test]
     fn values_pass_through() {
-        let ColumnarValue::Array(array) = evaluate(None, false).unwrap() else {
+        let ColumnarValue::Array(array) = evaluate(None, false, false).unwrap() else {
             panic!("expected an array");
         };
         let array = array.as_any().downcast_ref::<Int64Array>().unwrap();
@@ -292,25 +315,31 @@ mod tests {
             Failure::DivideByZero,
         ];
         for failure in failures {
-            for with_context in [false, true] {
-                let (message, has_context) = spark_error(evaluate(Some(failure), with_context));
+            for (with_context, wrapped) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let clue = format!("{failure:?} with context {with_context}, wrapped {wrapped}");
+                let result = evaluate(Some(failure), with_context, wrapped);
+                let (message, has_context) = spark_error(result);
                 assert_eq!(
                     message,
                     "[CAST_OVERFLOW_IN_TABLE_INSERT] Fail to assign a value of \"BIGINT\" type \
                      to the \"INT\" type column or variable `c` due to an overflow. Use \
                      `try_cast` on the input value to tolerate overflow and return NULL instead.",
-                    "{failure:?} with context {with_context}"
+                    "{clue}"
                 );
-                assert!(!has_context, "{failure:?} with context {with_context}");
+                assert!(!has_context, "{clue}");
             }
         }
     }
 
     #[test]
     fn other_errors_are_unchanged() {
-        for with_context in [false, true] {
-            let failure = Some(Failure::InvalidInput);
-            let (message, has_context) = spark_error(evaluate(failure, with_context));
+        for (with_context, wrapped) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let result = evaluate(Some(Failure::InvalidInput), with_context, wrapped);
+            assert_eq!(matches!(result, Err(DataFusionError::Context(..))), wrapped);
+            let (message, has_context) = spark_error(result);
             assert_eq!(message, Failure::InvalidInput.error().to_string());
             assert_eq!(has_context, with_context);
         }
