@@ -3489,7 +3489,7 @@ class CometNativeCastSuite
                   sparkMessage.startsWith(
                     cometMessage.substring(0, math.min(40, cometMessage.length))))
               } else {
-                // for Spark 3.4 we expect to reproduce the error message exactly
+                // For Spark 3.x we expect to reproduce the error message exactly.
                 assert(cometMessage == sparkMessage)
               }
           }

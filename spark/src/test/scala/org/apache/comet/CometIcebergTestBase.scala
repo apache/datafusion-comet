@@ -96,23 +96,29 @@ trait CometIcebergTestBase { this: CometTestBase =>
   /**
    * Adds a column of an Iceberg type Spark DDL cannot declare (e.g. `uuid`, `fixed(N)`) by
    * committing an `UpdateSchema` against the Iceberg table directly. Callers must `REFRESH TABLE`
-   * afterwards so Spark's catalog cache picks up the new schema.
+   * afterwards so Spark's catalog cache picks up the new schema. `parent` nests it in a struct.
    */
   protected def addIcebergColumn(
       icebergTable: AnyRef,
       columnName: String,
-      icebergType: AnyRef): Unit = {
+      icebergType: AnyRef,
+      parent: Option[String] = None): Unit = {
     val update = IcebergReflection
       .loadClass("org.apache.iceberg.Table")
       .getMethod("updateSchema")
       .invoke(icebergTable)
     val updateSchemaClass = IcebergReflection.loadClass("org.apache.iceberg.UpdateSchema")
-    updateSchemaClass
-      .getMethod(
-        "addColumn",
-        classOf[String],
-        IcebergReflection.loadClass("org.apache.iceberg.types.Type"))
-      .invoke(update, columnName, icebergType)
+    val typeClass = IcebergReflection.loadClass("org.apache.iceberg.types.Type")
+    parent match {
+      case None =>
+        updateSchemaClass
+          .getMethod("addColumn", classOf[String], typeClass)
+          .invoke(update, columnName, icebergType)
+      case Some(p) =>
+        updateSchemaClass
+          .getMethod("addColumn", classOf[String], classOf[String], typeClass)
+          .invoke(update, p, columnName, icebergType)
+    }
     updateSchemaClass.getMethod("commit").invoke(update)
   }
 

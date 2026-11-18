@@ -157,7 +157,7 @@ class CometPluginsSuite extends CometTestBase {
 
   test("executor memory overhead is left alone") {
     // Comet does not adjust spark.executor.memoryOverhead. A driver plugin runs too late to
-    // influence the executor container on Spark 3.4, 3.5 and 4.0, so the value the application
+    // influence the executor container on Spark 3.5 and 4.0, so the value the application
     // set is the value that is used.
     val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
     val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
@@ -560,7 +560,7 @@ class CometPluginsEventLogSuite extends SparkFunSuite {
       assert(
         pluginContext.ask(
           memoryUsageEvent("barrier", 0L, Array(0L, 0L, 0L, 0L), jvmArrow)) == null)
-      // The end as the listener sees it, which alone records what the driver holds on Spark 3.4
+      // The end as the listener sees it, which records what the driver holds on Spark 3.5
       // and 3.5. From Spark 4.0 the plugin's shutdown would record it too, when the context stops.
       postAndMark(sc, SparkListenerApplicationEnd(System.currentTimeMillis()))
     }

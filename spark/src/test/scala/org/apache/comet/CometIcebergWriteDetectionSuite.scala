@@ -42,7 +42,7 @@ import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, C
 import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
@@ -115,7 +115,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     withDetectionCatalog { _ =>
       createTable("plan_only", partitionSpec = "")
       // IcebergWriteStrategy runs before CometRule, so it needs its own plan-only guard.
-      // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
+      // withSQLConf returns Unit on Spark 3.5, hence the var.
       var plan: SparkPlan = null
       withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
         plan = captureWritePlan("plan_only", allowWriteFailure = false) {
@@ -247,7 +247,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible for a format-version=3 append") {
-    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
     withDetectionCatalog { _ =>
       createTable("v3", partitionSpec = "", properties = Some("'format-version'='3'"))
       assertSupportLevelIs[Compatible]("v3")
@@ -277,21 +276,70 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: unknown column in the write schema") {
+  test("fall-back: unknown field nested in a struct") {
     assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
     withDetectionCatalog { _ =>
-      // Spark DDL cannot declare `unknown` (Iceberg plans it as Spark's NullType), so evolve the
-      // schema through the Iceberg API.
+      // Spark DDL cannot declare `unknown`, so add it through the Iceberg API.
       createTable("unknown_col", partitionSpec = "", properties = Some("'format-version'='3'"))
+      spark.sql(s"ALTER TABLE $catalog.$ns.unknown_col ADD COLUMN s STRUCT<a: INT>")
       addIcebergColumn(
         loadIcebergTable(spark, catalog, ns, "unknown_col"),
         "u",
-        icebergUnknownType())
+        icebergUnknownType(),
+        parent = Some("s"))
       spark.sql(s"REFRESH TABLE $catalog.$ns.unknown_col")
       val writeExec = captureWriteExec("unknown_col", allowWriteFailure = true) {
-        spark.sql(s"INSERT INTO $catalog.$ns.unknown_col VALUES (1, 'us', 1.0, NULL)")
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.unknown_col " +
+            "VALUES (1, 'us', 1.0, named_struct('a', 1, 'u', NULL))")
       }
       assertUnsupportedContains(writeExec, "unknown_col", "column u has Iceberg type unknown")
+    }
+  }
+
+  test("fall-back: every column is unknown") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      createTable("only_unknown", partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(
+        loadIcebergTable(spark, catalog, ns, "only_unknown"),
+        "u",
+        icebergUnknownType())
+      Seq("id", "region", "amount").foreach { c =>
+        spark.sql(s"ALTER TABLE $catalog.$ns.only_unknown DROP COLUMN $c")
+      }
+      spark.sql(s"REFRESH TABLE $catalog.$ns.only_unknown")
+      // iceberg-java fails this write too: Parquet cannot write an empty schema.
+      val writeExec = captureWriteExec("only_unknown", allowWriteFailure = true) {
+        spark.sql(s"INSERT INTO $catalog.$ns.only_unknown VALUES (NULL)")
+      }
+      assertUnsupportedContains(
+        writeExec,
+        "only_unknown",
+        "every column has Iceberg type unknown")
+    }
+  }
+
+  test("fall-back: partition field sourced from an unknown column") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      val t = "unknown_partition_source"
+      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+      loadIcebergTable(spark, catalog, ns, t)
+        .asInstanceOf[org.apache.iceberg.Table]
+        .updateSpec()
+        .addField("u")
+        .commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      // iceberg-java 1.10 fails this write too: it has no comparator for an `unknown` partition.
+      val writeExec = captureWriteExec(t, allowWriteFailure = true) {
+        spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL)")
+      }
+      assertUnsupportedContains(
+        writeExec,
+        t,
+        "partition field u is sourced from a column of Iceberg type unknown")
     }
   }
 
@@ -390,7 +438,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       createTable("brotli_session", partitionSpec = "")
       val tableWrite = planInsertWriteExec(s"$catalog.$ns.brotli_table")
       // The session setting reaches the gate through SparkWrite.writeProperties. withSQLConf
-      // returns Unit on Spark 3.4/3.5, hence the var.
+      // returns Unit on Spark 3.5, hence the var.
       var sessionWrite: IcebergWriteExec = null
       withSQLConf("spark.sql.iceberg.compression-codec" -> "brotli") {
         sessionWrite = planInsertWriteExec(s"$catalog.$ns.brotli_session")
@@ -2050,7 +2098,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       values: String = "(1, 'us', 1.0)"): IcebergWriteExec = {
     val plan =
       spark.sessionState.sqlParser.parsePlan(s"INSERT INTO $qualifiedTable VALUES $values")
-    // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
+    // withSQLConf returns Unit on Spark 3.5, hence the var.
     var executed: SparkPlan = null
     withSplitWrite {
       executed = spark.sessionState.executePlan(plan, CommandExecutionMode.SKIP).executedPlan

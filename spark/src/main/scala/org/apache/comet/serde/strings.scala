@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, BoundReference, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, BoundReference, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -73,7 +73,7 @@ class CometCaseConversionBase[T <: Expression](function: String)
       super.convert(expr, inputs, binding)
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
-      // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
+      // Comet pipeline. This guarantees Spark-compatible behavior across supported versions.
       // Falls through to Spark when the dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
@@ -177,7 +177,7 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeO
       super.convert(expr, inputs, binding)
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
-      // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
+      // Comet pipeline. This guarantees Spark-compatible behavior across supported versions.
       // Falls through to Spark when the dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
@@ -836,7 +836,7 @@ object CometGetJsonObject
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(
-        getJsonObjectNativeFunctionName,
+        "get_json_object",
         expr.dataType,
         false,
         jsonExpr,
@@ -862,24 +862,6 @@ object CometOverlay extends CometCodegenDispatch[Overlay]
 object CometSoundEx extends CometScalarFunction[SoundEx]("soundex")
 
 object CometStringLocate extends CometCodegenDispatch[StringLocate]
-
-// On Spark 3.4 `Base64` is a plain expression node and always chunks the output (it uses
-// `java.util.Base64.getMimeEncoder()` with no arguments). On Spark 3.5+ it is RuntimeReplaceable
-// and lowers to a `StaticInvoke`, handled by CometBase64StaticInvoke instead.
-object CometBase64 extends CometExpressionSerde[Base64] {
-  override def convert(expr: Base64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val chunkExpr = exprToProtoInternal(Literal(true), inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType(
-        "base64",
-        StringType,
-        failOnError = false,
-        childExpr,
-        chunkExpr)
-    optExpr
-  }
-}
 
 // Base64.getMimeDecoder() semantics: skips non-alphabet bytes and matches Spark's codegen
 // path. The native path handles the default UnBase64 (failOnError = false, reachable from SQL

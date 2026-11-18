@@ -17,7 +17,7 @@
 
 -- decode() over invalid UTF-8 byte sequences with legacy / replacement-character semantics.
 --
--- On Spark 3.4 and 3.5 `decode(bin, charset)` always substitutes the Unicode replacement
+-- On Spark 3.5 `decode(bin, charset)` always substitutes the Unicode replacement
 -- character for malformed sequences (it lowers to `new String(bytes, charset)`, which uses the
 -- JVM's default replace-on-error decoder).
 -- On Spark 4.0+ the same substitute behavior is selected by enabling both
