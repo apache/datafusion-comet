@@ -35,7 +35,7 @@ use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, Physic
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::{
     hllpp_precision, ApproxPercentile, Avg, AvgDecimal, Correlation, Covariance, EvalMode,
-    HllPlusPlus, SparkPercentile, Stddev, SumDecimal, SumInteger, Variance,
+    HllPlusPlus, SparkPercentile, Stddev, SumDecimal, SumInteger, Variance, ZeroOrder,
 };
 use futures::StreamExt;
 use std::hint::black_box;
@@ -407,7 +407,11 @@ fn bench_statistical_aggregates(c: &mut Criterion) {
     });
 
     bench_f64_one_arg(c, "percentile", DataType::Float64, || {
-        Box::new(SparkPercentile::try_new(0.5).unwrap())
+        let zero_order = ZeroOrder {
+            signed_zero_keys: true,
+            ..Default::default()
+        };
+        Box::new(SparkPercentile::try_new(0.5, zero_order).unwrap())
     });
     bench_f64_one_arg(c, "approx_percentile", DataType::Float64, || {
         Box::new(ApproxPercentile::new(
