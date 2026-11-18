@@ -679,8 +679,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // it can only be converted if the read is a native input too (issue #6530). The read then
       // feeds the native plan in place of the stage, and reads only the partitions it specifies.
       // AQE adds its other reads after the operators above them have been converted.
+      // With forceOptimizeSkewedJoin, AQE keeps a split that adds a shuffle only because its cost
+      // evaluator counts the split join, and it counts only Spark's own ShuffledJoin. A native
+      // join there would make AQE drop the split, so the read and the join stay on Spark.
       case read @ AQEShuffleReadExec(CometSinkPlaceHolder(_, _, stage: ShuffleQueryStageExec), _)
-          if queryStagePrep && stage.shuffle.isInstanceOf[CometShuffleExchangeExec] =>
+          if queryStagePrep && stage.shuffle.isInstanceOf[CometShuffleExchangeExec] &&
+            !conf.getConf(SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN) =>
         val stageRead = read.withNewChildren(Seq(stage))
         convertToComet(stageRead, CometExchangeSink).getOrElse(stageRead)
 

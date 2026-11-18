@@ -49,7 +49,8 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
-import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, lit, spark_partition_id, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType}
@@ -2061,6 +2062,31 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             }
           }
         }
+      }
+    }
+  }
+
+  test("AQE forced skew join split that adds a shuffle stays a skew join") {
+    // Every right row has key 0, so its partition is skewed. Splitting it breaks the
+    // partitioning the GROUP BY needs, so the split adds a shuffle, which AQE accepts only
+    // when forceOptimizeSkewedJoin is on and its cost evaluator counts the split join.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN.key -> "true",
+      SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "false",
+      SQLConf.SKEW_JOIN_SKEWED_PARTITION_THRESHOLD.key -> "100",
+      SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "100",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+      val left = spark.range(0, 1000, 1, 10).select((col("id") % 3).as("k1"), col("id"))
+      val right = spark.range(0, 1000, 1, 10).select((col("id") % 1).as("k2"))
+      val (_, plan) =
+        checkSparkAnswer(left.join(right, col("k1") === col("k2")).groupBy("k1").count())
+      withClue(plan) {
+        assert(collect(plan) { case j: SortMergeJoinExec if j.isSkewJoin => j }.size == 1)
+        assert(collect(plan) { case s: ShuffleExchangeLike => s }.size == 3)
       }
     }
   }
