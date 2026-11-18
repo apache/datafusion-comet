@@ -563,7 +563,7 @@ fn r2_value(
 }
 
 /// One `regr_*` statistic over a group's state row, whose `N` fields are the partial-state
-/// columns in order. Each method repeats the arithmetic of the per-row accumulators, in the
+/// columns in order. Each method repeats the arithmetic of the scalar accumulators, in the
 /// same order, so grouped and ungrouped aggregation agree bit for bit.
 trait RegrKernel<const N: usize>: Debug + Send + Sync + 'static {
     /// Folds one row into `state`, leaving it unchanged when the row does not take part.

@@ -176,7 +176,7 @@ SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_y
 
 -- Nullable aggregate FILTERs must preserve group positions and combine with
 -- each function's pair-null rules. Group 1 exists but has no qualifying rows;
--- group 2 exercises the historical slope/intercept variance rule for null y.
+-- group 2 has x values whose y is NULL, which slope/intercept counted before SPARK-48719.
 statement
 CREATE TABLE test_regr_filtered(g int, y double, x double, keep boolean) USING parquet
 
