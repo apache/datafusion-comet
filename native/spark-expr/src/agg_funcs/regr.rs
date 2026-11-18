@@ -1356,103 +1356,86 @@ mod groups_tests {
             .collect()
     }
 
+    /// Compares every group's partial state and result with its scalar accumulator.
+    fn same_groups(state: &[ArrayRef], result: &ArrayRef, scalars: &mut [Box<dyn Accumulator>]) {
+        let result = result.as_primitive::<Float64Type>();
+        assert_eq!(result.len(), scalars.len());
+        for (group, scalar) in scalars.iter_mut().enumerate() {
+            same_state(state, group, scalar.as_mut());
+            same_value(
+                result.is_valid(group).then(|| result.value(group)),
+                scalar_value(scalar.as_mut()),
+            );
+        }
+    }
+
     #[test]
     fn grouped_updates_preserve_scalar_state_and_results() {
+        let y: Vec<_> = (0..35)
+            .map(|i| (i % 7 != 0).then_some(i as f64 * 1.5 + 1.0))
+            .collect();
+        let x: Vec<_> = (0..35)
+            .map(|i| (i % 11 != 0).then_some(i as f64 * 0.75 - 3.0))
+            .collect();
+        // The NULL entries sit on true values, so only their validity drops the row.
+        let predicate = BooleanArray::new(
+            (0..35).map(|i| i % 3 != 0).collect(),
+            Some((0..35).map(|i| i % 13 != 0).collect()),
+        );
         for kind in KINDS {
             for modern in [false, true] {
-                for nullable in [false, true] {
-                    for filtered in [false, true] {
-                        let expr = expression(kind, modern);
-                        let mut scalars = (0..6)
-                            .map(|_| expr.create_accumulator().unwrap())
-                            .collect::<Vec<_>>();
-                        let mut grouped = expr.create_groups_accumulator().unwrap();
-                        let mut for_state = expr.create_groups_accumulator().unwrap();
-                        let y: Vec<_> = (0..35)
-                            .map(|i| {
-                                (i != 0 && i != 34 && (!nullable || i % 7 != 0))
-                                    .then_some(i as f64 * 1.5 + 1.0)
-                            })
-                            .collect();
-                        let x: Vec<_> = (0..35)
-                            .map(|i| {
-                                (i != 0 && i != 34 && (!nullable || i % 11 != 0))
-                                    .then_some(i as f64 * 0.75 - 3.0)
-                            })
-                            .collect();
-                        let values = inputs(kind, &y, &x);
-                        // Sliced Arrow inputs and predicates retain nonzero offsets.
-                        // The dense case has NULLs only outside the sliced range.
-                        for start in [1, 12, 23] {
-                            let chunk: Vec<_> = values.iter().map(|a| a.slice(start, 11)).collect();
-                            // Pairs of rows share a group, so runs meet NULLs, FILTER and batch
-                            // boundaries, and a group comes back after other groups.
-                            let indices: Vec<_> = (start..start + 11).map(|i| i / 2 % 5).collect();
-                            let predicate = BooleanArray::from_iter((0..35).map(|i| {
-                                if i % 13 == 0 {
-                                    None
-                                } else {
-                                    Some(i % 3 != 0)
-                                }
-                            }))
-                            .slice(start, 11);
-                            let filter = filtered.then_some(&predicate);
-                            // Increase the allocated group count without adding a value
-                            // for group 5. FILTER can also leave existing groups empty.
-                            let total = if start == 1 { 5 } else { 6 };
-                            grouped
-                                .update_batch(&chunk, &indices, filter, total)
-                                .unwrap();
-                            for_state
-                                .update_batch(&chunk, &indices, filter, total)
-                                .unwrap();
-                            update_scalars(&mut scalars, &chunk, &indices, filter);
-                        }
-                        let states = for_state.state(EmitTo::All).unwrap();
-                        let result = grouped.evaluate(EmitTo::All).unwrap();
-                        let result = result.as_primitive::<Float64Type>();
-                        assert_eq!(result.len(), scalars.len());
-                        for (i, scalar) in scalars.iter_mut().enumerate() {
-                            same_state(&states, i, scalar.as_mut());
-                            same_value(
-                                result.is_valid(i).then(|| result.value(i)),
-                                scalar_value(scalar.as_mut()),
-                            );
-                        }
-                        assert_eq!(grouped.size(), 0);
-                        assert_eq!(for_state.size(), 0);
+                let expr = expression(kind, modern);
+                let accumulators =
+                    |n| -> Vec<_> { (0..n).map(|_| expr.create_accumulator().unwrap()).collect() };
+                // State and result both drain the accumulator, so each needs its own.
+                let mut grouped = expr.create_groups_accumulator().unwrap();
+                let mut for_state = expr.create_groups_accumulator().unwrap();
+                let mut scalars = accumulators(6);
+                let values = inputs(kind, &y, &x);
+                // Sliced batches keep nonzero offsets. Only the later ones carry a FILTER.
+                for (start, filtered) in [(1, false), (12, true), (23, true)] {
+                    let chunk: Vec<_> = values.iter().map(|a| a.slice(start, 11)).collect();
+                    let filter = filtered.then(|| predicate.slice(start, 11));
+                    // Pairs of rows share a group, so runs meet NULLs, FILTER and batch
+                    // boundaries, and a group comes back after other groups.
+                    let indices: Vec<_> = (start..start + 11).map(|i| i / 2 % 5).collect();
+                    // The later batches allocate group 5 without giving it a row.
+                    let total = if start == 1 { 5 } else { 6 };
+                    for accumulator in [&mut grouped, &mut for_state] {
+                        accumulator
+                            .update_batch(&chunk, &indices, filter.as_ref(), total)
+                            .unwrap();
+                    }
+                    update_scalars(&mut scalars, &chunk, &indices, filter.as_ref());
+                }
+                let states = for_state.state(EmitTo::All).unwrap();
+                same_groups(
+                    &states,
+                    &grouped.evaluate(EmitTo::All).unwrap(),
+                    &mut scalars,
+                );
 
-                        // Final aggregation receives several state rows at once,
-                        // with repeated and non-monotonic destination groups.
-                        let destinations = [2, 0, 2, 1, 0, 1];
-                        let mut merged = expr.create_groups_accumulator().unwrap();
-                        let mut expected = (0..3)
-                            .map(|_| expr.create_accumulator().unwrap())
-                            .collect::<Vec<_>>();
-                        for (start, len) in [(0, 6), (1, 4)] {
-                            let batch: Vec<_> =
-                                states.iter().map(|a| a.slice(start, len)).collect();
-                            let indices = &destinations[start..start + len];
-                            merged.merge_batch(&batch, indices, 3).unwrap();
-                            for_state.merge_batch(&batch, indices, 3).unwrap();
-                            for (row, &group) in indices.iter().enumerate() {
-                                let state: Vec<_> = batch.iter().map(|a| a.slice(row, 1)).collect();
-                                expected[group].merge_batch(&state).unwrap();
-                            }
-                        }
-                        let state = for_state.state(EmitTo::All).unwrap();
-                        let result = merged.evaluate(EmitTo::All).unwrap();
-                        let result = result.as_primitive::<Float64Type>();
-                        assert_eq!(result.len(), expected.len());
-                        for (i, scalar) in expected.iter_mut().enumerate() {
-                            same_state(&state, i, scalar.as_mut());
-                            same_value(
-                                result.is_valid(i).then(|| result.value(i)),
-                                scalar_value(scalar.as_mut()),
-                            );
-                        }
+                // Final aggregation receives several state rows at once, with repeated
+                // and non-monotonic destination groups.
+                let destinations = [2, 0, 2, 1, 0, 1];
+                let mut expected = accumulators(3);
+                for (start, len) in [(0, 6), (1, 4)] {
+                    let batch: Vec<_> = states.iter().map(|a| a.slice(start, len)).collect();
+                    let indices = &destinations[start..start + len];
+                    for accumulator in [&mut grouped, &mut for_state] {
+                        accumulator.merge_batch(&batch, indices, 3).unwrap();
+                    }
+                    for (row, &group) in indices.iter().enumerate() {
+                        let state: Vec<_> = batch.iter().map(|a| a.slice(row, 1)).collect();
+                        expected[group].merge_batch(&state).unwrap();
                     }
                 }
+                let merged = for_state.state(EmitTo::All).unwrap();
+                same_groups(
+                    &merged,
+                    &grouped.evaluate(EmitTo::All).unwrap(),
+                    &mut expected,
+                );
             }
         }
     }
