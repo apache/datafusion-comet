@@ -27,7 +27,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
+import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType, isNegativeScaleDecimal, negativeScaleDecimalReason}
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SparkFixes, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -45,20 +45,6 @@ object CometCast
   // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
-
-  // The native decimal to integral kernels divide by 10^scale, which overflows for a negative
-  // scale. A debug build panics on any batch with a value and a release build wraps the divisor,
-  // so the cast is left to Spark. Shared with CometNativeCastSuite like the reason above.
-  private[comet] val negativeScaleDecimalToIntegralReason: String =
-    "Cast from a negative-scale decimal to an integral type is not supported"
-
-  // `cast_decimal_to_timestamp` scale-aligns through 10^|scale| and overflows the same way.
-  private[comet] val negativeScaleDecimalToTimestampReason: String =
-    "Cast from a negative-scale decimal to TimestampType is not supported"
-
-  // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative scale.
-  private[comet] val negativeScaleDecimalFromIntegralReason: String =
-    "Cast from an integral type to a negative-scale decimal is not supported"
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
@@ -384,7 +370,7 @@ object CometCast
           Some(
             "String formatting can differ for floating-point values near precision limits " +
               "or when scientific notation is used"))
-      case d: DecimalType if d.scale < 0 =>
+      case d: DecimalType if isNegativeScaleDecimal(d) =>
         // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
         // When that config is enabled, Spark formats them using Java BigDecimal.toString()
         // which produces scientific notation (e.g. "1.23E+4"). Comet matches this behavior.
@@ -445,8 +431,10 @@ object CometCast
         Compatible()
       case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
         Compatible()
-      case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
+      // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative
+      // scale.
+      case d: DecimalType if isNegativeScaleDecimal(d) =>
+        Unsupported(Some(negativeScaleDecimalReason))
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
@@ -463,8 +451,10 @@ object CometCast
         Compatible()
       case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
         Compatible()
-      case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
+      // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative
+      // scale.
+      case d: DecimalType if isNegativeScaleDecimal(d) =>
+        Unsupported(Some(negativeScaleDecimalReason))
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
@@ -483,8 +473,10 @@ object CometCast
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
-      case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
+      // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative
+      // scale.
+      case d: DecimalType if isNegativeScaleDecimal(d) =>
+        Unsupported(Some(negativeScaleDecimalReason))
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
@@ -502,8 +494,10 @@ object CometCast
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
-      case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
+      // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative
+      // scale.
+      case d: DecimalType if isNegativeScaleDecimal(d) =>
+        Unsupported(Some(negativeScaleDecimalReason))
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
@@ -539,14 +533,19 @@ object CometCast
       // it applies to. See issue #5013.
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        if (fromType.scale < 0) {
-          Unsupported(Some(negativeScaleDecimalToIntegralReason))
+        // The native decimal to integral kernels divide by 10^scale, which overflows for a
+        // negative scale. A debug build panics on any batch with a value and a release build
+        // wraps the divisor, so `CodegenDispatchFallback` routes the cast through the JVM
+        // codegen dispatcher instead.
+        if (isNegativeScaleDecimal(fromType)) {
+          Unsupported(Some(negativeScaleDecimalReason))
         } else {
           Compatible()
         }
       case DataTypes.TimestampType =>
-        if (fromType.scale < 0) {
-          Unsupported(Some(negativeScaleDecimalToTimestampReason))
+        // `cast_decimal_to_timestamp` scale-aligns through 10^|scale| and overflows the same way.
+        if (isNegativeScaleDecimal(fromType)) {
+          Unsupported(Some(negativeScaleDecimalReason))
         } else {
           Compatible()
         }
