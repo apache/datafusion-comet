@@ -3636,7 +3636,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       ("INT", Int.MinValue.toLong, Int.MaxValue.toLong, "ARITHMETIC_OVERFLOW"),
       ("BIGINT", Long.MinValue, Long.MaxValue, "ARITHMETIC_OVERFLOW"))) {
     test(s"ANSI integral overflow fidelity - $sqlType") {
-      val expectedErrorClass = errorClass
       val cases = Seq(
         ("+", "try_add", max, 1L),
         ("+", "try_add", min, -1L),
@@ -3672,7 +3671,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
             val expected = structured(sparkError)
             val actual = structured(cometError)
-            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(expected.getErrorClass == errorClass, query)
             assert(actual.getClass == expected.getClass, query)
             assert(actual.getErrorClass == expected.getErrorClass, query)
             assert(actual.getSqlState == expected.getSqlState, query)

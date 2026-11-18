@@ -55,18 +55,6 @@ fn scalar_to_str(scalar: &ScalarValue, arg_name: &str) -> DataFusionResult<Optio
 /// - `.*` or `['*']` — child wildcard (accepted for parse compatibility; never
 ///   matches, matching Spark, whose field-wildcard arm is unreachable)
 pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-    spark_get_json_object_impl(args, true)
-}
-
-/// Spark 3.4's Jackson 2.14 does not impose a default number-length limit.
-pub fn spark_get_json_object_spark34(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-    spark_get_json_object_impl(args, false)
-}
-
-fn spark_get_json_object_impl(
-    args: &[ColumnarValue],
-    check_jackson_limits: bool,
-) -> DataFusionResult<ColumnarValue> {
     if args.len() != 2 {
         return exec_err!(
             "get_json_object expects 2 arguments (json, path), got {}",
@@ -101,11 +89,7 @@ fn spark_get_json_object_impl(
                     builder.append_null();
                 } else {
                     let json_str = json_strings.value(i);
-                    match evaluate_path_with_jackson_limits(
-                        json_str,
-                        &parsed_path,
-                        check_jackson_limits,
-                    ) {
+                    match evaluate_path(json_str, &parsed_path) {
                         Some(result) => builder.append_value(&result),
                         None => builder.append_null(),
                     }
@@ -130,8 +114,7 @@ fn spark_get_json_object_impl(
                 None => return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
             };
 
-            let result =
-                evaluate_path_with_jackson_limits(&json_str, &parsed_path, check_jackson_limits);
+            let result = evaluate_path(&json_str, &parsed_path);
             Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
         }
         // Column json, column path
@@ -147,11 +130,7 @@ fn spark_get_json_object_impl(
                     let json_str = json_strings.value(i);
                     let path_str = path_strings.value(i);
                     match parse_json_path(path_str) {
-                        Some(parsed_path) => match evaluate_path_with_jackson_limits(
-                            json_str,
-                            &parsed_path,
-                            check_jackson_limits,
-                        ) {
+                        Some(parsed_path) => match evaluate_path(json_str, &parsed_path) {
                             Some(result) => builder.append_value(&result),
                             None => builder.append_null(),
                         },
@@ -341,10 +320,9 @@ fn skip_string_body(bytes: &[u8], mut i: usize) -> Option<usize> {
     }
 }
 
-/// Spark 3.5+ rejects overlong number tokens and documents nested beyond 1000
+/// Spark rejects overlong number tokens and documents nested beyond 1000
 /// containers, including values this evaluation skips. serde_json's
 /// `IgnoredAny` enforces neither constraint, so inspect them before parsing.
-/// Spark 3.4's Jackson has no default limits and bypasses this scan.
 fn violates_jackson_limits(json: &str) -> bool {
     let bytes = json.as_bytes();
     let mut i = 0;
@@ -424,22 +402,10 @@ fn violates_jackson_limits(json: &str) -> bool {
 
 /// Evaluate a parsed JSONPath against a JSON string.
 /// Returns the result as a string, or None if no match.
-#[cfg(test)]
 fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
-    evaluate_path_with_jackson_limits(json_str, path, true)
-}
-
-fn evaluate_path_with_jackson_limits(
-    json_str: &str,
-    path: &ParsedPath,
-    check_jackson_limits: bool,
-) -> Option<String> {
     // A number longer than Jackson's limit needs at least 1,001 ASCII bytes.
     // Most JSON rows are shorter, so avoid a second pass over them entirely.
-    if check_jackson_limits
-        && json_str.len() > MAX_NUMBER_DIGITS
-        && violates_jackson_limits(json_str)
-    {
+    if json_str.len() > MAX_NUMBER_DIGITS && violates_jackson_limits(json_str) {
         return None;
     }
 
@@ -1373,15 +1339,10 @@ mod tests {
     }
 
     #[test]
-    fn test_number_limit_depends_on_spark_version() {
+    fn test_number_limit_in_skipped_object_field() {
         let path = parse_json_path("$.a").unwrap();
         let json = format!(r#"{{"a":1,"ignored":{}}}"#, "9".repeat(1001));
-        // Spark 3.4 uses Jackson 2.14, which has no default numeric length limit.
-        assert_eq!(
-            evaluate_path_with_jackson_limits(&json, &path, false),
-            Some("1".to_string())
-        );
-        assert_eq!(evaluate_path_with_jackson_limits(&json, &path, true), None);
+        assert_eq!(evaluate_path(&json, &path), None);
     }
 
     #[test]
@@ -1423,10 +1384,6 @@ mod tests {
                 format!(r#"[{{"skip":{nested},"a":1}}]"#),
             ] {
                 assert_eq!(evaluate_path(&json, &path), expected);
-                assert_eq!(
-                    evaluate_path_with_jackson_limits(&json, &path, false),
-                    Some("1".to_string())
-                );
             }
         }
 

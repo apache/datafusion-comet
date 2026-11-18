@@ -836,7 +836,7 @@ object CometGetJsonObject
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(
-        getJsonObjectNativeFunctionName,
+        "get_json_object",
         expr.dataType,
         false,
         jsonExpr,
