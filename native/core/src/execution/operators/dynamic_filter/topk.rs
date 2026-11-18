@@ -32,12 +32,10 @@ use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
-use futures::StreamExt;
 
 mod reader;
 
@@ -119,26 +117,7 @@ impl TopKReaderFilterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let result = sort.execute(partition, context);
-        // SortExec registers its TopK metrics synchronously in execute(). Keep
-        // those live counters, including on error, without retaining its filter.
-        for metric in sort.metrics().unwrap_or_default().iter() {
-            self.metrics.register(Arc::clone(metric));
-        }
-        drop(sort);
-        let input = result?;
-        // Release the reader and heap at EOF or error even when the caller keeps
-        // the exhausted stream. Cancellation drops this stream and its input.
-        let stream = futures::stream::unfold(Some(input), |input| async move {
-            let mut input = input?;
-            let batch = input.next().await?;
-            let remaining = if batch.is_ok() { Some(input) } else { None };
-            Some((batch, remaining))
-        });
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
-            stream,
-        )))
+        super::execute_runtime_plan(Arc::new(sort), partition, context, &self.metrics)
     }
 }
 

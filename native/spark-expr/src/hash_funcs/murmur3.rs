@@ -1148,4 +1148,170 @@ mod tests {
             "a dictionary child must keep the per-element path"
         );
     }
+
+    // `create_hashes_internal!` specialises maps of (Utf8, Int32), (Int32, Utf8), (Utf8, Utf8)
+    // and (Int32, Int32), each with a loop for input without nulls and a null-aware loop.
+    // `sql-tests/expressions/hash/hash.sql` checks both loops of every pair against Spark. The
+    // tests below cover the shapes SQL cannot build by comparing with the same rows with that map row removed
+
+    /// (key is Utf8, value is Utf8) for each specialised pair.
+    const MAP_PAIRS: [(bool, bool); 4] =
+        [(true, false), (false, true), (true, true), (false, false)];
+
+    /// Entries per row of every test map: row 2 owns entry 2.
+    const MAP_LENGTHS: [usize; 4] = [2, 0, 1, 3];
+    /// Map validity per row. With every map valid the hash takes the loop for input without
+    /// nulls; row 2 being null sends it to the null-aware loop.
+    const MAP_ALL_VALID: [bool; 4] = [true; 4];
+    const MAP_NULL_ROW: [bool; 4] = [true, true, false, true];
+
+    /// The seed every row starts from. Spark leaves it unchanged for a null map.
+    const SEED: u32 = 42;
+
+    fn map_pair_label(key_utf8: bool, value_utf8: bool) -> String {
+        let name = |utf8: bool| if utf8 { "Utf8" } else { "Int32" };
+        format!("({}, {})", name(key_utf8), name(value_utf8))
+    }
+
+    /// The first `len` entries of a pool, as a Utf8 or Int32 column.
+    fn map_entry_column(utf8: bool, strs: &[&str], ints: &[i32], len: usize) -> ArrayRef {
+        if utf8 {
+            Arc::new(StringArray::from(strs[..len].to_vec()))
+        } else {
+            Arc::new(Int32Array::from(ints[..len].to_vec()))
+        }
+    }
+
+    /// A map with `MAP_LENGTHS` entries per row and the given row validity. Every entry is
+    /// distinct, so hashing the wrong entry changes the hash.
+    fn map_of(key_utf8: bool, value_utf8: bool, valid: &[bool]) -> ArrayRef {
+        use arrow::array::{MapArray, StructArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        const STR_KEYS: [&str; 6] = ["a", "b", "", "日本", "x", "yz"];
+        const INT_KEYS: [i32; 6] = [1, -1, 0, i32::MAX, i32::MIN, 7];
+        const STR_VALUES: [&str; 6] = ["v1", "", "é", "w", "long value", "z"];
+        const INT_VALUES: [i32; 6] = [10, -20, 0, i32::MIN, i32::MAX, 3];
+
+        let len = MAP_LENGTHS.iter().sum();
+        let keys = map_entry_column(key_utf8, &STR_KEYS, &INT_KEYS, len);
+        let values = map_entry_column(value_utf8, &STR_VALUES, &INT_VALUES, len);
+        let entry_fields = Fields::from(vec![
+            Field::new("key", keys.data_type().clone(), false),
+            Field::new("value", values.data_type().clone(), true),
+        ]);
+        let entries = StructArray::new(entry_fields.clone(), vec![keys, values], None);
+        Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", DataType::Struct(entry_fields), false)),
+            OffsetBuffer::from_lengths(MAP_LENGTHS),
+            entries,
+            valid
+                .contains(&false)
+                .then(|| NullBuffer::from(valid.to_vec())),
+            false,
+        ))
+    }
+
+    /// murmur3 and xxhash64 of every row, both starting from `SEED`.
+    fn map_hashes(array: &ArrayRef) -> (Vec<u32>, Vec<u64>) {
+        use crate::hash_funcs::create_xxhash64_hashes;
+
+        let mut murmur3 = vec![SEED; array.len()];
+        create_murmur3_hashes(&[Arc::clone(array)], &mut murmur3).unwrap();
+        let mut xxhash64 = vec![SEED as u64; array.len()];
+        create_xxhash64_hashes(&[Arc::clone(array)], &mut xxhash64).unwrap();
+        (murmur3, xxhash64)
+    }
+
+    /// Whether the hash takes the null-aware loop. Like the loop selection itself, this counts
+    /// the nulls of the whole key and value arrays, not only the entries a slice covers.
+    fn map_takes_null_aware_loop(array: &ArrayRef) -> bool {
+        use arrow::array::{Array, MapArray};
+
+        let map = array.as_any().downcast_ref::<MapArray>().unwrap();
+        map.null_count() + map.keys().null_count() + map.values().null_count() > 0
+    }
+
+    /// A null map can still own entries, which Spark never produces but Arrow allows. Those
+    /// entries must not be hashed: the null row keeps the seed, and the other rows hash as they
+    /// do once the null row, and with it the entry it owns, is filtered out.
+    #[test]
+    fn test_specialised_map_null_row_skips_owned_entries() {
+        use arrow::array::BooleanArray;
+        use arrow::compute::filter;
+
+        let null_row = MAP_NULL_ROW.iter().position(|v| !v).unwrap();
+        assert!(MAP_LENGTHS[null_row] > 0, "the null map must own an entry");
+        let keep = BooleanArray::from(MAP_NULL_ROW.to_vec());
+
+        for (key_utf8, value_utf8) in MAP_PAIRS {
+            let label = map_pair_label(key_utf8, value_utf8);
+            let array = map_of(key_utf8, value_utf8, &MAP_NULL_ROW);
+            assert!(map_takes_null_aware_loop(&array), "{label}");
+
+            let (mut murmur3, mut xxhash64) = map_hashes(&array);
+            assert_eq!(
+                murmur3.remove(null_row),
+                SEED,
+                "murmur3 of the null map, {label}"
+            );
+            assert_eq!(
+                xxhash64.remove(null_row),
+                SEED as u64,
+                "xxhash64 of the null map, {label}"
+            );
+
+            let without_null_row = filter(&array, &keep).unwrap();
+            let (expected_murmur3, expected_xxhash64) = map_hashes(&without_null_row);
+            assert_eq!(
+                murmur3, expected_murmur3,
+                "murmur3 of the other rows, {label}"
+            );
+            assert_eq!(
+                xxhash64, expected_xxhash64,
+                "xxhash64 of the other rows, {label}"
+            );
+        }
+    }
+
+    /// A sliced map keeps its unsliced keys and values, so its offsets do not start at 0. Each
+    /// row must hash as it does in the unsliced array, in both loops.
+    #[test]
+    fn test_specialised_map_slice_matches_unsliced() {
+        use arrow::array::{Array, MapArray};
+
+        for (key_utf8, value_utf8) in MAP_PAIRS {
+            for valid in [MAP_ALL_VALID, MAP_NULL_ROW] {
+                let has_nulls = valid.contains(&false);
+                let label = format!(
+                    "{} {}",
+                    map_pair_label(key_utf8, value_utf8),
+                    if has_nulls {
+                        "with a null map"
+                    } else {
+                        "without nulls"
+                    }
+                );
+                let array = map_of(key_utf8, value_utf8, &valid);
+                let sliced = array.slice(1, array.len() - 1);
+
+                let offsets = sliced
+                    .as_any()
+                    .downcast_ref::<MapArray>()
+                    .unwrap()
+                    .offsets();
+                assert_ne!(
+                    offsets[0], 0,
+                    "{label}: the slice must not start at entry 0"
+                );
+                assert_eq!(map_takes_null_aware_loop(&sliced), has_nulls, "{label}");
+
+                let (murmur3, xxhash64) = map_hashes(&array);
+                let (sliced_murmur3, sliced_xxhash64) = map_hashes(&sliced);
+                assert_eq!(sliced_murmur3[..], murmur3[1..], "murmur3 of {label}");
+                assert_eq!(sliced_xxhash64[..], xxhash64[1..], "xxhash64 of {label}");
+            }
+        }
+    }
 }

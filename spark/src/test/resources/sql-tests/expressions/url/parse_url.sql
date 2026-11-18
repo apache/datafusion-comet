@@ -170,3 +170,99 @@ SELECT parse_url('http://host:abc/', 'AUTHORITY')
 -- unbalanced IPv6 bracket is invalid
 query
 SELECT parse_url('http://[::1/path', 'AUTHORITY')
+
+-- relative references (no scheme) are parsed like java.net.URI
+statement
+CREATE TABLE test_parse_url_relative(url string) USING parquet
+
+statement
+INSERT INTO test_parse_url_relative VALUES
+  ('/'),
+  ('notaurl'),
+  ('a/b:c?id=1'),
+  ('?id=7'),
+  ('#frag'),
+  ('/p#a?id=1'),
+  ('/shop/item/123?ref=abc&id=42#top'),
+  ('/r?to=http://x.com/a&id=1'),
+  ('//example.com'),
+  ('//user:pw@example.com:8080/p?id=1#f'),
+  ('///p?id=3'),
+  ('//#f'),
+  ('//?id=4'),
+  (':'),
+  (':foo'),
+  ('//'),
+  ('http://'),
+  ('http://example.com/r?to=https://y.com&id=9'),
+  (''),
+  (NULL)
+
+query
+SELECT url, parse_url(url, 'HOST'), parse_url(url, 'PATH'), parse_url(url, 'QUERY'),
+  parse_url(url, 'REF'), parse_url(url, 'PROTOCOL'), parse_url(url, 'FILE'),
+  parse_url(url, 'AUTHORITY'), parse_url(url, 'USERINFO'), parse_url(url, 'QUERY', 'id')
+FROM test_parse_url_relative
+
+-- characters java.net.URI rejects, and nearby ones it accepts
+statement
+CREATE TABLE test_parse_url_chars(url string) USING parquet
+
+statement
+INSERT INTO test_parse_url_chars VALUES
+  ('/p|q'),
+  ('?a=b|c'),
+  ('/p"q'),
+  ('/p\\q'),
+  ('/p^q'),
+  ('/p`q'),
+  ('/p%zz'),
+  ('/p%4'),
+  ('/p%41?id=%2F'),
+  ('/p[1]'),
+  ('?a=[1]#[b]'),
+  ('#a#b'),
+  ('/p?q#f?'),
+  ('/péq?id=é'),
+  ('http://example.com/p|q'),
+  ('http://example.com/p?id=%zz'),
+  ('http://example.com/p[1]'),
+  ('http://example.com/p?id=[1]'),
+  ('http://example.com/p#a#b'),
+  ('http://[::1]:8080/p'),
+  (NULL)
+
+query
+SELECT url, parse_url(url, 'HOST'), parse_url(url, 'PATH'), parse_url(url, 'QUERY'),
+  parse_url(url, 'REF'), parse_url(url, 'PROTOCOL'), parse_url(url, 'FILE'),
+  parse_url(url, 'AUTHORITY'), parse_url(url, 'USERINFO'), parse_url(url, 'QUERY', 'id')
+FROM test_parse_url_chars
+
+-- scheme names and opaque URIs (scheme-specific part not starting with '/')
+statement
+CREATE TABLE test_parse_url_schemes(url string) USING parquet
+
+statement
+INSERT INTO test_parse_url_schemes VALUES
+  ('mailto:x'),
+  ('mailto:a[b]'),
+  ('mailto:x#f'),
+  ('mailto:x#f#g'),
+  ('urn:isbn:123'),
+  ('http:p?id=1'),
+  ('http:?id=1'),
+  ('http:'),
+  ('http:#f'),
+  ('user_id:5'),
+  ('5:30'),
+  ('1http://example.com/p'),
+  ('h.t-t+p://example.com/p?id=1'),
+  ('HTTP://example.com/p'),
+  ('http:/p?id=1'),
+  (NULL)
+
+query
+SELECT url, parse_url(url, 'HOST'), parse_url(url, 'PATH'), parse_url(url, 'QUERY'),
+  parse_url(url, 'REF'), parse_url(url, 'PROTOCOL'), parse_url(url, 'FILE'),
+  parse_url(url, 'AUTHORITY'), parse_url(url, 'USERINFO'), parse_url(url, 'QUERY', 'id')
+FROM test_parse_url_schemes

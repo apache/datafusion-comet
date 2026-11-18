@@ -22,7 +22,7 @@ package org.apache.comet.shims
 import org.apache.spark.sql.execution.SampleExec
 
 /**
- * Shim for the seed that `SampleExec` samples with. Spark 3.4 through 4.1 carry it as a plain
+ * Shim for the seed that `SampleExec` samples with. Spark 3.5 through 4.1 carry it as a plain
  * `Long`. Spark 4.2 made it an `Option[Long]` resolved into a `resolvedSeed` field, handled by
  * the spark-4.2 shim.
  */
