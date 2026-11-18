@@ -717,9 +717,9 @@ impl<K: RegrKernel<N>, const N: usize> GroupsAccumulator for RegrGroupsAccumulat
         let x = values[1].as_primitive::<Float64Type>();
         self.states.resize(total_num_groups, [0.0; N]);
 
-        // Carry the state in a local while consecutive rows share a group, and reload it
-        // only when the group changes. Every row still writes it back, so input clustered
-        // by key updates the local without waiting on its own stores.
+        // Every row that passes the filter writes its state back. While consecutive such
+        // rows share a group, the next one continues from the local, and the state is
+        // reloaded only when the group changes.
         let mut current = usize::MAX;
         let mut state = [0.0; N];
         let rows = group_indices.iter().zip(y.values()).zip(x.values());
