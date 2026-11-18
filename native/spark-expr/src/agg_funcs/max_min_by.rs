@@ -46,7 +46,7 @@ use std::sync::Arc;
 /// Spark compares the ordering with `SQLOrderingUtil.compareDoubles`, while the accumulators rank
 /// it in Arrow's row format, which orders floats by IEEE 754 total order. The ordering column goes
 /// through [`normalize_floats`] first, which makes the two agree. This is verified identical on
-/// Spark 3.4 through master.
+/// Spark 3.5 through master.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaxMinBy {
     name: String,

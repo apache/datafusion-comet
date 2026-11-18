@@ -283,7 +283,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else {
       expr.ascendingOrder match {
-        // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
+        // Spark 3.5 requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
         // foldable boolean. Accept both; convert evaluates the foldable expression.
         case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
         case other =>

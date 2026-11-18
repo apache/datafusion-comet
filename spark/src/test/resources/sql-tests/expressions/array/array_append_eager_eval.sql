@@ -112,7 +112,7 @@ query expect_native(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(array(1)), CAST(NULL AS ARRAY<ARRAY<INT>>)), array(1 / (_1 + 1))) AS a
 FROM array_append_eager
 
--- Without ANSI nothing raises, and the default on Spark 3.4 and 3.5 is without ANSI. A computed
+-- Without ANSI nothing raises, and the default on Spark 3.5 is without ANSI. A computed
 -- item still goes through the extra evaluation for rows whose array is NULL, whose NULL has to be
 -- typed as the list the other branch returns, or the two cannot be merged. The division by zero
 -- returns NULL, and the second query has it land on a row whose array is not NULL, so [1, NULL] is

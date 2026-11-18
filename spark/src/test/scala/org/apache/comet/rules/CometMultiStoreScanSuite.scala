@@ -30,7 +30,6 @@ import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
-import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 import org.apache.spark.sql.comet.{CometCsvNativeScanExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{ExtendedMode, FileSourceScanExec, FormattedMode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -237,8 +236,6 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("global aggregate over a csv scan Spark plans as one partition across name nodes") {
-    // Spark 3.4 reports a one-partition V2 scan as SinglePartition and plans no exchange below
-    // the final aggregate, so a split scan would run that aggregate on two partitions.
     val (a, b) = (hdfs("nn1", "csv-agg-a"), hdfs("nn2", "csv-agg-b"))
     writeIds(a, 0, "csv")
     writeIds(b, 10, "csv")
@@ -257,20 +254,10 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
       val plan = query.queryExecution.executedPlan
       val scans = collect(plan) { case scan: CometCsvNativeScanExec => scan }
-      if (sparkScan.outputPartitioning.isInstanceOf[UnknownPartitioning]) {
-        // Spark planned an exchange above the scan, so splitting the scan is safe. The query is
-        // not run because native cannot read the fake stores.
-        assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
-        assert(scans.head.outputPartitioning.numPartitions == 2)
-        val exchanges = collect(plan) { case e: ShuffleExchangeLike => e }
-        assert(exchanges.nonEmpty, s"no exchange above the scan:\n$plan")
-      } else {
-        assert(scans.isEmpty, s"a split scan would break Spark's partitioning:\n$plan")
-        checkSparkAnswerAndFallbackReason(
-          query,
-          "Native CSV scan would split a partition that mixes object stores, but Spark " +
-            "planned the operators above it for the scan's own partitioning")
-      }
+      assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
+      assert(scans.head.outputPartitioning.numPartitions == 2)
+      val exchanges = collect(plan) { case e: ShuffleExchangeLike => e }
+      assert(exchanges.nonEmpty, s"no exchange above the scan:\n$plan")
     }
   }
 

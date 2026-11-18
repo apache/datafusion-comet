@@ -1547,12 +1547,16 @@ class CometNativeCastSuite
 
   // The tests above compare the cast with the Spark they run on, and SparkFixesSuite covers the
   // setting for each Spark version.
-  test("cast StringType to DecimalType sets the zero option for the running Spark version") {
+  test("cast StringType to DecimalType sets the decimal options for the running Spark version") {
     val a = AttributeReference("a", StringType)()
-    val proto = CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false)
+    val cast =
+      CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false).map(_.getCast)
+    val version = org.apache.spark.SPARK_VERSION
     assert(
-      proto.map(_.getCast.getDecimalZeroAnyExponent) ==
-        Some(SparkFixes.castsZeroWithAnyExponentToDecimal(org.apache.spark.SPARK_VERSION)))
+      cast.map(_.getDecimalZeroAnyExponent) ==
+        Some(SparkFixes.castsZeroWithAnyExponentToDecimal(version)))
+    assert(
+      cast.map(_.getDecimalTinyToZero) == Some(SparkFixes.castsTinyStringToDecimalZero(version)))
   }
 
   test(
@@ -1789,6 +1793,10 @@ class CometNativeCastSuite
   }
 
   test("(ansi) failing cast of a literal raises Spark's own exception when reached") {
+    // SPARK-60119 makes this cast return 0.00, so Spark folds the literal and nothing fails.
+    assume(
+      !SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
+      "Spark with SPARK-60119 casts this literal to 0.00 instead of failing")
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withTable("cast_literal_branch") {
         Seq(0L, 1L, 2L).toDF("id").write.format("parquet").saveAsTable("cast_literal_branch")
@@ -1811,6 +1819,9 @@ class CometNativeCastSuite
   }
 
   test("(ansi) cast string to negative-scale decimal fails when rescaling overflows an int") {
+    assume(
+      !SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
+      "Spark with SPARK-60119 casts this string to 0, see the test below")
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
       "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
@@ -1825,6 +1836,37 @@ class CometNativeCastSuite
         val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
         assert(sparkError.isDefined, "Spark did not fail")
         assert(cometError.isDefined, "Comet did not fail")
+      }
+    }
+  }
+
+  // Spark with SPARK-60119 skips `BigDecimal.setScale` for a value far below the target scale's
+  // ulp, so these strings cast to 0 in every eval mode where Spark used to fail, as the test above
+  // expects. See https://github.com/apache/datafusion-comet/issues/7187.
+  test("cast string far below a negative target scale to decimal returns 0 (SPARK-60119)") {
+    assume(
+      SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
+      "Spark fails this cast before SPARK-60119, see the test above")
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+        withTable("cast_decimal_rescale") {
+          // The first four are far below the target scale's ulp, "123" rounds to one ulp (1E+2)
+          // and NULL stays NULL.
+          Seq("1e-2147483647", "-1e-2147483647", "12e-2147483647", "1e-100000000", "123", null)
+            .toDF("s")
+            .write
+            .format("parquet")
+            .saveAsTable("cast_decimal_rescale")
+          val df = spark.table("cast_decimal_rescale").select(col("s").cast(DecimalType(10, -2)))
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          checkSparkAnswer(df)
+          val unscaled = df.collect().map(row => Option(row.getDecimal(0)).map(_.unscaledValue))
+          assert(unscaled.count(_.exists(_.signum == 0)) == 4, s"ansi=$ansiEnabled")
+          assert(unscaled.count(_.exists(_.intValue == 1)) == 1, s"ansi=$ansiEnabled")
+          assert(unscaled.count(_.isEmpty) == 1, s"ansi=$ansiEnabled")
+        }
       }
     }
   }
@@ -1918,6 +1960,12 @@ class CometNativeCastSuite
         "2020-01-01T12:34:56-08:00",
         // Single-digit hour offset (extract_offset_suffix supports ±H:MM)
         "2020-01-01T12:34:56+5:30",
+        // Second-precision offsets, the forms Java's ZoneOffset.of accepts
+        "2020-01-01T12:34:56+08:00:30",
+        "2020-01-01T12:34:56-01:30:15",
+        "2020-01-01T12:34:56+080030",
+        // Spark rejects a short minute or second segment once seconds are present
+        "2020-01-01T12:34:56+8:0:3",
         // T-prefixed time-only with colon
         "T12:34",
         "T12:34:56",
@@ -2011,6 +2059,9 @@ class CometNativeCastSuite
           "2020-06-15T12:30:00+05:30",
           "2020-06-15T12:30:00-08:00",
           "2020-06-15T12:30:00 UTC",
+          "2020-06-15T12:30:00+08:00:30",
+          "2020-06-15T12:30:00-01:30:15",
+          "2020-06-15T12:30:00+8:0:3",
           "2024-03-10 02:30:00",
           "2024-11-03 01:30:00",
           "not a timestamp",
@@ -3438,7 +3489,7 @@ class CometNativeCastSuite
                   sparkMessage.startsWith(
                     cometMessage.substring(0, math.min(40, cometMessage.length))))
               } else {
-                // for Spark 3.4 we expect to reproduce the error message exactly
+                // For Spark 3.x we expect to reproduce the error message exactly.
                 assert(cometMessage == sparkMessage)
               }
           }
