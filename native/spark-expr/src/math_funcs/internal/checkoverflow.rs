@@ -248,9 +248,6 @@ impl PhysicalExpr for CheckOverflow {
     }
 }
 
-/// Values per chunk in the no-null scan of [`fits_precision`].
-const FITS_PRECISION_CHUNK: usize = 64;
-
 /// Whether every non-null value of `array` fits `precision`, the check that
 /// `Decimal128Type::is_valid_decimal_precision` makes for one value.
 #[inline]
@@ -259,30 +256,38 @@ fn fits_precision(array: &Decimal128Array, precision: u8) -> bool {
         MIN_DECIMAL128_FOR_EACH_PRECISION.get(precision as usize),
         MAX_DECIMAL128_FOR_EACH_PRECISION.get(precision as usize),
     );
-    match bounds {
-        (Some(&min), Some(&max)) if array.null_count() == 0 => {
-            // Without nulls every slot holds a value, so scan the values buffer directly instead
-            // of reading the null bitmap per slot. Shifting by `min` turns the two bounds checks
-            // into one unsigned comparison. The check is branchless within a chunk, which lets
-            // the compiler unroll it, and the scan still stops at the first chunk that holds an
-            // overflow.
-            let range = max.wrapping_sub(min) as u128;
-            array.values().chunks(FITS_PRECISION_CHUNK).all(|chunk| {
-                chunk.iter().fold(true, |fits, &v| {
-                    fits & (v.wrapping_sub(min) as u128 <= range)
-                })
-            })
-        }
-        _ => array
+    let (Some(&min), Some(&max)) = bounds else {
+        return array
             .iter()
             .flatten()
-            .all(|v| Decimal128Type::is_valid_decimal_precision(v, precision)),
+            .all(|v| Decimal128Type::is_valid_decimal_precision(v, precision));
+    };
+    // Scan every slot of the values buffer, null or not, instead of reading the null bitmap per
+    // slot. Shifting by `min` turns the two bounds checks into one unsigned comparison, so the
+    // loop is one compare per value and a branch that is only taken at a value that doesn't fit.
+    let range = max.wrapping_sub(min) as u128;
+    let values = array.values();
+    let nulls = array.nulls();
+    let mut start = 0;
+    while let Some(offset) = values[start..]
+        .iter()
+        .position(|&v| v.wrapping_sub(min) as u128 > range)
+    {
+        // A null slot can hold any value, so a value that doesn't fit only counts in a valid
+        // slot. The null bitmap is read only at such a value, and the scan resumes after it.
+        let index = start + offset;
+        if !nulls.is_some_and(|nulls| nulls.is_null(index)) {
+            return false;
+        }
+        start = index + 1;
     }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::buffer::NullBuffer;
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use std::fmt::{Display, Formatter};
@@ -539,23 +544,100 @@ mod tests {
         let batch = array_batch(vec![Some(999), Some(9999)], 38, 0);
         let out = eval_array(&array_check_overflow(3, 0, false), &batch);
         assert_eq!(out.iter().collect::<Vec<_>>(), vec![Some(999), None]);
+
+        // The scan shifts by the precision's minimum and compares unsigned, so also check the
+        // values where that shift wraps, at the widest precision.
+        let max = MAX_DECIMAL128_FOR_EACH_PRECISION[38];
+        let min = MIN_DECIMAL128_FOR_EACH_PRECISION[38];
+        let fits = array_batch(vec![Some(max), Some(min), Some(0)], 38, 0);
+        let out = eval_array(&array_check_overflow(38, 0, true), &fits);
+        assert_eq!(out.null_count(), 0);
+        for v in [max + 1, min - 1, i128::MAX, i128::MIN] {
+            let batch = array_batch(vec![Some(0), Some(v)], 38, 0);
+            let out = eval_array(&array_check_overflow(38, 0, false), &batch);
+            assert!(out.is_null(1), "{v}");
+            let ansi = array_check_overflow(38, 0, true).evaluate(&batch);
+            assert!(ansi.is_err(), "{v}");
+        }
     }
 
     #[test]
-    fn test_array_no_nulls_overflow_past_first_chunk_and_sliced() {
-        // The no-null scan reads the values buffer in chunks, so an overflow in a later chunk
-        // must still be found, and a sliced array must only be checked within its slice.
+    fn test_array_overflow_at_every_position_and_sliced() {
+        // The scan stops at the first value that doesn't fit, and a compiled loop can split the
+        // batch into an unrolled part and a remainder, so move one value that doesn't fit
+        // through every row. 203 rows are not a multiple of any unroll factor.
+        for overflow in [1000, -1000] {
+            for i in 0..203 {
+                let mut values = vec![Some(5); 203];
+                values[i] = Some(overflow);
+                let batch = array_batch(values, 38, 0);
+                let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+                assert_eq!(out.null_count(), 1, "{overflow} at {i}");
+                assert!(out.is_null(i), "{overflow} at {i}");
+                let ansi = array_check_overflow(3, 0, true).evaluate(&batch);
+                assert!(ansi.is_err(), "{overflow} at {i}");
+            }
+        }
+
+        // A sliced array must only be checked within its slice. This one starts right after
+        // the overflowing value, so the slice has a non-zero offset.
         let mut values = vec![Some(5); 200];
         values[130] = Some(1000);
-        let batch = array_batch(values, 38, 0);
-        let out = eval_array(&array_check_overflow(3, 0, false), &batch);
-        assert_eq!(out.null_count(), 1);
-        assert!(out.is_null(130));
-
-        // Starts right after the overflowing value, so the slice has a non-zero offset.
-        let sliced = batch.slice(131, 69);
+        let sliced = array_batch(values, 38, 0).slice(131, 69);
         let out = eval_array(&array_check_overflow(3, 0, true), &sliced);
         assert_eq!(out.len(), 69);
         assert_eq!(out.null_count(), 0);
+    }
+
+    /// A Decimal128(38, 0) batch whose null slots keep the values given for them.
+    fn array_batch_with_null_slots(values: Vec<i128>, valid: Vec<bool>) -> RecordBatch {
+        let arr = Decimal128Array::new(values.into(), Some(NullBuffer::from(valid)))
+            .with_precision_and_scale(38, 0)
+            .unwrap();
+        let schema = Schema::new(vec![Field::new("d", arr.data_type().clone(), true)]);
+        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(arr)]).unwrap()
+    }
+
+    #[test]
+    fn test_array_null_slot_out_of_range_is_ignored() {
+        // A null slot can hold any value. One that doesn't fit the precision must not null out
+        // valid values or raise an ANSI error, and the scan must still find a value that doesn't
+        // fit in a valid slot after it, next to it or at the end.
+        let n = 70;
+        for i in 0..n - 1 {
+            let mut values = vec![5_i128; n];
+            let mut valid = vec![true; n];
+            values[i] = 1000;
+            valid[i] = false;
+            let mut expected = vec![Some(5_i128); n];
+            expected[i] = None;
+            let batch = array_batch_with_null_slots(values.clone(), valid.clone());
+            for fail_on_error in [false, true] {
+                let out = eval_array(&array_check_overflow(3, 0, fail_on_error), &batch);
+                assert_eq!(out.iter().collect::<Vec<_>>(), expected, "null slot {i}");
+            }
+            for j in [i + 1, n - 1] {
+                let mut values = values.clone();
+                values[j] = -1000;
+                let batch = array_batch_with_null_slots(values, valid.clone());
+                let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+                let mut expected = expected.clone();
+                expected[j] = None;
+                assert_eq!(out.iter().collect::<Vec<_>>(), expected, "{i}, {j}");
+                let ansi = array_check_overflow(3, 0, true).evaluate(&batch);
+                assert!(ansi.is_err(), "null slot {i}, overflow at {j}");
+            }
+        }
+
+        // In a slice, the values and the null bitmap both count from the slice's first row.
+        let mut values = vec![5_i128; 100];
+        let mut valid = vec![true; 100];
+        values[40] = 1000;
+        values[60] = 1000;
+        valid[60] = false;
+        let sliced = array_batch_with_null_slots(values, valid).slice(41, 59);
+        let out = eval_array(&array_check_overflow(3, 0, true), &sliced);
+        assert_eq!(out.null_count(), 1);
+        assert!(out.is_null(19));
     }
 }

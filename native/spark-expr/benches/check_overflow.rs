@@ -16,6 +16,8 @@
 // under the License.
 
 use arrow::array::{Array, Decimal128Array};
+use arrow::buffer::NullBuffer;
+use arrow::compute::concat_batches;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -97,6 +99,38 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     c.bench_function("check_overflow: ansi no overflow, with nulls", |b| {
         b.iter(|| black_box(ansi.evaluate(black_box(&no_overflow_nulls)).unwrap()))
+    });
+
+    // One overflow in the last row, so the scan reads the whole batch before the slow path runs.
+    // `sparse overflow` and `dense overflow` overflow at row 0 and stop in the first chunk.
+    let head = build(size - 1, 0, 0);
+    let last_row_overflow = concat_batches(&head.schema(), [&head, &build(1, 0, 1)]).unwrap();
+    c.bench_function("check_overflow: last row overflow", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&last_row_overflow)).unwrap()))
+    });
+
+    // The `with nulls` shape, except that its last row is a null slot holding a value that
+    // doesn't fit. A scan over every slot reaches it at the end of the batch and has to find
+    // that the slot is null, though nothing overflows.
+    let null_slot_overflow = {
+        let nulls = build(size, 17, 0);
+        let nulls = nulls
+            .column(0)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        let mut values = nulls.values().to_vec();
+        values[size - 1] = OVERFLOW_VALUE;
+        let mut validity: Vec<bool> = (0..size).map(|i| nulls.is_valid(i)).collect();
+        validity[size - 1] = false;
+        let array = Decimal128Array::new(values.into(), Some(NullBuffer::from(validity)))
+            .with_precision_and_scale(IN_PRECISION, SCALE)
+            .unwrap();
+        let schema = Schema::new(vec![Field::new("d", array.data_type().clone(), true)]);
+        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(array)]).unwrap()
+    };
+    c.bench_function("check_overflow: no overflow, null slot out of range", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&null_slot_overflow)).unwrap()))
     });
 }
 
