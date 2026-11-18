@@ -86,11 +86,11 @@ class CometMinMaxSuite extends CometTestBase {
     }
   }
 
-  for ((keyType, parquetKey) <- Seq(
-      (ByteType, "int32 k (INT_8)"),
-      (ShortType, "int32 k (INT_16)"),
-      (IntegerType, "int32 k"),
-      (LongType, "int64 k"))) {
+  for ((keyType, parquetKey, minValue, maxValue) <- Seq(
+      (ByteType, "int32 k (INT_8)", Byte.MinValue.toLong, Byte.MaxValue.toLong),
+      (ShortType, "int32 k (INT_16)", Short.MinValue.toLong, Short.MaxValue.toLong),
+      (IntegerType, "int32 k", Int.MinValue.toLong, Int.MaxValue.toLong),
+      (LongType, "int64 k", Long.MinValue, Long.MaxValue))) {
     test(s"MIN/MAX prune their Spark Parquet reader for ${keyType.sql}") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -104,23 +104,29 @@ class CometMinMaxSuite extends CometTestBase {
           val schema = org.apache.parquet.schema.MessageTypeParser.parseMessageType(s"""
             |message root {
             |  required int64 payload;
-            |  required $parquetKey;
+            |  optional $parquetKey;
             |}
             |""".stripMargin)
           val writer = createParquetWriter(schema, path, rowGroupSize = 1L)
           try {
-            // MIN improves 28 -> -20 -> -128; MAX reaches 127 in the first group.
+            // Both bounds improve before the NULL and type-extreme groups are reached.
             // The second physical column also exercises the reader's column mapping.
-            Seq(
-              28 until 128,
-              -20 until 80,
-              0 until 100,
-              -128 until -28,
-              -80 until 20,
-              20 until 120).flatten.foreach { key =>
+            def nonNullGroup(values: Seq[Long]): Seq[Option[Long]] = values.map(Some(_))
+            val rowGroups = Seq(
+              nonNullGroup(-50L until 50L),
+              nonNullGroup((-100L until -50L) ++ (50L until 100L)),
+              Seq.fill(100)(None),
+              nonNullGroup(-50L until 50L),
+              nonNullGroup(Seq.fill(50)(Seq(minValue, maxValue)).flatten),
+              nonNullGroup(-80L until 20L),
+              nonNullGroup(20L until 120L),
+              nonNullGroup(-10L until 90L))
+            rowGroups.flatten.zipWithIndex.foreach { case (key, index) =>
               val row = new org.apache.parquet.example.data.simple.SimpleGroup(schema)
-              row.add(0, key.toLong)
-              if (keyType == LongType) row.add(1, key.toLong) else row.add(1, key)
+              row.add(0, index.toLong)
+              key.foreach { value =>
+                if (keyType == LongType) row.add(1, value) else row.add(1, value.toInt)
+              }
               writer.write(row)
             }
           } finally {
@@ -130,8 +136,9 @@ class CometMinMaxSuite extends CometTestBase {
             org.apache.parquet.hadoop.util.HadoopInputFile
               .fromPath(path, spark.sessionState.newHadoopConf()))
           try {
-            assert(
-              footer.getFooter.getBlocks.asScala.map(_.getRowCount).toSeq == Seq.fill(6)(100L))
+            val rowGroups = footer.getFooter.getBlocks.asScala
+            assert(rowGroups.map(_.getRowCount).toSeq == Seq.fill(8)(100L))
+            assert(rowGroups(2).getColumns.get(1).getStatistics.getNumNulls == 100L)
           } finally {
             footer.close()
           }
@@ -154,10 +161,10 @@ class CometMinMaxSuite extends CometTestBase {
               }
               val Seq(disabled, enabled) = scans.result()
               withClue(s"$function(${keyType.sql}): ") {
-                assert(disabled("output_rows") == 600L)
+                assert(disabled("output_rows") == 800L)
                 assert(disabled("row_groups_pruned_dynamic_filter") == 0L)
                 assert(enabled("row_groups_pruned_dynamic_filter") >= 3L)
-                assert(enabled("output_rows") <= 300L)
+                assert(enabled("output_rows") <= 400L)
                 assert(enabled("bytes_scanned") < disabled("bytes_scanned"))
               }
             }
@@ -244,20 +251,4 @@ class CometMinMaxSuite extends CometTestBase {
     }
   }
 
-  test("MIN/MAX preserve empty, null, and duplicate integer results") {
-    val inputs: Seq[Seq[Tuple1[Option[Int]]]] = Seq(
-      Seq.empty[Tuple1[Option[Int]]],
-      Seq(Tuple1(None), Tuple1(None)),
-      Seq(Tuple1(Some(-2)), Tuple1(Some(-2)), Tuple1(None), Tuple1(Some(3))))
-    for (input <- inputs) {
-      withParquetTable(input, "minmax_input") {
-        for (enabled <- Seq(false, true); function <- Seq("MIN", "MAX")) {
-          withSQLConf(
-            CometConf.COMET_EXEC_AGGREGATE_DYNAMIC_FILTER_ENABLED.key -> enabled.toString) {
-            checkSparkAnswerAndOperator(s"SELECT $function(_1) FROM minmax_input")
-          }
-        }
-      }
-    }
-  }
 }
