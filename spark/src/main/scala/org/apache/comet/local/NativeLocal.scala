@@ -32,11 +32,13 @@ private[local] class NativeLocal extends NativeBase {
    * Creates and starts a local query over `partitions` partitions of a serialized Comet plan
    * without JVM inputs, with the memory pool and session that `Native.createPlan` creates for the
    * calling Spark task. Its running partitions read ahead of delivery up to `readAheadBytes`.
-   * Returns its handle.
+   * When the plan's leaf is a native file scan, `scanPartitions` holds each partition's
+   * serialized `NativeScan` carrying its files, and is otherwise empty. Returns its handle.
    */
   // scalastyle:off argcount
   @native def createQuery(
       plan: Array[Byte],
+      scanPartitions: Array[Array[Byte]],
       configs: Array[Byte],
       partitions: Int,
       columns: Int,
@@ -56,6 +58,12 @@ private[local] class NativeLocal extends NativeBase {
   @native def nextBatch(id: Long, arrays: Array[Long], schemas: Array[Long]): Long
 
   @native def close(id: Long): Unit
+
+  /**
+   * The partition whose turn it was when the query failed, or -1. Reading it forgets it, as does
+   * `close`.
+   */
+  @native def failedPartition(id: Long): Int
 
   @native def activeQueries(): Long
 }

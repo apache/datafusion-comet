@@ -22,9 +22,9 @@ package org.apache.comet.local
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{SortOrder, SubqueryExpression}
-import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
-import org.apache.spark.sql.comet.{CometNativeExec, CometRangeExec}
+import org.apache.spark.sql.catalyst.expressions.{PlanExpression, SortOrder}
+import org.apache.spark.sql.catalyst.plans.physical.{RangePartitioning, UnknownPartitioning}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometRangeExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -39,6 +39,10 @@ import org.apache.comet.shims.ShimCometStreaming
  * Admission of whole queries to local execution. A query is admitted only as a whole, from the
  * plan Comet's ordinary conversion produces: one native block with no JVM input, whose operators
  * then run for all partitions in one native graph. Everything else keeps ordinary execution.
+ *
+ * The block's leaf is a range or a native Parquet scan. A scan's partitions are its file
+ * partitions, which ordinary execution lists only when the query runs, so their number is checked
+ * then; see [[spec]].
  */
 private[comet] object CometLocalRule {
 
@@ -69,25 +73,46 @@ private[comet] object CometLocalRule {
     }
     convert(plan) match {
       case block: CometNativeExec if admits(block) =>
-        val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
-        val spec = LocalQuerySpec(
-          block.serializedPlanOpt.plan.get,
-          partitions,
-          block.output.map(_.dataType))
-        CometLocalResultExec(
-          CometLocalExec(block.output, spec, resultOrdering(block, partitions), block))
+        val result =
+          CometLocalResultExec(CometLocalExec(block.output, resultOrdering(block), block))
+        // AQE, when `spark.sql.adaptive.forceApply` wraps the plan, makes the result its last
+        // stage, which needs the logical plan the block came from.
+        block.logicalLink.foreach(result.setLogicalLink)
+        result
       case converted => converted
     }
+  }
+
+  /**
+   * The spec of an admitted block's graph, made when the query runs. A scan's files are listed
+   * then, as ordinary execution lists them, after its subqueries are resolved. `None` when the
+   * block has no partitions, such as a scan of no files, or more than [[MaxPartitions]].
+   */
+  private[local] def spec(block: CometNativeExec): Option[LocalQuerySpec] = {
+    val plan = block.serializedPlanOpt.plan.get
+    val types = block.output.map(_.dataType)
+    val spec = block.collectLeaves().head match {
+      case scan: CometNativeScanExec =>
+        scan.ensureSubqueriesResolved()
+        scan.sendDriverMetrics()
+        val files = scan.perPartitionData
+        LocalQuerySpec(plan, files.length, types, files, scan.perPartitionFilePaths)
+      case leaf =>
+        LocalQuerySpec(plan, leaf.outputPartitioning.numPartitions, types)
+    }
+    Some(spec).filter(spec => spec.partitions >= 1 && spec.partitions <= MaxPartitions)
   }
 
   /**
    * The ordering of the whole result. Spark's `outputOrdering` holds within each partition, and
    * the result concatenates the partitions in order, so it holds for the whole result only with
    * one partition, or when the partitions are ranges of a prefix of that ordering, as a range's
-   * slices are.
+   * slices are. A scan's partitions are unknown until the query runs, so its ordering is not
+   * reported; a scan local execution admits reports none anyway.
    */
-  private def resultOrdering(block: CometNativeExec, partitions: Int): Seq[SortOrder] = {
+  private def resultOrdering(block: CometNativeExec): Seq[SortOrder] = {
     val ordering = block.outputOrdering
+    val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
     block.outputPartitioning match {
       case _ if partitions == 1 => ordering
       case RangePartitioning(ranges, _) if SortOrder.orderingSatisfies(ordering, ranges) =>
@@ -113,23 +138,41 @@ private[comet] object CometLocalRule {
   /**
    * A single native block that a Spark task could run for each partition on its own: its root
    * carries the serialized plan, every other operator is native and part of the same block, its
-   * only leaf is a range, and its expressions are deterministic and do not call back into the
-   * JVM. Running all partitions in one graph then produces what the Spark tasks would.
+   * only leaf is a range or a native Parquet scan (see [[admitsLeaf]]), and its expressions are
+   * deterministic, contain no subquery, and do not call back into the JVM. Running all partitions
+   * in one graph then produces what the Spark tasks would.
    */
   private def admits(block: CometNativeExec): Boolean = {
     block.serializedPlanOpt.isDefined &&
     block.output.nonEmpty &&
-    block.collectLeaves().map(_.getClass) == Seq(classOf[CometRangeExec]) &&
+    (block.collectLeaves() match {
+      case Seq(leaf) => admitsLeaf(leaf)
+      case _ => false
+    }) &&
     block.collectFirst {
       case node: CometNativeExec if (node ne block) && node.serializedPlanOpt.isDefined => node
       case node if !node.isInstanceOf[CometNativeExec] => node
     }.isEmpty &&
+    // `PlanExpression` covers the subqueries of physical plans, such as a scalar subquery or
+    // dynamic pruning in a scan's filters, which are not in the serialized plan.
     !block.exists(_.expressions.exists(e =>
-      !e.deterministic || e.exists(_.isInstanceOf[SubqueryExpression]))) && {
-      val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
-      partitions >= 1 && partitions <= MaxPartitions
-    } &&
+      !e.deterministic || e.exists(_.isInstanceOf[PlanExpression[_]]))) &&
     withoutJvmCallbacks(block.nativeOp)
+  }
+
+  /**
+   * A range with 1 to [[MaxPartitions]] partitions, or a native Parquet scan that reports no
+   * partitioning and reads unencrypted files. A bucketed scan reports its buckets' hash
+   * partitioning, which local execution does not rely on. Decrypting a file needs the JVM.
+   */
+  private def admitsLeaf(leaf: SparkPlan): Boolean = leaf match {
+    case range: CometRangeExec =>
+      val partitions = range.outputPartitioning.numPartitions
+      partitions >= 1 && partitions <= MaxPartitions
+    case scan: CometNativeScanExec =>
+      scan.outputPartitioning.isInstanceOf[UnknownPartitioning] &&
+      !scan.nativeOp.getNativeScan.getCommon.getEncryptionEnabled
+    case _ => false
   }
 
   private def withoutJvmCallbacks(message: Message): Boolean = {

@@ -54,17 +54,25 @@ case class CometLocalResultExec(child: SparkPlan) extends UnaryExecNode {
 
   override protected def doExecute(): RDD[InternalRow] = ordinary.execute()
 
+  // A file scan's partitions are known only now. With none, or more than run locally, the
+  // collect runs as ordinary execution, before any native output.
   override def executeCollect(): Array[InternalRow] =
-    if (sparkContext.isLocal) LocalResultHandoff.collect(child.execute(), maxResultSize)
-    else super.executeCollect()
+    if (sparkContext.isLocal && localExec.forall(_.spec.isDefined)) {
+      LocalResultHandoff.collect(child.execute(), maxResultSize)
+    } else if (sparkContext.isLocal) {
+      ordinary.executeCollect()
+    } else {
+      super.executeCollect()
+    }
+
+  @transient private lazy val localExec: Option[CometLocalExec] =
+    child.collectFirst { case exec: CometLocalExec => exec }
 
   // The block as ordinary planning prepares it, which runs after this node is created: the
   // columnar-to-row transition Comet picks, or Spark's RangeExec for a bare range.
   @transient private[local] lazy val ordinary: SparkPlan =
-    child
-      .collectFirst { case local: CometLocalExec =>
-        EliminateRedundantTransitions(session)(ColumnarToRowExec(local.block))
-      }
+    localExec
+      .map(exec => EliminateRedundantTransitions(session)(ColumnarToRowExec(exec.block)))
       .getOrElse(child)
 
   // Spark enforces this on serialized task results; this boundary enforces it on copied rows.
