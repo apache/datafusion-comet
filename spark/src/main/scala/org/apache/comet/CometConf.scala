@@ -479,9 +479,9 @@ object CometConf extends ShimCometConf {
       "mergeRows",
       defaultValue = false,
       notes = Some(
-        "Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark " +
-          "4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; Comet's " +
-          "MergeRows is used only where the enclosing Comet write path preserves that contract."))
+        "On Spark 4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; " +
+          "Comet's MergeRows is used only where the enclosing Comet write path preserves that " +
+          "contract."))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
@@ -490,9 +490,7 @@ object CometConf extends ShimCometConf {
         "Requires spark.comet.enabled=true. On Spark 4.0 and later, it also decides how an " +
         "adaptive cached plan is built: when the final stage ends in a Spark row operator, " +
         "Comet writes the rows straight into Arrow batches for the cache instead of " +
-        "having Spark fill its own column vectors first. On Spark 3.4, AQE cannot coalesce the " +
-        "shuffle partitions of a union that Comet runs with a cached relation in one branch. " +
-        "At startup, this setting also decides " +
+        "having Spark fill its own column vectors first. At startup, this setting also decides " +
         "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
         "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
         "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +

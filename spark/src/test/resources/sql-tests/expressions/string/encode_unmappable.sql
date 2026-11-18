@@ -15,9 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- encode() over characters the target charset cannot represent, on Spark 3.4 and 3.5.
+-- encode() over characters the target charset cannot represent, on Spark 3.5.
 --
--- On those versions `Encode` is a plain BinaryExpression whose eval is
+-- On that version `Encode` is a plain BinaryExpression whose eval is
 -- `input.toString.getBytes(charset)`, and `String.getBytes` uses an encoder configured with
 -- `CodingErrorAction.REPLACE`. Unmappable characters therefore become the charset's replacement
 -- byte (0x3F, '?') rather than raising. Spark 4.0+ builds the encoder with

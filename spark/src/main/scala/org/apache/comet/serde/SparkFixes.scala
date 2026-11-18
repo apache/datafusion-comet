@@ -101,8 +101,8 @@ private[comet] object SparkFixes {
 
   /**
    * SPARK-48719 made regr_slope and regr_intercept count VariancePop(x) only over rows where both
-   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches and 3.4 count every
-   * row where x is non-null.
+   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches count every row where
+   * x is non-null.
    */
   def slopeFiltersVarByPairNulls(sparkVersion: String): Boolean =
     Utils.majorMinorPatchVersion(sparkVersion).exists {
@@ -113,7 +113,7 @@ private[comet] object SparkFixes {
   /**
    * SPARK-55969 swapped regr_r2's degenerate cases: a constant dependent variable yields 1.0 (was
    * null) and a constant independent variable yields null (was 1.0). Present from 3.5.9, 4.0.3,
-   * 4.1.2 and 4.2.0; earlier patches of those lines and 3.4 keep the old cases.
+   * 4.1.2 and 4.2.0; earlier patches of those lines keep the old cases.
    */
   def r2DegenerateCasesSwapped(sparkVersion: String): Boolean =
     Utils.majorMinorPatchVersion(sparkVersion).exists {

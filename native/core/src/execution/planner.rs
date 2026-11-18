@@ -887,7 +887,7 @@ impl PhysicalPlanner {
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
                 // Only fuse when the Cast target type matches the CheckOverflow output type.
-                // Spark 3.4+ does not currently emit this shape, but keep its errors typed and
+                // Spark 3.5+ does not currently emit this shape, but keep its errors typed and
                 // contextualized in case a future serializer makes the fusion reachable.
                 if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (
