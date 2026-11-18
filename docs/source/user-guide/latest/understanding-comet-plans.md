@@ -249,6 +249,11 @@ val info = new ExtendedExplainInfo()
 
 // Sorted, deduplicated list of fallback reasons across the whole plan.
 val reasons: Seq[String] = info.getFallbackReasons(plan)
+// The same for a DataFrame's executed plan. It does not run the query, so for
+// an adaptive query, run it first to get the reasons for the final plan.
+val dfReasons: Seq[String] = info.getFallbackReasons(df)
+// True when Comet is enabled for the session and the plan has no fallback reasons.
+val accelerated: Boolean = info.planAccelerated(df)
 
 // Sorted, deduplicated names of the expressions Comet accelerated, split by how
 // they run. Structural nodes (attribute references, literals, aliases) are not
