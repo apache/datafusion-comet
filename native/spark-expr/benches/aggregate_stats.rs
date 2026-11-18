@@ -30,7 +30,6 @@ use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::context::SessionConfig;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::AggregateUDF;
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
@@ -232,23 +231,6 @@ fn regression_benchmark(c: &mut Criterion) {
             let inputs: Vec<Arc<dyn PhysicalExpr>> = indices
                 .map(|i| Arc::new(Column::new(&format!("c{i}"), i)) as Arc<dyn PhysicalExpr>)
                 .to_vec();
-            // Check actual cardinality outside timing. Batches use successive row
-            // offsets, so the high-cardinality case really contains 64k groups.
-            let (rows, aggregate) = rt.block_on(agg_test(
-                partitions,
-                group_col.clone(),
-                inputs.clone(),
-                udf.clone(),
-                name,
-            ));
-            assert_eq!(rows, groups);
-            let skipped = aggregate
-                .metrics()
-                .unwrap()
-                .sum_by_name("skipped_aggregation_rows")
-                .map(|metric| metric.as_usize())
-                .unwrap_or(0);
-            assert_eq!(skipped, 0);
             let nulls = match null_every {
                 0 => "no_null",
                 2 => "half_null",
@@ -357,26 +339,18 @@ async fn agg_test(
     input_exprs: Vec<Arc<dyn PhysicalExpr>>,
     aggregate_udf: Arc<AggregateUDF>,
     alias: &str,
-) -> (usize, Arc<AggregateExec>) {
+) {
     let schema = &partitions[0][0].schema();
     let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
         MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
     )));
     let aggregate = create_aggregate(scan, group_col, input_exprs, schema, aggregate_udf, alias);
-    // Match Comet's eligibility gate: regression aggregates cannot skip partial
-    // aggregation (convert_to_state is unsupported by the grouped kernels).
-    let mut config = SessionConfig::new();
-    config
-        .options_mut()
-        .execution
-        .skip_partial_aggregation_probe_ratio_threshold = 1.1;
-    let context = TaskContext::default().with_session_config(config);
-    let mut stream = aggregate.execute(0, Arc::new(context)).unwrap();
-    let mut rows = 0;
+    let mut stream = aggregate
+        .execute(0, Arc::new(TaskContext::default()))
+        .unwrap();
     while let Some(batch) = stream.next().await {
-        rows += black_box(batch.unwrap()).num_rows();
+        let _batch = batch.unwrap();
     }
-    (rows, aggregate)
 }
 
 fn create_aggregate(

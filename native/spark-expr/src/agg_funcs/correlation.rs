@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
-use crate::agg_funcs::welford::{r2_value, ZeroDivisor};
+use crate::agg_funcs::welford::ZeroDivisor;
 use crate::{EvalMode, QueryContextMap};
 use arrow::compute::filter;
 use datafusion::common::{not_impl_err, Result, ScalarValue};
@@ -136,7 +136,7 @@ impl AggregateUDFImpl for Correlation {
         &self,
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        Ok(Box::new(CorrelationGroupsAccumulator::new_corr(
+        Ok(Box::new(CorrelationGroupsAccumulator::new(
             self.null_on_divide_by_zero,
             self.zero_divisor.clone(),
         )))
@@ -278,63 +278,33 @@ impl Accumulator for CorrelationAccumulator {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PearsonResult {
-    Corr {
-        null_on_divide_by_zero: bool,
-    },
-    RegrR2 {
-        constant_dependent_is_perfect_fit: bool,
-    },
-}
-
-/// Grouped correlation/R2 accumulator. Mirrors the per-row `CorrelationAccumulator`
+/// Grouped correlation accumulator. Mirrors the per-row `CorrelationAccumulator`
 /// composition: one population covariance + two population variance sub-
 /// accumulators for the per-column m2 values. Combined filter handles
 /// "skip rows where either input is null" without filtering `group_indices`.
 #[derive(Debug)]
-pub(super) struct CorrelationGroupsAccumulator {
+struct CorrelationGroupsAccumulator {
     covar: CovarianceGroupsAccumulator,
     var1: VarianceGroupsAccumulator,
     var2: VarianceGroupsAccumulator,
-    result: PearsonResult,
+    null_on_divide_by_zero: bool,
     zero_divisor: ZeroDivisor,
 }
 
 impl CorrelationGroupsAccumulator {
-    pub(super) fn new_corr(null_on_divide_by_zero: bool, zero_divisor: ZeroDivisor) -> Self {
-        Self::new(
-            PearsonResult::Corr {
-                null_on_divide_by_zero,
-            },
-            zero_divisor,
-        )
-    }
-
-    pub(super) fn new_regr_r2(
-        constant_dependent_is_perfect_fit: bool,
-        zero_divisor: ZeroDivisor,
-    ) -> Self {
-        Self::new(
-            PearsonResult::RegrR2 {
-                constant_dependent_is_perfect_fit,
-            },
-            zero_divisor,
-        )
-    }
-
-    fn new(result: PearsonResult, zero_divisor: ZeroDivisor) -> Self {
+    fn new(null_on_divide_by_zero: bool, zero_divisor: ZeroDivisor) -> Self {
         // Children run with StatsType::Population, which never hits the
         // count == 1 sample-divide-by-zero branch, so the children's
-        // null_on_divide_by_zero is dead code. The top-level result mode
-        // applies the appropriate degenerate-case rules.
+        // null_on_divide_by_zero is dead code. The top-level evaluate()
+        // applies the count <= 1 rule. Pass `false` to children to keep
+        // that intent explicit.
         Self {
             covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
             var1: VarianceGroupsAccumulator::new(StatsType::Population, false)
                 .with_pearson_update(),
             var2: VarianceGroupsAccumulator::new(StatsType::Population, false)
                 .with_pearson_update(),
-            result,
+            null_on_divide_by_zero,
             zero_divisor,
         }
     }
@@ -440,39 +410,35 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         let mut values = Vec::with_capacity(n);
         let mut validity = Vec::with_capacity(n);
         for i in 0..n {
-            let value = match self.result {
-                PearsonResult::Corr {
-                    null_on_divide_by_zero,
-                } => {
-                    if counts[i] == 0.0 {
-                        None
-                    } else if counts[i] == 1.0 {
-                        (!null_on_divide_by_zero).then_some(f64::NAN)
-                    } else {
-                        // Preserve Spark's raw-moment overflow/underflow behavior.
-                        let product = m2_1s[i] * m2_2s[i];
-                        if product == 0.0 {
-                            if let Some(error) = self.zero_divisor.error() {
-                                return Err(error);
-                            }
-                            None
-                        } else {
-                            Some(algo_consts[i] / product.sqrt())
-                        }
-                    }
+            let count = counts[i];
+            if count == 0.0 {
+                values.push(0.0);
+                validity.push(false);
+                continue;
+            }
+            if count == 1.0 {
+                if self.null_on_divide_by_zero {
+                    values.push(0.0);
+                    validity.push(false);
+                } else {
+                    values.push(f64::NAN);
+                    validity.push(true);
                 }
-                PearsonResult::RegrR2 {
-                    constant_dependent_is_perfect_fit,
-                } => r2_value(
-                    algo_consts[i],
-                    m2_1s[i],
-                    m2_2s[i],
-                    constant_dependent_is_perfect_fit,
-                    &self.zero_divisor,
-                )?,
-            };
-            values.push(value.unwrap_or_default());
-            validity.push(value.is_some());
+                continue;
+            }
+            // Match Spark's raw-moment product, including overflow, underflow
+            // and NaN from a zero moment paired with infinity.
+            let m2_product = m2_1s[i] * m2_2s[i];
+            if m2_product == 0.0 {
+                if let Some(error) = self.zero_divisor.error() {
+                    return Err(error);
+                }
+                values.push(0.0);
+                validity.push(false);
+                continue;
+            }
+            values.push(algo_consts[i] / m2_product.sqrt());
+            validity.push(true);
         }
 
         Ok(Arc::new(Float64Array::new(
@@ -528,7 +494,7 @@ mod groups_tests {
 
     fn acc(legacy: bool) -> CorrelationGroupsAccumulator {
         // null_on_divide_by_zero = !legacy
-        CorrelationGroupsAccumulator::new_corr(!legacy, zero_divisor(EvalMode::Legacy))
+        CorrelationGroupsAccumulator::new(!legacy, zero_divisor(EvalMode::Legacy))
     }
 
     fn evaluate(a: &mut CorrelationGroupsAccumulator) -> Vec<Option<f64>> {
@@ -569,7 +535,7 @@ mod groups_tests {
                         zero_divisor(EvalMode::Legacy),
                     )
                     .unwrap();
-                    let mut grouped = CorrelationGroupsAccumulator::new_corr(
+                    let mut grouped = CorrelationGroupsAccumulator::new(
                         null_on_divide_by_zero,
                         zero_divisor(EvalMode::Legacy),
                     );
@@ -586,7 +552,7 @@ mod groups_tests {
                         zero_divisor(EvalMode::Legacy),
                     )
                     .unwrap();
-                    let mut merged_grouped = CorrelationGroupsAccumulator::new_corr(
+                    let mut merged_grouped = CorrelationGroupsAccumulator::new(
                         null_on_divide_by_zero,
                         zero_divisor(EvalMode::Legacy),
                     );
@@ -614,8 +580,7 @@ mod groups_tests {
         ];
         let mut scalar =
             CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
-        let mut grouped =
-            CorrelationGroupsAccumulator::new_corr(true, zero_divisor(EvalMode::Legacy));
+        let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor(EvalMode::Legacy));
         scalar.update_batch(&input).unwrap();
         grouped.update_batch(&input, &[0, 0], None, 1).unwrap();
         let state = scalar
@@ -627,7 +592,7 @@ mod groups_tests {
         let mut merged_scalar =
             CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
         let mut merged_grouped =
-            CorrelationGroupsAccumulator::new_corr(true, zero_divisor(EvalMode::Legacy));
+            CorrelationGroupsAccumulator::new(true, zero_divisor(EvalMode::Legacy));
         merged_scalar.merge_batch(&state).unwrap();
         merged_grouped.merge_batch(&state, &[0], 1).unwrap();
         for result in [
@@ -647,7 +612,7 @@ mod groups_tests {
             let mut scalar =
                 CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
             let mut grouped =
-                CorrelationGroupsAccumulator::new_corr(true, zero_divisor(EvalMode::Legacy));
+                CorrelationGroupsAccumulator::new(true, zero_divisor(EvalMode::Legacy));
             let counts = if empty_first {
                 [0.0, 100.0]
             } else {
@@ -716,7 +681,7 @@ mod groups_tests {
             // count == 1 branch reads, does not matter.
             let mut scalar =
                 CorrelationAccumulator::try_new(true, zero_divisor(eval_mode)).unwrap();
-            let mut grouped = CorrelationGroupsAccumulator::new_corr(true, zero_divisor(eval_mode));
+            let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor(eval_mode));
             scalar.update_batch(&input(0..6)).unwrap();
             grouped
                 .update_batch(&input(0..6), &[0; 6], None, 1)
@@ -727,8 +692,7 @@ mod groups_tests {
             for ranges in [[0..3, 3..6], [3..6, 0..3]] {
                 let mut scalar =
                     CorrelationAccumulator::try_new(true, zero_divisor(eval_mode)).unwrap();
-                let mut grouped =
-                    CorrelationGroupsAccumulator::new_corr(true, zero_divisor(eval_mode));
+                let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor(eval_mode));
                 for range in ranges {
                     let state = partial_state(&input(range));
                     scalar.merge_batch(&state).unwrap();
@@ -768,7 +732,7 @@ mod groups_tests {
             Arc::new(Float64Array::from(vec![0.1, 0.1, 0.1])),
         ];
         let mut scalar = CorrelationAccumulator::try_new(true, zero_divisor.clone()).unwrap();
-        let mut grouped = CorrelationGroupsAccumulator::new_corr(true, zero_divisor);
+        let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor);
         scalar.update_batch(&input).unwrap();
         grouped.update_batch(&input, &[0, 0, 0], None, 1).unwrap();
         for result in [
@@ -792,7 +756,7 @@ mod groups_tests {
                 zero_divisor(EvalMode::Ansi),
             )
             .unwrap();
-            let mut grouped = CorrelationGroupsAccumulator::new_corr(
+            let mut grouped = CorrelationGroupsAccumulator::new(
                 null_on_divide_by_zero,
                 zero_divisor(EvalMode::Ansi),
             );
@@ -828,7 +792,7 @@ mod groups_tests {
                 zero_divisor(EvalMode::Ansi),
             )
             .unwrap();
-            let mut grouped = CorrelationGroupsAccumulator::new_corr(
+            let mut grouped = CorrelationGroupsAccumulator::new(
                 null_on_divide_by_zero,
                 zero_divisor(EvalMode::Ansi),
             );
@@ -846,7 +810,7 @@ mod groups_tests {
                 Arc::new(Float64Array::from(vec![1.0, 2.0, 1.0, 2.0])),
                 Arc::new(Float64Array::from(vec![2.0, 4.0, 3.0, 3.0])),
             ];
-            let mut grouped = CorrelationGroupsAccumulator::new_corr(
+            let mut grouped = CorrelationGroupsAccumulator::new(
                 null_on_divide_by_zero,
                 zero_divisor(EvalMode::Ansi),
             );

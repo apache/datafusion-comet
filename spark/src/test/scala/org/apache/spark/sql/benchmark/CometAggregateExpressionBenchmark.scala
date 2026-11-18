@@ -261,20 +261,9 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             highCardinalityAggregates ++ percentileAggregates ++ approxPercentileAggregates ++
             approxCountDistinctAggregates ++ maxMinByAggregates
 
-          require(
-            mainArgs.forall(name => allAggregates.exists(_.name == name)),
-            s"Unknown aggregate name in: ${mainArgs.mkString(", ")}")
-          // Optional names allow focused comparisons. With SPARK_GENERATE_BENCHMARK_FILES=1,
-          // a filtered run replaces the results file with only the selected aggregates.
-          allAggregates
-            .filter(config => mainArgs.isEmpty || mainArgs.contains(config.name))
-            .foreach { config =>
-              runExpressionBenchmark(
-                config.name,
-                v.toLong,
-                config.query,
-                config.extraCometConfigs)
-            }
+          allAggregates.foreach { config =>
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
+          }
         }
       }
     }

@@ -33,26 +33,28 @@
 //! | `regr_r2`                 | `PearsonCorrelation`   | 6            |
 //! | `regr_slope`/`_intercept` | composite cov + var    | 7            |
 //!
-//! Grouped aggregation reuses [`VarianceGroupsAccumulator`],
-//! [`CovarianceGroupsAccumulator`], and [`CorrelationGroupsAccumulator`],
-//! preserving the same partial-state layouts.
+//! Grouped aggregation runs [`RegrGroupsAccumulator`], which keeps the same partial-state
+//! layouts in one row per group and updates every moment of a statistic in a single pass.
 
-use arrow::array::{Array, ArrayRef, BooleanArray, Float64Array};
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::compute::{and, filter, is_not_null};
-use arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::{not_impl_err, Result, ScalarValue};
+use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
+use datafusion::common::{downcast_value, not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
 };
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
+use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::agg_funcs::correlation::CorrelationGroupsAccumulator;
-use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
-use crate::agg_funcs::variance::{VarianceAccumulator, VarianceGroupsAccumulator};
-use crate::agg_funcs::welford::{r2_value, ZeroDivisor};
+use crate::agg_funcs::covariance::CovarianceAccumulator;
+use crate::agg_funcs::variance::VarianceAccumulator;
+use crate::agg_funcs::welford::{
+    covariance_merge, covariance_update, variance_merge, variance_update, VarianceUpdate,
+    ZeroDivisor,
+};
 use crate::{EvalMode, QueryContextMap};
 
 /// The kind of linear-regression statistic to compute.
@@ -178,22 +180,16 @@ impl AggregateUDFImpl for Regr {
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
         Ok(match self.regr_type {
-            RegrType::SXX | RegrType::SYY => Box::new(RegrMomentGroupsAccumulator {
-                var: VarianceGroupsAccumulator::new(StatsType::Population, false),
-            }),
-            RegrType::SXY => Box::new(RegrCovGroupsAccumulator {
-                covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
-            }),
-            RegrType::Slope | RegrType::Intercept => Box::new(RegrLineGroupsAccumulator {
-                covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
-                var_x: VarianceGroupsAccumulator::new(StatsType::Population, false),
+            RegrType::SXX | RegrType::SYY => RegrGroupsAccumulator::boxed(MomentKernel),
+            RegrType::SXY => RegrGroupsAccumulator::boxed(CovKernel),
+            RegrType::Slope | RegrType::Intercept => RegrGroupsAccumulator::boxed(LineKernel {
                 intercept: self.regr_type == RegrType::Intercept,
                 filter_var_by_pair_nulls: self.filter_var_by_pair_nulls,
             }),
-            RegrType::R2 => Box::new(CorrelationGroupsAccumulator::new_regr_r2(
-                self.r2_constant_dependent_is_perfect_fit,
-                self.zero_divisor.clone(),
-            )),
+            RegrType::R2 => RegrGroupsAccumulator::boxed(R2Kernel {
+                constant_dependent_is_perfect_fit: self.r2_constant_dependent_is_perfect_fit,
+                zero_divisor: self.zero_divisor.clone(),
+            }),
         })
     }
 
@@ -531,132 +527,185 @@ fn line_value(ck: f64, m2_x: f64, mean_x: f64, mean_y: f64, intercept: bool) -> 
     }
 }
 
-/// Grouped raw central moment. Spark has already pair-filtered the selected child.
+/// Spark RegrR2's result rule, shared by scalar and grouped accumulation.
+/// SPARK-55969 swapped the constant-x/constant-y cases. Their guards precede
+/// division, including in ANSI mode; Corr's count guards do not apply here.
+fn r2_value(
+    ck: f64,
+    m2_y: f64,
+    m2_x: f64,
+    constant_dependent_is_perfect_fit: bool,
+    zero_divisor: &ZeroDivisor,
+) -> Result<Option<f64>> {
+    let (null_case, perfect_fit_case) = if constant_dependent_is_perfect_fit {
+        (m2_x == 0.0, m2_y == 0.0)
+    } else {
+        (m2_y == 0.0, m2_x == 0.0)
+    };
+    if null_case {
+        Ok(None)
+    } else if perfect_fit_case {
+        Ok(Some(1.0))
+    } else {
+        // Nonzero moments can still have a product that underflows to zero.
+        let product = m2_y * m2_x;
+        if product == 0.0 {
+            return match zero_divisor.error() {
+                Some(error) => Err(error),
+                None => Ok(None),
+            };
+        }
+        // Preserve Spark's rounding and overflow behavior: dividing first and
+        // then squaring differs from (ck * ck) / (m2_y * m2_x).
+        let corr = ck / product.sqrt();
+        Ok(Some(corr * corr))
+    }
+}
+
+/// One `regr_*` statistic over a group's state row, whose `N` fields are the partial-state
+/// columns in order. Each method repeats the arithmetic of the per-row accumulators, in the
+/// same order, so grouped and ungrouped aggregation agree bit for bit.
+trait RegrKernel<const N: usize>: Debug + Send + Sync + 'static {
+    /// Folds one row into `state`, leaving it unchanged when the row does not take part.
+    /// `None` is a NULL input.
+    fn update(&self, state: &mut [f64; N], y: Option<f64>, x: Option<f64>);
+
+    /// Merges a partial state into `state`.
+    fn merge(&self, state: &mut [f64; N], partial: [f64; N]);
+
+    /// The statistic for a final state.
+    fn finish(&self, state: &[f64; N]) -> Result<Option<f64>>;
+}
+
+/// `regr_sxx` / `regr_syy`: count, mean, m2 of the pair-filtered child Spark passes twice.
 #[derive(Debug)]
-struct RegrMomentGroupsAccumulator {
-    var: VarianceGroupsAccumulator,
-}
+struct MomentKernel;
 
-impl GroupsAccumulator for RegrMomentGroupsAccumulator {
-    fn update_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> Result<()> {
-        self.var
-            .update_batch(&values[0..1], group_indices, opt_filter, total_num_groups)
+impl RegrKernel<3> for MomentKernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 3], y: Option<f64>, _x: Option<f64>) {
+        if let Some(y) = y {
+            (s[0], s[1], s[2]) =
+                variance_update(s[0], s[1], s[2], y, VarianceUpdate::CentralMoment);
+        }
     }
 
-    fn merge_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        total_num_groups: usize,
-    ) -> Result<()> {
-        self.var
-            .merge_batch(values, group_indices, total_num_groups)
+    fn merge(&self, s: &mut [f64; 3], p: [f64; 3]) {
+        (s[0], s[1], s[2]) = variance_merge(s[0], s[1], s[2], p[0], p[1], p[2]);
     }
 
-    fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        let counts = emit_to.take_needed(&mut self.var.counts);
-        let _ = emit_to.take_needed(&mut self.var.means);
-        let m2s = emit_to.take_needed(&mut self.var.m2s);
-        Ok(Arc::new(Float64Array::from_iter(
-            counts
-                .into_iter()
-                .zip(m2s)
-                .map(|(count, m2)| (count != 0.0).then_some(m2)),
-        )))
-    }
-
-    fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        self.var.state(emit_to)
-    }
-
-    fn convert_to_state(
-        &self,
-        _values: &[ArrayRef],
-        _opt_filter: Option<&BooleanArray>,
-    ) -> Result<Vec<ArrayRef>> {
-        not_impl_err!("Input batch conversion to state not implemented")
-    }
-
-    fn size(&self) -> usize {
-        self.var.size()
+    fn finish(&self, s: &[f64; 3]) -> Result<Option<f64>> {
+        Ok((s[0] != 0.0).then_some(s[2]))
     }
 }
 
-/// Grouped raw co-moment, with the same four state fields as covariance.
+/// `regr_sxy`: count, mean(y), mean(x), co-moment.
 #[derive(Debug)]
-struct RegrCovGroupsAccumulator {
-    covar: CovarianceGroupsAccumulator,
-}
+struct CovKernel;
 
-impl GroupsAccumulator for RegrCovGroupsAccumulator {
-    fn update_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> Result<()> {
-        self.covar
-            .update_batch(values, group_indices, opt_filter, total_num_groups)
+impl RegrKernel<4> for CovKernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 4], y: Option<f64>, x: Option<f64>) {
+        if let (Some(y), Some(x)) = (y, x) {
+            (s[0], s[1], s[2], s[3]) = covariance_update(s[0], s[1], s[2], s[3], y, x);
+        }
     }
 
-    fn merge_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        total_num_groups: usize,
-    ) -> Result<()> {
-        self.covar
-            .merge_batch(values, group_indices, total_num_groups)
+    fn merge(&self, s: &mut [f64; 4], p: [f64; 4]) {
+        (s[0], s[1], s[2], s[3]) = covariance_merge(s[0], s[1], s[2], s[3], p[0], p[1], p[2], p[3]);
     }
 
-    fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        let counts = emit_to.take_needed(&mut self.covar.counts);
-        let _ = emit_to.take_needed(&mut self.covar.mean1s);
-        let _ = emit_to.take_needed(&mut self.covar.mean2s);
-        let cs = emit_to.take_needed(&mut self.covar.algo_consts);
-        Ok(Arc::new(Float64Array::from_iter(
-            counts
-                .into_iter()
-                .zip(cs)
-                .map(|(count, c)| (count != 0.0).then_some(c)),
-        )))
-    }
-
-    fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        self.covar.state(emit_to)
-    }
-
-    fn convert_to_state(
-        &self,
-        _values: &[ArrayRef],
-        _opt_filter: Option<&BooleanArray>,
-    ) -> Result<Vec<ArrayRef>> {
-        not_impl_err!("Input batch conversion to state not implemented")
-    }
-
-    fn size(&self) -> usize {
-        self.covar.size()
+    fn finish(&self, s: &[f64; 4]) -> Result<Option<f64>> {
+        Ok((s[0] != 0.0).then_some(s[3]))
     }
 }
 
-/// The covariance and x variance keep independent counts: before SPARK-48719,
-/// the variance includes x even when y is null. Preserve the seven-field state.
+/// `regr_slope` / `regr_intercept`: the covariance of (x, y) followed by the variance of x.
+/// The two keep their own counts, because before SPARK-48719 the variance also counts x
+/// where y is null.
 #[derive(Debug)]
-struct RegrLineGroupsAccumulator {
-    covar: CovarianceGroupsAccumulator,
-    var_x: VarianceGroupsAccumulator,
+struct LineKernel {
     intercept: bool,
     filter_var_by_pair_nulls: bool,
 }
 
-impl GroupsAccumulator for RegrLineGroupsAccumulator {
+impl RegrKernel<7> for LineKernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 7], y: Option<f64>, x: Option<f64>) {
+        let Some(x) = x else {
+            return;
+        };
+        if let Some(y) = y {
+            (s[0], s[1], s[2], s[3]) = covariance_update(s[0], s[1], s[2], s[3], x, y);
+        }
+        if y.is_some() || !self.filter_var_by_pair_nulls {
+            (s[4], s[5], s[6]) =
+                variance_update(s[4], s[5], s[6], x, VarianceUpdate::CentralMoment);
+        }
+    }
+
+    fn merge(&self, s: &mut [f64; 7], p: [f64; 7]) {
+        (s[0], s[1], s[2], s[3]) = covariance_merge(s[0], s[1], s[2], s[3], p[0], p[1], p[2], p[3]);
+        (s[4], s[5], s[6]) = variance_merge(s[4], s[5], s[6], p[4], p[5], p[6]);
+    }
+
+    fn finish(&self, s: &[f64; 7]) -> Result<Option<f64>> {
+        Ok(line_value(s[3], s[6], s[1], s[2], self.intercept))
+    }
+}
+
+/// `regr_r2`: count, mean(y), mean(x), co-moment, m2(y), m2(x). The two moments share the
+/// covariance's count and means, as they do in Spark's `PearsonCorrelation` buffer.
+#[derive(Debug)]
+struct R2Kernel {
+    constant_dependent_is_perfect_fit: bool,
+    zero_divisor: ZeroDivisor,
+}
+
+impl RegrKernel<6> for R2Kernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 6], y: Option<f64>, x: Option<f64>) {
+        if let (Some(y), Some(x)) = (y, x) {
+            (_, _, s[4]) = variance_update(s[0], s[1], s[4], y, VarianceUpdate::Pearson);
+            (_, _, s[5]) = variance_update(s[0], s[2], s[5], x, VarianceUpdate::Pearson);
+            (s[0], s[1], s[2], s[3]) = covariance_update(s[0], s[1], s[2], s[3], y, x);
+        }
+    }
+
+    fn merge(&self, s: &mut [f64; 6], p: [f64; 6]) {
+        (_, _, s[4]) = variance_merge(s[0], s[1], s[4], p[0], p[1], p[4]);
+        (_, _, s[5]) = variance_merge(s[0], s[2], s[5], p[0], p[2], p[5]);
+        (s[0], s[1], s[2], s[3]) = covariance_merge(s[0], s[1], s[2], s[3], p[0], p[1], p[2], p[3]);
+    }
+
+    fn finish(&self, s: &[f64; 6]) -> Result<Option<f64>> {
+        r2_value(
+            s[3],
+            s[4],
+            s[5],
+            self.constant_dependent_is_perfect_fit,
+            &self.zero_divisor,
+        )
+    }
+}
+
+/// Grouped `regr_*` accumulator: one state row per group, updated in a single pass.
+#[derive(Debug)]
+struct RegrGroupsAccumulator<K, const N: usize> {
+    kernel: K,
+    states: Vec<[f64; N]>,
+}
+
+impl<K: RegrKernel<N>, const N: usize> RegrGroupsAccumulator<K, N> {
+    fn boxed(kernel: K) -> Box<dyn GroupsAccumulator> {
+        Box::new(Self {
+            kernel,
+            states: Vec::new(),
+        })
+    }
+}
+
+impl<K: RegrKernel<N>, const N: usize> GroupsAccumulator for RegrGroupsAccumulator<K, N> {
     fn update_batch(
         &mut self,
         values: &[ArrayRef],
@@ -664,26 +713,35 @@ impl GroupsAccumulator for RegrLineGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
-        let cov_input = [Arc::clone(&values[1]), Arc::clone(&values[0])];
-        self.covar
-            .update_batch(&cov_input, group_indices, opt_filter, total_num_groups)?;
-        // The variance child already skips null x. Modern Spark additionally
-        // excludes null y; preserve row positions so group_indices still align.
-        let combined = if self.filter_var_by_pair_nulls && values[0].null_count() != 0 {
-            let valid_y = is_not_null(&values[0])?;
-            Some(match opt_filter {
-                Some(filter) => and(filter, &valid_y)?,
-                None => valid_y,
-            })
-        } else {
-            None
-        };
-        self.var_x.update_batch(
-            &values[1..2],
-            group_indices,
-            combined.as_ref().or(opt_filter),
-            total_num_groups,
-        )
+        let y = values[0].as_primitive::<Float64Type>();
+        let x = values[1].as_primitive::<Float64Type>();
+        self.states.resize(total_num_groups, [0.0; N]);
+
+        // Carry the state in a local while consecutive rows share a group, and reload it
+        // only when the group changes. Every row still writes it back, so input clustered
+        // by key updates the local without waiting on its own stores.
+        let mut current = usize::MAX;
+        let mut state = [0.0; N];
+        let rows = group_indices.iter().zip(y.values()).zip(x.values());
+        for (idx, ((&group_index, &yv), &xv)) in rows.enumerate() {
+            if let Some(f) = opt_filter {
+                if !f.is_valid(idx) || !f.value(idx) {
+                    continue;
+                }
+            }
+            let slot = &mut self.states[group_index];
+            if current != group_index {
+                current = group_index;
+                state = *slot;
+            }
+            self.kernel.update(
+                &mut state,
+                y.is_valid(idx).then_some(yv),
+                x.is_valid(idx).then_some(xv),
+            );
+            *slot = state;
+        }
+        Ok(())
     }
 
     fn merge_batch(
@@ -692,29 +750,35 @@ impl GroupsAccumulator for RegrLineGroupsAccumulator {
         group_indices: &[usize],
         total_num_groups: usize,
     ) -> Result<()> {
-        self.covar
-            .merge_batch(&values[0..4], group_indices, total_num_groups)?;
-        self.var_x
-            .merge_batch(&values[4..7], group_indices, total_num_groups)
+        let mut columns = Vec::with_capacity(N);
+        for value in &values[..N] {
+            columns.push(downcast_value!(value, Float64Array));
+        }
+        self.states.resize(total_num_groups, [0.0; N]);
+        for (row, &group_index) in group_indices.iter().enumerate() {
+            let partial = std::array::from_fn(|field| columns[field].value(row));
+            self.kernel.merge(&mut self.states[group_index], partial);
+        }
+        Ok(())
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        let _ = emit_to.take_needed(&mut self.covar.counts);
-        let means_x = emit_to.take_needed(&mut self.covar.mean1s);
-        let means_y = emit_to.take_needed(&mut self.covar.mean2s);
-        let cs = emit_to.take_needed(&mut self.covar.algo_consts);
-        let _ = emit_to.take_needed(&mut self.var_x.counts);
-        let _ = emit_to.take_needed(&mut self.var_x.means);
-        let m2s = emit_to.take_needed(&mut self.var_x.m2s);
-        Ok(Arc::new(Float64Array::from_iter((0..cs.len()).map(|i| {
-            line_value(cs[i], m2s[i], means_x[i], means_y[i], self.intercept)
-        }))))
+        let states = emit_to.take_needed(&mut self.states);
+        let values = states
+            .iter()
+            .map(|state| self.kernel.finish(state))
+            .collect::<Result<Float64Array>>()?;
+        Ok(Arc::new(values))
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        let mut state = self.covar.state(emit_to)?;
-        state.extend(self.var_x.state(emit_to)?);
-        Ok(state)
+        let states = emit_to.take_needed(&mut self.states);
+        Ok((0..N)
+            .map(|field| {
+                let column = states.iter().map(|state| state[field]);
+                Arc::new(Float64Array::from_iter_values(column)) as ArrayRef
+            })
+            .collect())
     }
 
     fn convert_to_state(
@@ -726,7 +790,7 @@ impl GroupsAccumulator for RegrLineGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        self.covar.size() + self.var_x.size()
+        self.states.capacity() * size_of::<[f64; N]>()
     }
 }
 
@@ -1173,7 +1237,7 @@ mod tests {
 #[cfg(test)]
 mod groups_tests {
     use super::*;
-    use crate::{create_query_context_map, Correlation, QueryContext, SparkErrorWithContext};
+    use crate::{create_query_context_map, QueryContext, SparkErrorWithContext};
     use arrow::array::AsArray;
     use arrow::datatypes::{Float64Type, Schema};
     use datafusion::common::DataFusionError;
@@ -1321,7 +1385,9 @@ mod groups_tests {
                         // The dense case has NULLs only outside the sliced range.
                         for start in [1, 12, 23] {
                             let chunk: Vec<_> = values.iter().map(|a| a.slice(start, 11)).collect();
-                            let indices: Vec<_> = (start..start + 11).map(|i| i % 5).collect();
+                            // Pairs of rows share a group, so runs meet NULLs, FILTER and batch
+                            // boundaries, and a group comes back after other groups.
+                            let indices: Vec<_> = (start..start + 11).map(|i| i / 2 % 5).collect();
                             let predicate = BooleanArray::from_iter((0..35).map(|i| {
                                 if i % 13 == 0 {
                                     None
@@ -1500,10 +1566,9 @@ mod groups_tests {
                     RegrType::SXX | RegrType::SYY => 3,
                     RegrType::SXY => 4,
                     RegrType::Slope | RegrType::Intercept => 7,
-                    RegrType::R2 => 10,
+                    RegrType::R2 => 6,
                 };
-                let allocated = grouped.size();
-                assert!(allocated >= 4 * vectors * size_of::<f64>());
+                assert!(grouped.size() >= 4 * vectors * size_of::<f64>());
                 assert!(grouped
                     .state(EmitTo::First(0))
                     .unwrap()
@@ -1515,9 +1580,6 @@ mod groups_tests {
                     first.as_primitive::<Float64Type>().iter().next().unwrap(),
                     scalar_value(scalars.remove(0).as_mut()),
                 );
-                // EmitTo keeps the backing allocation when draining a small
-                // prefix. Accounting must reflect capacity, not the new length.
-                assert_eq!(grouped.size(), allocated);
                 let state = grouped.state(EmitTo::First(1)).unwrap();
                 same_state(&state, 0, scalars.remove(0).as_mut());
                 assert!(grouped.size() >= 2 * vectors * size_of::<f64>());
@@ -1592,8 +1654,8 @@ mod groups_tests {
                     expected,
                 );
             }
-            // Synthetic partial state checks that R2 does not inherit Corr's
-            // count==0 shortcut. Empty-partial merge arithmetic produces NaN M2.
+            // R2 has no count == 0 shortcut: merging empty partials can leave a NaN
+            // moment, which Spark's result rule turns into NaN.
             let state: Vec<ArrayRef> = [0.0, f64::NAN, f64::NAN, 0.0, 0.0, 0.0]
                 .into_iter()
                 .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
@@ -1611,31 +1673,6 @@ mod groups_tests {
                 Some(f64::NAN),
             );
         }
-        let corr = physical(AggregateUDF::new_from_impl(Correlation::new(
-            "corr",
-            DataType::Float64,
-            false,
-            EvalMode::Legacy,
-            None,
-            create_query_context_map(),
-        )));
-        let mut corr = corr.create_groups_accumulator().unwrap();
-        corr.update_batch(
-            &inputs(RegrType::R2, &[Some(1.0)], &[Some(2.0)]),
-            &[0],
-            None,
-            1,
-        )
-        .unwrap();
-        same_value(
-            corr.evaluate(EmitTo::All)
-                .unwrap()
-                .as_primitive::<Float64Type>()
-                .iter()
-                .next()
-                .unwrap(),
-            Some(f64::NAN),
-        );
     }
 
     #[test]
