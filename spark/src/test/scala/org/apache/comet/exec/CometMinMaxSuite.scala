@@ -41,9 +41,12 @@ class CometMinMaxSuite extends CometTestBase {
   private def assertAttachments(plan: SparkPlan, expected: Long): Unit = {
     val nodes = aggregates(plan)
     assert(nodes.nonEmpty, s"Expected native aggregation:\n$plan")
-    assert(nodes.filter(_.modes == Seq(Partial)).map(_.metrics(attached).value).sum == expected)
-    assert(nodes.filterNot(_.modes == Seq(Partial)).forall(_.metrics(attached).value == 0L))
-    assert(nodes.forall(_.metrics(skipped).value == 0L))
+    val (enabled, disabled) = nodes.partition(_.dynamicFilterEnabled)
+    assert(enabled.forall(node => node.groupingExpressions.isEmpty && node.modes == Seq(Partial)))
+    assert(enabled.map(_.metrics(attached).value).sum == expected)
+    assert(enabled.forall(_.metrics(skipped).value == 0L))
+    assert(disabled.forall(node =>
+      !node.metrics.contains(attached) && !node.metrics.contains(skipped)))
   }
 
   test("MIN/MAX filtering is opt-in and captured in the native aggregate plan") {
@@ -56,16 +59,22 @@ class CometMinMaxSuite extends CometTestBase {
             val (_, plan) = checkSparkAnswerAndOperator(
               sql("SELECT MIN(_1) + 1 FROM minmax_input"),
               Seq(classOf[CometHashAggregateExec]))
-            assert(aggregates(plan).forall(_.dynamicFilterEnabled == enabled))
-            assert(aggregates(plan).find(_.modes == Seq(Final)).get.nativeOp.hasProjection)
+            val finalAggregate = aggregates(plan).find(_.modes == Seq(Final)).get
+            assert(finalAggregate.nativeOp.hasProjection)
+            assert(!finalAggregate.dynamicFilterEnabled)
+            assert(!finalAggregate.metrics.contains(attached))
+            assert(!finalAggregate.metrics.contains(skipped))
             val partial = collect(plan) {
               case aggregate: CometHashAggregateExec if aggregate.modes == Seq(Partial) =>
                 aggregate
             }.head
             assert(partial.nativeOp.getHashAgg.getDynamicFilterEnabled == enabled)
+            assert(partial.metrics.contains(attached) == enabled)
+            assert(partial.metrics.contains(skipped) == enabled)
             withSQLConf(
               CometConf.COMET_EXEC_AGGREGATE_DYNAMIC_FILTER_ENABLED.key -> (!enabled).toString) {
-              assert(aggregates(plan).forall(_.dynamicFilterEnabled == enabled))
+              assert(partial.dynamicFilterEnabled == enabled)
+              assert(!finalAggregate.dynamicFilterEnabled)
             }
             val changed = partial.nativeOp.toBuilder
               .setHashAgg(partial.nativeOp.getHashAgg.toBuilder.setDynamicFilterEnabled(!enabled))
@@ -192,7 +201,9 @@ class CometMinMaxSuite extends CometTestBase {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       withParquetTable((0 until 100).map(i => (i - 50, i % 2)), "minmax_input") {
         val queries = Seq(
+          "SELECT DISTINCT _2 FROM minmax_input",
           "SELECT MIN(_1), MAX(_1) FROM minmax_input",
+          "SELECT MIN(_1), COUNT(DISTINCT _2) FROM minmax_input",
           "SELECT _2, MIN(_1) FROM minmax_input GROUP BY _2",
           "SELECT MIN(_1 + 1) FROM minmax_input",
           "SELECT MIN(CAST(_1 AS BIGINT)) FROM minmax_input",
