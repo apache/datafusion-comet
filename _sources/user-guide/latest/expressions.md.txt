@@ -562,7 +562,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `ascii` | ✅ | Native |  |
-| `base64` | ✅ | Native |  |
+| `base64` | ✅ | — |  |
 | `bit_length` | ✅ | Native |  |
 | `btrim` | ✅ | — |  |
 | `char` | ✅ | Native |  |
