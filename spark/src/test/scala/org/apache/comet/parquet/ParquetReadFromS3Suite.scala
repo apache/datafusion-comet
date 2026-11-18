@@ -41,7 +41,6 @@ import org.apache.spark.sql.functions.{col, expr, max, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometS3TestBase}
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
@@ -286,7 +285,6 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
 
   test("dynamic partition pruning over a table whose partitions span two buckets") {
     // AQE dynamic partition pruning falls back to Spark's scan before Spark 3.5.
-    assume(isSpark35Plus)
     createBucketIfNotExists(secondBucketName)
     withTable("mb_fact", "mb_dim") {
       sql(s"""CREATE TABLE mb_fact (id INT, p STRING) USING parquet PARTITIONED BY (p)

@@ -252,6 +252,16 @@ impl PhysicalPlanner {
         }
     }
 
+    /// This planner's settings for `partition`, with its own query context registry, as
+    /// `ExecutionContext::planner` would create it. The SQL text pool is shared.
+    pub(crate) fn for_partition(&self, partition: i32) -> Self {
+        Self {
+            partition,
+            query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            ..self.clone()
+        }
+    }
+
     /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
     /// called with the *root* operator: the JVM only populates the pool there, and
     /// `QueryContext.sql_text_idx` values are indices into it.
@@ -877,7 +887,7 @@ impl PhysicalPlanner {
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
                 // Only fuse when the Cast target type matches the CheckOverflow output type.
-                // Spark 3.4+ does not currently emit this shape, but keep its errors typed and
+                // Spark 3.5+ does not currently emit this shape, but keep its errors typed and
                 // contextualized in case a future serializer makes the fusion reachable.
                 if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (

@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.DecimalType
  *
  * Spark itself stopped wrapping these in `CheckOverflow` in 3.4 (SPARK-39316), but Comet's native
  * `CheckOverflow` only validates precision (it does not rescale), so the target type must equal
- * the child's actual `dataType`. Always using `expr.dataType` is the safe choice: on Spark 3.4 -
+ * the child's actual `dataType`. Always using `expr.dataType` is the safe choice: on Spark 3.5 -
  * 4.0 it equals the value the rule would otherwise recompute from `SQLConf`, and on Spark 4.1+
  * (SPARK-53968) it preserves the per-expression `allowDecimalPrecisionLoss` captured at view
  * creation time. Recomputing from the live `SQLConf` would re-label a stored DEC(38, 17) result

@@ -59,7 +59,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.{CometParquetUtils, HadoopFileOutput}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
@@ -2586,11 +2586,11 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
     // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
     // CodegenFallback expression, or when the output or an input exceeds its field limit. The
-    // NO_CODEGEN factory mode turns whole-stage codegen off only from Spark 3.5 (SPARK-44236).
+    // NO_CODEGEN factory mode also turns whole-stage codegen off (SPARK-44236).
     val codegenOff = !op.conf.wholeStageEnabled ||
-      (isSpark35Plus && op.conf
+      op.conf
         .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
-        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)) ||
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString) ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
       op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||

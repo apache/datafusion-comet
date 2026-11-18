@@ -26,7 +26,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -95,7 +94,6 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("width_bucket") {
-    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .createDataFrame(
@@ -108,7 +106,6 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("width_bucket - edge cases") {
-    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .createDataFrame(Seq(
@@ -125,7 +122,6 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("width_bucket - NaN values") {
-    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .createDataFrame(
@@ -137,7 +133,6 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("width_bucket - with range data") {
-    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .range(10)

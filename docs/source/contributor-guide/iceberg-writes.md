@@ -190,8 +190,8 @@ The gate has these properties, and a new rule has to keep them:
 Most rules are pinned by `CometIcebergWriteDetectionSuite`, and the row lineage rule by
 `CometIcebergWriteActionSuite`. Add a case to the detection suite for any new rule, for
 both the accepted and the declined side. Update the eligibility table in the user guide in the same
-change. Whether each existing restriction is permanent is tracked in
-[#5643](https://github.com/apache/datafusion-comet/issues/5643).
+change, and the user guide's "Plans for each fallback" lists, which record whether each rule is
+planned to be lifted, waiting on another project, or not planned.
 
 ## What Crosses the Boundary
 
@@ -294,7 +294,10 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   held rows then go through `RowPacer`, so the roll grid does not move.
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
-  mismatch fails the task instead of writing NULLs.
+  mismatch fails the task instead of writing NULLs. It first drops top-level `unknown` columns,
+  whose fields `parse_iceberg_schema` prunes. The gate declines a partition field sourced from an
+  `unknown` column: the partition calculator resolves sources by field id in the pruned schema and
+  would fail with `Field not found`.
 - **Deterministic output order.** `FanoutPartitions`, Comet's version of iceberg-rust's
   `FanoutWriter`, closes its files in an order that depends on how the rows arrived and on which
   partitions it closed early, so the fanout path sorts its `DataFile`s by path before returning them
