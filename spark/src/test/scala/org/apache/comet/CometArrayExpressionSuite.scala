@@ -495,6 +495,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("folded array literals backed by UnsafeArrayData") {
+    // sequence() folds to an UnsafeArrayData literal, which has no backing array,
+    // so serializing it through ArrayData.array raised UNSUPPORTED_CALL at planning time.
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        checkSparkAnswerAndOperator(sql("SELECT sequence(1, 5), _2 FROM t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(sequence(1, 5), _2) FROM t1"))
+        // A nested literal whose inner arrays are UnsafeArrayData.
+        checkSparkAnswerAndOperator(
+          sql("SELECT array(sequence(1, 3), sequence(4, 5)), _2 FROM t1"))
+      }
+    }
+  }
+
   test("array_contains - test all types (convert from Parquet)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
