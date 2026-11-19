@@ -69,6 +69,20 @@ broadcast again. Each task still builds its own hash table.
 Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
 itself.
 
+#### Broadcast compression
+
+Comet compresses the Arrow IPC batches of a broadcast with Spark's `spark.io.compression.codec`. When
+`spark.broadcast.compress` is `true`, which is Spark's default, Spark compresses the broadcast again with the same
+codec, and executors decompress it twice. The second pass runs on the driver before the join can start, and it saves few
+bytes because the data is already compressed: up to about 10% when the build side has sorted or sequential columns,
+such as surrogate keys, and 0 to 6% otherwise. Its cost grows with the size of the broadcast and with the codec level.
+In local tests with broadcasts of 270 to 460 MiB, it added about 0.2 seconds of driver time and up to 0.15 seconds on
+each executor with `lz4`, and about 0.85 seconds of driver time with `zstd` at level 5.
+
+For queries that broadcast large build sides, consider setting `spark.broadcast.compress=false`. The setting applies to
+every broadcast in the application, so broadcasts that Comet does not create, such as the build side of a join that
+runs in Spark, are sent uncompressed too.
+
 ### Join Runtime Filters
 
 Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime

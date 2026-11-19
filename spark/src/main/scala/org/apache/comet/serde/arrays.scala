@@ -25,7 +25,6 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BinaryExpression, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GetStructField, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -286,7 +285,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else {
       expr.ascendingOrder match {
-        // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
+        // Spark 3.5 requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
         // foldable boolean. Accept both; convert evaluates the foldable expression.
         case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
         case other =>
@@ -440,13 +439,13 @@ object CometArraysOverlap
     ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
 
   /**
-   * The native variant for a Spark version. Where ArraySetSupport.normalizesFloats holds, Spark
-   * normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and the
-   * `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * The native variant for a Spark version. Where SparkFixes.arraySetFunctionsNormalizeFloats
+   * holds, Spark normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and
+   * the `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
    * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
    */
   def nativeFunction(version: String): String =
-    if (ArraySetSupport.normalizesFloats(version)) "spark_arrays_overlap_normalized"
+    if (SparkFixes.arraySetFunctionsNormalizeFloats(version)) "spark_arrays_overlap_normalized"
     else "spark_arrays_overlap"
 
   override def convert(
@@ -709,22 +708,8 @@ private[comet] object ArraySetSupport {
       "4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions " +
       "(SPARK-54918, SPARK-59602)"
 
-  // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
-  // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
-  // and 0.0, and every NaN, as one value at any depth, which the spark_ variants match. Earlier
-  // releases keep -0.0 and 0.0 apart in a flat array. Both changes cover arrays_overlap too (see
-  // CometArraysOverlap.nativeFunction). The check reads the version rather than a
-  // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
-  // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
-  def normalizesFloats(version: String): Boolean =
-    Utils.majorMinorPatchVersion(version).exists {
-      case (4, 0, patch) => patch >= 5
-      case (4, 1, patch) => patch >= 4
-      case (major, minor, _) => major > 4 || (major == 4 && minor >= 2)
-    }
-
   def supportLevel(dataType: DataType): SupportLevel = {
-    if (hasFloats(dataType) && !normalizesFloats(SPARK_VERSION)) {
+    if (hasFloats(dataType) && !SparkFixes.arraySetFunctionsNormalizeFloats(SPARK_VERSION)) {
       Incompatible(Some(floatingPointReason))
     } else {
       Compatible()
@@ -843,7 +828,14 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding)
+    // Spark narrows any integral ordinal to an int; ListExtract reads an Int32 ordinal.
+    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding).flatMap { ordinal =>
+      if (expr.ordinal.dataType == IntegerType) {
+        Some(ordinal)
+      } else {
+        CometCast.castToProto(expr, None, IntegerType, ordinal, CometEvalMode.LEGACY)
+      }
+    }
 
     if (childExpr.isDefined && ordinalExpr.isDefined) {
       val listExtractBuilder = ExprOuterClass.ListExtract
@@ -1309,16 +1301,24 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.child, inputs, binding)
+
+    // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
+    // a NULL child must give NULL. The guard serializes the child twice, which would run an
+    // expensive child such as a Scala UDF twice per row.
+    if (expr.legacySizeOfNull || !expr.child.nullable) {
+      return scalarFunctionExprToProto("size", arrayExprProto)
+    }
+
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, IntegerType), inputs, binding)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExprProto)
         .addThen(sizeScalarExprProto)
-        .setElseExpr(emptyLiteralExprProto)
+        .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
@@ -1336,11 +1336,6 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-  }
-
-  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
-    val value = if (legacySizeOfNull) -1 else null
-    exprToProtoInternal(Literal(value, IntegerType), Seq.empty, binding = true)
   }
 
 }

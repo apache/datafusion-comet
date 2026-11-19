@@ -33,6 +33,7 @@ jobs:
   benchmark-check:
     name: Benchmark Compile & Lint Check
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
     steps:

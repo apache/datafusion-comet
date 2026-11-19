@@ -444,7 +444,7 @@ private[rules] object MakeDateEvaluation {
       val rebuilt = node match {
         case _: RowToColumnarExec | _: CometSparkToColumnarExec if childReason.isDefined =>
           children.head
-        case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec
+        case _: ColumnarToRowExec | _: CometColumnarToRowExec
             if childReason.isDefined && !children.head.supportsColumnar =>
           children.head
         case native: CometExec if fallbackReason.isDefined || children != node.children =>

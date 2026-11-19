@@ -27,7 +27,7 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometNativeScanExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
 import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometWindowExecSuite extends CometTestBase {
 
@@ -126,8 +126,6 @@ class CometWindowExecSuite extends CometTestBase {
     test(
       s"window group limit: $orderColumn NaN and signed zero peers at the cutoff " +
         s"(strictFloatingPoint=$strictFloatingPoint)") {
-      assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
-
       val positiveFloatNaN = java.lang.Float.intBitsToFloat(0x7fc00001)
       val negativeFloatNaN = java.lang.Float.intBitsToFloat(0xffc00002)
       val positiveDoubleNaN = java.lang.Double.longBitsToDouble(0x7ff8000000000001L)
@@ -208,7 +206,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window group limit: floating-point values nested in the order key") {
-    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
     // The native RANK and DENSE_RANK find ties by byte equality, on order keys that the native
     // planner has normalized, nested floats included. So [-0.0] and [0.0] are peers, and the
     // cutoff keeps both rows, as Spark does (#5507). These keys, read back from Parquet, can hold
@@ -269,7 +266,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window group limit: nested null peers with non-default root null ordering") {
-    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
@@ -340,8 +336,6 @@ class CometWindowExecSuite extends CometTestBase {
   } {
     test(
       s"window: floating partition keys ($partitionColumn, $function, group limit=$groupLimit)") {
-      assume(!groupLimit || isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
-
       val partitionKeys = Seq(
         (Some(1.0f), Some(1.0d)),
         (Some(2.0f), Some(2.0d)),
@@ -2070,6 +2064,42 @@ class CometWindowExecSuite extends CometTestBase {
           FROM date_edge
         """)
         checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("window over a sorted bucketed table with empty buckets runs natively") {
+    // With legacy bucketed output ordering on, Spark plans no sort below the window. Two keys fill
+    // at most two of the eight buckets, and each empty one has to declare the order too (#7223).
+    withTable("sorted_bucketed") {
+      // A single writer task writes one file per bucket.
+      (0 until 40)
+        .map(i => (i % 2, i))
+        .toDF("k", "v")
+        .coalesce(1)
+        .write
+        .format("parquet")
+        .bucketBy(8, "k")
+        .sortBy("k", "v")
+        .saveAsTable("sorted_bucketed")
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.BUCKETING_ENABLED.key -> "true",
+        SQLConf.AUTO_BUCKETED_SCAN_ENABLED.key -> "false",
+        SQLConf.LEGACY_BUCKETED_TABLE_SCAN_OUTPUT_ORDERING.key -> "true") {
+        val df = sql(
+          "SELECT k, v, dense_rank() OVER (PARTITION BY k ORDER BY v) AS r " +
+            "FROM sorted_bucketed")
+        val (_, plan) = checkSparkAnswerAndOperator(df)
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(windows.size == 1, plan)
+        assert(
+          windows.head.child match {
+            case scan: CometNativeScanExec => scan.bucketedScan
+            case _ => false
+          },
+          plan)
+        assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 1, plan)
       }
     }
   }
