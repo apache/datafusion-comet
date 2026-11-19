@@ -33,9 +33,8 @@ macro_rules! hash_array {
                 )
             });
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(&array.value(i), $hashes[i]);
+            for (i, hash) in $hashes.iter_mut().enumerate() {
+                *hash = $hash_method(&array.value(i), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -62,12 +61,8 @@ macro_rules! hash_array_boolean {
                 )
             });
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(
-                    $hash_input_type::from(array.value(i)).to_le_bytes(),
-                    $hashes[i],
-                );
+            for (hash, value) in $hashes.iter_mut().zip(array.values().iter()) {
+                *hash = $hash_method($hash_input_type::from(value).to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -99,9 +94,8 @@ macro_rules! hash_array_primitive {
         let values = array.values();
 
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..values.len() {
-                $hashes[i] = $hash_method((values[i] as $ty).to_le_bytes(), $hashes[i]);
+            for (hash, &value) in $hashes.iter_mut().zip(values.iter()) {
+                *hash = $hash_method((value as $ty).to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -130,10 +124,9 @@ macro_rules! hash_array_primitive_float {
         let values = array.values();
 
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..values.len() {
-                let value = $crate::float_semantics::hash_input(values[i]);
-                $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
+            for (hash, &value) in $hashes.iter_mut().zip(values.iter()) {
+                let value = $crate::float_semantics::hash_input(value);
+                *hash = $hash_method(value.to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -168,17 +161,14 @@ macro_rules! hash_array_interval_month_day_nano {
         // always an exact multiple of 1000 and out-of-range intervals throw at
         // conversion time instead of reaching this hasher.
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                let value = array.value(i);
+            for (hash, value) in $hashes.iter_mut().zip(array.values().iter()) {
                 // Match Spark 4.2 generated code, which omits the days field:
                 // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
                 // SPARK-58236 includes days starting in Spark 4.3; the version
                 // switch for that is tracked in
                 // https://github.com/apache/datafusion-comet/issues/5498.
-                $hashes[i] =
-                    $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
-                $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+                *hash = $hash_method((value.nanoseconds / 1_000).to_le_bytes(), *hash);
+                *hash = $hash_method(value.months.to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -209,13 +199,12 @@ macro_rules! hash_array_small_decimal {
             });
 
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(
-                    i64::try_from(array.value(i))
+            for (hash, &value) in $hashes.iter_mut().zip(array.values().iter()) {
+                *hash = $hash_method(
+                    i64::try_from(value)
                         .map(|v| v.to_le_bytes())
                         .map_err(|e| DataFusionError::Execution(e.to_string()))?,
-                    $hashes[i],
+                    *hash,
                 );
             }
         } else {
@@ -875,6 +864,15 @@ macro_rules! create_hashes_internal {
         use datafusion_comet_common::children_with_parent_nulls;
 
         for (i, col) in $arrays.iter().enumerate() {
+            // The fast paths zip the hashes with the values, which would silently skip rows if
+            // the lengths differed.
+            if col.len() != $hashes_buffer.len() {
+                return Err(datafusion::common::DataFusionError::Internal(format!(
+                    "Column {i} has {} rows but the hashes buffer has {}",
+                    col.len(),
+                    $hashes_buffer.len()
+                )));
+            }
             // The dictionary fast path hashes each distinct dictionary value once and reuses that
             // result for every key, which is only valid while every row carries the same incoming
             // hash. Position in the column list is not a sufficient test: this macro also runs on

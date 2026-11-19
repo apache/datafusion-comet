@@ -193,7 +193,7 @@ pub fn create_murmur3_hashes<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     /// Produced by the per-element `hash_list_array!` implementation. An empty list and a null
     /// list both leave the seed untouched.
     const EXPECTED_LIST_OF_STRUCT: [u32; 6] =
@@ -210,6 +210,49 @@ mod tests {
         expected: Vec<u32>,
     ) {
         test_hashes_with_nulls!(create_murmur3_hashes, T, values, expected, u32);
+    }
+
+    /// Arrays of every fixed-width kind the hash loops special-case, plus strings, with and
+    /// without nulls.
+    pub(crate) fn length_mismatch_arrays() -> Vec<ArrayRef> {
+        use arrow::array::{BooleanArray, Decimal128Array, IntervalMonthDayNanoArray};
+        use arrow::datatypes::IntervalMonthDayNano;
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
+            Arc::new(Float64Array::from(vec![1.0, -0.0, f64::NAN])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(BooleanArray::from(vec![true, false, true])),
+            Arc::new(IntervalMonthDayNanoArray::from(vec![
+                IntervalMonthDayNano::new(1, 2, 3_000);
+                3
+            ])),
+            Arc::new(
+                Decimal128Array::from(vec![1, 2, 3])
+                    .with_precision_and_scale(10, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Int32Array::from(Vec::<i32>::new())),
+        ]
+    }
+
+    #[test]
+    fn test_hashes_buffer_length_mismatch_is_error() {
+        for array in length_mismatch_arrays() {
+            for len in [array.len().saturating_sub(1), array.len() + 1] {
+                if len == array.len() {
+                    continue;
+                }
+                let mut hashes = vec![42u32; len];
+                let result = create_murmur3_hashes(&[Arc::clone(&array)], &mut hashes);
+                assert!(
+                    result.is_err(),
+                    "{} array of length {} with {len} hashes",
+                    array.data_type(),
+                    array.len()
+                );
+            }
+        }
     }
 
     /// A dictionary array reached through a nested type arrives as the only column of its recursive
