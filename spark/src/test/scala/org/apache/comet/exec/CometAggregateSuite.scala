@@ -44,9 +44,9 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, RegrSparkVersions}
+import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -360,8 +360,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("PartialMerge over a sort-merge join on a prefix of its keys spills (issue #6880)") {
-    // The sorts under the join need more than a 2 or 8 MiB pool's fair share, so this uses 16 MiB.
-    withPartialMergeOverSortedPrefix(Seq(16)) { path =>
+    withPartialMergeOverSortedPrefix(Seq(2, 8)) { path =>
       // With the default rules, the join's hash partitioning on g satisfies the PartialMerge keyed
       // by (g, k), so the join, the partial aggregate and the PartialMerge run in one native plan,
       // and the PartialMerge sees its input sorted on g. The suite lets AQE broadcast up to 1g at
@@ -2419,57 +2418,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("regression aggregate flags follow the Spark patch release that changed them") {
-    // Both fixes shipped mid-line, so the flag must flip at the exact patch and stay off for
-    // earlier patches of the same minor version. A vendor suffix parses, a missing patch reads
-    // as 0, and an unparsable string falls back to the old minor-version rule.
-    val slopeExpectations = Seq(
-      "3.4.3" -> false,
-      "3.5.0" -> false,
-      "3.5.1" -> false,
-      "3.5.2" -> true,
-      "3.5.9" -> true,
-      "3.5.10" -> true,
-      "4.0.0" -> true,
-      "4.1.3" -> true,
-      "4.2.0-SNAPSHOT" -> true,
-      "4.1.3-amzn-1" -> true,
-      "3.5" -> false,
-      "v3.5.9" -> true)
-    slopeExpectations.foreach { case (version, expected) =>
-      assert(
-        RegrSparkVersions.slopeFiltersVarByPairNulls(version) == expected,
-        s"slope pair-null filtering for Spark $version should be $expected")
-    }
-
-    val r2Expectations = Seq(
-      "3.4.3" -> false,
-      "3.5.3" -> false,
-      "3.5.8" -> false,
-      "3.5.9" -> true,
-      "3.5.10" -> true,
-      "4.0.1" -> false,
-      "4.0.2" -> false,
-      "4.0.3" -> true,
-      "4.0.4" -> true,
-      "4.1.0" -> false,
-      "4.1.1" -> false,
-      "4.1.2" -> true,
-      "4.1.3" -> true,
-      "4.2.0" -> true,
-      "4.2.0-SNAPSHOT" -> true,
-      "3.6.0" -> true,
-      "5.0.0" -> true,
-      "4.1.3-amzn-1" -> true,
-      "3.5" -> false,
-      "v3.5.9" -> true)
-    r2Expectations.foreach { case (version, expected) =>
-      assert(
-        RegrSparkVersions.r2DegenerateCasesSwapped(version) == expected,
-        s"regr_r2 degenerate-case swap for Spark $version should be $expected")
-    }
-  }
-
   test("avg/sum overflow on decimal(38, _)") {
     val table = "overflow_decimal_38"
     withTable(table) {
@@ -2653,17 +2601,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
           withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
             val df = sql("SELECT SUM(v) FROM dec_no_codegen")
-            if (isSpark35Plus) {
-              assertDecimalSumFallsBackLikeSpark(df, reason, ansiEnabled, Row(null))
-            } else {
-              // Before SPARK-44236 (3.5) the factory mode leaves whole-stage codegen on, so
-              // Spark recovers the sum and the aggregate stays native.
-              checkSparkAnswerAndOperator(df)
-              val answer = df.collect().toSeq
-              assert(
-                answer == Seq(Row(recoveredSum.bigDecimal.setScale(38))),
-                s"NO_CODEGEN on Spark 3.4 returned $answer, expected $recoveredSum")
-            }
+            assertDecimalSumFallsBackLikeSpark(df, reason, ansiEnabled, Row(null))
           }
         }
       }
@@ -3906,7 +3844,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      val swapped = RegrSparkVersions.r2DegenerateCasesSwapped(spark.version)
+      val swapped = SparkFixes.r2DegenerateCasesSwapped(spark.version)
       val constantX: java.lang.Double = if (swapped) null else 1.0
       val constantY: java.lang.Double = if (swapped) 1.0 else null
       for (reverse <- Seq(false, true)) {

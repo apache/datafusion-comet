@@ -292,17 +292,16 @@ message Regr {
   Expr child2 = 2;
   RegrType regr_type = 3;
   DataType datatype = 4;
-  // Only consulted for SLOPE and INTERCEPT. When true (Spark 3.5+), VariancePop(x)
-  // is computed only over rows where both y and x are non-null. When false
-  // (Spark 3.4), VariancePop(x) includes every row where x is non-null even if y
-  // is null, matching the pre-fix Spark 3.4 semantics.
+  // Only consulted for SLOPE and INTERCEPT. When true (SPARK-48719), VariancePop(x)
+  // is computed only over rows where both y and x are non-null. When false,
+  // VariancePop(x) includes every row where x is non-null even if y is null,
+  // matching earlier Spark patches.
   bool filter_var_by_pair_nulls = 5;
   // Only consulted for R2. Spark swapped the degenerate-case handling of
   // regr_r2. When true, a constant dependent variable (m2(y) = 0) returns 1.0
   // and a constant independent variable (m2(x) = 0) returns null. When false
   // those two cases are reversed. The swap is present in the Spark versions
-  // Comet builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not
-  // in 3.4.
+  // Comet builds against (3.5.9, 4.0.3+, 4.1, 4.2).
   bool r2_constant_dependent_is_perfect_fit = 6;
   // Only consulted for R2. Division by an underflowed moment product returns
   // null in LEGACY mode and raises DIVIDE_BY_ZERO in ANSI mode.
@@ -473,6 +472,13 @@ message Cast {
   // True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
   // 0, instead of applying the integral-digit limit to it (SPARK-60118).
   bool decimal_zero_any_exponent = 7;
+  // True when the running Spark casts a string far below the target scale's ulp to decimal as 0
+  // even when the difference to the target scale does not fit in an int, instead of failing in
+  // BigDecimal.setScale (SPARK-60119).
+  bool decimal_tiny_to_zero = 8;
+  // True when Spark does not apply the 38 integral-digit limit when it casts a string to
+  // decimal, as it does not with spark.sql.legacy.allowNegativeScaleOfDecimal.
+  bool decimal_skip_integral_digit_limit = 9;
 }
 
 // Spark's internal PreciseTimestampConversion, used by time-window grouping to convert

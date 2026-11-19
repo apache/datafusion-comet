@@ -120,13 +120,11 @@ BUILD_JOBS = {
     "build_linux_all_profiles",
     "build_macos",
     "build_macos_full",
-    "spark_3_4",
     "spark_3_5",
     "spark_4_0",
     "spark_4_1",
     "spark_4_1_hive",
     "spark_4_2",
-    "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
     "iceberg_1_11",
@@ -207,15 +205,15 @@ ROUTING_CASES = [
 # where "allowed" ignores path filters. Written out longhand rather than
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
-# The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
-# suite waits for the queue or the nightly run, or for its label.
-PR_TIER = {"build_linux", "build_linux_full"}
-# The queue adds one Spark version (4.1, the default profile) and one Iceberg
-# version (1.11, the only Spark 4.1 coverage), plus the build-level gates.
+# The PR tier is the Linux build plus one Spark version (4.1, the default
+# profile, catalyst and sql_core only) and one Iceberg version (1.11, the only
+# Spark 4.1 coverage). Every other Spark SQL and Iceberg suite waits for the
+# nightly run, or for its label.
+PR_TIER = {"build_linux", "build_linux_full", "spark_4_1", "iceberg_1_11"}
+# The queue runs the same Spark and Iceberg versions as the PR tier, adds the
+# Spark 4.1 sql_hive shards, and adds the build-level gates.
 QUEUE_TIER = PR_TIER | {
-    "spark_4_1",
     "spark_4_1_hive",
-    "iceberg_1_11",
     "build_macos",
     "build_macos_full",
     "benchmark",
@@ -230,7 +228,6 @@ NIGHTLY_TIER = {
     "spark_3_5",
     "spark_4_0",
     "spark_4_2",
-    "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
     "delta_3_5",
@@ -238,18 +235,12 @@ NIGHTLY_TIER = {
     "delta_4_1",
     "build_linux_all_profiles",
 }
-# Spark 3.4 is deprecated and sits outside the queue and nightly tiers
-# entirely: a label on a pull request, or a workflow_dispatch, and nothing
-# else. Keeping it in its own set is what makes the `merge_group` and
-# `schedule` cases below assert its absence rather than quietly accept it
-# coming back.
-SPARK_DEPRECATED = {"spark_3_4"}
-# One label opts a pull request into every Iceberg version, whichever tier
-# each sits in.
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+# One label opts a pull request into every nightly Iceberg version. Iceberg
+# 1.11 is in the PR tier, so it needs no label.
+ICEBERG_OPT_IN = {"iceberg_1_9", "iceberg_1_10"}
 # Likewise one label for every Delta profile.
 DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
-ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
+ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
 # The repository whose queue gates main; check_event_policy asserts this matches
@@ -277,9 +268,8 @@ POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
     # The merge queue is the authoritative gate: everything except the site
-    # deploy, which can only run once the commit is actually on main, the
-    # nightly tier, and the deprecated Spark 3.4 suite, which no longer gates
-    # a merge.
+    # deploy, which can only run once the commit is actually on main, and the
+    # nightly tier.
     ({"name": "merge_group"}, QUEUE_TIER),
     # The scheduled run is the nightly tier and nothing else. The queue already
     # ran everything in QUEUE_TIER against the tree that is now main, so a
@@ -372,22 +362,9 @@ POLICY_CASES = [
         },
         {"build_linux_all_profiles"},
     ),
-    # Spark 4.1 is queue-only too. Two labels feed its one call: the suite
-    # label selects every module, the hive label only the sql_hive shards.
-    # Neither label pulls in any other Spark version.
-    (
-        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
-        PR_TIER | {"spark_4_1", "spark_4_1_hive"},
-    ),
-    (
-        {
-            "name": "pull_request",
-            "action": "labeled",
-            "label": "run-spark-4.1-tests",
-            "labels": ["run-spark-4.1-tests"],
-        },
-        {"spark_4_1", "spark_4_1_hive"},
-    ),
+    # Spark 4.1's catalyst and sql_core shards are in the PR tier. Its sql_hive
+    # shards are queue-only, and their label brings them forward without
+    # pulling in any other Spark version.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
         PR_TIER | {"spark_4_1_hive"},
@@ -401,34 +378,20 @@ POLICY_CASES = [
         },
         {"spark_4_1_hive"},
     ),
-    # Adding the hive label on top of the suite label re-runs only the hive
-    # rows: a `labeled` run selects what the new label gates, and the suite
-    # label's earlier run already covered every module at this commit.
+    # The retired suite label gates nothing now, so it must not start a second
+    # pipeline or add anything to a pushed commit's run.
     (
         {
             "name": "pull_request",
             "action": "labeled",
-            "label": "run-spark-4.1-hive-tests",
-            "labels": ["run-spark-4.1-tests", "run-spark-4.1-hive-tests"],
+            "label": "run-spark-4.1-tests",
+            "labels": ["run-spark-4.1-tests"],
         },
-        {"spark_4_1_hive"},
-    ),
-    # An opt-in label present on a pushed commit adds just that suite. For the
-    # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
-    # pull request or the queue, so this case and the `labeled` one below are
-    # what keep it reachable at all.
-    (
-        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},
-        PR_TIER | {"spark_3_4"},
+        set(),
     ),
     (
-        {
-            "name": "pull_request",
-            "action": "labeled",
-            "label": "run-spark-3.4-tests",
-            "labels": ["run-spark-3.4-tests"],
-        },
-        {"spark_3_4"},
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
+        PR_TIER,
     ),
     # Spark 4.2 runs nightly, and its label brings that run forward onto a pull
     # request, the same shape as 3.5 and 4.0. It pulls in no other Spark version.
@@ -481,14 +444,13 @@ POLICY_CASES = [
             "name": "pull_request",
             "action": "labeled",
             "label": "dependencies",
-            "labels": ["dependencies", "run-spark-3.4-tests"],
+            "labels": ["dependencies", "run-spark-3.5-tests"],
         },
         set(),
     ),
     # A pull request against a release branch runs the queue and nightly tiers
     # as well, because a release branch has no queue and no nightly to run them
-    # later. The site deploy still never runs from a pull request, and the
-    # deprecated Spark 3.4 suite still waits for its label.
+    # later. The site deploy still never runs from a pull request.
     (
         {"name": "pull_request", "action": "opened", "labels": [], "base": "branch-1.1"},
         QUEUE_TIER | NIGHTLY_TIER,
@@ -496,27 +458,6 @@ POLICY_CASES = [
     (
         {"name": "pull_request", "action": "synchronize", "labels": [], "base": "branch-2.0"},
         QUEUE_TIER | NIGHTLY_TIER,
-    ),
-    (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": ["run-spark-3.4-tests"],
-            "base": "branch-1.1",
-        },
-        QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED,
-    ),
-    # There the commit run already covered everything a label gates except
-    # Spark 3.4, so a `labeled` run adds Spark 3.4 or nothing.
-    (
-        {
-            "name": "pull_request",
-            "action": "labeled",
-            "label": "run-spark-3.4-tests",
-            "labels": ["run-spark-3.4-tests"],
-            "base": "branch-1.1",
-        },
-        SPARK_DEPRECATED,
     ),
     (
         {
@@ -547,8 +488,8 @@ POLICY_CASES = [
     # because a fork cannot see the labels on the pull request.
     (fork_pr(), set()),
     (
-        fork_pr(labels=["run-spark-4.1-tests", "run-delta-tests"]),
-        {"spark_4_1", "spark_4_1_hive"} | DELTA_OPT_IN,
+        fork_pr(labels=["run-spark-4.1-hive-tests", "run-delta-tests"]),
+        {"spark_4_1_hive"} | DELTA_OPT_IN,
     ),
     # The label brings the non-default Spark profiles forward here, while the
     # fork's run covers the default profile and the lints, so between them every
@@ -1928,11 +1869,87 @@ def check_scheduled_workflows_stay_upstream():
     return not failures
 
 
+def check_docs_permission_boundary():
+    """Keep dependency builds away from the site publishing token."""
+    path = WORKFLOWS / "docs.yaml"
+    jobs = job_blocks(path)
+    build = jobs.get("build-docs", "")
+    deploy = jobs.get("deploy-docs", "")
+    caller = job_blocks(CI_WORKFLOW).get("docs", "")
+    failures = []
+    for label, block, permission in (
+        ("caller", caller, "write"),
+        ("build-docs", build, "read"),
+        ("deploy-docs", deploy, "write"),
+    ):
+        if not re.search(rf"^    permissions:\n      contents: {permission}\n(?=    \S|\Z)", block, re.M):
+            failures.append(f"{label} must grant only contents: {permission}")
+    checkout_steps = re.findall(
+        r"      - name: [^\n]+\n        uses: actions/checkout@[^\n]+(?:\n          [^\n]+|\n        with:)*",
+        build,
+    )
+    checkout_count = len(re.findall(r"uses: actions/checkout@", build))
+    if (not checkout_count or len(checkout_steps) != checkout_count
+            or any("persist-credentials: false" not in step for step in checkout_steps)):
+        failures.append("every build checkout must disable persisted credentials")
+    build_steps = re.split(r"^      - ", build, flags=re.M)[1:]
+    uploads = [step for step in build_steps
+               if re.search(r"^        uses: \./\.github/actions/upload-artifact-retry$", step, re.M)]
+    if (len(uploads) != 1 or
+            re.findall(r"^          include-hidden-files: (.+)$", uploads[0], re.M) != ["true"]):
+        failures.append("the site upload must include hidden files such as .buildinfo")
+    if not re.search(r"^    needs: build-docs$", deploy, re.M):
+        failures.append("deploy-docs must depend on the build")
+    steps = re.split(r"^      - ", deploy, flags=re.M)[1:]
+    uses = [re.findall(r"^(?:uses:|        uses:) (\S+)", step, re.M) for step in steps]
+    runs = [re.findall(r"^(?:run:|        run:)", step, re.M) for step in steps]
+    if (len(steps) != 4 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
+            or len(uses[1]) != 1 or not uses[1][0].startswith("actions/checkout@")
+            or uses[2] != ["./trusted/.github/actions/download-artifact-retry"]
+            or uses[3] or runs[0] or runs[1] or runs[2] or len(runs[3]) != 1
+            or not re.search(r"^          ref: asf-site$", steps[0], re.M)
+            or not re.search(r"^          path: asf-site$", steps[0], re.M)
+            or not re.search(r"^          ref: \$\{\{ github.sha \}\}$", steps[1], re.M)
+            or not re.search(r"^          path: trusted$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout: \|\n            /\.asf.yaml\n            /\.github/actions/download-artifact-retry/$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout-cone-mode: false$", steps[1], re.M)
+            or re.findall(r"^          name: (.+)$", steps[2], re.M) != ["comet-docs-site"]
+            or re.findall(r"^          path: (.+)$", steps[2], re.M) != ["site-output"]
+            or not re.search(r"^          persist-credentials: false$", steps[1], re.M)):
+        failures.append("the writer must check out the site and trusted metadata before downloading the artifact")
+    if len(steps) == 4:
+        artifact_refs = [line.strip() for line in steps[3].splitlines() if "site-output" in line]
+        if artifact_refs != ["../site-output/ \\"]:
+            failures.append("the writer may use site-output only as the rsync source")
+        for required in ("--exclude '/.git'", "--exclude '/.asf.yaml'", "--exclude '/.nojekyll'",
+                         "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll"):
+            if required not in steps[3]:
+                failures.append(f"the writer must protect metadata: {required}")
+        commands = [line.strip() for line in steps[3].splitlines()]
+        try:
+            after_copy = commands[commands.index("./") + 1:]
+        except ValueError:
+            after_copy = []
+        if after_copy != [
+            "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll",
+            "git status --porcelain", 'if [ "$(git status --porcelain)" != "" ]; then',
+            'git config user.name "github-actions[bot]"',
+            'git config user.email "github-actions[bot]@users.noreply.github.com"',
+            "git add --all", "git commit -m 'Publish built docs triggered by ${{ github.sha }}'",
+            "git push || git push --force", "fi",
+        ]:
+            failures.append("the writer must run only the expected commands after copying the site")
+    for failure in failures:
+        print(f"docs permissions: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_event_env() and ok
     ok = check_docs_deploy_guard() and ok
+    ok = check_docs_permission_boundary() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
