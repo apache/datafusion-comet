@@ -252,7 +252,7 @@ case class CometIcebergWriteExec(
     // `resolveInputObjects` starts; the probe's RDD would hide the shuffle RDD that
     // `resolveInputObjects` needs, so only a wrapped child gets it.
     val shuffleScanIndices = CometExec.findShuffleScanIndices(nativeOp)
-    val (input, inputProbe): (RDD[_], Option[IcebergSchedulerTestProbe]) =
+    val inputAndProbe: (RDD[_], Option[IcebergSchedulerTestProbe]) =
       if (shuffleScanIndices.nonEmpty) {
         (child.executeColumnar(), schedulerProbe)
       } else {
@@ -290,6 +290,9 @@ case class CometIcebergWriteExec(
             (stream, None)
         }
       }
+    // Read through the tuple: Scala 2.12 cannot express the type a pattern would infer here.
+    val input = inputAndProbe._1
+    val inputProbe = inputAndProbe._2
 
     // No child metric nodes: the write's native tree (IcebergWrite -> Projection -> Scan or
     // ShuffleScan) does not line up with the JVM child operators, which own their own native
