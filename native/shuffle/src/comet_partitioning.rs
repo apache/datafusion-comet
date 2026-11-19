@@ -121,12 +121,14 @@ impl CometPartitioning {
 }
 
 pub(crate) fn pmod(hash: u32, n: usize) -> usize {
-    let hash = hash as i32;
-    let n = n as i32;
-    let r = hash % n;
-    // A negative `r` is in `(-n, 0)`, so `r + n` is already in `(0, n)`.
-    let result = if r < 0 { r + n } else { r };
-    result as usize
+    (hash as i32).rem_euclid(n as i32) as usize
+}
+
+/// Maps each hash to its partition the way hash partitioning does.
+pub fn hash_partition_ids(hashes: &[u32], num_partitions: usize, partition_ids: &mut [u32]) {
+    for (id, &hash) in partition_ids.iter_mut().zip(hashes) {
+        *id = pmod(hash, num_partitions) as u32;
+    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@
 //!
 //! Not an API, and not used outside `benches/`.
 
+pub use crate::comet_partitioning::hash_partition_ids;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{MultiPartitionShuffleRepartitioner, ShufflePartitioner};
 use crate::writers::PartitionWriter;
@@ -117,12 +118,5 @@ impl BenchRepartitioner {
     /// discards them.
     pub fn gather(&mut self) -> Result<()> {
         self.inner.shuffle_write()
-    }
-}
-
-/// Maps each hash to its partition the way hash partitioning does.
-pub fn hash_partition_ids(hashes: &[u32], num_partitions: usize, partition_ids: &mut [u32]) {
-    for (id, &hash) in partition_ids.iter_mut().zip(hashes) {
-        *id = crate::comet_partitioning::pmod(hash, num_partitions) as u32;
     }
 }
