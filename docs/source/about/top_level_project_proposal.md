@@ -204,8 +204,8 @@ The relevant code is already in a separate repository,
 code extraction and propose that the repository be renamed to reflect the new top-level project.
 
 Comet depends on the `datafusion-spark` crate in
-[apache/datafusion](https://github.com/apache/datafusion), which would remain part of the DataFusion
-project.
+[apache/datafusion-spark](https://github.com/apache/datafusion-spark), which would remain part of
+the DataFusion project.
 
 ### Orphaned Products
 
