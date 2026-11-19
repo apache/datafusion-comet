@@ -124,8 +124,10 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+// Re-exported for local execution, whose memory pool is the one `createPlan` creates.
+pub(crate) use crate::execution::memory_pools::{create_memory_pool, running_native_tasks};
 use crate::execution::memory_pools::{
-    create_memory_pool, overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
+    overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
@@ -497,6 +499,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::ParquetWriter(_) => "ParquetWriter",
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
+        OpStruct::TextScan(_) => "TextScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::CrossJoin(_) => "CrossJoin",
@@ -533,7 +536,7 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 }
 
 /// Comet native execution context. Kept alive across JNI calls.
-struct ExecutionContext {
+pub(crate) struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
     /// The deserialized Spark plan
@@ -722,9 +725,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     })
 }
 
+impl ExecutionContext {
+    /// The planner that creates this plan's operators for `partition`.
+    pub(crate) fn planner(&self, partition: i32) -> PhysicalPlanner {
+        PhysicalPlanner::new(Arc::clone(&self.session_ctx), partition)
+            .with_exec_id(self.id)
+            .with_strict_timestamp_labels(self.strict_timestamp_labels)
+            .with_sql_text_pool(&self.spark_plan)
+            .with_task_context(self.task_context.clone())
+            .with_class_loader(self.class_loader.clone())
+            .with_shuffle_partition_pusher(self.shuffle_partition_pusher.clone())
+            .with_output_stream(self.output_stream.clone())
+    }
+}
+
 /// What `createPlan` takes from the Spark configs.
-struct PlanSettings {
-    spark_config: HashMap<String, String>,
+pub(crate) struct PlanSettings {
+    pub(crate) spark_config: HashMap<String, String>,
     debug_native: bool,
     strict_timestamp_labels: bool,
     explain_native: bool,
@@ -735,7 +752,7 @@ struct PlanSettings {
 
 /// Deserializes the Spark configs of a plan and initializes the Tokio runtime from them. The
 /// first step of `Native.createPlan`, before its trace span opens.
-fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSettings> {
+pub(crate) fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSettings> {
     let spark_configs = serde::deserialize_config(serialized_spark_configs)?;
     let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
 
@@ -758,34 +775,35 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
 }
 
 /// The arguments of `Native.createPlan`, converted from JNI.
-struct PlanInputs {
-    id: i64,
-    settings: PlanSettings,
-    serialized_plan: Vec<u8>,
-    partition_count: usize,
-    batch_size: usize,
-    off_heap_mode: bool,
-    memory_pool_type: String,
-    memory_limit: i64,
-    off_heap_size: i64,
-    task_attempt_id: i64,
-    task_cpus: usize,
-    local_dirs: Vec<String>,
+pub(crate) struct PlanInputs {
+    pub(crate) id: i64,
+    pub(crate) settings: PlanSettings,
+    pub(crate) serialized_plan: Vec<u8>,
+    pub(crate) partition_count: usize,
+    pub(crate) batch_size: usize,
+    pub(crate) off_heap_mode: bool,
+    pub(crate) memory_pool_type: String,
+    pub(crate) memory_limit: i64,
+    pub(crate) off_heap_size: i64,
+    pub(crate) task_attempt_id: i64,
+    pub(crate) task_cpus: usize,
+    pub(crate) local_dirs: Vec<String>,
     /// In milliseconds; zero or less publishes metrics only when the plan is released.
-    metrics_update_interval: i64,
+    pub(crate) metrics_update_interval: i64,
     /// When plan creation started, the start of `ExecutionContext::plan_creation_time`.
-    start: Instant,
-    jvm: PlanJvmRefs,
+    pub(crate) start: Instant,
+    pub(crate) jvm: PlanJvmRefs,
 }
 
 /// The JVM objects a plan calls back into, as JNI global references. Each is `None` or empty
 /// only without a JVM (unit tests) or when Spark passes none.
-struct PlanJvmRefs {
-    metrics: Option<Arc<Global<JObject<'static>>>>,
-    input_sources: Vec<Arc<Global<JObject<'static>>>>,
-    key_unwrapper: Option<Arc<Global<JObject<'static>>>>,
-    task_context: Option<Arc<Global<JObject<'static>>>>,
-    class_loader: Option<Arc<Global<JObject<'static>>>>,
+#[derive(Default)]
+pub(crate) struct PlanJvmRefs {
+    pub(crate) metrics: Option<Arc<Global<JObject<'static>>>>,
+    pub(crate) input_sources: Vec<Arc<Global<JObject<'static>>>>,
+    pub(crate) key_unwrapper: Option<Arc<Global<JObject<'static>>>>,
+    pub(crate) task_context: Option<Arc<Global<JObject<'static>>>>,
+    pub(crate) class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 /// Creates the execution context of a native plan: deserializes the plan, sets up its memory
@@ -794,7 +812,7 @@ struct PlanJvmRefs {
 ///
 /// `memory_pool_for` builds the pool every reservation of the plan goes through from its
 /// config; `Native.createPlan` builds one that acquires memory from Spark.
-fn create_execution_context(
+pub(crate) fn create_execution_context(
     inputs: PlanInputs,
     memory_pool_for: impl FnOnce(&MemoryPoolConfig) -> Arc<dyn MemoryPool>,
 ) -> CometResult<Box<ExecutionContext>> {
@@ -1216,7 +1234,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
 }
 
 /// Prepares arrow arrays for output.
-fn prepare_output(
+pub(crate) fn prepare_output(
     env: &mut Env,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
@@ -1375,6 +1393,15 @@ struct BatchProducer {
     task: JoinHandle<()>,
 }
 
+/// Wakes the thread waiting in [`BatchProducer::next_batch_until`].
+struct Unparker(std::thread::Thread);
+
+impl Wake for Unparker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark()
+    }
+}
+
 impl BatchProducer {
     fn spawn(runtime: &Handle, stream: SendableRecordBatchStream) -> Self {
         // Channel capacity of 2 allows the producer to work one batch
@@ -1435,7 +1462,37 @@ impl BatchProducer {
     /// plan's output is incomplete. That is an error, or the Spark task would end successfully
     /// with only the batches it has read so far.
     fn next_batch(&mut self) -> CometResult<Option<RecordBatch>> {
-        match self.batches.blocking_recv() {
+        let item = self.batches.blocking_recv();
+        self.received(item)
+    }
+
+    /// Like [`Self::next_batch`], but waits no later than `deadline`, and is `Pending` if neither
+    /// a batch nor the end of the stream arrived by then.
+    ///
+    /// It parks the thread rather than using a Tokio timer, which fires only once a runtime
+    /// worker is free. Every worker can be busy for a long time, such as with a shuffle writer
+    /// spilling or writing its output.
+    fn next_batch_until(&mut self, deadline: Instant) -> CometResult<Poll<Option<RecordBatch>>> {
+        let waker = Waker::from(Arc::new(Unparker(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(item) = self.batches.poll_recv(&mut cx) {
+                return self.received(item).map(Poll::Ready);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(Poll::Pending);
+            }
+            std::thread::park_timeout(deadline - now);
+        }
+    }
+
+    /// What an item taken from the channel, or its closing, means for the plan's output.
+    fn received(
+        &self,
+        item: Option<DataFusionResult<RecordBatch>>,
+    ) -> CometResult<Option<RecordBatch>> {
+        match item {
             Some(batch) => Ok(Some(batch?)),
             None if self.stream_ended.load(Ordering::Acquire) => Ok(None),
             None => Err(CometError::Internal(
@@ -1548,21 +1605,12 @@ fn execute_plan(
     partition: i32,
     publish_metrics: &mut PublishMetrics,
 ) -> CometResult<Option<RecordBatch>> {
-    let exec_context_id = exec_context.id;
-
     // Initialize the execution stream.
     // Because we don't know if input arrays are dictionary-encoded when we create
     // query plan, we need to defer stream initialization to first time execution.
     if exec_context.root_op.is_none() {
         let start = Instant::now();
-        let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-            .with_exec_id(exec_context_id)
-            .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
-            .with_sql_text_pool(&exec_context.spark_plan)
-            .with_task_context(exec_context.task_context.clone())
-            .with_class_loader(exec_context.class_loader.clone())
-            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone())
-            .with_output_stream(exec_context.output_stream.clone());
+        let planner = exec_context.planner(partition);
         let (scans, shuffle_scans, root_op) = planner.create_plan(
             &exec_context.spark_plan,
             &mut exec_context.input_sources.clone(),
@@ -1598,20 +1646,33 @@ fn execute_plan(
         pull_input_batches(exec_context)?;
     }
 
-    if let Some(producer) = &mut exec_context.batch_producer {
-        return match producer.next_batch()? {
-            Some(batch) => {
+    // Wait no later than when metrics are due, so a plan that runs long before its first batch,
+    // such as a native shuffle write, still publishes on the interval. A publish while waiting
+    // does not restart the interval, so the batch that ends the wait is published too.
+    let interval = exec_context.metrics_update_interval;
+    let mut wait_until = interval.map(|interval| exec_context.metrics_last_update_time + interval);
+    while let Some(producer) = exec_context.batch_producer.as_mut() {
+        let next = match wait_until {
+            Some(deadline) => producer.next_batch_until(deadline)?,
+            None => Poll::Ready(producer.next_batch()?),
+        };
+        match next {
+            Poll::Ready(Some(batch)) => {
                 // Publish on the configured interval, as the ScanExec path below does,
                 // since each publish walks the whole metric tree and calls into the JVM.
                 // `releasePlan` publishes the final values.
                 update_metrics_on_interval(exec_context, publish_metrics)?;
-                Ok(Some(batch))
+                return Ok(Some(batch));
             }
-            None => {
+            Poll::Ready(None) => {
                 log_plan_metrics(exec_context, stage_id, partition);
-                Ok(None)
+                return Ok(None);
             }
-        };
+            Poll::Pending => {
+                publish_and_sample_memory(exec_context, publish_metrics)?;
+                wait_until = interval.map(|interval| Instant::now() + interval);
+            }
+        }
     }
 
     // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
@@ -1661,7 +1722,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 /// Releases a plan: stops it, publishes its final metrics through `publish_metrics`, drops it,
 /// and waits briefly for its memory reservations to be returned. The context is freed even if a
 /// step fails. Core of `Native.releasePlan`.
-fn release_plan(
+pub(crate) fn release_plan(
     mut execution_context: Box<ExecutionContext>,
     publish_metrics: &mut PublishMetrics,
 ) -> CometResult<()> {
@@ -1724,8 +1785,17 @@ fn update_metrics_on_interval(
     if now - exec_context.metrics_last_update_time < interval {
         return Ok(());
     }
-    publish_metrics(exec_context)?;
+    publish_and_sample_memory(exec_context, publish_metrics)?;
     exec_context.metrics_last_update_time = now;
+    Ok(())
+}
+
+/// Runs `publish_metrics` and, with tracing on, samples this thread's pool reservation.
+fn publish_and_sample_memory(
+    exec_context: &ExecutionContext,
+    publish_metrics: &mut PublishMetrics,
+) -> CometResult<()> {
+    publish_metrics(exec_context)?;
     if exec_context.tracing_enabled {
         log_memory_usage(
             &exec_context.tracing_memory_metric_name,
@@ -4274,6 +4344,65 @@ mod tests {
             exec_context.batch_producer.is_some(),
             "a plan without JVM input runs on a Tokio task"
         );
+        release_plan(exec_context, &mut |_| Ok(())).unwrap();
+    }
+
+    /// See issue #7582. A plan ending in a native shuffle write returns nothing until it has
+    /// written all of its input, and its metrics have to reach the JVM while it runs, even with
+    /// every Tokio worker busy, as with the shuffle writers spilling or writing their output.
+    #[test]
+    fn execute_plan_publishes_metrics_while_it_waits_for_a_batch() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(range_plan(1)).unwrap();
+        // Creates the plan's operators, so that only its stream is replaced below.
+        while execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(()))
+            .unwrap()
+            .is_some()
+        {}
+        let handle = get_runtime();
+        let (batches, stream) = futures::channel::mpsc::unbounded();
+        exec_context.batch_producer = Some(BatchProducer::spawn(&handle, plan_stream(stream)));
+        exec_context.metrics_update_interval = Some(Duration::from_millis(1));
+
+        // Holds every worker until two publishes have happened. It gives up eventually so a
+        // failure cannot hang the suite.
+        let publishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers = handle.metrics().num_workers();
+        let (holding_tx, holding_rx) = std::sync::mpsc::channel();
+        let (released_tx, released_rx) = std::sync::mpsc::channel();
+        for _ in 0..workers {
+            let (holding, released) = (holding_tx.clone(), released_tx.clone());
+            let seen = Arc::clone(&publishes);
+            handle.spawn(async move {
+                holding.send(()).unwrap();
+                let give_up = Instant::now() + Duration::from_secs(10);
+                while seen.load(Ordering::Relaxed) < 2 && Instant::now() < give_up {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                released.send(seen.load(Ordering::Relaxed)).unwrap();
+            });
+        }
+        for _ in 0..workers {
+            holding_rx.recv().unwrap();
+        }
+        // The producer cannot take the batch until a worker is free.
+        batches.unbounded_send(Ok(empty_batch())).unwrap();
+
+        let batch = execute_plan(&mut exec_context, 0, 0, &mut |_| {
+            publishes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+        .unwrap();
+        assert!(batch.is_some());
+        for _ in 0..workers {
+            // The first deadline has passed when the wait starts. Publishing only once the batch
+            // arrives would make this 0, and waiting on a Tokio timer would make it 1.
+            let while_held = released_rx.recv().unwrap();
+            assert!(
+                while_held >= 2,
+                "{while_held} publishes while every worker was busy"
+            );
+        }
         release_plan(exec_context, &mut |_| Ok(())).unwrap();
     }
 

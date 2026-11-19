@@ -17,11 +17,6 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- Spark 3.4.3 emits invalid Java for bit_count(boolean). Use interpreted Spark
--- reference execution; plain queries still assert Comet operator replacement.
--- Config: spark.sql.codegen.wholeStage=false
--- Config: spark.sql.codegen.factoryMode=NO_CODEGEN
-
 statement
 CREATE TABLE test_bit_count_types(l bigint, i int, s smallint, b tinyint, flag boolean) USING parquet
 

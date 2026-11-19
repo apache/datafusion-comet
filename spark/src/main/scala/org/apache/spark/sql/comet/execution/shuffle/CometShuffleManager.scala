@@ -32,7 +32,7 @@ import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SerializedShuffleHandle, SortShuffleManager, SortShuffleWriter}
-import org.apache.spark.sql.comet.PlanDataInjector
+import org.apache.spark.sql.comet.{CapturedSQLConf, PlanDataInjector}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.collection.OpenHashSet
 
@@ -92,9 +92,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   }
 
   override val shuffleBlockResolver: IndexShuffleBlockResolver = {
-    // The patch versions of Spark 3.4 have different constructor signatures:
-    // See https://github.com/apache/spark/commit/5180694705be3508bd21dd9b863a59b8cb8ba193
-    // We look for proper constructor by reflection.
+    // Supported Spark versions have different constructor signatures, so select the matching
+    // constructor by reflection.
     classOf[IndexShuffleBlockResolver].getDeclaredConstructors
       .filter(c => List(2, 3).contains(c.getParameterCount()))
       .map { c =>
@@ -218,6 +217,21 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
     }
   }
 
+  /** Apply the driver capture to writer construction and each executor-side operation. */
+  private def withWriterConf[K, V](sqlConf: CapturedSQLConf)(
+      create: => ShuffleWriter[K, V]): ShuffleWriter[K, V] = {
+    val writer = sqlConf.withConf(create)
+    new ShuffleWriter[K, V] {
+      override def write(records: Iterator[Product2[K, V]]): Unit =
+        sqlConf.withConf(writer.write(records))
+
+      override def stop(success: Boolean): Option[org.apache.spark.scheduler.MapStatus] =
+        sqlConf.withConf(writer.stop(success))
+
+      override def getPartitionLengths(): Array[Long] = writer.getPartitionLengths()
+    }
+  }
+
   /** Get a writer for a given partition. Called on executors by map tasks. */
   @nowarn("msg=references private")
   override def getWriter[K, V](
@@ -249,30 +263,34 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
         val bypassDep =
           bypassMergeSortHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
         val bypassEncodeMetric = bypassDep.shuffleWriteMetrics.get("encode_time").orNull
-        new CometBypassMergeSortShuffleWriter(
-          env.blockManager,
-          context.taskMemoryManager(),
-          context,
-          bypassMergeSortHandle,
-          mapId,
-          env.conf,
-          metrics,
-          shuffleExecutorComponents,
-          bypassEncodeMetric)
+        withWriterConf(bypassDep.writerSQLConf) {
+          new CometBypassMergeSortShuffleWriter(
+            env.blockManager,
+            context.taskMemoryManager(),
+            context,
+            bypassMergeSortHandle,
+            mapId,
+            env.conf,
+            metrics,
+            shuffleExecutorComponents,
+            bypassEncodeMetric)
+        }
       case unsafeShuffleHandle: CometSerializedShuffleHandle[K @unchecked, V @unchecked] =>
         val unsafeDep =
           unsafeShuffleHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
         val unsafeEncodeMetric = unsafeDep.shuffleWriteMetrics.get("encode_time").orNull
-        new CometUnsafeShuffleWriter(
-          env.blockManager,
-          context.taskMemoryManager(),
-          unsafeShuffleHandle,
-          mapId,
-          context,
-          env.conf,
-          metrics,
-          shuffleExecutorComponents,
-          unsafeEncodeMetric)
+        withWriterConf(unsafeDep.writerSQLConf) {
+          new CometUnsafeShuffleWriter(
+            env.blockManager,
+            context.taskMemoryManager(),
+            unsafeShuffleHandle,
+            mapId,
+            context,
+            env.conf,
+            metrics,
+            shuffleExecutorComponents,
+            unsafeEncodeMetric)
+        }
       case _ =>
         // It is a Spark shuffle dependency, so we use Spark Sort Shuffle Writer.
         sortShuffleManager.getWriter(handle, mapId, context, metrics)
