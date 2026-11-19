@@ -155,6 +155,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 
     // Arrow's decimal division, which this kernel doesn't call. Its change is the run's noise.
+    assert!(numeric::div(&c1, &c2).is_ok());
     group.bench_function("control_arrow_decimal_div", |b| {
         b.iter(|| black_box(numeric::div(black_box(&c1), black_box(&c2))))
     });

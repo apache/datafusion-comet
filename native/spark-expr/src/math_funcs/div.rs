@@ -110,7 +110,7 @@ fn spark_decimal_div_internal(
         )));
     }
 
-    // Both branches divide once at scale s3 and round from the remainder.
+    // Both branches divide once at scale s3. `/` rounds from the remainder.
     let l_exp = ((s2 + s3) as u32).saturating_sub(s1 as u32);
     let r_exp = (s1 as u32).saturating_sub((s2 + s3) as u32);
     let result = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
@@ -172,9 +172,9 @@ fn spark_decimal_div_internal(
             }
             let q = l / r;
             // Round half away from zero. `|q * r| <= |l|`, so the product can't overflow, and
-            // `rem >= |r| - rem` is `2 * rem >= |r|` without the overflow of `2 * rem`.
+            // `rem < |r| <= 2^127`, so `2 * rem` fits in `u128`.
             let rem = (l - q * r).unsigned_abs();
-            let res = if !is_integral_div && rem >= r.unsigned_abs() - rem {
+            let res = if !is_integral_div && 2 * rem >= r.unsigned_abs() {
                 if (l < 0) == (r < 0) {
                     q + 1
                 } else {
@@ -319,6 +319,9 @@ mod tests {
     fn test_decimal_div_matches_exact_quotient() {
         let mut rng = StdRng::seed_from_u64(42);
         let (mut halves, mut i128_branch, mut bigint_branch) = (0, 0, 0);
+        // Scale combinations that moved to the i128 branch, and to the BigInt branch, when the
+        // kernel removed its extra digit.
+        let (mut to_i128, mut to_bigint) = (0, 0);
         let precisions: Vec<(u8, Vec<i128>)> = [1u8, 10, 19, 38]
             .into_iter()
             .map(|p| (p, test_values(p, &mut rng)))
@@ -341,10 +344,17 @@ mod tests {
                     for s2 in [0, 1, p2 / 2, p2 - 1, p2] {
                         for s3 in [0u8, 1, 6, 18, 38] {
                             let scales = (s1 as i8, s2 as i8, s3 as i8);
-                            // The branch choice before this kernel removed its extra digit.
-                            let l_exp = (s2 + s3 + 1).saturating_sub(s1);
-                            let r_exp = s1.saturating_sub(s2 + s3 + 1);
-                            if p1 + l_exp > 38 || p2 + r_exp > 38 {
+                            let uses_bigint = |extra: u8| {
+                                let l_exp = (s2 + s3 + extra).saturating_sub(s1);
+                                let r_exp = s1.saturating_sub(s2 + s3 + extra);
+                                p1 + l_exp > 38 || p2 + r_exp > 38
+                            };
+                            match (uses_bigint(1), uses_bigint(0)) {
+                                (true, false) => to_i128 += 1,
+                                (false, true) => to_bigint += 1,
+                                _ => {}
+                            }
+                            if uses_bigint(0) {
                                 bigint_branch += 1;
                             } else {
                                 i128_branch += 1;
@@ -393,6 +403,7 @@ mod tests {
         }
         assert!(halves > 1000, "only {halves} exact halves");
         assert!(i128_branch > 100 && bigint_branch > 100);
+        assert!(to_i128 > 0 && to_bigint > 0, "{to_i128} {to_bigint}");
     }
 
     #[test]
