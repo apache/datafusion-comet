@@ -28,6 +28,7 @@ on:
 jobs:
   check-pr-title:
     runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Check PR title

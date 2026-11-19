@@ -45,6 +45,7 @@ Development Guide <development>
 :hidden:
 
 Comet Plugin Overview <plugin_overview>
+Local Execution <local-execution>
 Arrow FFI <ffi>
 Timezone Handling <timezones>
 Floating-Point Semantics <floating_point>

@@ -27,6 +27,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.objectstore.NativeConfig
 
@@ -110,6 +111,80 @@ object CometScanUtils {
       groups.getOrElseUpdate(storeKey(file), mutable.ArrayBuffer.empty[PartitionedFile]) += file
     }
     groups.valuesIterator.map(_.toVector).toVector
+  }
+
+  /**
+   * What the native CSV and Text scans serialize besides their format options: the object store
+   * options of every scheme the scan reads, and its file partitions, split so that none mixes
+   * object stores.
+   */
+  case class NativeFileScanInput(
+      objectStoreOptions: Map[String, String],
+      filePartitions: Seq[FilePartition])
+
+  /**
+   * Prepares the part of a native file scan's serialization that does not depend on the format:
+   * the Hadoop conf from the read options, the object store options, and the per-store partition
+   * split. `Left` is the reason the scan must stay on Spark. `readOptions` is the scan's option
+   * map with the case of each key preserved, as Spark's reader factory builds the Hadoop conf.
+   *
+   * A read option can list a scheme for libhdfs that the session does not. Native reads through
+   * libhdfs with the executor classpath's configuration, not the read options, so a scheme that
+   * only the options route there cannot be read natively, and the scan declines it, as the native
+   * Parquet scan does.
+   */
+  def prepareNativeFileScan(
+      scanName: String,
+      op: CometBatchScanExec,
+      readOptions: Map[String, String]): Either[String, NativeFileScanInput] = {
+    val sessionState = op.session.sessionState
+    val hadoopConf = sessionState.newHadoopConfWithOptions(readOptions)
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val scanLibhdfs = NativeConfig.resolveScanLibhdfsSchemes(
+      NativeConfig.resolveLibhdfsSchemes(sessionState.newHadoopConf()),
+      hadoopConf)
+    val libhdfsSchemes = scanLibhdfs.libhdfs
+    val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val scanOnlyLibhdfsSchemes = inputPartitions.view
+      .flatMap(_.files.view.flatMap(file => NativeConfig.lowerScheme(file.pathUri)))
+      .filter(scanLibhdfs.scanOnly.contains)
+      .toSet
+    if (scanOnlyLibhdfsSchemes.nonEmpty) {
+      return Left(
+        s"$scanName does not support filesystem scheme(s) " +
+          s"${scanOnlyLibhdfsSchemes.toSeq.sorted.mkString(", ")} listed for libhdfs only " +
+          "through reader options")
+    }
+    val multiStoreReason = multiStoreFallbackReason(
+      scanName,
+      inputPartitions.view.flatMap(_.files.view.map(_.pathUri)),
+      s3CompliantSchemes,
+      libhdfsSchemes,
+      isBucketedScan = false)
+    if (multiStoreReason.nonEmpty) {
+      return Left(multiStoreReason.get)
+    }
+    // The options of every scheme the scan reads, or a decline for the ABFS layouts one
+    // resolution cannot serve. Checked before the split below so that its reason is reported.
+    val fileUris = inputPartitions.view.flatMap(_.files).map(_.pathUri)
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+        case Right(options) => options
+        case Left(reason) => return Left(reason)
+      }
+    // Native planning reads each partition through one object store.
+    val filePartitions = splitPartitionsByStore(
+      inputPartitions,
+      file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
+    Right(NativeFileScanInput(objectStoreOptions, filePartitions))
+  }
+
+  /** Indexes into `dataSchema` of the columns in `readDataSchema`, in `dataSchema` order. */
+  def projectionVector(dataSchema: StructType, readDataSchema: StructType): Seq[Integer] = {
+    val readFieldNames = readDataSchema.fieldNames
+    dataSchema.zipWithIndex
+      .filter { case (field, _) => readFieldNames.contains(field.name) }
+      .map(_._2.asInstanceOf[Integer])
   }
 
   /**

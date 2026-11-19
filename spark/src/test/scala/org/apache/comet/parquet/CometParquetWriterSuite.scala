@@ -54,7 +54,7 @@ import org.apache.spark.sql.types.{ArrayType, IntegerType, LongType, MapType, Me
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.hadoop.fs.RecordingFileSystem
 import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
 import org.apache.comet.serde.operator.NativeWriteUtils
@@ -633,7 +633,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("parquet write with a mixed-case unsupported compression codec falls back to Spark") {
-    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
     // The other half of the case bug, and the dangerous half: a case-sensitive read misses the
     // option entirely, finds `snappy` in the SQLConf, decides the codec is supported, and writes
     // SNAPPY bytes into a file Spark named `...-c000.lz4raw.parquet`.
@@ -724,7 +723,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("parquet write with unsupported compression codec falls back to Spark") {
-    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")

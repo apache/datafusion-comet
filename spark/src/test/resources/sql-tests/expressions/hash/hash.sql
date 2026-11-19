@@ -118,3 +118,31 @@ SELECT hash(array(-d)), xxhash64(array(-d)), hash(named_struct('a', -d, 'b', -f)
 -- so the null row is filtered out.
 query
 SELECT hash(map(-d, -f)), xxhash64(map(-d, -f)) FROM test_nan WHERE d IS NOT NULL
+
+
+-- Map hashing. A batch with no null map, key or value takes the native fast loop, so those
+-- rows get their own table; the second table covers null maps and null values.
+statement
+CREATE TABLE test_hash_map_no_nulls(m_si MAP<STRING, INT>, m_is MAP<INT, STRING>, m_ss MAP<STRING, STRING>, m_ii MAP<INT, INT>) USING parquet
+
+statement
+INSERT INTO test_hash_map_no_nulls VALUES
+  (map('a', 10, 'b', -20), map(1, 'v1', -1, ''), map('a', 'v1', 'b', ''), map(1, 10, -1, -20)),
+  (cast(map() AS MAP<STRING, INT>), cast(map() AS MAP<INT, STRING>), cast(map() AS MAP<STRING, STRING>), cast(map() AS MAP<INT, INT>)),
+  (map('', 0), map(0, 'é'), map('', 'é'), map(0, 0)),
+  (map('日本', 2147483647, 'x', -2147483648, 'yz', 3), map(2147483647, 'w', -2147483648, 'long value', 7, 'z'), map('日本', 'w', 'x', 'long value', 'yz', 'z'), map(2147483647, -2147483648, -2147483648, 2147483647, 7, 3))
+
+query
+SELECT hash(m_si), xxhash64(m_si), hash(m_is), xxhash64(m_is), hash(m_ss), xxhash64(m_ss), hash(m_ii), xxhash64(m_ii) FROM test_hash_map_no_nulls
+
+statement
+CREATE TABLE test_hash_map_nulls(m_si MAP<STRING, INT>, m_is MAP<INT, STRING>, m_ss MAP<STRING, STRING>, m_ii MAP<INT, INT>) USING parquet
+
+statement
+INSERT INTO test_hash_map_nulls VALUES
+  (map('a', 10), map(1, 'v1'), map('a', 'v1'), map(1, 10)),
+  (NULL, NULL, NULL, NULL),
+  (map('a', CAST(NULL AS INT), 'b', 3), map(1, CAST(NULL AS STRING), 2, 'z'), map('a', CAST(NULL AS STRING), 'b', 'z'), map(1, CAST(NULL AS INT), 2, 3))
+
+query
+SELECT hash(m_si), xxhash64(m_si), hash(m_is), xxhash64(m_is), hash(m_ss), xxhash64(m_ss), hash(m_ii), xxhash64(m_ii) FROM test_hash_map_nulls
