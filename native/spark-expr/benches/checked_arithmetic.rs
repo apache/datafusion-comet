@@ -92,8 +92,9 @@ enum Overflow {
     UnderNulls,
 }
 
-/// Values in [-1000, 1000], with `max` at the rows that overflow, so that both `+` and `*`
-/// overflow there. Returns the left and right operands.
+/// Values in [-1000, 1000], with `max` in both operands at the rows that overflow, so that
+/// both `+` and `*` overflow there. Only the left operand has nulls. Returns the left and
+/// right operands.
 fn try_operands(
     overflow: Overflow,
     nulls: bool,
@@ -101,28 +102,61 @@ fn try_operands(
     to_array: ToArray,
 ) -> (ArrayRef, ArrayRef) {
     let mut state = 0x1234_5678;
-    let mut side = |left: bool| {
-        let mut values = Vec::with_capacity(NUM_ROWS);
-        let mut valid = Vec::with_capacity(NUM_ROWS);
-        for row in 0..NUM_ROWS {
-            let null = nulls && left && next(&mut state).is_multiple_of(10);
-            let overflows = match overflow {
-                Overflow::None => false,
-                Overflow::OnePerBatch => row == NUM_ROWS / 2,
-                Overflow::Random => next(&mut state).is_multiple_of(100),
-                Overflow::UnderNulls => null,
-            };
-            values.push(if overflows {
+    let (mut left, mut right) = (Vec::with_capacity(NUM_ROWS), Vec::with_capacity(NUM_ROWS));
+    let mut valid = Vec::with_capacity(NUM_ROWS);
+    for row in 0..NUM_ROWS {
+        // The row that overflows in `OnePerBatch` stays valid.
+        let null = nulls && row != NUM_ROWS / 2 && next(&mut state).is_multiple_of(10);
+        let overflows = match overflow {
+            Overflow::None => false,
+            Overflow::OnePerBatch => row == NUM_ROWS / 2,
+            Overflow::Random => next(&mut state).is_multiple_of(100),
+            Overflow::UnderNulls => null,
+        };
+        for side in [&mut left, &mut right] {
+            side.push(if overflows {
                 max
             } else {
                 (next(&mut state) % 2001) as i64 - 1000
             });
-            valid.push(!null);
         }
-        to_array(values, nulls.then(|| NullBuffer::from(valid)))
+        valid.push(!null);
+    }
+
+    // Check that the inputs reach the path the case name claims.
+    let (min, max) = (-max - 1, max);
+    let overflows = |a: i64, b: i64| {
+        let (a, b) = (a as i128, b as i128);
+        !(min as i128..=max as i128).contains(&(a + b))
+            || !(min as i128..=max as i128).contains(&(a * b))
     };
-    let left = side(true);
-    (left, side(false))
+    let (mut valid_overflows, mut null_overflows) = (0, 0);
+    for ((&a, &b), &v) in left.iter().zip(&right).zip(&valid) {
+        if overflows(a, b) {
+            if v {
+                valid_overflows += 1
+            } else {
+                null_overflows += 1
+            }
+        }
+    }
+    let expected = match overflow {
+        Overflow::None => valid_overflows == 0 && null_overflows == 0,
+        Overflow::OnePerBatch => valid_overflows == 1 && null_overflows == 0,
+        Overflow::Random => {
+            (NUM_ROWS / 200..=NUM_ROWS / 50).contains(&(valid_overflows + null_overflows))
+        }
+        Overflow::UnderNulls => valid_overflows == 0 && null_overflows > 0,
+    };
+    assert!(
+        expected,
+        "{valid_overflows} valid and {null_overflows} null overflows"
+    );
+
+    (
+        to_array(left, nulls.then(|| NullBuffer::from(valid))),
+        to_array(right, None),
+    )
 }
 
 fn try_benchmarks(c: &mut Criterion) {

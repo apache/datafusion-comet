@@ -106,8 +106,9 @@ where
     checked_binary(left, right, |l, r| l.div_checked(r))
 }
 
-/// Wrapping integer arithmetic that also reports whether the exact result overflowed. The
-/// sign-bit tests vectorize, while the signed `overflowing_add` and `overflowing_sub` don't.
+/// Wrapping integer arithmetic that also reports whether the exact result overflowed. Add and
+/// sub test sign bits, because the signed `overflowing_add` and `overflowing_sub` don't
+/// vectorize (apache/arrow-rs#12058).
 trait TryArithmetic: ArrowNativeTypeOp {
     fn try_add(self, rhs: Self) -> (Self, bool);
     fn try_sub(self, rhs: Self) -> (Self, bool);
@@ -135,7 +136,8 @@ macro_rules! impl_try_arithmetic {
     };
 }
 
-// Multiplying in the next wider type vectorizes. Widening `i64` to `i128` doesn't pay off.
+// The narrower types multiply in the next wider type. `i64` uses `overflowing_mul`, because in
+// `i128` it measured 0.65x on `x86-64-v3` in apache/arrow-rs#12058.
 impl_try_arithmetic!(i8, |l: i8, r: i8| {
     let wide = l as i16 * r as i16;
     (wide as i8, wide != wide as i8 as i16)
@@ -191,10 +193,10 @@ fn values_and_overflow<T: ArrowNativeTypeOp>(
     (values.into(), overflow)
 }
 
-/// Spark's try mode: a row whose result overflows is null. When no row overflowed, which is
-/// the common case, the result's validity is the inputs' validity. Otherwise a second pass
-/// finds the rows that didn't overflow. Rows under a null may overflow and take that pass
-/// too. Their values are left as computed.
+/// Spark's try mode: a row whose result overflows is null. When no row overflowed, the result's
+/// validity is the inputs' validity. Otherwise a second pass finds the rows that didn't
+/// overflow. Rows under a null may overflow and take that pass too. Their values are left as
+/// computed.
 fn try_binary<T, F>(
     left: &ColumnarValue,
     right: &ColumnarValue,
@@ -1011,6 +1013,20 @@ mod tests {
                     let r = side(b, rng);
                     check_try_against_i128::<T>(scalar(Some(a)), r, op, LEN);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_scalar_operands_return_scalar() {
+        for (l, expected) in [(1, Some(3)), (i32::MAX, None)] {
+            let args = [
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(l))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(2))),
+            ];
+            match checked_add(&args, &DataType::Int32, EvalMode::Try).unwrap() {
+                ColumnarValue::Scalar(ScalarValue::Int32(v)) => assert_eq!(v, expected),
+                other => panic!("expected an Int32 scalar, got {other:?}"),
             }
         }
     }
