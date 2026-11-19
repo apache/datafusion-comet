@@ -27,6 +27,7 @@ jobs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -112,6 +113,7 @@ jobs:
     name: Deploy docs
     needs: build-docs
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

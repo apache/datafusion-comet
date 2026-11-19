@@ -3199,6 +3199,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 mod tests {
     mod empty_native_scan;
     mod iceberg_predicate;
+    mod min_max_reader_filter;
     mod multi_store_scan;
     mod semi_join_reduction;
 
@@ -4675,6 +4676,7 @@ mod tests {
                 expr_modes: vec![],
                 initial_input_buffer_offset: 0,
                 ordered_by_grouping_keys: false,
+                dynamic_filter_enabled: false,
             })),
         };
         let projection = Operator {

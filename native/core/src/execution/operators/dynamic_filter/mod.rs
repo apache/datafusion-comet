@@ -27,6 +27,7 @@ mod topk;
 mod test_utils;
 
 pub(crate) use join::DynamicFilterJoinExec;
+pub(crate) use min_max::MinMaxReaderFilterExec;
 pub(crate) use topk::TopKReaderFilterExec;
 
 use std::fmt::Formatter;
