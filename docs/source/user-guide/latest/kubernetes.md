@@ -154,7 +154,7 @@ kubectl logs comet-dataframe-pi-driver
 ```
 
 The driver log contains the computed approximation (`Pi is roughly ...`). The example retains the
-completed executor pod so that you can inspect its log for the native plan emitted by
+completed executor pod so that you can inspect its log for the Rust plan emitted by
 `spark.comet.explain.native.enabled` and confirm that Comet executed the DataFrame query. Delete the
 application with `kubectl delete sparkapplication comet-dataframe-pi` when you finish.
 

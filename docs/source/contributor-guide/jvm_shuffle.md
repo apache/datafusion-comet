@@ -58,7 +58,7 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 
 4. **Partition keys native shuffle cannot serialize**: native shuffle serializes the
    partitioning expressions to protobuf, so a key expression Comet has no serde for, or whose
-   serde reports it incompatible, keeps the exchange off the native path. JVM shuffle has no
+   serde reports it incompatible, keeps the exchange off the native shuffle path. JVM shuffle has no
    such requirement, because it evaluates the key on the JVM through `UnsafeProjection` and
    `LazilyGeneratedOrdering`, so these exchanges land here rather than on Spark's shuffle. One
    example is the `mapsort(...)` wrapper Spark 4.0 and later adds around a map used as a

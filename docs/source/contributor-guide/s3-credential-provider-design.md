@@ -23,7 +23,7 @@ This page captures why the `org.apache.comet.cloud.s3.CometS3CredentialProvider`
 
 ## The gap the SPI fills
 
-Comet's native scan paths (`object_store` for raw Parquet, `opendal` via `iceberg-rust` for Iceberg) bypass Spark's Hadoop S3A code path. That means credentials cannot flow through any of the contracts that vendors typically wire into for S3A:
+Comet's native scans (`object_store` for raw Parquet, `opendal` via `iceberg-rust` for Iceberg) bypass Spark's Hadoop S3A code path. That means credentials cannot flow through any of the contracts that vendors typically wire into for S3A:
 
 - `org.apache.spark.deploy.security.cloud.CloudCredentialsProvider` yields a single JWT per service name. No path argument, no AWS credential.
 - Hadoop S3A custom signers hide path-aware logic inside `Signer.sign(request, credentials)`. The credential never leaves the signing pipeline, and the underlying secret is an HMAC key that is not present in the signed output, so running the signer against a synthesized request cannot recover it.
@@ -51,7 +51,7 @@ Comet caches one provider instance per `(FQCN, dispatchKey, catalogProperties)` 
 - `catalogProperties` enters the key to handle multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can configure the same provider class against the same `dispatchKey` but with different REST endpoints, OAuth tokens, or vendor keys. Without it the second session would silently use the first session's credentials.
 - Keying solely by FQCN would force vendors to encode multi-tenant routing in static state. The triple-key keeps each call site independent.
 
-`ensureInitialized` returns a `long` handle that the native bridge stashes and replays on every per-request call. Routing per-request lookups by handle avoids re-sending the property bag across JNI on the hot path and unambiguously selects the right provider when the same `(FQCN, dispatchKey)` pair maps to multiple instances.
+`ensureInitialized` returns a `long` handle that the Rust bridge stashes and replays on every per-request call. Routing per-request lookups by handle avoids re-sending the property bag across JNI on the hot path and unambiguously selects the right provider when the same `(FQCN, dispatchKey)` pair maps to multiple instances.
 
 ## Why fresh construction in `initialize`, not probing a JVM-wide static
 
@@ -59,7 +59,7 @@ A provider implementation might be tempted to probe an existing static populated
 
 - The driver JVM hits `S3AFileSystem.initialize` during analysis (raw `s3a://` paths) or during Hadoop catalog manifest reads (Iceberg with Hadoop catalog), so the static is populated there.
 - The driver may not hit `S3AFileSystem` at all under Iceberg with REST catalog plus `S3FileIO`, because `S3FileIO` calls AWS SDK directly without going through the Hadoop layer. The static stays null.
-- Executors with Comet-only reads never instantiate `S3AFileSystem`. The data path is `object_store` (raw Parquet) or `opendal` via `iceberg-rust` (Iceberg native scan). Neither touches Hadoop S3A. The static stays null on every executor.
+- Executors with Comet-only reads never instantiate `S3AFileSystem`. The data path is `object_store` (raw Parquet) or `opendal` via `iceberg-rust` (native Iceberg scan). Neither touches Hadoop S3A. The static stays null on every executor.
 
 Constructing a fresh provider from `catalogProperties` plus `SparkEnv` is the only strategy that works across all four cases. The trade-off is that on the driver (and any JVM where Hadoop S3A is also active), two credential caches now exist for the same identity: one inside the Hadoop signer's provider, one inside the SPI implementation's. The vendor pays for this with a small number of extra AS round-trips on cold starts and TTL boundaries. A future optional optimization could probe the static first and reuse if non-null, falling back to fresh construction otherwise.
 
@@ -78,7 +78,7 @@ The bridge used to forward every call, which left each path with a different and
 - object_store asks for a credential on every request and has no notion of expiry, so the Parquet path called the provider once per HTTP request and used a credential however close it was to expiring. object_store also signs a request once and sends that signature again on every retry, for up to 3 minutes by default, so a retry after backoff could arrive after the session token expired, and a 403 is not retried.
 - iceberg-rust builds a new opendal operator, and with it a new reqsign signer, for every storage call, so reqsign's own cache lasts one operation, and a scan called the provider at least once per data and delete file, even with one-hour tokens.
 
-The reuse window is not a tuning knob. It follows the expiry the vendor reports, and a vendor that wants every request to reach it reports `0`. Five minutes is the refresh-ahead of Comet's other credential caches, the native Parquet credential chain and the IRSA web-identity provider, and it covers object_store's retries. A vendor whose credentials can be revoked before the expiry it reports should report an earlier one.
+The reuse window is not a tuning knob. It follows the expiry the vendor reports, and a vendor that wants every request to reach it reports `0`. Five minutes is the refresh-ahead of Comet's other credential caches, the native Parquet scan's credential chain and the IRSA web-identity provider, and it covers object_store's retries. A vendor whose credentials can be revoked before the expiry it reports should report an earlier one.
 
 ## Location-scoped credentials on the Parquet path
 
@@ -154,7 +154,7 @@ The cache holds the `FileIO` and its bridge. The bridge reuses its credential un
 
 ## Property-bag handling on the Parquet path
 
-The Parquet path forwards the full `fs.s3a.*` config subset as `catalog_properties`, so an SPI provider sees the same `fs.s3a.*` config Spark would. `forward_catalog_properties` in `native/core/src/parquet/objectstore/s3.rs` keeps every `fs.s3a.*` key, including the static credentials (`*.access.key`, `*.secret.key`, `*.session.token`). Forwarding them is deliberate: `AWSCredentialProviderList` skips a provider that throws `NoAwsCredentialsException` and moves to the next entry, so stripping the static keys would let a chain such as `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different provider than Spark, reading data as a different principal. These keys already cross JNI for the non-adapter native path (`build_credential_provider` reads them), so this matches existing behavior rather than widening exposure. Because `NativeConfig.extractObjectStoreOptions` only collects the object store prefixes of the schemes the scan reads (plus the `fs.comet.*` scheme keys), config a provider reads that is not under `fs.s3a.*` -- notably `hadoop.security.credential.provider.path` -- never crosses JNI. `AdapterSupport.toConfiguration` therefore seeds the Hadoop `Configuration` from the executor's own Spark-derived Hadoop conf (`spark.hadoop.*`) and overlays the forwarded `fs.s3a.*` on top, so those keys are present.
+The Parquet path forwards the full `fs.s3a.*` config subset as `catalog_properties`, so an SPI provider sees the same `fs.s3a.*` config Spark would. `forward_catalog_properties` in `native/core/src/parquet/objectstore/s3.rs` keeps every `fs.s3a.*` key, including the static credentials (`*.access.key`, `*.secret.key`, `*.session.token`). Forwarding them is deliberate: `AWSCredentialProviderList` skips a provider that throws `NoAwsCredentialsException` and moves to the next entry, so stripping the static keys would let a chain such as `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different provider than Spark, reading data as a different principal. These keys already cross JNI when Comet's Rust code builds the credential chain itself (`build_credential_provider` reads them), so this matches existing behavior rather than widening exposure. Because `NativeConfig.extractObjectStoreOptions` only collects the object store prefixes of the schemes the scan reads (plus the `fs.comet.*` scheme keys), config a provider reads that is not under `fs.s3a.*` -- notably `hadoop.security.credential.provider.path` -- never crosses JNI. `AdapterSupport.toConfiguration` therefore seeds the Hadoop `Configuration` from the executor's own Spark-derived Hadoop conf (`spark.hadoop.*`) and overlays the forwarded `fs.s3a.*` on top, so those keys are present.
 
 ## Built-in adapters
 

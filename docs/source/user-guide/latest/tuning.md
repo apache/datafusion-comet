@@ -43,12 +43,12 @@ guide is split into the following pages:
 Rows with many columns, long strings, or nested columns such as arrays of structs make every batch
 larger, so queries over such data spill more. For these workloads:
 
-- Choose the codec for spill files from native sorts, aggregations, and joins, which Comet
+- Choose the codec for spill files from Rust-implemented sorts, aggregations, and joins, which Comet
   compresses with `lz4` by default. See
   [Compressing Spill Files](tuning/memory.md#compressing-spill-files).
 - Lower the batch size if wide batches cause spilling or out-of-memory errors. See
   [Batch Size](tuning/memory.md#batch-size).
-- Check which shuffles can run natively when partitioning keys are nested. See
+- Check which shuffles can use native shuffle when partitioning keys are nested. See
   [Native Shuffle](tuning/shuffle.md#native-shuffle).
 - Watch for row/columnar conversions, which are expensive for such schemas. See
   [Wide or Deeply Nested Schemas](tuning/transitions.md#wide-or-deeply-nested-schemas).
@@ -69,10 +69,11 @@ cores from the first of these that applies:
 
 On any other cluster manager, such as Mesos, Comet cannot tell how many cores the executor has when
 `spark.executor.cores` is not set. It starts one worker thread for each processor available to the executor's JVM, and
-logs a warning unless `COMET_WORKER_THREADS` is set. Too few worker threads cost more than a few idle ones: native plans
-that read no input from the JVM, such as a native Parquet scan feeding a sort, run entirely on the worker threads, so
-tasks share them when an executor runs more tasks at once than it has worker threads. The worker and blocking thread
-counts can be overridden using the environment variables `COMET_WORKER_THREADS` and `COMET_MAX_BLOCKING_THREADS`.
+logs a warning unless `COMET_WORKER_THREADS` is set. Too few worker threads cost more than a few idle ones:
+Rust-implemented plans that read no input from the JVM, such as a native Parquet scan feeding a sort, run entirely
+on the worker threads, so tasks share them when an executor runs more tasks at once than it has worker threads. The
+worker and blocking thread counts can be overridden using the environment variables `COMET_WORKER_THREADS` and
+`COMET_MAX_BLOCKING_THREADS`.
 
 ## Metrics Overhead
 

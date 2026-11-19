@@ -24,7 +24,7 @@ helpful to have a roadmap for some of the major items that require coordination 
 
 ## Window Expressions
 
-Native window execution runs by default (`spark.comet.exec.window.enabled`). The ranking functions (`rank`,
+Comet runs window operators by default (`spark.comet.exec.window.enabled`). The ranking functions (`rank`,
 `dense_rank`, `row_number`, `percent_rank`, `cume_dist`, `ntile`), value functions (`lag`, `lead`, `nth_value`,
 `first_value`, `last_value`), and the `count`, `min`, `max`, `sum`, and `avg` aggregates are accelerated.
 Remaining work is to close the gaps that still fall back to Spark: statistical aggregates (`stddev`, `variance`,
@@ -39,16 +39,16 @@ supported functions, frames, and fallback cases.
 [#4834]: https://github.com/apache/datafusion-comet/issues/4834
 [#4835]: https://github.com/apache/datafusion-comet/issues/4835
 
-## Native Lambda Evaluation
+## Rust Lambda Evaluation
 
 Spark supports higher-order functions on arrays and maps that take a lambda, including `transform`, `exists`,
 `forall`, `aggregate`, `zip_with`, `map_filter`, and `map_zip_with`. Comet evaluates these today through a JVM
 codegen-dispatch bridge (`CometScalaUDF`, `CometBatchKernelCodegen`) instead of falling back to Spark, but the
-lambda body is still interpreted row-at-a-time on the JVM rather than natively in DataFusion. DataFusion added
-native higher-order function support (`array_transform`, `array_filter`, `array_any_match`, etc.) that Comet
+lambda body is still interpreted row-at-a-time on the JVM rather than in DataFusion. DataFusion added
+higher-order function support (`array_transform`, `array_filter`, `array_any_match`, etc.) that Comet
 does not yet use; it's not yet known whether their semantics are Spark-compatible. We'll explore whether
 DataFusion's implementations can replace the JVM codegen-dispatch bridge to remove that round-trip and let
-these expressions benefit from vectorized native execution.
+these expressions benefit from vectorized execution in Rust.
 
 ## Native Coverage for Codegen-Dispatched Expressions
 
@@ -57,7 +57,7 @@ functions, for example) route through the same JVM codegen-dispatch bridge by de
 DataFusion or `datafusion-spark` implementation has known semantic differences from Spark, or because no native
 implementation exists yet. The [expression reference] records which expressions are codegen-dispatched today. The
 bridge covers only scalar expressions, so an aggregate function with no Spark-compatible native implementation falls
-back to Spark instead. We're exploring closing these gaps so that more expressions run natively by default, which
+back to Spark instead. We're exploring closing these gaps so that more expressions run in Rust by default, which
 would remove JVM round-trips beyond those the lambda work above addresses.
 
 [expression reference]: ../user-guide/latest/expressions.md
@@ -100,9 +100,9 @@ core DataFusion operators (joins, aggregates, window) made in support of Comet a
 
 ## Spillable Hash Join
 
-Comet's native hash join currently requires the build side to fit entirely in memory. Adding spill-to-disk
+Comet's Rust-implemented hash join currently requires the build side to fit entirely in memory. Adding spill-to-disk
 support ([#2545]) will allow Comet to handle larger joins without falling back to Spark, improving both reliability
-and performance for memory-intensive workloads. Comet's native hash join uses DataFusion's `HashJoinExec`, and a
+and performance for memory-intensive workloads. Comet's hash join uses DataFusion's `HashJoinExec`, and a
 design for spilling in that operator, behind a flag that is off by default, is proposed upstream in
 [datafusion #24768].
 
@@ -136,7 +136,7 @@ enabled by default ([#1625]).
 
 ## Iceberg Table Writes
 
-Comet can write Iceberg tables natively, controlled by one setting, `spark.comet.write.iceberg.enabled`, which is
+Comet can write Iceberg tables in Rust, controlled by one setting, `spark.comet.write.iceberg.enabled`, which is
 off by default. Comet splits Spark's Iceberg V2 write operator into separate writer and committer operators, so the
 query feeding the write becomes visible to AQE and to Comet's columnar rules ([#4658]), and delegates each task's
 Parquet write to `iceberg-rust` when the write passes an eligibility check ([#5361]); writes that don't pass keep

@@ -19,9 +19,9 @@
 
 # Spark Data Type Support
 
-This page is the complete reference for how Apache Comet handles each Spark data type. Comet's
-native execution path is built on Apache Arrow, so the set of types Comet can express natively
-is constrained by Arrow's type system. When a query references a type Comet does not support,
+This page is the complete reference for how Apache Comet handles each Spark data type. The Comet
+pipeline is built on Apache Arrow, so the set of types Comet can express is constrained by Arrow's
+type system. When a query references a type Comet does not support,
 the relevant operator falls back to Spark; results are unaffected.
 
 For per-scan and per-operator type caveats (for example, Parquet read-time conversions or
@@ -31,7 +31,7 @@ hash-aggregate group-key restrictions), see the [Compatibility Guide](compatibil
 
 | Status                 | Meaning                                                                                 |
 | ---------------------- | --------------------------------------------------------------------------------------- |
-| ✅ Supported           | Native support; enabled by default.                                                     |
+| ✅ Supported           | Handled in the Comet pipeline; enabled by default.                                      |
 | ⚠️ Supported (caveats) | Works, but with limits: certain values, contexts, or configurations fall back to Spark. |
 | 🔜 Planned             | Intended; tracked by an open issue or pull request.                                     |
 
@@ -40,7 +40,7 @@ hash-aggregate group-key restrictions), see the [Compatibility Guide](compatibil
 The following types fall back to Spark and are not on the current roadmap. They are omitted from
 the tables below and may be reconsidered based on demand:
 
-- **`UserDefinedType`**: user-defined types are application-specific and outside the scope of native acceleration; queries referencing UDTs fall back to Spark.
+- **`UserDefinedType`**: user-defined types are application-specific and outside the scope of Comet acceleration; queries referencing UDTs fall back to Spark.
 
 ## Numeric
 
@@ -71,17 +71,17 @@ the tables below and may be reconsidered based on demand:
 
 ## Datetime
 
-| Type               | Status | Notes                                                                                                                                                                                                                   |
-| ------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DateType`         | ✅     |                                                                                                                                                                                                                         |
-| `TimestampType`    | ✅     |                                                                                                                                                                                                                         |
-| `TimestampNTZType` | ✅     |                                                                                                                                                                                                                         |
-| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place. Parquet scans of `TIME` columns fall back, and some operators (sort, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
+| Type               | Status | Notes                                                                                                                                                                                                            |
+| ------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DateType`         | ✅     |                                                                                                                                                                                                                  |
+| `TimestampType`    | ✅     |                                                                                                                                                                                                                  |
+| `TimestampNTZType` | ✅     |                                                                                                                                                                                                                  |
+| `TimeType`         | ⚠️     | Spark 4.1+. Serde support is in place. Parquet scans of `TIME` columns fall back, and some operators (sort, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
 
 ## Interval
 
 All three interval types are mapped to Arrow and flow through serde, native shuffle, and the
-codegen dispatcher, so interval columns and the interval-producing expressions run natively.
+codegen dispatcher, so interval columns and the interval-producing expressions run in Comet.
 Several operators still gate on the type and fall back: Parquet scans of ANSI interval columns,
 single-column sorts, hash aggregates (`min` / `max` / `sum` / `avg`), `GROUP BY`, window
 functions. Remaining work is tracked by
@@ -114,7 +114,7 @@ Parquet timestamp inference settings. Support for Spark's whole-value pushdown r
 by [#5519](https://github.com/apache/datafusion-comet/issues/5519). Nested Variant columns, pushed-down
 Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
 files, and Iceberg scans that read a Variant column fall back to Spark. Iceberg scans of tables
-whose Variant columns the query does not read run natively. Spark also handles columnar-to-row
+whose Variant columns the query does not read run in Comet. Spark also handles columnar-to-row
 conversion of the native scan output and strict reads with `allowReadingShredded=false`. Broader
 support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295) and
 [#3983](https://github.com/apache/datafusion-comet/issues/3983).

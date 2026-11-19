@@ -233,8 +233,8 @@ mode controls how results are validated.
 
 #### `query` (default mode)
 
-Checks that the query runs natively on Comet (not falling back to Spark) and that results
-match Spark exactly.
+Checks that the query runs in Comet (not falling back to Spark) and that results match Spark
+exactly.
 
 ```sql
 query
@@ -243,7 +243,7 @@ SELECT abs(v) FROM test_abs
 
 #### `query spark_answer_only`
 
-Only checks that Comet results match Spark. Does not assert that the query runs natively.
+Only checks that Comet results match Spark. Does not assert that the query runs in Comet.
 Use this for expressions that Comet may not fully support yet but should still produce
 correct results.
 
@@ -285,18 +285,18 @@ SELECT unsupported_func(v) FROM test_table
 Checks results and coverage like a plain `query`, and additionally asserts how Comet evaluated
 the named expressions.
 
-Comet runs an expression either natively (a DataFusion expression) or through the JVM codegen
+Comet runs an expression either in Rust (a DataFusion expression) or through the JVM codegen
 dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel). Both produce
 Spark-matching results, so a plain `query` cannot tell them apart. Use these modes on fixtures
 where the mechanism is the point of the test, typically an expression whose support depends on
 its argument type.
 
 ```sql
--- BinaryType has no native path and must route through the dispatcher
-query expect_dispatch(bit_length)
-SELECT bit_length(b) FROM test_bit_length_binary
+-- lower routes through the dispatcher unless spark.comet.caseConversion.enabled=true
+query expect_dispatch(lower)
+SELECT lower(s) FROM test_lower
 
--- StringType must stay on the native path
+-- bit_length of a string runs in Rust
 query expect_native(bit_length)
 SELECT bit_length(s) FROM test_bit_length
 ```
@@ -306,8 +306,8 @@ Names are comma-separated. A name is the expression's `prettyName` lowercased (`
 expression asserts both that it ran through the expected mechanism and that it did not run
 through the other one.
 
-A query carries one mode, so a query mixing a native and a dispatched expression has to be split
-into two queries, one per mode.
+A query carries one mode, so a query mixing a Rust-implemented and a dispatched expression has to
+be split into two queries, one per mode.
 
 #### `query ignore(<reason>)`
 
@@ -396,10 +396,10 @@ operators and needs no additional successful query.
    `NULL`, boundary values, and negative numbers.
 
 5. Add `query` blocks for each expression or behavior to test. Use the default `query` mode
-   when you expect Comet to run the expression natively. Use `query spark_answer_only` when
-   native execution is not yet expected.
+   when you expect the query to run in Comet. Use `query spark_answer_only` when Comet is not
+   yet expected to run it.
 
-   If the expression's serde routes some input types to a native DataFusion expression and
+   If the expression's serde routes some input types to a DataFusion expression in Rust and
    others through the JVM codegen dispatcher, use `expect_native(...)` and `expect_dispatch(...)`
    for those queries. A plain `query` cannot tell the two mechanisms apart, so the split is
    otherwise untested.
@@ -417,8 +417,8 @@ operators and needs no additional successful query.
 Reach for `expect_native(...)` / `expect_dispatch(...)` whenever the fixture's own comments
 explain which path an input takes. That comment is a claim about behavior, and these modes are
 what turn it into a test. Expressions worth annotating are the ones whose support level depends
-on argument type or on a config: `round` (float and double dispatch, decimal and integral stay
-native), `lower` / `upper` (dispatch by default), and anything mixing in `CodegenDispatchFallback`.
+on argument type or on a config: `round` (float and double dispatch, decimal and integral run in
+Rust), `lower` / `upper` (dispatch by default), and anything mixing in `CodegenDispatchFallback`.
 
 A query carries a single mode, so a query that mixes both mechanisms has to be split. That split
 is usually worth doing on its own: it forces you to say which argument takes which path.
@@ -459,12 +459,11 @@ SELECT concat_ws(',', 'hello', 'world')
 
 **Note on constant folding:** Normally Spark constant-folds all-literal expressions during
 planning, so Comet would never see them. However, `CometSqlFileTestSuite` automatically
-disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so
-all-literal queries are evaluated by Comet's native engine. This means you can use the
-default `query` mode for all-literal cases and they will be tested natively just like
-column-based queries, subject to other optimizer rewrites such as `NullPropagation` and
-Comet's own plan-time literal handling. `ConstantFolding: enabled` opts out of the default
-exclusion for fixtures that deliberately test folded literals.
+disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so that
+rule does not remove all-literal expressions before Comet sees them. Other optimizer rules, such
+as `NullPropagation`, and Comet's own plan-time literal handling can still remove them, so an
+all-literal query is not guaranteed to exercise the expression in Comet. `ConstantFolding:
+enabled` opts out of the default exclusion for fixtures that deliberately test folded literals.
 
 #### Cover edge cases
 

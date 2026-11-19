@@ -36,8 +36,8 @@ admitted when:
 - `spark.executor.userClassPathFirst` is off, since a child-first task class loader would load
   its own copy of the driver's result slots;
 - the plan is a batch query and not a subquery being prepared;
-- the converted plan is one native block, a tree of Comet native operators whose root carries
-  the block's serialized plan, with no JVM input, broadcast or shuffle inside it;
+- the converted plan is one native block, a tree of Rust-implemented Comet operators whose root
+  carries the block's serialized plan, with no JVM input, broadcast or shuffle inside it;
 - the block's only leaf is a `CometRangeExec`, so the range must be converted to Comet
   (`spark.comet.exec.range.enabled`);
 - its expressions are deterministic, contain no subquery, and do not call back into the JVM,
@@ -98,7 +98,7 @@ partition, or when the partitions are ranges of a prefix of that ordering, as a 
 are. Sorting within partitions, for example, reports no ordering. `CometLocalResultExec` reports
 the block's own partitioning and ordering, which hold for the partitions it returns.
 
-Explain shows the native block under `CometLocalExec`. Its native operators do not report SQL
+Explain shows the native block under `CometLocalExec`. Its operators do not report SQL
 metrics; `CometLocalExec` counts the rows and batches it delivers.
 
 ## Result delivery

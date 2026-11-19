@@ -22,9 +22,9 @@ under the License.
 This HOWTO describes how to debug JVM code and Native code concurrently. The guide assumes you have:
 
 1. IntelliJ as the Java IDE
-2. CLion as the Native IDE. For Rust code, the CLion Rust language plugin is required. Note that the
+2. CLion as the Rust IDE. For Rust code, the CLion Rust language plugin is required. Note that the
    IntelliJ Rust plugin is not sufficient.
-3. CLion/LLDB as the native debugger. CLion ships with a bundled LLDB and the Rust community has
+3. CLion/LLDB as the Rust debugger. CLion ships with a bundled LLDB and the Rust community has
    its own packaging of LLDB (`lldb-rust`). Both provide a better display of Rust symbols than plain
    LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with CLion for this guide.
 4. We will use a Comet _unit_ test as the canonical use case.
@@ -106,9 +106,9 @@ Detecting the debugger
 
 ## Verbose debug
 
-### Enabling Native Backtraces
+### Enabling Rust Backtraces
 
-By default, Comet does not show native backtraces when exceptions happen in native code:
+By default, Comet does not show Rust backtraces when exceptions happen in native code:
 
 ```scala
 scala> spark.sql("my_failing_query").show(false)
@@ -123,7 +123,7 @@ This was likely caused by a bug in DataFusion's code and we would welcome that y
 
 ```
 
-Comet can be built with DataFusion's [backtrace] feature enabled, which will include native back traces in `CometNativeException`.
+Comet can be built with DataFusion's [backtrace] feature enabled, which will include Rust backtraces in `CometNativeException`.
 
 [backtrace]: https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces
 
@@ -174,13 +174,13 @@ stderr of the executor where it happened, on a line starting with `Comet native 
 `CometNativeException` it surfaces as carries the panic message only, because a panic can reach the
 JVM on a different thread than the one that raised it.
 
-### Native log configuration
+### Native-side log configuration
 
 By default, Comet emits native-side logs at the `INFO` level to `stderr`.
 
 You can use the `COMET_LOG_LEVEL` environment variable to specify the log level. Supported values are: `OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`.
 
-For example, to configure native logs at the `DEBUG` level on spark executor:
+For example, to configure native-side logs at the `DEBUG` level on spark executor:
 
 ```
 spark.executorEnv.COMET_LOG_LEVEL=DEBUG

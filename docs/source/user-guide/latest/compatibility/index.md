@@ -30,10 +30,10 @@ This guide documents areas where Comet's behavior is known to differ from Spark.
 - **Regular expressions**: differences between the Rust regexp crate and Java's regex engine.
 - **Operators**: operator-level compatibility notes, including window functions and round-robin partitioning.
 - **Expressions**: per-expression compatibility notes, including cast.
-- **JSON**: choosing between the native and Spark-compatible engines for JSON expressions.
+- **JSON**: choosing between the Rust and Spark-compatible engines for JSON expressions.
 - **Spark versions**: version-specific known issues and limitations.
 
-## Compatible by default, opt in to native
+## Compatible by default, opt in to native implementations
 
 Comet runs a Spark-compatible implementation of every supported expression by default. Some
 expressions also have a native implementation that can differ from Spark for certain
@@ -41,17 +41,17 @@ inputs. These are not used unless you opt in by setting the relevant
 `spark.comet.expression.<Name>.allowIncompatible=true` config (a few use a dedicated config, noted
 per expression below), after which you accept the documented differences.
 
-You can discover where a native opt-in is available for a specific query in the verbose extended
-explain output. A `[COMET-INFO: ...]` segment points at an available native path and does not mean
-the operator falls back to Spark. This is distinct from `[COMET: ...]`, which records a reason an
-operator did fall back.
+You can discover where an opt-in native implementation is available for a specific query in the
+verbose extended explain output. A `[COMET-INFO: ...]` segment points at an available native
+implementation and does not mean the operator falls back to Spark. This is distinct from
+`[COMET: ...]`, which records a reason an operator did fall back.
 
 ## Native and codegen-dispatch implementations
 
 Some Spark expressions have two implementations in Comet:
 
 - A **codegen-dispatch** implementation that runs Spark's own generated code for the
-  expression inside Comet's native pipeline (via the Arrow-direct codegen dispatcher). This
+  expression inside the Comet pipeline (via the Arrow-direct codegen dispatcher). This
   produces byte-exact Spark results at the cost of one JNI round-trip per batch. It is gated
   globally by `spark.comet.exec.scalaUDF.codegen.enabled` (enabled by default); when the
   dispatcher is disabled, these expressions fall back to Spark.
@@ -59,10 +59,10 @@ Some Spark expressions have two implementations in Comet:
   known semantic differences from Spark for some inputs or patterns.
 
 Because the codegen-dispatch path matches Spark exactly, Comet uses it by **default**. The
-native path is **opt-in per expression** via that expression's
+native implementation is **opt-in per expression** via that expression's
 `spark.comet.expression.<ExprClassName>.allowIncompatible=true` flag, which declares that you
-accept its differences from Spark. There is no global opt-in. When the native path is enabled
-but a specific input or pattern has no native implementation, Comet routes that case back
+accept its differences from Spark. There is no global opt-in. When the native implementation is
+enabled but a specific input or pattern has no native implementation, Comet routes that case back
 through the codegen dispatcher rather than running something incompatible.
 
 This is the model behind the [regular expression](regex.md) and [JSON](json.md) families,
@@ -70,15 +70,15 @@ which document their per-expression configs and the specific differences to expe
 
 This is distinct from expressions that have **no** codegen-dispatch path: there, the
 incompatible cases fall back to Spark by default, and `allowIncompatible=true` runs the native
-(incompatible) path instead. Aggregate functions such as `mode` are the main example, because the
-codegen dispatcher covers only scalar expressions; see the
+(incompatible) implementation instead. Aggregate functions such as `mode` are the main example,
+because the codegen dispatcher covers only scalar expressions; see the
 [expression reference](../expressions.md) for which expressions have incompatible cases.
 
 ## Strings with non-UTF-8 bytes
 
 Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
 example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
-the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
+the raw bytes in an Arrow string. When Comet produces a string from arbitrary bytes (such as
 `CAST(binary AS string)`, a columnar shuffle, or a nested Parquet BINARY value read as a string),
 it decodes them the same way the JVM does
 (`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
@@ -126,7 +126,7 @@ a result:
   repartitioning a Latin-1 Text table can return `U+FFFD` where Spark keeps the original bytes.
   Setting `spark.comet.shuffle.mode=native` keeps such shuffles on Spark.
 - **`CAST(binary AS STRING)`.** Comet decodes the bytes where Spark keeps them. Because `min` and `max`
-  over strings run natively, a cast below them is decoded before the comparison, and the two can swap.
+  over strings run in Comet, a cast below them is decoded before the comparison, and the two can swap.
   With `b` holding `X'80'` and `X'C3A9'`, Spark returns `min(CAST(b AS STRING))` = the `0x80` string
   and `max` = `é`, whereas Comet returns `min` = `é` and `max` = `U+FFFD`. This is the ordering
   difference above. If the cast input can hold bytes that are not valid UTF-8, disable Comet for the
@@ -135,10 +135,10 @@ a result:
   `spark.comet.shuffle.mode=native`. All three are needed: with only the first two, the aggregate
   runs in Spark, but Comet's columnar shuffle still decodes its partial results. These settings are
   not enough when the cast is in a projection below the aggregate, for example
-  `SELECT min(s) FROM (SELECT CAST(b AS STRING) AS s FROM t)`, because Comet runs that projection
-  natively and decodes the bytes before the aggregate sees them.
+  `SELECT min(s) FROM (SELECT CAST(b AS STRING) AS s FROM t)`, because that projection runs in
+  Comet and decodes the bytes before the aggregate sees them.
 
-Consistent handling of invalid UTF-8 across all native string paths is tracked by
+Consistent handling of invalid UTF-8 across all of Comet's string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
@@ -147,7 +147,7 @@ valid UTF-8 rather than reading them like Spark
 
 ## ANSI errors from rows skipped by LIMIT
 
-Native operators evaluate batches of rows. With `spark.sql.ansi.enabled=true`, some `LIMIT`
+Comet operators evaluate batches of rows. With `spark.sql.ansi.enabled=true`, some `LIMIT`
 plan shapes can therefore raise an expression error from a row that Spark stops before evaluating.
 For example, with a Parquet batch read in the order `(id, value) = (0, '0'), (1, '1')`:
 
@@ -173,7 +173,7 @@ evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 
 ## ANSI-mode error classes and messages
 
-Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct
+Under `spark.sql.ansi.enabled=true`, several Rust error paths raise the error at the correct
 input but with a different exception type, error class, SQLSTATE, or message text than Spark.
 Code that catches `SparkException` and only asserts on message substrings is unaffected; code that
 inspects the exception class, `getCondition()`, or the parameterised error class will observe
@@ -184,18 +184,18 @@ divergence:
 
 ## Known result-value divergences
 
-The following native paths can return different values or raise errors that Spark does not raise
-for edge-case inputs.
+The following Rust-implemented paths can return different values or raise errors that Spark does
+not raise for edge-case inputs.
 Most also have entries in the per-category expression pages linked above; they are collected here
 so users hunting an unexpected value have a single place to check. Parquet and Iceberg reads and
 writes have their own lists, under Known Issues on the
 [Parquet](../parquet.md#known-issues) and [Iceberg](../iceberg.md#known-issues) pages:
 
-- Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
-  Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
+- Comet's `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
+  Spark when the boundary arithmetic overflows for a `DATE` `ORDER BY` column
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - Grouped ANSI decimal `AVG` can evaluate an overflowing group in a batch even when Spark would
-  stop before that group at `LIMIT`. It remains natively enabled with this error-timing difference;
+  stop before that group at `LIMIT`. It still runs in Comet with this error-timing difference;
   disabling `spark.comet.exec.aggregate.enabled` restores Spark's aggregate evaluation.
   On final result overflow, Comet's error message prints the average rounded to the result scale;
   Spark 4.0 prints the quotient truncated to 39 fractional digits.

@@ -23,7 +23,7 @@ under the License.
 
 Spark 4.0 inserts `MapSort` to normalize map values when they appear in shuffle hash partitioning
 keys, in `try_element_at`, and in other contexts where map ordering must be deterministic. Comet
-runs `MapSort` natively, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.
+runs `MapSort` in Rust, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.
 
 When `spark.comet.exec.strictFloatingPoint=true`, `MapSort` falls back to Spark for maps whose
 keys contain `Float` or `Double`. Arrow's sort uses

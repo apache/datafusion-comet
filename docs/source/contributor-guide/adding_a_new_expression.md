@@ -115,7 +115,7 @@ Follow these rules when wiring scalar expressions:
   `scalarFunctionExprToProtoWithReturnType(..., failOnError, ...)`. The function
   must also have a dedicated match arm in
   `create_comet_physical_fun_with_eval_mode` that actually consumes the flag;
-  it must not fall through to registry lookup. Existing native consumers
+  it must not fall through to registry lookup. Existing Rust consumers
   include `make_decimal`, `make_date`, `make_time`, and `next_day`.
 
 #### When to set the return type explicitly
@@ -129,7 +129,7 @@ org.apache.comet.CometNativeException: Error from DataFusion:
 Function 'levenshtein' expects 2 arguments but received 3.
 ```
 
-The classic case is `levenshtein`. Spark accepts an optional 3rd `threshold` argument, DataFusion's built-in is 2-arg only, so the 3-arg form fails native execution unless the serde sets the return type explicitly. Other names that exist in both engines with potentially different signatures include `concat`, `coalesce`, `sha2`, and `regexp_replace`. If you are adding a function whose name is shared with `datafusion-functions`, check the upstream signature before deciding how to serialize.
+The classic case is `levenshtein`. Spark accepts an optional 3rd `threshold` argument, DataFusion's built-in is 2-arg only, so the 3-arg form fails at execution time unless the serde sets the return type explicitly. Other names that exist in both engines with potentially different signatures include `concat`, `coalesce`, `sha2`, and `regexp_replace`. If you are adding a function whose name is shared with `datafusion-functions`, check the upstream signature before deciding how to serialize.
 
 To avoid the registry lookup, write a custom `CometExpressionSerde` and use `scalarFunctionExprToProtoWithReturnType`, passing the Spark expression's declared `dataType`:
 
@@ -154,7 +154,7 @@ When the return type is set on the proto, the native planner skips the registry 
 
 #### Arguments that Spark skips after a NULL
 
-A null-intolerant `BinaryExpression` or `TernaryExpression` returns NULL as soon as one of its arguments is NULL, without evaluating the arguments after it. Native execution evaluates every argument of a `ScalarFunc` over the whole batch, so an argument that can fail, such as an ANSI cast of a malformed string, would fail on rows that Spark skips. Wrap the serialized call of such an expression in `withNullShortCircuit`, as `CometArrayContains` and `CometSlice` do, after checking the conditions in its Scaladoc.
+A null-intolerant `BinaryExpression` or `TernaryExpression` returns NULL as soon as one of its arguments is NULL, without evaluating the arguments after it. Comet's Rust code evaluates every argument of a `ScalarFunc` over the whole batch, so an argument that can fail, such as an ANSI cast of a malformed string, would fail on rows that Spark skips. Wrap the serialized call of such an expression in `withNullShortCircuit`, as `CometArrayContains` and `CometSlice` do, after checking the conditions in its Scaladoc.
 
 #### Registering the Expression Handler
 
@@ -181,7 +181,7 @@ The `SupportLevel` sealed trait has three possible values:
 
 - **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases unlikely to affect most users. This is the default if you don't override `getSupportLevel`.
 - **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if the expression-specific config `spark.comet.expression.<exprName>.allowIncompatible=true` is set.
-- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. Spark will fall back to its native execution.
+- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The operator that contains it falls back to Spark, unless a `CodegenDispatchFallback` serde routes it through codegen dispatch.
 
 All three accept an optional `notes` parameter to provide additional context that is logged for debugging.
 
@@ -366,7 +366,7 @@ That run rewrites every Implementation cell in place, mapping SQL function names
 
 #### Adding Spark-side Tests for the New Expression
 
-It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a Comet SQL Test. This approach is simpler than writing Comet Scala Tests and makes it easy to cover many input combinations and edge cases.
+It is important to verify that the new expression is correctly recognized by Comet and matches the expected Spark behavior. The preferred way to add test coverage is to write a Comet SQL Test. This approach is simpler than writing Comet Scala Tests and makes it easy to cover many input combinations and edge cases.
 
 ##### Writing a Comet SQL Test
 
@@ -398,7 +398,7 @@ query
 SELECT unhex('48656C6C6F'), unhex(''), unhex(NULL)
 ```
 
-Each `query` block automatically runs the SQL through both Spark and Comet and compares results, and also verifies that Comet executes the expression natively (not falling back to Spark).
+Each `query` block automatically runs the SQL through both Spark and Comet and compares results, and also verifies that the expression runs in Comet (not falling back to Spark).
 
 Run the test with:
 
@@ -410,11 +410,11 @@ For full documentation on the test file format, including directives like `Confi
 
 ##### Tips
 
-- **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
+- **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated by Comet.
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
 - **For `FLOAT` and `DOUBLE` input, include `-0.0` and a NaN with the sign bit set.** [Floating-Point Semantics](floating_point.md) explains which Spark rule an expression follows and how to test it.
 - **Keep one file per expression** to make failures easy to locate.
-- **Pin the mechanism when it depends on the input.** If your serde routes some input types natively and others through the JVM codegen dispatcher, say so with `expect_native(...)` and `expect_dispatch(...)`. A plain `query` cannot tell the two apart, so without these a later change that swaps one for the other passes silently. See [Comet SQL Tests](sql-file-tests.md).
+- **Pin the mechanism when it depends on the input.** If your serde routes some input types to its native implementation and others through the JVM codegen dispatcher, say so with `expect_native(...)` and `expect_dispatch(...)`. A plain `query` cannot tell the two apart, so without these a later change that swaps one for the other passes silently. See [Comet SQL Tests](sql-file-tests.md).
 
 ##### Comet Scala Tests (alternative)
 
@@ -444,31 +444,33 @@ test("unhex") {
 
 `checkSparkAnswerAndOperator` verifies that results match Spark and that Comet did not fall back
 for the operator. It does not distinguish _how_ Comet evaluated the expression. Comet has two
-accelerated paths, a native DataFusion expression and the JVM codegen dispatcher (Spark's own
+accelerated paths, a DataFusion expression in Rust and the JVM codegen dispatcher (Spark's own
 `doGenCode` compiled into an Arrow batch kernel), and both produce Spark-matching results by
 construction.
 
-If your serde picks between them, for example returning `Unsupported` for one input type and
-relying on `CodegenDispatchFallback` to keep it in the pipeline, use `checkSparkAnswerAndImpl` so
+If your serde picks between them, for example by input type with `CodegenDispatchFallback`, or by a
+config as `lower` does with `spark.comet.caseConversion.enabled`, use `checkSparkAnswerAndImpl` so
 the choice is asserted rather than assumed:
 
 ```scala
-test("bit_length dispatches on binary and stays native on string") {
+test("lower dispatches by default and runs in Rust with case conversion enabled") {
   withTable("t") {
-    sql("CREATE TABLE t (b BINARY, s STRING) USING parquet")
-    sql("INSERT INTO t VALUES (X'48656c6c6f', 'hello'), (NULL, NULL)")
+    sql("CREATE TABLE t (s STRING) USING parquet")
+    sql("INSERT INTO t VALUES ('Hello'), (NULL)")
 
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(b) FROM t"), dispatched = Seq("bit_length"))
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(s) FROM t"), native = Seq("bit_length"))
+    checkSparkAnswerAndImpl(sql("SELECT lower(s) FROM t"), dispatched = Seq("lower"))
+    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+      checkSparkAnswerAndImpl(sql("SELECT lower(s) FROM t"), native = Seq("lower"))
+    }
   }
 }
 ```
 
 Names are the expression's `prettyName` lowercased. Naming an expression asserts both that it ran
 through the expected mechanism and that it did not run through the other one, so a serde that
-later gains a native path (or loses its dispatcher route) fails here instead of passing unnoticed.
-Prefer the SQL file equivalents, `expect_native(...)` and `expect_dispatch(...)`, when the test
-fits in a fixture.
+later gains a native implementation (or loses its dispatcher route) fails here instead of passing
+unnoticed. Prefer the SQL file equivalents, `expect_native(...)` and `expect_dispatch(...)`, when
+the test fits in a fixture.
 
 When writing Comet Scala Tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
 
@@ -516,8 +518,8 @@ How this works is somewhat dependent on the type of expression you're adding. Ex
 If you're adding a new expression that requires custom protobuf serialization, you may need to:
 
 1. Add a new message to the protobuf definition in `native/proto/src/proto/expr.proto`
-2. Add a native expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
-   create a native expression
+2. Add an expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
+   create a DataFusion `PhysicalExpr`
 
 For most expressions, you can skip this step if you're using the existing scalar function infrastructure.
 
@@ -584,7 +586,7 @@ Use `datafusion_comet_common::decode_utf8_spark_lossy` (defined in `native/commo
 replaces each ill-formed sequence with `U+FFFD` exactly as the JVM's `new String(bytes, UTF_8)` does,
 so Comet's rendered output matches Spark (including the surrogate-range cases where
 `str::from_utf8_lossy` would differ). This is the decoder used by both `CAST(binary AS string)` and
-the native columnar shuffle. See the
+JVM shuffle's Rust conversion of Spark rows to Arrow. See the
 [strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
 compatibility guide for the user-visible behavior, including the cases where decoding diverges from
 Spark.

@@ -107,7 +107,7 @@ What each is for:
 
 - `git` clones the repository
 - `make` drives the build through the top level `Makefile`
-- `gcc`, `gcc-c++`, `cmake` build the native dependencies of the Rust crates
+- `gcc`, `gcc-c++`, `cmake` build the C and C++ dependencies of the Rust crates
 - `protobuf-compiler` provides `protoc`, needed to generate the plan serialization code
 - `java-17-amazon-corretto-devel` provides the JDK. JDK 17 or later is required for Spark 4.0 and
   above, which is the default build profile
@@ -115,7 +115,7 @@ What each is for:
 
 ### Protobuf Compiler
 
-The native build compiles the Comet protobuf definitions with `prost-build`, which needs a `protoc`
+The Rust build compiles the Comet protobuf definitions with `prost-build`, which needs a `protoc`
 binary on the `PATH`. Without one, `make release` fails with:
 
 ```
@@ -345,7 +345,7 @@ compiler. Install one and rerun `make release`:
 sudo dnf install -y gcc gcc-c++ make
 ```
 
-**`Could not find protoc` during the native build.** See
+**`Could not find protoc` during the Rust build.** See
 [Protobuf Compiler](#protobuf-compiler) above, then rerun `make release`.
 
 **`JAVA_HOME could not be determined`.** Install a JDK and export `JAVA_HOME`, or pass a checkout

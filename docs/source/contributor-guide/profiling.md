@@ -260,7 +260,7 @@ Here is the flamegraph for this example:
 ### Use wall-clock profiling to spot JNI boundary overhead
 
 When profiling Comet with async-profiler, `wall` mode is often more revealing than `cpu`
-because it captures time spent crossing the JNI boundary, waiting for native results,
+because it captures time spent crossing the JNI boundary, waiting for results from the Rust side,
 and blocked on I/O — none of which show up in CPU-only profiles.
 
 ```shell
@@ -276,7 +276,7 @@ objects are created during data transfer between JVM and native code:
 $ASYNC_PROFILER_HOME/bin/asprof -e alloc -d 60 -f alloc-profile.html <pid>
 ```
 
-Look for allocations in `CometExecIterator` (native to JVM output), `CometArrowStream` (JVM to native
+Look for allocations in `CometExecIterator` (Rust-to-JVM output), `CometArrowStream` (JVM-to-Rust
 input export), and Arrow vector classes.
 
 ### Isolate Rust-only performance issues
@@ -293,4 +293,4 @@ cargo flamegraph --root --bench <benchmark_name>
 
 In async-profiler flame graphs, native Rust frames appear below JNI entry points like
 `Java_org_apache_comet_Native_*`. Look for these transition points to understand how
-time is split between Spark's JVM code and Comet's native execution.
+time is split between Spark's JVM code and Comet's Rust code.

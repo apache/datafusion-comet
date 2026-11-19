@@ -211,7 +211,7 @@ names `DataWritingCommandExec`.
 
 Query the data from the test source and check:
 
-- INFO message shows the native Comet library has been initialized.
+- INFO message shows Comet's native library has been initialized.
 - The query plan reflects Comet operators being used for this query instead of Spark ones
 
 ```scala
@@ -270,7 +270,7 @@ Some cluster managers may require additional configuration, see <https://spark.a
 ### Memory tuning
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
-allocation for native execution. See [Comet Memory Tuning](./tuning/memory.md) for details.
+allocation for Comet. See [Comet Memory Tuning](./tuning/memory.md) for details.
 
 ### Kryo serialization
 
@@ -281,7 +281,7 @@ If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.Kryo
 --conf spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
 ```
 
-Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
+Without it, any query that uses Comet's broadcast exchange, which is enabled by default,
 fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
 Comet's [in-memory cache](in-memory-cache.md#kryo) format needs the same registrations, and while
 Kryo has not registered Comet's cached batch, Comet's plugin keeps caches in Spark's format. Set it

@@ -75,10 +75,10 @@ change in any release:
 - Every Scala, Java, and Rust type not on that list, including the internal structure of the
   classes that are on it. See [Everything Else Is Internal](#everything-else-is-internal).
 - `EXPLAIN` output, and the shape of the plans Comet produces. Which operators are fused, how a
-  native block is partitioned, and how a plan is rendered may all change between releases.
+  Rust plan is partitioned, and how a plan is rendered may all change between releases.
 - Metric names and log output.
-- Performance characteristics, including which expressions and operators run natively and which
-  fall back to Spark. An expression that ran natively in one release may fall back in the next,
+- Performance characteristics, including which expressions and operators run in Comet and which
+  fall back to Spark. An expression that ran in Comet in one release may fall back in the next,
   and vice versa. The results stay the same; only the speed changes.
 
 ### Testing and Internal Configurations Are Exempt
@@ -307,7 +307,7 @@ full vendor contract.
 ### Everything Else Is Internal
 
 Every other Scala, Java, and Rust type Comet ships is internal. This includes the rest of
-`org.apache.comet.*`, everything Comet contributes to `org.apache.spark.*`, and all of the native
+`org.apache.comet.*`, everything Comet contributes to `org.apache.spark.*`, and all of the Rust
 crates. These types exist to make the plugin work, not to be programmed against. They may be
 renamed, changed, or removed in any release, including a patch release, with no deprecation cycle
 and no upgrade guide entry.
