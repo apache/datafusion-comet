@@ -299,13 +299,22 @@ class CometTopKSuite extends CometTestBase {
     }
   }
 
-  for (corruption <- Seq("footer", "page")) {
-    test(s"local TopK preserves the corrupt Parquet $corruption file in read errors") {
+  for {
+    corruption <- Seq("footer", "page")
+    sharedPartition <- Seq(false, true)
+  } {
+    test(
+      s"local TopK preserves the corrupt Parquet $corruption file in read errors: " +
+        s"sharedPartition=$sharedPartition") {
+      // With a shared partition, both files land in one scan partition, so the task's file list
+      // names both of them and only the native reader knows which one failed.
+      val numPartitions = if (sharedPartition) 1 else 2
       withSQLConf(
         CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "2",
-        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4194304",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> numPartitions.toString,
+        SQLConf.FILES_MAX_PARTITION_BYTES.key ->
+          (if (sharedPartition) "134217728" else "4194304"),
         SQLConf.IGNORE_CORRUPT_FILES.key -> "false") {
         withTempPath { path =>
           spark
@@ -326,7 +335,9 @@ class CometTopKSuite extends CometTestBase {
                 .sortBy(_.getFileName.toString)
             } finally entries.close()
           assert(files.size == 2)
-          val corruptFile = files.last
+          // The first file holds the smallest keys, so in a shared partition the TopK dynamic
+          // filter can't prune the corrupt file's row group, whichever file is read first.
+          val corruptFile = if (sharedPartition) files.head else files.last
           val bytes = Files.readAllBytes(corruptFile)
           if (corruption == "footer") {
             // Keep the file length but destroy the footer magic, failing during reader setup.
@@ -353,13 +364,16 @@ class CometTopKSuite extends CometTestBase {
                 val scans = collect(plan) { case scan: CometNativeScanExec => scan }
                 assert(scans.size == 1, s"Expected one native scan:\n$plan")
                 val partitionPaths = scans.head.perPartitionFilePaths
-                assert(partitionPaths.length == 2 && partitionPaths.forall(_.size == 1))
+                assert(
+                  partitionPaths.length == numPartitions &&
+                    partitionPaths.forall(_.size == 2 / numPartitions),
+                  s"Unexpected scan partitions: ${partitionPaths.toSeq}")
                 val expectedPath = partitionPaths.flatten
                   .find(file => new URI(file) == corruptFile.toUri)
                   .getOrElse(fail(s"Missing corrupt file $corruptFile in scan partitions"))
                 val topKs = collect(plan) { case topK: CometTakeOrderedAndProjectExec => topK }
                 assert(topKs.size == 1, s"Expected one native TopK:\n$plan")
-                assert(topKs.head.child.executeColumnar().getNumPartitions == 2)
+                assert(topKs.head.child.executeColumnar().getNumPartitions == numPartitions)
                 val locals = collect(plan) { case local: CometLocalTopKExec => local }
                 assert(locals.size == (if (fusion) 1 else 0), s"fusion=$fusion:\n$plan")
                 val failure = intercept[Exception](query.collect())
@@ -372,7 +386,7 @@ class CometTopKSuite extends CometTestBase {
                   }
                   .getOrElse(fail(s"Missing $errorClass in ${causeChain(failure)}"))
                 // A lower-level cause can mention the file even when the structured path is lost.
-                // With one file per partition, the path must name only the corrupt file.
+                // The path must name only the corrupt file, even when its partition has two.
                 assert(readError.getMessageParameters.get("path") == expectedPath)
               }
             }
