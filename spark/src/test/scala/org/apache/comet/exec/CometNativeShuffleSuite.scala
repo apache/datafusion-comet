@@ -56,7 +56,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, M
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -1989,7 +1989,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("AQE DPP query with a broadcast side reads its shuffle stage through ShuffleScan") {
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     withTempDir { dir =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
