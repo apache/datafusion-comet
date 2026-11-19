@@ -446,7 +446,8 @@ pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema)
 
 /// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at any cost: what
 /// [`is_infallible`] accepts, and casts that [`Cast::cannot_fail`] accepts beyond it, such as a
-/// LEGACY or TRY cast from a string to an integer, which returns NULL for a string it cannot parse.
+/// LEGACY or TRY cast from a string to an integer, which returns NULL for a string it cannot parse,
+/// or a cast from a number to a string.
 /// `NullShortCircuit` and `LazyLogical` use this, since they mask an operand only to keep it from
 /// failing on rows that Spark skips.
 pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
