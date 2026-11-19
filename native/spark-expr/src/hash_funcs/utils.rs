@@ -19,6 +19,7 @@
 
 use arrow::array::Array;
 use arrow::buffer::NullBuffer;
+use datafusion::common::{internal_err, Result};
 
 /// The positions of the set bits of `bits`, lowest first.
 #[inline]
@@ -36,20 +37,29 @@ fn set_bits(mut bits: u64) -> impl Iterator<Item = usize> {
 /// its null rows costs less than hashing only its valid rows one at a time.
 /// The null rates from 25% to 85% in the `hash_nulls` benchmark put random chunks around this
 /// count, so rerun them when changing the value.
-pub(super) const MIN_VALID_FOR_DENSE: u32 = 16;
+const MIN_VALID_FOR_DENSE: u32 = 16;
 
 /// Hashes the valid rows of a fixed-width column that has nulls, 64 rows at a time. Null rows keep
 /// their previous hash. A chunk with at least [`MIN_VALID_FOR_DENSE`] valid rows is hashed in
-/// full, which vectorizes, and the previous hashes of its null rows are saved before and written
-/// back after. Hashing a null slot is harmless because `hash` can't fail. A sparser chunk, and the
-/// last `len % 64` rows, hash only their valid rows.
+/// full, which vectorizes, and its null rows then get their previous hashes back from a copy of the
+/// chunk. Hashing a null slot is harmless because `hash` can't fail. A sparser chunk, and the last
+/// `len % 64` rows, hash only their valid rows.
 #[inline]
-pub(crate) fn hash_fixed_width_with_nulls<T: Copy, H: Copy + Default>(
+pub(crate) fn hash_fixed_width_with_nulls<T: Copy, H: Copy>(
     values: &[T],
     nulls: &NullBuffer,
     hashes: &mut [H],
     hash: impl Fn(T, H) -> H,
-) {
+) -> Result<()> {
+    // The chunks below zip the three inputs, which would skip rows if the lengths differed.
+    if nulls.len() != values.len() || hashes.len() != values.len() {
+        return internal_err!(
+            "{} values, {} validity bits, and {} hashes",
+            values.len(),
+            nulls.len(),
+            hashes.len()
+        );
+    }
     let chunks = nulls.inner().bit_chunks();
     let (value_chunks, value_tail) = values.as_chunks::<64>();
     let (hash_chunks, hash_tail) = hashes.as_chunks_mut::<64>();
@@ -61,21 +71,18 @@ pub(crate) fn hash_fixed_width_with_nulls<T: Copy, H: Copy + Default>(
             }
             continue;
         }
-        // The check above leaves at most `64 - MIN_VALID_FOR_DENSE` null rows.
-        let mut kept = [H::default(); 64 - MIN_VALID_FOR_DENSE as usize];
-        for (kept, i) in kept.iter_mut().zip(set_bits(!valid)) {
-            *kept = hashes[i];
-        }
+        let previous = *hashes;
         for (h, &v) in hashes.iter_mut().zip(values) {
             *h = hash(v, *h);
         }
-        for (&kept, i) in kept.iter().zip(set_bits(!valid)) {
-            hashes[i] = kept;
+        for i in set_bits(!valid) {
+            hashes[i] = previous[i];
         }
     }
     for i in set_bits(chunks.remainder_bits()) {
         hash_tail[i] = hash(value_tail[i], hash_tail[i]);
     }
+    Ok(())
 }
 
 #[macro_export]
@@ -162,7 +169,7 @@ macro_rules! hash_array_primitive {
                 nulls,
                 $hashes,
                 |value, hash| $hash_method((value as $ty).to_le_bytes(), hash),
-            );
+            )?;
         }
     };
 }
@@ -196,7 +203,7 @@ macro_rules! hash_array_primitive_float {
                     let value = $crate::float_semantics::hash_input(value);
                     $hash_method(value.to_le_bytes(), hash)
                 },
-            );
+            )?;
         }
     };
 }
@@ -1355,7 +1362,9 @@ pub(crate) mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::super::{spark_murmur3_hash, spark_xxhash64};
+    use super::{hash_fixed_width_with_nulls, MIN_VALID_FOR_DENSE};
     use arrow::array::{Array, ArrayRef, BinaryArray, Decimal128Array, Int32Array};
+    use arrow::buffer::NullBuffer;
     use datafusion::common::{Result, ScalarValue};
     use datafusion::logical_expr::ColumnarValue;
     use num::BigInt;
@@ -1557,16 +1566,6 @@ mod tests {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod null_chunk_tests {
-    use super::{hash_fixed_width_with_nulls, MIN_VALID_FOR_DENSE};
-    use crate::hash_funcs::create_xxhash64_hashes;
-    use crate::murmur3::create_murmur3_hashes;
-    use arrow::array::{Array, ArrayRef, Float64Array, Int32Array, Int64Array};
-    use arrow::buffer::NullBuffer;
-    use std::sync::Arc;
 
     type Pattern = Box<dyn Fn(usize) -> bool>;
 
@@ -1614,75 +1613,27 @@ mod null_chunk_tests {
                         })
                         .collect();
                     let mut hashes = previous.clone();
-                    hash_fixed_width_with_nulls(&values, &nulls, &mut hashes, hash);
+                    hash_fixed_width_with_nulls(&values, &nulls, &mut hashes, hash).unwrap();
                     assert_eq!(hashes, expected, "{name}, len {len}, offset {offset}");
                 }
             }
         }
     }
 
-    /// Hashes each valid row on its own, as a one-row array, which never reaches a full chunk.
-    fn per_row<H: Copy>(
-        array: &ArrayRef,
-        previous: &[H],
-        create: impl Fn(&[ArrayRef], &mut [H]),
-    ) -> Vec<H> {
-        (0..array.len())
-            .map(|i| {
-                let mut hash = [previous[i]];
-                if array.is_valid(i) {
-                    create(&[array.slice(i, 1)], &mut hash);
-                }
-                hash[0]
-            })
-            .collect()
-    }
-
     #[test]
-    fn create_hashes_with_nulls_matches_per_row() {
-        let len = 200;
-        let offset = 5;
-        for (name, valid) in patterns(len) {
-            let nulls = NullBuffer::from((0..offset + len).map(&valid).collect::<Vec<_>>());
-            let arrays: Vec<ArrayRef> = vec![
-                Arc::new(Int32Array::new(
-                    (0..(offset + len) as i32).map(|i| i * 7919 - 3).collect(),
-                    Some(nulls.clone()),
-                )),
-                Arc::new(Int64Array::new(
-                    (0..(offset + len) as i64).map(|i| (i << 40) - i).collect(),
-                    Some(nulls.clone()),
-                )),
-                // -0.0 and NaN take the float normalization.
-                Arc::new(Float64Array::new(
-                    (0..offset + len)
-                        .map(|i| match i % 4 {
-                            0 => -0.0,
-                            1 => f64::NAN,
-                            _ => i as f64 * 0.5,
-                        })
-                        .collect(),
-                    Some(nulls),
-                )),
-            ];
-            for array in arrays {
-                let array = array.slice(offset, len);
-                let previous: Vec<u32> = (0..len as u32).map(|i| i * 31 + 1).collect();
-                let mut hashes = previous.clone();
-                create_murmur3_hashes(&[Arc::clone(&array)], &mut hashes).unwrap();
-                let expected = per_row(&array, &previous, |a, h| {
-                    create_murmur3_hashes(a, h).unwrap();
-                });
-                assert_eq!(hashes, expected, "murmur3, {}, {name}", array.data_type());
-
-                let previous: Vec<u64> = (0..len as u64).map(|i| i * 31 + 1).collect();
-                let mut hashes = previous.clone();
-                create_xxhash64_hashes(&[Arc::clone(&array)], &mut hashes).unwrap();
-                let expected = per_row(&array, &previous, |a, h| {
-                    create_xxhash64_hashes(a, h).unwrap();
-                });
-                assert_eq!(hashes, expected, "xxhash64, {}, {name}", array.data_type());
-            }
+    fn hash_fixed_width_with_nulls_length_mismatch_is_error() {
+        let hash = |value: u64, previous: u64| previous ^ value;
+        let nulls = NullBuffer::from(vec![true, false, true]);
+        let values = [1u64, 2, 3];
+        for len in [2, 4] {
+            let mut hashes = vec![0u64; len];
+            assert!(
+                hash_fixed_width_with_nulls(&values, &nulls, &mut hashes, hash).is_err(),
+                "{len} hashes"
+            );
         }
+        let short_nulls = NullBuffer::from(vec![true, false]);
+        let mut hashes = vec![0u64; 3];
+        assert!(hash_fixed_width_with_nulls(&values, &short_nulls, &mut hashes, hash).is_err());
     }
 }

@@ -28,6 +28,8 @@ use datafusion_comet_spark_expr::spark_xxhash64;
 use std::hint::black_box;
 use std::sync::Arc;
 
+mod common;
+
 const NUM_ROWS: usize = 8192;
 
 /// Null percentages, from TPC-DS-like to nearly all null.
@@ -52,11 +54,6 @@ fn random_nulls(null_fraction: f64) -> NullBuffer {
             .map(|_| (next() as f64 / u64::MAX as f64) >= null_fraction)
             .collect::<Vec<_>>(),
     )
-}
-
-/// Every tenth row is null, a pattern the branch predictor learns.
-fn stride_nulls() -> NullBuffer {
-    NullBuffer::from((0..NUM_ROWS).map(|i| i % 10 != 0).collect::<Vec<_>>())
 }
 
 fn int32(nulls: Option<NullBuffer>) -> ArrayRef {
@@ -96,7 +93,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     };
     // No nulls, which this path doesn't reach, to show the run's noise.
     murmur3("int32/no_nulls", int32(None));
-    murmur3("int32/stride_10%", int32(Some(stride_nulls())));
+    // Every tenth row is null, a pattern the branch predictor learns. Murmur3 costs the same for
+    // every value, so these values don't need to be random.
+    murmur3(
+        "int32/stride_10%",
+        common::i32_array(NUM_ROWS, 0.1, |i| i as i32),
+    );
     // The rates from 25% to 85% leave about 48 down to 10 valid rows in a 64-row chunk, around
     // `MIN_VALID_FOR_DENSE`. Rerun them when changing it.
     for percent in SWEEP {
