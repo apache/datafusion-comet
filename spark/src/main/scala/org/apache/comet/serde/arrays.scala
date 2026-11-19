@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BinaryExpression, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GetStructField, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
@@ -1048,7 +1048,7 @@ trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
       shortCircuitSafe(body) &&
       !canProduceNullMapKey(argument) &&
       !canProduceNullMapKey(body) &&
-      !convertsDateTime(body) &&
+      !appliesFunctionToDateTime(body) &&
       (argument.dataType match {
         case ArrayType(elementType, _) => isLambdaElementType(elementType)
         case _ => false
@@ -1067,21 +1067,26 @@ trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
     }
 
   /**
-   * Whether `body` casts between a date or timestamp and a string, date or timestamp. The native
-   * cast fails for years beyond chrono's range (about 262,143), which Spark supports up to year
-   * 294,247 (#7471), so such a body stays on the dispatcher.
+   * Whether `body` applies a function to a date or timestamp, other than comparing it, testing it
+   * for NULL, choosing it with `IF`, `CASE WHEN` or `COALESCE`, or casting it to a number. Native
+   * date and timestamp functions go through chrono, whose range ends at about the year 262,143,
+   * while Spark's goes to 294,247. Outside it, `year` and the other fields return NULL natively
+   * and `last_day` fails (#6843), and a cast between a date or timestamp and a string, date or
+   * timestamp fails (#7471). Such a body stays on the dispatcher.
    */
-  private def convertsDateTime(body: Expression): Boolean = {
+  private def appliesFunctionToDateTime(body: Expression): Boolean = {
     def isDateTime(dt: DataType): Boolean = dt match {
       case DateType | TimestampType | TimestampNTZType => true
       case _ => false
     }
     def isTextOrDateTime(dt: DataType): Boolean = dt.isInstanceOf[StringType] || isDateTime(dt)
     body.exists {
-      case c: Cast if c.child.dataType != c.dataType =>
-        (isDateTime(c.child.dataType) && isTextOrDateTime(c.dataType)) ||
-        (isDateTime(c.dataType) && isTextOrDateTime(c.child.dataType))
-      case _ => false
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: In | _: InSet | _: If |
+          _: CaseWhen | _: Coalesce =>
+        false
+      case c: Cast if c.child.dataType == c.dataType => false
+      case c: Cast if isDateTime(c.child.dataType) => isTextOrDateTime(c.dataType)
+      case e => e.children.exists(c => isDateTime(c.dataType))
     }
   }
 
@@ -1099,38 +1104,65 @@ trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
       .forall(isFixedWidth)
 
   /**
-   * Spark evaluates `a AND b`, `a OR b` and `x IN (a, b)` lazily, so `x != 0 AND 100 / x > 1`
-   * never divides by zero. The native side evaluates every operand over the whole batch, so the
-   * same lambda raises on the element Spark skips. `CASE WHEN`, `IF` and `COALESCE` are not
-   * affected. A body that short-circuits stays on the dispatcher unless none of its expressions
-   * can raise.
+   * Spark evaluates `x IN (a, b)` lazily: it stops at the first candidate that matches, and
+   * evaluates no candidate when `x` is NULL. The native `IN` evaluates every candidate when one
+   * can fail, so the same lambda raises on a candidate Spark skips. A body with `IN` stays on the
+   * dispatcher unless none of its expressions can raise. `AND`, `OR`, `CASE WHEN`, `IF` and
+   * `COALESCE` are lazy natively too (`LazyLogical` and `CaseWhenExpr`), so they need no check.
    */
   private def shortCircuitSafe(body: Expression): Boolean =
     !body.exists {
-      case _: And | _: Or | _: In | _: InSet => true
+      case _: In | _: InSet => true
       case _ => false
     } || !body.exists(mayRaise)
 
   /**
    * Whether `e` can raise on an input value. This fails closed: an expression is assumed to raise
-   * unless it is listed here, since some raise in any mode (`element_at` with the index 0), and
-   * arithmetic and casts raise only in the ANSI eval mode they carry. `infallible` in
-   * `case_when.rs` is the native counterpart.
+   * unless it is listed here. Numeric arithmetic and casts between the types `plainCastType`
+   * lists raise only in the ANSI eval mode they carry, but some expressions raise in any mode,
+   * such as `element_at` with the index 0, the arithmetic of intervals and a date cast to a
+   * timestamp, so those count as raising. `infallible` in `case_when.rs` is the native
+   * counterpart. #7529 keeps the same list for shared subexpressions, and the two are to become
+   * one classifier.
    */
-  protected def mayRaise(e: Expression): Boolean = e match {
-    case _: Literal | _: NamedLambdaVariable | _: AttributeReference | _: BoundReference |
-        _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
-        _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen | _: Length | _: Upper |
-        _: Lower | _: Substring | _: StartsWith | _: EndsWith | _: Contains =>
-      false
-    case c: Cast => evalMode(c) == CometEvalMode.ANSI
-    case a: Add => a.evalMode == EvalMode.ANSI
-    case a: Subtract => a.evalMode == EvalMode.ANSI
-    case a: Multiply => a.evalMode == EvalMode.ANSI
-    case a: Divide => a.evalMode == EvalMode.ANSI
-    case a: IntegralDivide => a.evalMode == EvalMode.ANSI
-    case a: Remainder => a.evalMode == EvalMode.ANSI
-    case _ => true
+  protected def mayRaise(e: Expression): Boolean = {
+    def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    !(e match {
+      case _: Literal | _: NamedLambdaVariable | _: AttributeReference | _: BoundReference |
+          _: GetStructField =>
+        true
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+          _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
+        true
+      case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
+          _: Contains =>
+        true
+      case c: Cast =>
+        evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
+        plainCastType(c.dataType)
+      case a: Add => plainArithmetic(a, a.evalMode)
+      case a: Subtract => plainArithmetic(a, a.evalMode)
+      case a: Multiply => plainArithmetic(a, a.evalMode)
+      case a: Divide => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
+      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case _ => false
+    })
+  }
+
+  /**
+   * Whether a cast to or from `dataType` outside the ANSI eval mode cannot raise. This fails
+   * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
+   * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
+   * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
+   * too, since a cast key can become NULL.
+   */
+  private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
+    case ArrayType(elementType, _) => plainCastType(elementType)
+    case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
+    case _ => false
   }
 
   protected def isFixedWidth(dt: DataType): Boolean = dt match {

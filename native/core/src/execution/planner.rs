@@ -96,8 +96,6 @@ use crate::parquet::parquet_support::{
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
-use datafusion::functions_nested::array_any_match::array_any_match_higher_order_function;
-use datafusion::functions_nested::array_filter::array_filter_higher_order_function;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
 use datafusion::physical_expr::expressions::Literal;
@@ -1175,15 +1173,7 @@ impl PhysicalPlanner {
                 let body = self.create_expr(hof.body.as_ref().unwrap(), lambda_schema)?;
                 let lambda: Arc<dyn PhysicalExpr> =
                     Arc::new(LambdaExpr::try_new(vec![hof.param_name.clone()], body)?);
-                let func = match hof.func.as_str() {
-                    "array_filter" => array_filter_higher_order_function(),
-                    "array_any_match" => array_any_match_higher_order_function(),
-                    other => {
-                        return Err(GeneralError(format!(
-                            "Unsupported higher-order function '{other}'"
-                        )))
-                    }
-                };
+                let func = self.session_ctx.higher_order_function(&hof.func)?;
                 Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
                     func,
                     vec![array, lambda],
@@ -5511,17 +5501,18 @@ mod tests {
         ]);
         assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
 
-        // The argument must be an array, and only array_filter and array_any_match are implemented.
+        // The argument must be an array, and the function must be registered with the session.
         let not_array = planner.create_expr(&filter("array_filter", bound(1)), Arc::clone(&schema));
         assert!(not_array
             .unwrap_err()
             .to_string()
             .contains("expects an array argument"));
-        let unknown = planner.create_expr(&filter("array_zip", bound(0)), Arc::clone(&schema));
+        let unknown =
+            planner.create_expr(&filter("no_such_function", bound(0)), Arc::clone(&schema));
         assert!(unknown
             .unwrap_err()
             .to_string()
-            .contains("Unsupported higher-order function"));
+            .contains("Higher Order Function no_such_function not found"));
         Ok(())
     }
 

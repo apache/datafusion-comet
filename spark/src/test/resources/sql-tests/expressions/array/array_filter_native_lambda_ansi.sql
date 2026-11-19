@@ -16,9 +16,10 @@
 -- under the License.
 
 -- Spark evaluates AND, OR and IN lazily, so a guard before a division keeps it from raising on
--- the elements the guard rules out. The native lambda evaluates every operand over every
--- element, so under ANSI mode a lambda that short-circuits must stay on the dispatcher unless
--- nothing in it can raise. None of these queries may raise.
+-- the elements the guard rules out. Native AND and OR are lazy too, so those lambdas run
+-- natively. The native IN evaluates every candidate when one can fail, so under ANSI mode a
+-- lambda with IN must stay on the dispatcher unless nothing in it can raise. None of these
+-- queries may raise.
 
 -- Config: spark.sql.ansi.enabled=true
 
@@ -33,22 +34,22 @@ INSERT INTO test_filter_lambda_ansi VALUES
   (4, array(0, 0), 3),
   (5, array(2147483647, 0, -7), 4)
 
-query expect_dispatch(filter)
+query expect_native(filter)
 SELECT id, filter(ints, x -> x != 0 AND 100 / x > 1) FROM test_filter_lambda_ansi
 
-query expect_dispatch(filter)
+query expect_native(filter)
 SELECT id, filter(ints, x -> x = 0 OR 100 / x > 1) FROM test_filter_lambda_ansi
 
-query expect_dispatch(filter)
+query expect_native(filter)
 SELECT id, filter(ints, x -> NOT (x = 0) AND 100 / x > 1) FROM test_filter_lambda_ansi
 
 query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x IN (0, 100 / x)) FROM test_filter_lambda_ansi
 
-query expect_dispatch(filter)
+query expect_native(filter)
 SELECT id, filter(ints, x -> x IS NOT NULL AND x > 0 AND x < 1000 AND x + 1 > 0 AND 100 / x > 1) FROM test_filter_lambda_ansi
 
--- CASE, IF and COALESCE are lazy on the native side too.
+-- CASE, IF and COALESCE are lazy on the native side as well.
 query expect_native(filter)
 SELECT id, filter(ints, x -> CASE WHEN x = 0 THEN false ELSE 100 / x > 1 END) FROM test_filter_lambda_ansi
 

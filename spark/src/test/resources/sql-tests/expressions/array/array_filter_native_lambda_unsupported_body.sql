@@ -16,8 +16,9 @@
 
 -- A lambda body with an expression that the native side cannot evaluate like Spark stays on the
 -- dispatcher, which runs it in Spark's own code. An array argument or a body can hold a TRY cast
--- that makes a null map key (#6172), which Arrow cannot represent, and a cast between a date or
--- timestamp and another type fails natively for years beyond chrono's range (#7471).
+-- that makes a null map key (#6172), which Arrow cannot represent. A cast between a date or
+-- timestamp and another type fails natively for years beyond chrono's range (#7471), and native
+-- date functions return NULL or fail there (#6843).
 
 -- ConfigMatrix: spark.sql.ansi.enabled=true,false
 
@@ -53,6 +54,22 @@ SELECT id, filter(tss, x -> year(CAST(x AS DATE)) > 2000) FROM test_filter_lambd
 
 query expect_dispatch(exists)
 SELECT id, exists(tss, x -> CAST(x AS STRING) <> '') FROM test_filter_lambda_unsupported
+
+query expect_dispatch(filter)
+SELECT id, filter(dates, x -> year(x) > 2000) FROM test_filter_lambda_unsupported
+
+query expect_dispatch(filter)
+SELECT id, filter(dates, x -> last_day(x) > DATE '2000-01-01') FROM test_filter_lambda_unsupported
+
+query expect_dispatch(filter)
+SELECT id, filter(tss, x -> hour(x) > 1) FROM test_filter_lambda_unsupported
+
+-- Comparing a date, testing it for NULL or choosing it is not affected.
+query expect_native(filter)
+SELECT id, filter(dates, x -> x > DATE '2000-01-01' OR x IS NULL) FROM test_filter_lambda_unsupported
+
+query expect_native(filter)
+SELECT id, filter(dates, x -> coalesce(x, DATE '2000-01-01') IN (DATE '2020-01-01', DATE '2024-02-29')) FROM test_filter_lambda_unsupported
 
 -- A cast between a timestamp and a number is not affected.
 query expect_native(filter)

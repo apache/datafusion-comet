@@ -55,20 +55,24 @@ To get the most out of Comet when a query uses lambdas:
   UDF or another lambda cannot be split from the dispatcher, so the whole lambda runs there. Use
   [`spark.comet.explain.codegen.enabled`](../understanding-comet-plans.md#sparkcometexplaincodegenenabled) to see which
   expressions of a query went through the dispatcher.
-- **Keep `AND`, `OR` and `IN` away from operations that can raise.** Spark evaluates them lazily, so
-  `x != 0 AND 100 / x > 1` never divides by zero, but the native lambda evaluates every operand for every element. A
-  body that combines them with an operation that can raise stays on the dispatcher. That covers a division, an
-  addition or a cast under ANSI mode, which raise only in that mode, and `element_at`, which raises for the index 0 in
-  any mode. `CASE WHEN`, `IF` and `COALESCE` are lazy natively too, so
-  `filter(arr, x -> CASE WHEN x = 0 THEN false ELSE 100 / x > 1 END)` runs natively.
+- **Keep `IN` away from operations that can raise.** Spark evaluates `IN` lazily: it stops at the first candidate
+  that matches and evaluates none when the value is `NULL`. The native `IN` evaluates every candidate when one can
+  raise, so a body that combines `IN` with an operation that can raise stays on the dispatcher. That covers a
+  division, an addition or a cast under ANSI mode, which raise only in that mode, and `element_at`, which raises for
+  the index 0 in any mode. `AND`, `OR`, `CASE WHEN`, `IF` and `COALESCE` are lazy natively too, so
+  `filter(arr, x -> x != 0 AND 100 / x > 1)` runs natively.
 - **Keep operations that can raise out of an `exists` lambda.** Spark stops at the first element that matches, so
   under ANSI mode `exists(array(1, 0), x -> 100 / x > 1)` returns true without dividing by zero, but the native lambda
   evaluates every element. An `exists` lambda that contains any operation that can raise stays on the dispatcher,
   whether or not it uses `AND`, `OR`, `IN` or `CASE WHEN`.
-- **Keep date and timestamp conversions out of the lambda.** A cast between a date or timestamp and a string, date or
-  timestamp fails natively for years beyond about 262,143, which Spark supports up to year 294,247
-  ([#7471](https://github.com/apache/datafusion-comet/issues/7471)), so a lambda that contains one stays on the
-  dispatcher. So does a lambda with a `try_cast` that can make a `NULL` map key.
+- **Keep date and timestamp functions out of the lambda.** Native date and timestamp functions support years up to
+  about 262,143, while Spark supports them up to year 294,247. Beyond that, a cast between a date or timestamp and a
+  string, date or timestamp fails natively ([#7471](https://github.com/apache/datafusion-comet/issues/7471)), and
+  `year`, `month` and the other date fields return `NULL`
+  ([#6843](https://github.com/apache/datafusion-comet/issues/6843)). So a lambda that applies a function to a date or
+  timestamp stays on the dispatcher. Comparing one, testing it for `NULL`, choosing it with `CASE WHEN`, `IF` or
+  `COALESCE`, and casting it to a number still run natively. A lambda with a `try_cast` that can make a `NULL` map key
+  stays on the dispatcher too.
 - **Capture only numeric, decimal, boolean, date or timestamp columns.** DataFusion copies each column the lambda reads
   once per element of the array before it evaluates the lambda, so a captured string, binary, array, struct or map
   column is copied as many times as the array has elements. A lambda that reads one stays on the dispatcher.

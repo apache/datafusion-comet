@@ -191,9 +191,13 @@ query expect_native(filter)
 SELECT id, filter(ints, v -> v > 0) FROM test_filter_lambda WHERE id < 0
 
 -- `element_at` raises for the index 0 whatever the ANSI setting, and Spark skips it for the
--- elements `x > 0` rules out, so this lambda stays on the dispatcher.
-query expect_dispatch(filter)
+-- elements `v > 0` rules out. Native AND skips them too, so this lambda runs natively.
+query expect_native(filter)
 SELECT id, filter(ints, v -> v > 0 AND element_at(array(threshold, 5), v) > 1) FROM test_filter_lambda
+
+-- Native IN evaluates every candidate when one can fail, so this lambda stays on the dispatcher.
+query expect_dispatch(filter)
+SELECT id, filter(ints, v -> v IN (0, element_at(array(threshold, 5), v))) FROM test_filter_lambda
 
 -- A lambda inside an argument that is evaluated only for the rows where an earlier argument or operand
 -- leaves the result open. The lambda parameter belongs to the inner lambda, not to the outer batch.
