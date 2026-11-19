@@ -57,6 +57,7 @@ jobs:
   writer-test:
     name: spark-sql-writer/spark-${{ inputs.spark-version }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
       image: amd64/rust
     steps:
