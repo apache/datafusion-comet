@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
-import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence}
+import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence, WithoutSubexpressionElimination}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
@@ -127,12 +127,17 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * Spark's own (see [[CometInvokeTargets]]), when [[CometBatchKernelCodegen.canHandle]] refuses
    * the expression tree, or when the bound tree cannot be closure-serialized. Callers should
    * treat `None` as a clean Spark-fallback signal; this method never throws.
+   *
+   * `subexpressionElimination = false` makes the kernel compile without subexpression
+   * elimination, for a tree Spark evaluates without it, such as a filter predicate. Every other
+   * caller keeps the default.
    */
   def emitJvmCodegenDispatch(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] =
-    tryJvmCodegenDispatch(expr, inputs, binding) match {
+      binding: Boolean,
+      subexpressionElimination: Boolean = true): Option[Expr] =
+    tryJvmCodegenDispatch(expr, inputs, binding, subexpressionElimination) match {
       case Right(proto) => Some(proto)
       case Left(reason) =>
         withFallbackReason(expr, reason)
@@ -147,7 +152,8 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
   private def tryJvmCodegenDispatch(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Either[String, Expr] = {
+      binding: Boolean,
+      subexpressionElimination: Boolean = true): Either[String, Expr] = {
     val exprName = CometExplainInfo.exprDisplayName(expr)
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       return Left(
@@ -203,7 +209,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val bytes =
       try {
         val serializer = SparkEnv.get.closureSerializer.newInstance()
-        val buffer = serializer.serialize(DispatchOccurrence.tag(boundExpr))
+        val compileTarget =
+          if (subexpressionElimination) boundExpr else WithoutSubexpressionElimination(boundExpr)
+        val buffer = serializer.serialize(DispatchOccurrence.tag(compileTarget))
         val serialized = new Array[Byte](buffer.remaining())
         buffer.get(serialized)
         serialized

@@ -416,6 +416,58 @@ class CometCodegenFuzzSuite
     }
   }
 
+  // --- Detour fuzz: make Comet treat `abs` as having no translation
+  // (`spark.comet.testing.unsupportedExpressions`), so the JVM detour
+  // (`spark.comet.exec.jvmDetour.enabled`) is the path under test rather than the ScalaUDF entry
+  // point. Downstream (`emitJvmCodegenDispatch` -> Janino kernel) is shared, so this fuzzes the
+  // detour's routing and the FFI marshaling of the detoured argument columns. ANSI is disabled so
+  // `abs(Long.MinValue)`-style overflow wraps identically in both engines rather than throwing. ---
+
+  private def withDetourAbsUnsupported(f: => Unit): Unit =
+    withSQLConf(
+      CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true",
+      CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Abs",
+      SQLConf.ANSI_ENABLED.key -> "false")(f)
+
+  test("detour fuzz: abs over every numeric column of the random schema") {
+    val numericFields = spark.table("t1").schema.fields.filter { f =>
+      f.dataType match {
+        case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType => true
+        case _: DecimalType => true
+        case _ => false
+      }
+    }
+    assert(numericFields.nonEmpty, "expected at least one numeric column in the random schema")
+    withDetourAbsUnsupported {
+      for (field <- numericFields) {
+        withClue(s"column ${field.name}: ${field.dataType}: ") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(s"SELECT abs(${field.name}) FROM t1")
+          }
+        }
+      }
+    }
+  }
+
+  test("detour fuzz: abs over the decimal precision/scale/null-density sweep") {
+    withDetourAbsUnsupported {
+      for {
+        density <- nullDensities
+        (precision, scale) <- decimalShapes
+      } {
+        val seed = (((precision * 31L) + scale) * 31L + density.hashCode) * 17L + 3
+        val values = generateDecimals(seed, precision, scale, density)
+        withDecimalTable(s"DECIMAL($precision, $scale)", values) {
+          withClue(s"precision=$precision scale=$scale nullDensity=$density: ") {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(sql("SELECT abs(d) FROM t"))
+            }
+          }
+        }
+      }
+    }
+  }
+
   /**
    * Randomized output-writer coverage (#4539). Generates a random nested output type and a random
    * catalyst value of that type, wraps it in a `Literal`, and drives it through the kernel output

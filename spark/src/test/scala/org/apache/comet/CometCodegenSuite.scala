@@ -2127,14 +2127,13 @@ class CometCodegenSuite
   }
 
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {
-    // The same scalar subquery appears in two sites: the projection (which the dispatcher
-    // compiles into a fused kernel) and the filter (a separate operator). Each site holds its
-    // own `ScalarSubquery` expression instance with its own `@volatile result` field. Each
-    // surrounding operator's inherited `SparkPlan.waitForSubqueries` populates its instance's
-    // `result` before the dispatcher's bridge serializes the expression. The populated value
-    // travels through closure serialization into the cache key's bytes, so different subquery
-    // values compile distinct kernels. Exercises the full subquery-correctness invariant
-    // documented on `CometBatchKernelCodegen.canHandle`.
+    // The same scalar subquery appears in two sites: the projection and the filter. In both, the
+    // subquery is a sibling of the dispatched `addOne(x)`, not part of its tree: the dispatcher
+    // serializes `addOne(x)` alone at plan time, and the subquery is converted on its own, so the
+    // Rust plan reads the result the operator's `waitForSubqueries` populated (through
+    // `CometScalarSubquery`). A subquery inside a dispatched tree is refused by
+    // `CometBatchKernelCodegen.canHandle`, because the tree is serialized before the subquery has
+    // run (see the comment there).
     spark.udf.register("addOne", (i: Int) => i + 1)
     withTable("t", "t2") {
       sql("CREATE TABLE t (x INT) USING parquet")

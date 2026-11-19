@@ -348,6 +348,16 @@ object CometExplainInfo {
     }
   }
 
+  /**
+   * Replace the fallback reasons the current conversion's journal holds for `node`; an empty set
+   * removes the entry. For `CometJvmDetour`, which puts back the journal as it was before a
+   * conversion it abandoned. Does nothing outside a fallback reason scope.
+   */
+  private[comet] def setJournalFallbackReasons(node: Expression, reasons: Set[String]): Unit =
+    Option(fallbackJournal.get()).foreach { journal =>
+      if (reasons.isEmpty) journal.remove(node) else journal.put(node, reasons)
+    }
+
   private[comet] def currentFallbackReasons(node: Expression): Set[String] = {
     Option(fallbackJournal.get())
       .flatMap(journal => Option(journal.get(node)))
