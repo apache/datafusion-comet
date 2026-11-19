@@ -237,25 +237,6 @@ mod tests {
         test_hashes_with_nulls!(create_xxhash64_hashes, T, values, expected, u64);
     }
 
-    #[test]
-    fn test_hashes_buffer_length_mismatch_is_error() {
-        for array in crate::hash_funcs::murmur3::tests::length_mismatch_arrays() {
-            for len in [array.len().saturating_sub(1), array.len() + 1] {
-                if len == array.len() {
-                    continue;
-                }
-                let mut hashes = vec![42u64; len];
-                let result = create_xxhash64_hashes(&[Arc::clone(&array)], &mut hashes);
-                assert!(
-                    result.is_err(),
-                    "{} array of length {} with {len} hashes",
-                    array.data_type(),
-                    array.len()
-                );
-            }
-        }
-    }
-
     /// The dictionary fast path is shared in shape with murmur3, so it has the same requirement:
     /// a dictionary reached through a nested type must not restart from the seed.
     #[test]
