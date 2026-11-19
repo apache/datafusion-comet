@@ -264,6 +264,21 @@ query
 SELECT a FROM topk_arrays ORDER BY a, size(slice(arr, 1, 1)), size(array_insert(arr, 1, 0))
 LIMIT 3
 
+statement
+CREATE TABLE topk_regex(a int, s string, p string) USING parquet
+
+statement
+INSERT INTO topk_regex SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (1, 'abc', 'a.*'), (2, 'abc', '('), (3, 'xyz', 'x'), (4, NULL, NULL) AS t(a, s, p)
+
+-- rlike raises for an invalid pattern in every mode. No two rows tie on a, so Spark never
+-- evaluates the pattern '(' on row 2.
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_regex ORDER BY a, s RLIKE p LIMIT 3
+
+query
+SELECT a FROM topk_regex ORDER BY a, s RLIKE '^a' LIMIT 3
+
 -- A view keeps the configs it was created with, so the b + 1 in its ordering stays in ANSI mode
 statement
 SET spark.sql.ansi.enabled=true
