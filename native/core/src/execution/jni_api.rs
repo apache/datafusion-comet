@@ -1641,10 +1641,10 @@ fn execute_plan(
             exec_context.stream = Some(stream);
         }
         exec_context.root_op = Some(root_op);
-    } else {
-        // Pull input batches
-        pull_input_batches(exec_context)?;
     }
+    // JVM input is pulled only when the stream waits for it, in `next_batch` below. An operator
+    // above a scan, such as a `BatchSplitExec`, can still hold rows of the last batch it took,
+    // and a limit can finish on them without the JVM producing another batch.
 
     // Wait no later than when metrics are due, so a plan that runs long before its first batch,
     // such as a native shuffle write, still publishes on the interval. A publish while waiting

@@ -1864,11 +1864,18 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                // The sort evaluates its keys on each batch it receives.
-                let input = self.bound_scalar_expansion(
-                    Arc::clone(&child.native_plan),
-                    exprs.iter().map(|sort| &sort.expr),
-                );
+                // A TopK evaluates its keys on each batch it receives. A full sort concatenates
+                // its buffered input before evaluating them, so a split would not bound it, and
+                // DataFusion's `ExternalSorter` reserves each slice of a shared buffer as if it
+                // owned the buffer (apache/datafusion#25804).
+                let input = if fetch.is_some() {
+                    self.bound_scalar_expansion(
+                        Arc::clone(&child.native_plan),
+                        exprs.iter().map(|sort| &sort.expr),
+                    )
+                } else {
+                    Arc::clone(&child.native_plan)
+                };
                 let sort_plan =
                     SortExec::new(LexOrdering::new(exprs).unwrap(), input).with_fetch(fetch);
                 let mut sort_exec: Arc<dyn ExecutionPlan> = if sort.dynamic_filter_enabled {
@@ -4375,9 +4382,9 @@ mod tests {
 
     #[test]
     fn sort_bounds_the_scalar_its_keys_expand() {
-        // A sort evaluates its keys on each batch it receives, and a TopK on each batch it
-        // inserts, expanding a string scalar in a key to the batch's length. The keys get the
-        // bound a projection's expressions get.
+        // A TopK evaluates its keys on each batch it inserts, expanding a string scalar in a key
+        // to the batch's length, so the keys get the bound a projection's expressions get. A full
+        // sort gets no split: it evaluates its keys after concatenating its buffered input.
         let string_type = spark_expression::DataType {
             type_id: spark_expression::data_type::DataTypeId::String as i32,
             type_info: None,
@@ -4435,12 +4442,17 @@ mod tests {
                 .unwrap();
             let sort = planned.native_plan.downcast_ref::<SortExec>().unwrap();
             assert_eq!(fetch.map(|n| n as usize), sort.fetch());
-            let split = sort
-                .input()
-                .downcast_ref::<BatchSplitExec>()
-                .expect("a split under the sort");
-            // A 256 KiB scalar expanded to 4096 rows takes 1 GiB.
-            assert_eq!(4096, split.batch_size());
+            match fetch {
+                None => assert!(!sort.input().is::<BatchSplitExec>()),
+                Some(_) => {
+                    let split = sort
+                        .input()
+                        .downcast_ref::<BatchSplitExec>()
+                        .expect("a split under the TopK");
+                    // A 256 KiB scalar expanded to 4096 rows takes 1 GiB.
+                    assert_eq!(4096, split.batch_size());
+                }
+            }
         }
     }
 
