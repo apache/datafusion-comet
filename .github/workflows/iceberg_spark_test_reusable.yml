@@ -63,6 +63,7 @@ jobs:
   build-native:
     name: Build Native Library
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     outputs:
       shard-matrix: ${{ steps.shards.outputs.matrix }}
       shard-count: ${{ steps.shards.outputs.count }}
@@ -126,6 +127,7 @@ jobs:
       matrix: ${{ fromJSON(needs.build-native.outputs.shard-matrix) }}
     name: iceberg-spark/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}/shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
       image: amd64/rust
     env:
@@ -185,6 +187,7 @@ jobs:
     if: ${{ !cancelled() }}
     name: iceberg-spark-shard-coverage/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Download Iceberg shard inventories
@@ -208,6 +211,7 @@ jobs:
     needs: build-native
     name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
       image: amd64/rust
     env:
@@ -257,6 +261,7 @@ jobs:
     needs: build-native
     name: iceberg-spark-runtime/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:

@@ -51,6 +51,7 @@ jobs:
   delta-build-gate:
     name: Build-gate verification (default builds exclude Delta)
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:
