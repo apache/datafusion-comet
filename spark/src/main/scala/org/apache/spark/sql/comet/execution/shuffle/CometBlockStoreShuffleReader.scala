@@ -57,7 +57,7 @@ class CometBlockStoreShuffleReader[K, C](
 
   private val dep = handle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
 
-  private def fetchIterator: Iterator[(BlockId, InputStream)] = {
+  protected[shuffle] def fetchIterator: Iterator[(BlockId, InputStream)] = {
     new ShuffleBlockFetcherIterator(
       context,
       blockManager.blockStoreClient,
@@ -94,16 +94,21 @@ class CometBlockStoreShuffleReader[K, C](
     val nativeUtil = new NativeUtil()
     val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
     val readBufferSize = CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt
+    // One block buffer for the task, shared by the iterator of every fetched block.
+    val readBuffer = new ShuffleReadBuffer
 
     // Closes last read iterator and shared resources after the task is finished.
     // We need to close read iterator during iterating input streams,
     // instead of one callback per read iterator. Otherwise if there are too many
     // read iterators, it may blow up the call stack and cause OOM.
     context.addTaskCompletionListener[Unit] { _ =>
-      if (currentReadIterator != null) {
-        currentReadIterator.close()
+      Utils.tryWithSafeFinally {
+        if (currentReadIterator != null) {
+          currentReadIterator.close()
+        }
+      } {
+        Utils.tryWithSafeFinally(nativeUtil.close())(readBuffer.release())
       }
-      nativeUtil.close()
     }
 
     val recordIter: Iterator[(Int, ColumnarBatch)] = fetchIterator
@@ -117,7 +122,8 @@ class CometBlockStoreShuffleReader[K, C](
           nativeLib,
           nativeUtil,
           tracingEnabled,
-          readBufferSize = readBufferSize)
+          readBufferSize = readBufferSize,
+          readBuffer = readBuffer)
         currentReadIterator
       })
       .map(b => (0, b))
@@ -129,8 +135,9 @@ class CometBlockStoreShuffleReader[K, C](
   private[shuffle] def readWithCoalescing(maxRows: Int): Iterator[Product2[K, C]] = {
     val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
     val readBufferSize = CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt
-    val input = readAsRawStream(resetDecoderBuffer = true)
+    val input = readAsRawStream()
     val nativeUtil = new NativeUtil()
+    val readBuffer = new ShuffleReadBuffer
     val decoder = NativeBatchDecoderIterator(
       input,
       dep.decodeTime,
@@ -138,12 +145,15 @@ class CometBlockStoreShuffleReader[K, C](
       nativeUtil,
       tracingEnabled,
       readBufferSize = readBufferSize,
-      coalescing = Some(maxRows))
+      coalescing = Some(maxRows),
+      readBuffer = readBuffer)
     // Registration invokes the callback immediately if completion raced construction. The
     // decoder is lazy, so a closed task cannot acquire native batching state after cleanup.
     context.addTaskCompletionListener[Unit] { _ =>
       Utils.tryWithSafeFinally {
-        Utils.tryWithSafeFinally(decoder.close())(nativeUtil.close())
+        Utils.tryWithSafeFinally(decoder.close()) {
+          Utils.tryWithSafeFinally(nativeUtil.close())(readBuffer.release())
+        }
       }(context.taskMetrics().mergeShuffleReadMetrics())
     }
     withReadMetrics(decoder.map(batch => (0, batch)))
@@ -189,13 +199,11 @@ class CometBlockStoreShuffleReader[K, C](
    * Returns the raw concatenated InputStream of all shuffle blocks, bypassing the decode step.
    * Used by ShuffleScan direct read path.
    */
-  override def readAsRawStream(): InputStream = readAsRawStream(resetDecoderBuffer = false)
-
-  private def readAsRawStream(resetDecoderBuffer: Boolean): InputStream = {
+  override def readAsRawStream(): InputStream = {
     val streams = fetchIterator.map(_._2)
     // Native code reads this stream on the task thread, outside any InterruptibleIterator, so
     // every read checks whether the task was killed.
-    new FilterInputStream(CometBlockStoreShuffleReader.concatenate(streams, resetDecoderBuffer)) {
+    new FilterInputStream(CometBlockStoreShuffleReader.concatenate(streams)) {
       override def read(): Int = {
         context.killTaskIfInterrupted()
         in.read()
@@ -244,17 +252,11 @@ private[shuffle] object CometBlockStoreShuffleReader {
    * SequenceInputStream normally drains its Enumeration during close, which would fetch every
    * remaining shuffle block even when the native consumer stopped early.
    */
-  def concatenate(
-      streams: Iterator[InputStream],
-      resetDecoderBuffer: Boolean = false): InputStream = {
+  def concatenate(streams: Iterator[InputStream]): InputStream = {
     val closed = new AtomicBoolean(false)
     val enumeration = new java.util.Enumeration[InputStream] {
       override def hasMoreElements: Boolean = !closed.get() && streams.hasNext
-      override def nextElement(): InputStream = {
-        // Batching spans blocks, but its oversized read buffer belongs to a single block.
-        if (resetDecoderBuffer) NativeBatchDecoderIterator.resetDataBuf()
-        streams.next()
-      }
+      override def nextElement(): InputStream = streams.next()
     }
     val sequence = new java.io.SequenceInputStream(enumeration)
     new FilterInputStream(sequence) {
