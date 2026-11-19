@@ -1435,11 +1435,11 @@ class CometIcebergNativeSuite
             else Seq.empty
           }
           def pushedValues(scan: CometIcebergNativeScanExec): Set[java.math.BigInteger] = {
-            val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
-            val tasks = scan.perPartitionData.toSeq.flatMap(bytes =>
-              OperatorOuterClass.IcebergScan.parseFrom(bytes).getFileScanTasksList.asScala)
+            val tasks = partitionScans(scan).flatMap { partition =>
+              partition.getFileScanTasksList.asScala.map(task => (task, partition.getCommon))
+            }
             assert(tasks.size == 1, s"file planning must retain the one data file: $tasks")
-            val task = tasks.head
+            val (task, common) = tasks.head
             assert(task.getDataFilePath == file.getPath.toString)
             assert(task.hasResidualIdx, "task must reference the pushed residual")
             val literals = decimalLiterals(common.getResidualPool(task.getResidualIdx))

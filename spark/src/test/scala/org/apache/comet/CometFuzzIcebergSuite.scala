@@ -19,7 +19,6 @@
 
 package org.apache.comet
 
-import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.spark.sql.Column
@@ -29,6 +28,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.IcebergScanPlanData.distinctResiduals
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
@@ -244,14 +244,15 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         val (_, cometPlan) = checkSparkAnswer(df.where(col(name) === lit(v)))
         val scans = collectIcebergNativeScans(cometPlan)
         assert(scans.length == 1, s"expected one native scan for '$name'\n$cometPlan")
-        val pushed = distinctResiduals(scans.head).nonEmpty
+        val residuals = distinctResiduals(scans.head)
+        val pushed = residuals.nonEmpty
         if (isPushable(field.dataType)) {
           assert(
             pushed,
             s"expected a pushed residual for pushable column '$name' (${field.dataType})")
           field.dataType match {
             case decimalType: DecimalType =>
-              val equalities = common.getResidualPoolList.asScala.toSeq
+              val equalities = residuals.toSeq
                 .flatMap(binaryPredicates)
                 .filter(p =>
                   p.getColumn == name && p.getOp == OperatorOuterClass.IcebergPredicateOperator.Eq)
