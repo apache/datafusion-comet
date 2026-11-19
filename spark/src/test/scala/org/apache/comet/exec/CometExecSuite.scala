@@ -4684,9 +4684,13 @@ class CometExecSuite extends CometTestBase {
       "typed Dataset" -> (() =>
         spark.sparkContext.parallelize(data, 2).toDS().toDF(schema.fieldNames.toSeq: _*)),
       "RDD" -> (() => spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema)))
-    val expressions = Seq("id", "size(xs) AS n", "slice(xs, 2, 2) AS s", "map_entries(m) AS e") ++
-      (if (isSpark35Plus) Seq("array_insert(xs, 1, 0) AS i", "array_prepend(xs, -1) AS p")
-       else Seq.empty)
+    val expressions = Seq(
+      "id",
+      "size(xs) AS n",
+      "slice(xs, 2, 2) AS s",
+      "map_entries(m) AS e",
+      "array_insert(xs, 1, 0) AS i",
+      "array_prepend(xs, -1) AS p")
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "native",
