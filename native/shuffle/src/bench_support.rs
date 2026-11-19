@@ -119,3 +119,10 @@ impl BenchRepartitioner {
         self.inner.shuffle_write()
     }
 }
+
+/// Maps each hash to its partition the way hash partitioning does.
+pub fn hash_partition_ids(hashes: &[u32], num_partitions: usize, partition_ids: &mut [u32]) {
+    for (id, &hash) in partition_ids.iter_mut().zip(hashes) {
+        *id = crate::comet_partitioning::pmod(hash, num_partitions) as u32;
+    }
+}

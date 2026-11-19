@@ -124,7 +124,8 @@ pub(crate) fn pmod(hash: u32, n: usize) -> usize {
     let hash = hash as i32;
     let n = n as i32;
     let r = hash % n;
-    let result = if r < 0 { (r + n) % n } else { r };
+    // A negative `r` is in `(-n, 0)`, so `r + n` is already in `(0, n)`.
+    let result = if r < 0 { r + n } else { r };
     result as usize
 }
 
@@ -140,6 +141,28 @@ mod tests {
         // expected partition from Spark with n=200
         let expected = vec![69, 5, 193, 171, 115];
         assert_eq!(result, expected);
+    }
+
+    /// Spark's `pmod` on the hash as an `i32`, which for a positive `n` is the Euclidean remainder.
+    #[test]
+    fn test_pmod_edge_cases() {
+        let hashes = [
+            0,
+            1,
+            199,
+            200,
+            201,
+            i32::MAX as u32,
+            0x8000_0000,
+            0x8000_0001,
+            u32::MAX,
+        ];
+        for n in [1, 2, 13, 16, 200, i32::MAX as usize] {
+            for hash in hashes {
+                let expected = (hash as i32 as i64).rem_euclid(n as i64) as usize;
+                assert_eq!(pmod(hash, n), expected, "hash {hash:#x}, n {n}");
+            }
+        }
     }
 
     /// A group that a previous batch left part-way through is finished by the next batch, rather
