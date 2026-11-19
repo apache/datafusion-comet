@@ -35,7 +35,6 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.util.ThreadUtils
-import org.apache.spark.util.io.ChunkedByteBuffer
 
 /**
  * Comet replacement for SubqueryBroadcastExec that consumes Arrow broadcast data from a
@@ -94,8 +93,8 @@ case class CometSubqueryBroadcastExec(
         val beforeCollect = System.nanoTime()
 
         // Get the Arrow broadcast from CometBroadcastExchangeExec
-        val broadcasted = child.executeBroadcast[Array[ChunkedByteBuffer]]()
-        val arrowBatches = broadcasted.value
+        val broadcasted = child.executeBroadcast[CometBroadcastValue]()
+        val arrowBatches = broadcasted.value.chunks
 
         // Decode Arrow batches to rows using the same approach as ColumnarToRowExec:
         // batch.rowIterator() + UnsafeProjection handles all types including structs/arrays.

@@ -45,6 +45,7 @@ Development Guide <development>
 :hidden:
 
 Comet Plugin Overview <plugin_overview>
+Local Execution <local-execution>
 Arrow FFI <ffi>
 Timezone Handling <timezones>
 Floating-Point Semantics <floating_point>
@@ -74,6 +75,7 @@ Adding a New Spark Version <adding_a_new_spark_version>
 Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
+Iceberg Scheduler Failure Tests <iceberg-scheduler-failures.md>
 Continuous Integration <ci>
 ```
 
@@ -98,6 +100,7 @@ Expression Audits <expression-audits/index>
 Data Source Audits <data-source-audits/index>
 Supported Spark Configurations <spark_configs_support>
 Configuration Conventions <config_conventions>
+Documentation Style Guide <style_guide>
 ```
 
 ```{toctree}

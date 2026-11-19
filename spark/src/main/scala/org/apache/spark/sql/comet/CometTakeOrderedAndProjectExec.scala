@@ -155,6 +155,7 @@ case class CometTakeOrderedAndProjectExec(
     if (childRDD.getNumPartitions == 0 || limit == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)
     } else {
+      val sqlConf = CapturedSQLConf.capture()
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
         childRDD
       } else {
@@ -178,6 +179,7 @@ case class CometTakeOrderedAndProjectExec(
               serializedTopK,
               numParts,
               idx,
+              sqlConf,
               child.output.map(_.dataType))
           }
         }
@@ -207,6 +209,7 @@ case class CometTakeOrderedAndProjectExec(
           serializedFinalPlan,
           1,
           0,
+          sqlConf,
           finalOutputTypes)
         setSubqueries(it.id, this)
 

@@ -28,12 +28,12 @@ import scala.util.Try
 
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
+import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR, SHUFFLE_MANAGER}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.serializer.KryoSerializer
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleManager}
-import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.util.{Clock, SystemClock}
 
 import org.apache.comet.{COMET_VERSION, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
@@ -112,6 +112,8 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
 
     val extraConfs = new ju.HashMap[String, String]()
 
+    // Before the cache serializer, which is installed only with one of Comet's shuffle managers.
+    CometDriverPlugin.maybeSetShuffleManager(sc.conf)
     CometDriverPlugin.maybeSetCacheSerializer(sc.conf, extraConfs)
     CometDriverPlugin.warnIfKryoRegistrationsMissing(sc.conf)
 
@@ -123,7 +125,7 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
     CometDriverPlugin.registerIcebergWriteReport(sc.conf)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
-    CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
+    CometDriverPlugin.warnIfDeprecatedConfigsSet(sc.getConf)
 
     extraConfs
   }
@@ -174,6 +176,36 @@ object CometDriverPlugin extends Logging {
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
 
+  // Choose Comet's shuffle manager for an application that did not, so that Comet does not
+  // disable itself. Only from Spark 4.0 (SPARK-45762) does SparkContext create the manager after
+  // it initializes the plugins, from the same conf that executors then fetch. An application's own
+  // choice, even Spark's, is kept: it may depend on that manager, as Celeborn does.
+  // Nor is it set where Comet disables itself whatever the manager, since Comet would not run and
+  // Spark would copy every row of its exchanges for want of a SortShuffleManager.
+  private[apache] def maybeSetShuffleManager(conf: SparkConf): Unit = {
+    if (CometSparkSessionExtensions.isSpark40Plus &&
+      getBooleanConf(conf, CometConf.COMET_ENABLED) &&
+      getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED) &&
+      !conf.contains(SHUFFLE_MANAGER) &&
+      !cometUnsupportedAtStartup(conf)) {
+      val value = classOf[CometShuffleManager].getName
+      conf.set(SHUFFLE_MANAGER.key, value)
+      logInfo(s"Auto-set ${SHUFFLE_MANAGER.key}=$value")
+    }
+  }
+
+  // Applies the checks that isCometLoaded makes on the platform and settings. A library that
+  // fails to load when nativeLoadRequired is set counts as supported: isCometLoaded throws then,
+  // when Comet first plans a query, and the application should not fail here instead.
+  private def cometUnsupportedAtStartup(conf: SparkConf): Boolean = {
+    val int96Conversion = conf.getBoolean(SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key, false)
+    val nativeLoadRequired = getBooleanConf(conf, CometConf.COMET_NATIVE_LOAD_REQUIRED)
+    Try(
+      CometSparkSessionExtensions
+        .unsupportedEnvironmentReason(int96Conversion, nativeLoadRequired)
+        .isDefined).getOrElse(false)
+  }
+
   // Use Comet's cache serializer only when the native in-memory cache scan can run, which needs
   // Comet and its native execution as well as the cache config. spark.sql.cache.serializer is
   // static, so an application that starts with Comet or native execution off would otherwise
@@ -213,7 +245,7 @@ object CometDriverPlugin extends Logging {
   // Comet hands Spark's serializer classes that Kryo has not been told about, so with
   // spark.kryo.registrationRequired=true it rejects them with "Class is not registered", which
   // names neither Comet nor the operation that failed. Two paths reach it: a native broadcast,
-  // which broadcasts an Array[ChunkedByteBuffer], and any cached block Spark serializes -- the
+  // which broadcasts a CometBroadcastValue, and any cached block Spark serializes -- the
   // disk half of MEMORY_AND_DISK, the _SER levels, replication, a cross-executor fetch.
   // CometKryoRegistrator covers both, but spark.kryo.registrator is read when SparkEnv builds the
   // serializer, before any plugin runs, so it cannot be set from here. Say so while the
@@ -264,7 +296,7 @@ object CometDriverPlugin extends Logging {
   // class name.
   private def isCometShuffleManager(conf: SparkConf): Boolean =
     Set(classOf[CometShuffleManager].getName, classOf[CometCelebornShuffleManager].getName)
-      .contains(conf.get("spark.shuffle.manager", ""))
+      .contains(conf.get(SHUFFLE_MANAGER.key, ""))
 
   // Comet's native allocations are made by the Rust global allocator and live in the native heap.
   // In off-heap mode the share that operators reserve is charged against a memory pool, but
@@ -275,7 +307,7 @@ object CometDriverPlugin extends Logging {
   // spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
   //
   // Comet used to add an overhead of its own to it here, but a driver plugin cannot: on Spark
-  // 3.4, 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
+  // 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
   // container, and the cluster managers size executors from that profile rather than re-reading
   // the conf, so the new value never reached the container. Say so while the application is still
   // starting up instead, because this has to be set before the SparkContext is created.
@@ -320,21 +352,32 @@ object CometDriverPlugin extends Logging {
       .exists(factor => !Try(factor.toDouble).toOption.contains(submitDefault))
   }
 
+  // Deprecated configs that the driver warns about when they are set, with the reason for each.
+  //
   // spark.comet.exec.memoryPool.fraction was documented as holding back part of the off-heap pool
   // for the native memory that Comet does not reserve. It cannot: Spark hands out the whole pool
-  // to the tasks that ask for it, and the fraction only caps each task's consumers under
+  // to the tasks that ask for it, and the fraction only caps each task's total under
   // fair_unified. Users who set it for that purpose need to size the memory overhead instead.
-  private[apache] def warnIfMemoryPoolFractionSet(conf: SparkConf): Unit = {
-    val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
-    conf.getOption(key).foreach { value =>
-      logWarning(
-        s"$key=$value is deprecated and will be removed in a future major release. It does " +
-          "not leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
-          "pools do not track, because Spark hands out the whole off-heap pool whatever it is " +
-          s"set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
-          s"${CometConf.TUNING_GUIDE}.")
+  //
+  // spark.comet.exec.columnarToRow.native.enabled turned on a Rust columnar-to-row converter that
+  // has been removed, so the key no longer does anything.
+  private def deprecatedConfigs: Seq[(ConfigEntry[_], String)] = Seq(
+    CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION ->
+      ("It does not leave room in spark.memory.offHeap.size for native memory that Comet's " +
+        "memory pools do not track, because Spark hands out the whole off-heap pool whatever " +
+        s"it is set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
+        s"${CometConf.TUNING_GUIDE}."),
+    CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED ->
+      "It has no effect: Comet always converts Arrow batches to Spark rows on the JVM.")
+
+  private[apache] def warnIfDeprecatedConfigsSet(conf: SparkConf): Unit =
+    deprecatedConfigs.foreach { case (entry, reason) =>
+      conf.getOption(entry.key).foreach { value =>
+        logWarning(
+          s"${entry.key}=$value is deprecated and will be removed in a future major release. " +
+            reason)
+      }
     }
-  }
 
   // Reads a deprecated alternative too, such as spark.comet.exec.shuffle.enabled, as a session
   // would.

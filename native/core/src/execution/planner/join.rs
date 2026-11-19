@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Builders for the native join operators (hash join, sort-merge join, and broadcast nested loop
-//! join), and the join-key and join-filter planning they share.
+//! Builders for the native join operators (hash join, sort-merge join, broadcast nested loop
+//! join, and cross join), and the join-key and join-filter planning they share.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -35,25 +35,31 @@ use datafusion::{
         LexOrdering, PhysicalExpr,
     },
     physical_plan::{
+        empty::EmptyExec,
         filter::FilterExec,
         joins::{
-            utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
+            utils::JoinFilter, CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
+            SortMergeJoinExec,
         },
         projection::ProjectionExec,
+        sorts::sort::SortExec,
         ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
     },
 };
-use datafusion_comet_operators::{CometFilterExec, CometProjectionExec};
+use datafusion_comet_operators::{
+    CometFilterExec, CometProjectionExec, MembershipKeyReductionExec,
+};
 use datafusion_comet_proto::{
     spark_expression::Expr,
     spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
 };
 use datafusion_datasource::{file_scan_config::FileScanConfig, source::DataSourceExec};
 use itertools::Itertools;
-use jni::objects::{Global, JObject};
+use jni::objects::{Global, JObject, JValue};
 
 use super::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult};
 use crate::{
+    errors::CometError,
     execution::{
         operators::{
             DynamicFilterJoinExec, ExecutionError, ScanExec, ShuffleScanExec, SortedInputExec,
@@ -61,6 +67,7 @@ use crate::{
         spark_plan::SparkPlan,
     },
     extract_op,
+    jvm_bridge::{check_exception, JVMClasses},
 };
 
 use ExecutionError::GeneralError;
@@ -201,6 +208,71 @@ impl OperatorBuilder for HashJoinBuilder {
 /// Builder for `SortMergeJoin`.
 pub struct SortMergeJoinBuilder;
 
+/// Spark identifies the shuffle input. Check the actual sort and its key before replacing its child.
+fn reduce_before_sort(
+    planner: &PhysicalPlanner,
+    params: &mut JoinParameters,
+    sort_options: &[SortOptions],
+) -> Result<Option<Arc<dyn ExecutionPlan>>, ExecutionError> {
+    if params.join_type != DFJoinType::LeftSemi || params.join_filter.is_some() {
+        return Ok(None);
+    }
+    let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
+        return Ok(None);
+    };
+    let input = sort.input();
+    let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
+        return Ok(None);
+    };
+    let schema = input.schema();
+    let order = sort.expr().first();
+    if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
+        || schema.fields().len() != 1
+        || !schema.field(0).data_type().is_signed_integer()
+        || !key.is::<Column>()
+        || sort.expr().len() != 1
+        || order.options != *options
+        || !order.expr.eq(key)
+    {
+        return Ok(None);
+    }
+    // A smaller sort reservation can pass Comet's fair-share limit and reach Spark's
+    // acquireExecutionMemory, spilling a resident JVM consumer where the unreduced sort
+    // would have spilled natively. This best-effort check runs once at first execution,
+    // after input iterator construction; it cannot cover consumers that allocate later.
+    if let Some(context) = &planner.task_context {
+        let occupied = JVMClasses::with_env(|env| -> Result<bool, CometError> {
+            let result = env.call_static_method(
+                jni::jni_str!("org/apache/comet/CometExecIterator"),
+                jni::jni_str!("hasOtherExecutionMemory"),
+                jni::jni_sig!("(Lorg/apache/spark/TaskContext;)Z"),
+                &[JValue::Object(context.as_obj())],
+            );
+            if let Some(error) = check_exception(env)? {
+                return Err(error);
+            }
+            Ok(result?.z()?)
+        })?;
+        if occupied {
+            log::debug!(
+                "Skipping semi-join right-key reduction before sort {}: another Spark \
+                 consumer holds execution memory in this task",
+                params.right.plan_id
+            );
+            return Ok(None);
+        }
+    }
+    let reducer: Arc<dyn ExecutionPlan> =
+        Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
+    let sort = Arc::clone(&params.right.native_plan).replace_children(
+        vec![Arc::clone(&reducer)],
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )?;
+    Arc::make_mut(&mut params.right).native_plan = sort;
+    // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
+    Ok(Some(reducer))
+}
+
 impl OperatorBuilder for SortMergeJoinBuilder {
     fn build(
         &self,
@@ -212,7 +284,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
         let join = extract_op!(spark_plan, SortMergeJoin);
         let children = &spark_plan.children;
 
-        let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
+        let (mut join_params, scans, shuffle_scans) = planner.parse_join_parameters(
             inputs,
             children,
             &join.left_join_keys,
@@ -222,7 +294,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             partition_count,
         )?;
 
-        let sort_options = join
+        let sort_options: Vec<_> = join
             .sort_options
             .iter()
             .map(|sort_option| {
@@ -236,6 +308,14 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             })
             .collect();
 
+        let reducer = if join.right_key_reduction_enabled
+            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
+                if sort.fetch.is_none() && sort.skip.is_none())
+        {
+            reduce_before_sort(planner, &mut join_params, &sort_options)?
+        } else {
+            None
+        };
         let left = Arc::clone(&join_params.left.native_plan);
         let right = Arc::clone(&join_params.right.native_plan);
 
@@ -267,13 +347,11 @@ impl OperatorBuilder for SortMergeJoinBuilder {
         Ok((
             scans,
             shuffle_scans,
-            Arc::new(SparkPlan::new(
+            Arc::new(SparkPlan::new_with_additional(
                 spark_plan.plan_id,
                 join,
-                vec![
-                    Arc::clone(&join_params.left),
-                    Arc::clone(&join_params.right),
-                ],
+                vec![join_params.left, join_params.right],
+                reducer.into_iter().collect(),
             )),
         ))
     }
@@ -344,6 +422,48 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
     }
 }
 
+/// Builder for `CrossJoin` (Spark's `CartesianProductExec`).
+pub struct CrossJoinBuilder;
+
+impl OperatorBuilder for CrossJoinBuilder {
+    fn build(
+        &self,
+        spark_plan: &Operator,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
+        partition_count: usize,
+        planner: &PhysicalPlanner,
+    ) -> PlanCreationResult {
+        let children = &spark_plan.children;
+
+        // No keys or condition. The join type only satisfies the helper; CrossJoinExec emits left
+        // then right columns, as Spark does.
+        let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
+            inputs,
+            children,
+            &[],
+            &[],
+            JoinType::Inner as i32,
+            &None,
+            partition_count,
+        )?;
+
+        let left = Arc::clone(&join_params.left.native_plan);
+        let right = Arc::clone(&join_params.right.native_plan);
+
+        let cross_join = Arc::new(CrossJoinExec::new(left, right));
+
+        Ok((
+            scans,
+            shuffle_scans,
+            Arc::new(SparkPlan::new(
+                spark_plan.plan_id,
+                cross_join,
+                vec![join_params.left, join_params.right],
+            )),
+        ))
+    }
+}
+
 impl PhysicalPlanner {
     /// Keep Spark metric identities for the small set of nodes whose children
     /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
@@ -402,27 +522,31 @@ impl PhysicalPlanner {
         Ok(Arc::new(prepared))
     }
 
-    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless it already
-    /// declares one. Spark's plan knows the order of an input that enters the native plan from
-    /// the JVM, and of a scan of sorted files, but the `ScanExec` or the file scan the rows
-    /// arrive through declares none. Only that order is declared: when an operator in between may
-    /// have moved rows, `plan` is left as it is.
+    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless the order it
+    /// declares already satisfies them. Spark's plan knows the order of an input that enters the
+    /// native plan from the JVM, and of a scan of sorted files, but the `ScanExec` or the file
+    /// scan the rows arrive through declares none. Only that order is declared: when an operator
+    /// in between may have moved rows, `plan` is left as it is.
     ///
-    /// The serde sends an order only when the streamed side's Comet operators report it, and it
-    /// checks that nothing under them moves rows (`mayReportFalseOrder`), while this walk asks
-    /// the native operators the same thing through `maintains_input_order`. The two agree as
-    /// long as a Comet operator that reports an order keeps it natively and says so, and a Comet
-    /// leaf that reports one is a source this walk knows or declares its order itself, as the
-    /// native range does. One that does not lands here with `plan` unchanged, and the join then
-    /// moves its unmatched rows after Spark has dropped the sort above it. Nothing here can fall
-    /// back at that point, so the invariant is kept at the operator: see "Adding a New Operator"
-    /// in the contributor guide.
-    fn with_declared_order(
+    /// An input that declares only part of `sort_orders`, such as a window over another window,
+    /// gets them declared next to its own order.
+    ///
+    /// The serde sends an order only when the Comet operators of a join's streamed side or of a
+    /// window's input report it, and it checks that nothing under them moves rows
+    /// (`mayReportFalseOrder`), while this walk asks the native operators the same thing through
+    /// `maintains_input_order`. The two agree as long as a Comet operator that reports an order
+    /// keeps it natively and says so, and a Comet leaf that reports one is a source this walk
+    /// knows or declares its order itself, as the native range does. One that does not lands
+    /// here with `plan` unchanged, and the join then moves its unmatched rows after Spark has
+    /// dropped the sort above it, or the window rejects its input. Nothing here can fall back at
+    /// that point, so the invariant is kept at the operator: see "Adding a New Operator" in the
+    /// contributor guide.
+    pub(super) fn with_declared_order(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         sort_orders: &[Expr],
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
-        if plan.output_ordering().is_some() || !Self::keeps_source_order(&plan) {
+        if sort_orders.is_empty() || !Self::keeps_source_order(&plan) {
             return Ok(plan);
         }
         let exprs = sort_orders
@@ -430,8 +554,14 @@ impl PhysicalPlanner {
             .map(|expr| self.create_sort_expr(expr, plan.schema()))
             .collect::<Result<Vec<_>, _>>()?;
         match LexOrdering::new(exprs) {
-            Some(ordering) => Ok(Arc::new(SortedInputExec::new(plan, ordering))),
-            None => Ok(plan),
+            Some(ordering)
+                if !plan
+                    .equivalence_properties()
+                    .ordering_satisfy(ordering.iter().cloned())? =>
+            {
+                Ok(Arc::new(SortedInputExec::new(plan, ordering)))
+            }
+            _ => Ok(plan),
         }
     }
 
@@ -439,11 +569,12 @@ impl PhysicalPlanner {
     /// keep their input's order, so that the order Spark reports for them still holds. A source is
     /// an input from the JVM, or a scan of files, which reads the files of its one file group one
     /// after the other: Spark reports an order for a file scan only when every partition reads one
-    /// sorted file, as for a sorted bucketed table with one file per bucket. Any other operator may
-    /// have moved rows, such as the null-aware anti join, whose streamed side Comet builds on, and
-    /// declaring Spark's order over it would be wrong.
+    /// sorted file, as for a sorted bucketed table with one file per bucket. An `EmptyExec`, a
+    /// bucket with no file, has no rows to be out of order. Any other operator may have moved
+    /// rows, such as the null-aware anti join, whose streamed side Comet builds on, and declaring
+    /// Spark's order over it would be wrong.
     pub(super) fn keeps_source_order(plan: &Arc<dyn ExecutionPlan>) -> bool {
-        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() {
+        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() || plan.is::<EmptyExec>() {
             return true;
         }
         if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {
@@ -453,18 +584,21 @@ impl PhysicalPlanner {
                 .is_some_and(|config| config.file_groups.len() == 1);
         }
         // DataFusion reports every right hash join as keeping its probe order, but a right outer
-        // join keeps it only when the probe declares one, and no input on this path declares an
-        // order. An inner join emits its matches probe row by probe row, and a right semi, anti or
-        // mark join builds its probe indices in ascending order, so none of them depends on a
-        // declaration. Any other join type keeps no probe order at all.
+        // join keeps its unmatched probe rows in place only when the probe declares an order, as
+        // the planner does for the join's streamed side. An inner join emits its matches probe
+        // row by probe row, and a right semi, anti or mark join builds its probe indices in
+        // ascending order, so none of them depends on a declaration. Any other join type keeps no
+        // probe order at all.
         if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
-            if !matches!(
-                join.join_type(),
+            let keeps_probe_order = match join.join_type() {
                 DFJoinType::Inner
-                    | DFJoinType::RightSemi
-                    | DFJoinType::RightAnti
-                    | DFJoinType::RightMark
-            ) {
+                | DFJoinType::RightSemi
+                | DFJoinType::RightAnti
+                | DFJoinType::RightMark => true,
+                DFJoinType::Right => join.right().output_ordering().is_some(),
+                _ => false,
+            };
+            if !keeps_probe_order {
                 return false;
             }
         }

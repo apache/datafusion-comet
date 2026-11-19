@@ -92,7 +92,7 @@ case class CometIcebergNativeScanExec(
    * by every construction site), so values resolved through `waitForSubqueries` are visible on
    * both sides.
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[PartitionPlanData]) = {
     // Canonicalized instances set originalPlan = null and are not meant to be executed.
     // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
     // deep inside originalPlan.inputRDD.
@@ -122,16 +122,15 @@ case class CometIcebergNativeScanExec(
 
   def commonData: Array[Byte] = serializedPartitionData._1
 
-  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+  def perPartitionData: Array[PartitionPlanData] = serializedPartitionData._2
 
   // numPartitions for execution - derived from actual DPP-filtered partitions
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  // Like BatchScanExec on Spark 3.5 and later without a key-grouped partitioning, the scan does
-  // not know its partition count while planning, because dynamic partition pruning decides which
-  // tasks survive and its subqueries resolve at execution. AQE reads outputPartitioning while it
-  // optimizes a stage (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // Without a key-grouped partitioning, the scan does not know its partition count while
+  // planning because dynamic partition pruning decides which tasks survive and its subqueries
+  // resolve at execution. AQE reads outputPartitioning while it optimizes a stage, before
   // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.

@@ -118,10 +118,6 @@ object IcebergWriteReportListener {
     // A streaming micro-batch, which Comet's split operator never plans.
     case w: WriteToDataSourceV2Exec if isIcebergMicroBatch(w.batchWrite) =>
       Seq(IcebergWrite(Spark, w.nodeName, Nil))
-    // Spark 3.4 writes a CTAS or RTAS from the create or replace exec itself. Later versions run
-    // that write as a nested append or overwrite, which this listener sees as a query of its own.
-    case w if IcebergTableAsSelectShim.writeCatalog(w).exists(isIceberg) =>
-      Seq(IcebergWrite(Spark, w.nodeName, Nil))
     case p => p.children.flatMap(writes)
   }
 

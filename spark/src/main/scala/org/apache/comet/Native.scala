@@ -24,7 +24,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
@@ -49,6 +49,12 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param memoryLimit
+   *   the most that the task's native memory pool may reserve, see
+   *   `CometExecIterator.getMemoryConfig`.
+   * @param offHeapSize
+   *   `spark.memory.offHeap.size`, which the `fair_unified` pool shares among the tasks running
+   *   native plans.
    * @param taskContext
    *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
    * @param classLoader
@@ -72,6 +78,7 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
+      offHeapSize: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
@@ -91,6 +98,20 @@ class Native extends NativeBase {
    *   the callback that receives complete encoded shuffle blocks.
    */
   @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
+
+  /**
+   * Bind the output stream of the file a native Parquet write writes, for a file the JVM created
+   * itself, to an existing native query plan.
+   *
+   * The output stream must be registered before the plan is executed. Its native global reference
+   * is released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param output
+   *   the file the plan's Parquet writer writes the bytes of.
+   */
+  @native def setOutputStream(plan: Long, output: HadoopFileOutput): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -282,6 +303,29 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
 
+  /** Own a bounded group of decoded local shuffle batches until export or reader cleanup. */
+  @native def createShuffleBatchCoalescer(maxRows: Int): Long
+
+  /** Decode one frame and return the next output's column count, or -1 for more input. */
+  @native def appendShuffleBatch(
+      handle: Long,
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      numColumns: Int,
+      tracingEnabled: Boolean): Int
+
+  /** Return ready columns, flushing any pending group at EOF. */
+  @native def peekShuffleBatch(handle: Long, endOfInput: Boolean, tracingEnabled: Boolean): Int
+
+  /** Transfer one ready batch through Arrow FFI, returning its row count. */
+  @native def takeShuffleBatch(
+      handle: Long,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
+
+  @native def closeShuffleBatchCoalescer(handle: Long): Unit
+
   /**
    * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
    * expected schema is serialized as a ShuffleScan protobuf.
@@ -347,50 +391,4 @@ class Native extends NativeBase {
    *   `plans` is the number of native plans created and not yet released.
    */
   @native def getMemoryUsage(): Array[Long]
-
-  // Native Columnar to Row conversion methods
-
-  /**
-   * Initialize a native columnar to row converter.
-   *
-   * @param schema
-   *   Array of serialized data types (as byte arrays) for each column in the schema.
-   * @param batchSize
-   *   The maximum number of rows that will be converted in a single batch. Used to pre-allocate
-   *   the output buffer.
-   * @return
-   *   A handle to the native converter context. This handle must be passed to subsequent convert
-   *   and close calls.
-   */
-  @native def columnarToRowInit(schema: Array[Array[Byte]], batchSize: Int): Long
-
-  /**
-   * Convert Arrow columnar data to Spark UnsafeRow format.
-   *
-   * @param c2rHandle
-   *   The handle returned by columnarToRowInit.
-   * @param arrayAddrs
-   *   The addresses of Arrow Array structures for each column.
-   * @param schemaAddrs
-   *   The addresses of Arrow Schema structures for each column.
-   * @param numRows
-   *   The number of rows to convert.
-   * @return
-   *   A NativeColumnarToRowInfo containing the memory address of the row buffer and metadata
-   *   (offsets and lengths) for each row.
-   */
-  @native def columnarToRowConvert(
-      c2rHandle: Long,
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long],
-      numRows: Int): NativeColumnarToRowInfo
-
-  /**
-   * Close and release the native columnar to row converter.
-   *
-   * @param c2rHandle
-   *   The handle returned by columnarToRowInit.
-   */
-  @native def columnarToRowClose(c2rHandle: Long): Unit
-
 }

@@ -72,10 +72,11 @@
 //! the stamped copy too; nothing outside the rebase path reads the key, and the copy is otherwise
 //! identical.
 //!
-//! Conversion checks also use the raw footer to preserve legacy LIST clipping failures. With
-//! row filters enabled, a deferred conversion failure is raised on the first data-page request.
-//! Footer, Bloom-filter and page-index reads still proceed, so format pruning can discard a file
-//! without decoding it, but row selection cannot hide the failure.
+//! Conversion checks also use the raw footer to preserve legacy LIST clipping failures and to see
+//! which leaves the file declares `TIMESTAMP(NANOS)`. With row filters enabled, or for a file with
+//! a `TIMESTAMP(NANOS)` leaf even without them, a deferred conversion failure is raised on the
+//! first data-page request. Footer, Bloom-filter and page-index reads still proceed, so format
+//! pruning can discard a file without decoding it, but row selection cannot hide the failure.
 //!
 //! With `with_next_file_metadata_prefetch`, readers also load the next file's metadata before
 //! DataFusion opens it. DataFusion's `FileStream` keeps one I/O outstanding and plans a file
@@ -95,7 +96,7 @@
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::{
-    check_file_conversions, RejectOnNonEmpty, REPEATED_PRIMITIVE_KEY,
+    check_file_conversions, RejectOnNonEmpty, NANOS_TIMESTAMP_KEY, REPEATED_PRIMITIVE_KEY,
 };
 use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -126,7 +127,7 @@ use object_store::{
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{encode_arrow_schema, parquet_to_arrow_schema, ARROW_SCHEMA_META_KEY};
-use parquet::basic::{ConvertedType, LogicalType};
+use parquet::basic::{ConvertedType, LogicalType, TimeUnit as ParquetTimeUnit, TimestampType};
 use parquet::encryption::decrypt::FileDecryptionProperties;
 use parquet::errors::{ParquetError, Result as ParquetResult};
 use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
@@ -271,8 +272,9 @@ impl EagerPageIndexReaderFactory {
         }
     }
 
-    /// Retain raw LIST encoding for open-time validation. When row filters are enabled,
-    /// enforce deferred failures at the first data-page read, after format pruning.
+    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation. When row
+    /// filters are enabled, or the file has a `TIMESTAMP(NANOS)` leaf, enforce deferred failures
+    /// at the first data-page read, after format pruning.
     pub(crate) fn with_conversion_check(
         mut self,
         required: SchemaRef,
@@ -527,10 +529,22 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
     ))
 }
 
-/// Arrow normalizes both standard and legacy LISTs to the same type. Carry the repeated
-/// primitive distinction in an ephemeral schema used by the conversion check, never in the
-/// shared footer cache or in the schema given to the decoder.
-fn mark_repeated_primitives(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
+/// Whether the file declares `column` as `TIMESTAMP(NANOS)`.
+fn is_nanos_timestamp(column: &ColumnDescPtr) -> bool {
+    matches!(
+        column.logical_type_ref(),
+        Some(LogicalType::Timestamp(TimestampType {
+            unit: ParquetTimeUnit::NANOS,
+            ..
+        }))
+    )
+}
+
+/// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
+/// `TIMESTAMP(NANOS)` leaves the same nanosecond timestamp type. Carry the repeated primitive
+/// and `TIMESTAMP(NANOS)` distinctions in an ephemeral schema used by the conversion check,
+/// never in the shared footer cache or in the schema given to the decoder.
+fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
     fn mark(field: &FieldRef, columns: &[ColumnDescPtr], index: &mut usize) -> FieldRef {
         let data_type = match field.data_type() {
             DataType::Struct(fields) => DataType::Struct(
@@ -545,17 +559,26 @@ fn mark_repeated_primitives(schema: &Schema, parquet: &SchemaDescriptor) -> Sche
             DataType::FixedSizeList(item, size) => {
                 DataType::FixedSizeList(mark(item, columns, index), *size)
             }
+            DataType::ListView(item) => DataType::ListView(mark(item, columns, index)),
+            DataType::LargeListView(item) => DataType::LargeListView(mark(item, columns, index)),
             DataType::Map(entries, sorted) => DataType::Map(mark(entries, columns, index), *sorted),
             _ => {
-                let repeated = columns.get(*index).is_some_and(|column| {
+                let column = columns.get(*index);
+                *index += 1;
+                let repeated = column.is_some_and(|column| {
                     column.self_type().get_basic_info().repetition()
                         == parquet::basic::Repetition::REPEATED
                 });
-                *index += 1;
+                let nanos = column.is_some_and(is_nanos_timestamp);
                 let mut field = field.as_ref().clone();
-                if repeated {
+                if repeated || nanos {
                     let mut metadata = field.metadata().clone();
-                    metadata.insert(REPEATED_PRIMITIVE_KEY.to_string(), "true".to_string());
+                    if repeated {
+                        metadata.insert(REPEATED_PRIMITIVE_KEY.to_string(), "true".to_string());
+                    }
+                    if nanos {
+                        metadata.insert(NANOS_TIMESTAMP_KEY.to_string(), "true".to_string());
+                    }
                     field = field.with_metadata(metadata);
                 }
                 return Arc::new(field);
@@ -750,8 +773,13 @@ impl AsyncFileReader for EagerPageIndexReader {
                 self.conversion_check.as_ref()
             {
                 let file = metadata.file_metadata();
+                let columns = file.schema_descr().columns();
+                // Only this check sees the Parquet type of a nanosecond timestamp leaf, so a
+                // `TIMESTAMP(NANOS)` rejection is deferred from here even without row filters.
+                let has_nanos = columns.iter().any(is_nanos_timestamp);
                 let needs_check = *row_filters
-                    || file.schema_descr().columns().iter().any(|column| {
+                    || has_nanos
+                    || columns.iter().any(|column| {
                         column.self_type().get_basic_info().repetition()
                             == parquet::basic::Repetition::REPEATED
                     });
@@ -760,7 +788,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 }
                 let schema =
                     parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
-                let schema = mark_repeated_primitives(&schema, file.schema_descr());
+                let schema = mark_parquet_leaves(&schema, file.schema_descr());
                 let rejection = check_file_conversions(
                     Arc::clone(required),
                     Arc::new(schema),
@@ -772,7 +800,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     DataFusionError::External(source) => ParquetError::External(source),
                     other => ParquetError::External(Box::new(other)),
                 })?;
-                if *row_filters {
+                if *row_filters || has_nanos {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
                             object_meta.location.clone(),

@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -47,7 +47,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def arithmeticError(error: Throwable): SparkThrowable =
     causeChain(error)
       .collectFirst {
-        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // SparkArithmeticException is private[spark] in Spark 3.x, so this cross-version test
         // cannot pattern match on its type directly.
         case error: SparkThrowable
             if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
@@ -60,6 +60,177 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
     val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
     checkCometAnswer(cometDf, sparkAnswer)
+  }
+
+  test("AtLeastNNonNulls: na.drop counts non-null and non-NaN values") {
+    val input = sql("""SELECT * FROM VALUES
+      (1, '', cast('NaN' AS FLOAT), 1D),
+      (2, NULL, -0F, cast('NaN' AS DOUBLE)),
+      (3, 'NaN', cast(NULL AS FLOAT), cast('Infinity' AS DOUBLE)),
+      (4, NULL, cast(NULL AS FLOAT), cast(NULL AS DOUBLE)) AS t(id, s, f, d)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+          for (n <- Seq(-1, 0, 1, 2, 3, 4)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, Seq("s", "f", "d")),
+              native = Seq("atleastnnonnulls"))
+          }
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop("all", Seq("s", "f", "d")),
+            native = Seq("atleastnnonnulls"))
+          withSQLConf(CometConf.getExprEnabledConfigKey("AtLeastNNonNulls") -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              spark.table("nonnulls").na.drop(2, Seq("s", "f", "d")),
+              "Expression support is disabled. Set spark.comet.expression.AtLeastNNonNulls.enabled=true to enable it.")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: counter and batch boundaries") {
+    val columns = (0 until 33).map(i => s"c$i")
+    val fields = columns.zipWithIndex.map { case (name, i) =>
+      s"CASE WHEN (id + $i) % 33 < id % 34 THEN cast(id AS DOUBLE) " +
+        s"WHEN $i % 2 = 0 THEN cast('NaN' AS DOUBLE) ELSE NULL END AS $name"
+    }
+    withTempPath { dir =>
+      spark.range(137).selectExpr((Seq("id") ++ fields): _*).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65") {
+          for (n <- Seq(2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 34)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, columns),
+              native = Seq("atleastnnonnulls"))
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: complex values use only their outer nullability") {
+    val input = sql("""SELECT * FROM VALUES
+      (array(cast(NULL AS INT)), named_struct('a', cast(NULL AS INT)), map(1, cast(NULL AS INT))),
+      (array(), named_struct('a', 1), map()),
+      (NULL, NULL, NULL) AS t(a, s, m)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        for (n <- Seq(1, 2, 3, 4)) {
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop(n),
+            native = Seq("atleastnnonnulls"))
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: short-circuit child evaluation") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query(n: Int, prefix: Boolean = false): DataFrame = {
+          val df = spark.table("nonnulls")
+          val children = Seq(df.col("_1").expr, Cast(df.col("_2").expr, IntegerType))
+          val args = if (prefix) Literal(1) +: children else children
+          df.select(getColumnFromExpression(AtLeastNNonNulls(n, args)))
+        }
+        for (n <- Seq(-1, 0, 1)) {
+          checkSparkAnswerAndImpl(query(n), native = Seq("atleastnnonnulls"))
+        }
+        // Reach the threshold on different children for different rows in the counter path.
+        checkSparkAnswerAndImpl(query(2, prefix = true), native = Seq("atleastnnonnulls"))
+        for (n <- Seq(2, 3)) {
+          assertExpressionImpl(
+            query(n).queryExecution.executedPlan,
+            Seq("atleastnnonnulls"),
+            Seq.empty)
+          checkSparkError(query(n), "CAST_INVALID_INPUT")
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: falls back rather than skip a shared subexpression") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        // Every row reaches n=2 before its second cast, and the first row before either cast.
+        // Spark evaluates the repeated cast for every row only when it eliminates it as a
+        // shared subexpression, and then fails on "bad".
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(df.col("_2").expr, IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          // A shared subexpression among the first n children is evaluated for every row anyway.
+          val df = spark.table("nonnulls")
+          val plus = Add(df.col("_1").expr, Literal(1))
+          checkSparkAnswerAndImpl(
+            df.select(getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(plus, plus, Cast(df.col("_2").expr, IntegerType))))),
+            native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(
+                  causeChain(error).exists(e =>
+                    String.valueOf(e.getMessage).contains("CAST_INVALID_INPUT")),
+                  error)
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: shared decimal subexpressions preserve divide-by-zero errors") {
+    val rows = Seq((Some(1), BigDecimal(1), BigDecimal(0)), (None, BigDecimal(7), BigDecimal(1)))
+    withParquetTable(rows, "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(Divide(df.col("_2").expr, df.col("_3").expr), IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(arithmeticError(error).getErrorClass == "DIVIDE_BY_ZERO")
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
+        }
+      }
+    }
   }
 
   test("nested floating point membership uses native In and InSet") {
@@ -2248,7 +2419,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("null IN empty list honours legacy null-in-empty behavior") {
     // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
-    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // in effect (SPARK-44550): on by default on Spark 3.5 and whenever ANSI
     // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
     // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
     // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
@@ -2277,7 +2448,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               col("a").isin(),
               !col("a").isin(),
               getColumnFromExpression(emptySet))
-            val legacyEnabled = !CometSparkSessionExtensions.isSpark35Plus ||
+            val legacyEnabled =
               legacy.map(_.toBoolean).getOrElse(!isSpark40Plus || !ansi.toBoolean)
             if (!legacyEnabled) {
               checkSparkAnswerAndImpl(df, native = Seq("in", "inset"))
@@ -2289,6 +2460,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 s"in: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
             }
           }
+        }
+      }
+    }
+  }
+
+  test("make_date is not evaluated by empty IN predicates") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> OptimizeIn.ruleName) {
+      val data: Seq[Tuple1[Integer]] = Seq(Tuple1(13), Tuple1(null))
+      withParquetTable(data, "make_date_empty_in") {
+        val input = sql("SELECT make_date(2024, _1, 1) AS d FROM make_date_empty_in")
+        val emptySet = InSet(input.queryExecution.analyzed.output.head, Set.empty[Any])
+        // Separate projections ensure one parent's fallback cannot mask a missing guard for
+        // the other. The fallback reason also proves the optimizer retained the empty predicate.
+        Seq("In" -> col("d").isin(), "InSet" -> getColumnFromExpression(emptySet)).foreach {
+          case (parent, predicate) =>
+            val df = input.select(predicate)
+            val _ = checkSparkAnswerAndFallbackReason(
+              df,
+              s"make_date requires Spark evaluation under $parent")
+            checkCometAnswer(df, Seq(Row(false), Row(false)))
         }
       }
     }
@@ -2825,7 +3019,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
-    // Spark 3.4/3.5 throw `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
+    // Spark 3.5 throws `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
     // short. Spark 4.x routes them through `MathUtils.negateExact` and agrees with Comet, which
     // always renders `SparkError::ArithmeticOverflow` with the Spark type name.
     def sparkOverflowMsg(dtype: String): String =
@@ -3442,12 +3636,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       ("INT", Int.MinValue.toLong, Int.MaxValue.toLong, "ARITHMETIC_OVERFLOW"),
       ("BIGINT", Long.MinValue, Long.MaxValue, "ARITHMETIC_OVERFLOW"))) {
     test(s"ANSI integral overflow fidelity - $sqlType") {
-      val expectedErrorClass =
-        if (errorClass == "BINARY_ARITHMETIC_OVERFLOW" && !isSpark35Plus) {
-          "_LEGACY_ERROR_TEMP_2044"
-        } else {
-          errorClass
-        }
       val cases = Seq(
         ("+", "try_add", max, 1L),
         ("+", "try_add", min, -1L),
@@ -3483,7 +3671,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
             val expected = structured(sparkError)
             val actual = structured(cometError)
-            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(expected.getErrorClass == errorClass, query)
             assert(actual.getClass == expected.getClass, query)
             assert(actual.getErrorClass == expected.getErrorClass, query)
             assert(actual.getSqlState == expected.getSqlState, query)
@@ -3807,6 +3995,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator(dfWithOverflowSeed)
       val dfWithNullSeed = df.selectExpr("_1", "rand(null) as rnd")
       checkSparkAnswerAndOperator(dfWithNullSeed)
+      val dfWithIntSeed = df.selectExpr("_1", "rand(42) as rnd")
+      checkSparkAnswerAndOperator(dfWithIntSeed)
+      val dfWithNegativeIntSeed = df.selectExpr("_1", "rand(-42) as rnd")
+      checkSparkAnswerAndOperator(dfWithNegativeIntSeed)
+      val dfWithMinIntSeed = df.selectExpr("_1", s"rand(${Int.MinValue}) as rnd")
+      checkSparkAnswerAndOperator(dfWithMinIntSeed)
     }
   }
 
@@ -3819,6 +4013,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperatorWithTol(dfWithOverflowSeed)
       val dfWithNullSeed = df.selectExpr("_1", "randn(null) as randn")
       checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
+      val dfWithIntSeed = df.selectExpr("_1", "randn(42) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithIntSeed)
+      val dfWithNegativeIntSeed = df.selectExpr("_1", "randn(-42) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithNegativeIntSeed)
+      val dfWithMinIntSeed = df.selectExpr("_1", s"randn(${Int.MinValue}) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithMinIntSeed)
     }
   }
 

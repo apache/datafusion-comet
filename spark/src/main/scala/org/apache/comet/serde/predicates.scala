@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, AtLeastNNonNulls, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -330,14 +330,14 @@ object ComparisonUtils {
       s"effect (`$legacyNullInEmptyListConfig`), because a `NULL` operand then evaluates to " +
       "`NULL` rather than `false`."
 
-  // Spark 3.4 has no config and always uses the legacy behavior, Spark 3.5 defaults the config to
-  // true, and Spark 4.0+ makes it optional with a default of `!spark.sql.ansi.enabled`. Read by
-  // string key so this compiles against every supported Spark version.
+  // Spark 3.5 defaults the config to true, and Spark 4.0+ makes it optional with a default of
+  // `!spark.sql.ansi.enabled`. Read by string key so this compiles against every supported Spark
+  // version.
   private def legacyNullInEmptyListBehavior: Boolean =
-    !isSpark35Plus || {
-      val default = !isSpark40Plus || !SQLConf.get.ansiEnabled
-      CometConf.getBooleanConf(legacyNullInEmptyListConfig, default, SQLConf.get)
-    }
+    CometConf.getBooleanConf(
+      legacyNullInEmptyListConfig,
+      !isSpark40Plus || !SQLConf.get.ansiEnabled,
+      SQLConf.get)
 
   /**
    * Support level shared by the `In` and `InSet` serdes: `list` is the set of values being tested
@@ -487,6 +487,38 @@ object ComparisonUtils {
       // explain fallback.
       liftFallbackReasons(serializedValue, expr)
       serializedList.foreach(liftFallbackReasons(_, expr))
+      None
+    }
+  }
+}
+
+object CometAtLeastNNonNulls extends CometExpressionSerde[AtLeastNNonNulls] {
+  override def convert(
+      expr: AtLeastNNonNulls,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // Native evaluation, like Spark's, stops counting a row once it reaches n, which takes at
+    // least the first n children. So it may skip the children after those, which a shared
+    // subexpression that Spark eliminates would evaluate for every row.
+    val skippable = if (expr.n <= 0) expr.children else expr.children.drop(expr.n)
+    if (!canSkipEvaluation(skippable)) {
+      withFallbackReason(
+        expr,
+        "AtLeastNNonNulls would skip a subexpression that Spark evaluates for every row")
+      return None
+    }
+    val children = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    if (children.forall(_.isDefined)) {
+      Some(
+        Expr
+          .newBuilder()
+          .setAtLeastNNonNulls(
+            ExprOuterClass.AtLeastNNonNulls
+              .newBuilder()
+              .setN(expr.n)
+              .addAllChildren(children.map(_.get).asJava))
+          .build())
+    } else {
       None
     }
   }

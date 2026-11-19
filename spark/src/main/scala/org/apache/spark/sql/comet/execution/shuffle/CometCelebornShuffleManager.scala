@@ -170,10 +170,11 @@ class CometCelebornShuffleManager private[shuffle] (
           .computeIfAbsent(handle.shuffleId, _ => new ConcurrentHashMap[Int, AnyRef]())
           .put(resolved.celebornShuffleId, resolved.client)
 
+        val spec = dependency.nativeShuffleSpec.getOrElse {
+          throw new IllegalStateException("Native Comet shuffle has no execution plan")
+        }
         new CometNativeShuffleWriter[K, V](
-          dependency.nativeShuffleSpec.getOrElse {
-            throw new IllegalStateException("Native Comet shuffle has no execution plan")
-          },
+          spec,
           dependency.outputPartitioning.getOrElse {
             throw new IllegalStateException("Native Comet shuffle has no output partitioning")
           },
@@ -189,7 +190,7 @@ class CometCelebornShuffleManager private[shuffle] (
             CelebornNativeShuffleDestination(
               resolved.pusher,
               CometCelebornShuffleManager.maxNativeFrameBytes(
-                CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.get().toInt,
+                spec.sqlConf.withConf(CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.get().toInt),
                 resolved.pusher),
               dependency.partitioner.numPartitions,
               commitAuthorized = true,
@@ -820,7 +821,7 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
       taskAttempt: Int): Boolean =
     outputCommitCoordinator.synchronized {
       // Spark records task failures here even when no file-output commit was requested. Read that
-      // record without acquiring its commit slot: Spark 3.4 aborts the whole stage if an authorized
+      // record without acquiring its commit slot: Spark aborts the whole stage if an authorized
       // file committer fails, including executor loss before native map output has been written.
       val stageStatesField = classOf[OutputCommitCoordinator].getDeclaredField("stageStates")
       stageStatesField.setAccessible(true)
