@@ -75,13 +75,14 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   }
 
   /**
-   * Whether Comet is enabled for the session of `df` and reports no fallback reasons for its
-   * executed plan. Enabled means the check the Comet planner rules make, so this is false when
-   * Comet disabled itself, for example because Spark is not in off-heap mode or the Comet shuffle
-   * manager is not set, even if `spark.comet.enabled` is true. Like `getFallbackReasons(df)`,
-   * this does not run the query.
+   * Whether the executed plan of `df` is fully accelerated: Comet is enabled for its session and
+   * reports no fallback reasons for the plan. A plan with partial fallback, where some operators
+   * run in Comet and others fall back to Spark, is not fully accelerated. Enabled means the check
+   * the Comet planner rules make, so this is false when Comet disabled itself, for example
+   * because Spark is not in off-heap mode or the Comet shuffle manager is not set, even if
+   * `spark.comet.enabled` is true. Like `getFallbackReasons(df)`, this does not run the query.
    */
-  def planAccelerated(df: DataFrame): Boolean = {
+  def isFullyAccelerated(df: DataFrame): Boolean = {
     val conf = df.queryExecution.sparkSession.sessionState.conf
     CometSparkSessionExtensions.isCometLoaded(conf) && getFallbackReasons(df).isEmpty
   }
