@@ -19,10 +19,6 @@
 
 package org.apache.comet.rules
 
-import java.io.File
-import java.net.URLClassLoader
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
 import java.util.ServiceLoader
 
 import scala.annotation.nowarn
@@ -43,7 +39,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, LeafExecNode, SparkPl
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
-import org.apache.comet.ContribServices
+import org.apache.comet.{ContribServiceFiles, ContribServices}
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -339,34 +335,8 @@ class CometScanContribSuite extends AnyFunSuite {
     }
   }
 
-  /**
-   * Writes a `META-INF/services/org.apache.comet.rules.CometScanContrib` naming `impls` into a
-   * temp directory, loads it through an isolated child `URLClassLoader`, and hands the discovered
-   * instances to `f`. The child loader keeps the discovery out of the JVM-wide registry that the
-   * default-build test above asserts is empty.
-   */
-  private def withServiceFile(implNames: Seq[String])(f: ClassLoader => Unit): Unit = {
-    // The scalatest plugin points java.io.tmpdir at spark/target/tmp, which may not exist yet;
-    // ensure it before createTempDirectory (which requires its parent to exist).
-    val baseTmp = new File(System.getProperty("java.io.tmpdir"))
-    baseTmp.mkdirs()
-    val svcDir = Files.createTempDirectory(baseTmp.toPath, "comet-scan-contrib-test").toFile
-    try {
-      val servicesDir = new File(svcDir, "META-INF/services")
-      assert(servicesDir.mkdirs(), s"could not create $servicesDir")
-      Files.write(
-        new File(servicesDir, classOf[CometScanContrib].getName).toPath,
-        implNames.mkString("", "\n", "\n").getBytes(StandardCharsets.UTF_8))
-
-      f(new URLClassLoader(Array(svcDir.toURI.toURL), getClass.getClassLoader))
-    } finally {
-      def del(file: File): Unit = {
-        Option(file.listFiles()).foreach(_.foreach(del))
-        file.delete()
-      }
-      del(svcDir)
-    }
-  }
+  private def withServiceFile(implNames: Seq[String])(f: ClassLoader => Unit): Unit =
+    ContribServiceFiles.withServiceFile(classOf[CometScanContrib], implNames)(f)
 }
 
 /** Inert leaf plan standing in for whatever node a real contrib would return. */

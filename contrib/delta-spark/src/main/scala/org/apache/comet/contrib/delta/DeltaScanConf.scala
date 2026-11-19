@@ -46,7 +46,7 @@ object DeltaScanConf {
           "planned by delta-spark are executed through Comet's native Parquet scan, " +
           "inheriting row-group pruning, page-index pruning, and filter pushdown, with " +
           "deletion vectors applied inside the scan. Experimental: defaults to false, so " +
-          "adding the contrib jar does not by itself change how any query is read.")
+          "adding the contrib jar does not by itself change how any Delta table is scanned.")
       .booleanConf
       .createWithDefault(false)
 

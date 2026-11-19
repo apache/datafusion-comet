@@ -62,7 +62,7 @@ class DeltaScanContrib extends CometScanContrib with Logging {
 
     if (!DeltaScanConf.scanEnabled) {
       // Deliberate deviation from the "own but cannot handle => claim" contract: a
-      // user-disabled contrib must be fully inert (the jar alone changes nothing) and must
+      // user-disabled contrib must be fully inert (the jar alone changes no scan) and must
       // not shadow another registered Delta contrib. Tag the opt-in hint for EXPLAIN, pass.
       withFallbackReason(
         scanExec,

@@ -30,7 +30,7 @@ import org.apache.comet.util.ClassLoaders
 
 /**
  * Shared `ServiceLoader` discovery for Comet's optional, out-of-tree contrib registries
- * (`CometScanContrib`, `CometConfigProvider`, `PlanDataInjector`).
+ * (`CometScanContrib`, `CometExpressionContrib`, `CometConfigProvider`, `PlanDataInjector`).
  *
  * Exists because the obvious spellings are both wrong in ways that are invisible until a contrib
  * jar is misbuilt in production:
@@ -53,8 +53,7 @@ import org.apache.comet.util.ClassLoaders
  * changes.
  *
  * Not `private[comet]`: `PlanDataInjector` lives in `org.apache.spark.sql.comet`, which is a
- * different package root, so a comet-scoped qualifier would hide this from one of its three call
- * sites.
+ * different package root, so a comet-scoped qualifier would hide this from one of its call sites.
  */
 object ContribServices extends Logging {
 
