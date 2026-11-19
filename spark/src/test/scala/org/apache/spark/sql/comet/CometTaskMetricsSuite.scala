@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometBypassMergeSortShuffleH
 import org.apache.spark.sql.comet.execution.shuffle.CometColumnarShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -260,6 +260,35 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // An unset size metric keeps its -1 initial value and must not subtract from the task.
     assert(ctx.taskMetrics.inputMetrics.bytesRead == 42L)
     assert(ctx.taskMetrics.inputMetrics.recordsRead == 0L)
+  }
+
+  test("scan input metrics reported while the task runs are not counted again at completion") {
+    val bytes = new SQLMetric("bytes", -1L)
+    val rows = new SQLMetric("rows")
+    val scan = CometMetricNode(Map("bytes_scanned" -> bytes, "output_rows" -> rows))
+    // Native code publishes to the iterator's own instance of the tree, on the task thread.
+    val instance = scan.newInstance()
+    def publish(b: Long, r: Long): Unit =
+      instance.set_all_from_bytes(
+        nativeMetricUpdate(Map("bytes_scanned" -> b, "output_rows" -> r)).toByteArray)
+
+    val ctx = TaskContext.empty()
+    TaskContext.setTaskContext(ctx)
+    val whileRunning =
+      try {
+        scan.reportScanInputMetricsWhileRunning(ctx)
+        publish(64L, 8L)
+        // The iterator's close publishes the final values at task completion, before the report.
+        ctx.addTaskCompletionListener[Unit](_ => publish(100L, 10L))
+        (ctx.taskMetrics.inputMetrics.bytesRead, ctx.taskMetrics.inputMetrics.recordsRead)
+      } finally {
+        ctx.markTaskCompleted(None)
+        TaskContext.unset()
+      }
+
+    assert(whileRunning == ((64L, 8L)))
+    assert(ctx.taskMetrics.inputMetrics.bytesRead == 100L)
+    assert(ctx.taskMetrics.inputMetrics.recordsRead == 10L)
   }
 
   test("native sort in a non-shuffle stage reports task-level disk spill metrics") {
@@ -766,7 +795,9 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
         CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
         CometConf.COMET_BATCH_SIZE.key -> "1024",
-        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+        // About 1 MB per task, which a scan task's 4,000 rows overflow even though the idle
+        // shuffle writer above the sort takes no share.
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.0005",
         CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
         "spark.comet.datafusion.execution.spill_compression" -> "zstd",
         "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
@@ -1224,19 +1255,17 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // The task deserializes this metric together with the scan's metric node, so both
           // refer to the task-side copy that native execution publishes into.
           val outputRows = scan.metrics("output_rows")
-          val (midStream, atEnd) = SQLExecution.withSQLConfPropagated(spark) {
-            scan
-              .executeColumnar()
-              .mapPartitions { batches =>
-                Thread.sleep(100)
-                batches.next()
-                val mid = outputRows.value
-                batches.foreach(_ => ())
-                Iterator((mid, outputRows.value))
-              }
-              .collect()
-              .head
-          }
+          val (midStream, atEnd) = scan
+            .executeColumnar()
+            .mapPartitions { batches =>
+              Thread.sleep(100)
+              batches.next()
+              val mid = outputRows.value
+              batches.foreach(_ => ())
+              Iterator((mid, outputRows.value))
+            }
+            .collect()
+            .head
           check(midStream, atEnd)
         }
 

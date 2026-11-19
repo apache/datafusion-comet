@@ -26,19 +26,14 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.types.{StructField, StructType}
 
 trait ShimCometShuffleExchangeExec {
-  // TODO: remove after dropping Spark 3.4 support
   def apply(s: ShuffleExchangeExec, shuffleType: ShuffleType): CometShuffleExchangeExec = {
-    val advisoryPartitionSize = s.getClass.getDeclaredMethods
-      .filter(_.getName == "advisoryPartitionSize")
-      .flatMap(_.invoke(s).asInstanceOf[Option[Long]])
-      .headOption
     CometShuffleExchangeExec(
       s.outputPartitioning,
       s.child,
       s,
       s.shuffleOrigin,
       shuffleType,
-      advisoryPartitionSize)
+      s.advisoryPartitionSize)
   }
 
   // TODO: remove after dropping Spark 3.x support

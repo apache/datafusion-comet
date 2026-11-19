@@ -266,7 +266,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
    */
   private def verifyArmsAgree(c: DispatchCase, rows: Int): Unit = {
     def collect(configs: Seq[(String, String)]): Array[String] = {
-      // Assigned to a local rather than returned from the block: Spark 3.4 and 3.5 declare
+      // Assigned to a local rather than returned from the block: Spark 3.5 declares
       // `SQLHelper.withSQLConf` as returning `Unit`; only Spark 4 has the result-returning form.
       var collected: Array[Row] = Array.empty
       withSQLConf(configs: _*) {

@@ -74,9 +74,6 @@ object IcebergReflection extends Logging {
     val MANIFEST_FILE = "org.apache.iceberg.ManifestFile"
     val MANIFEST_FILES = "org.apache.iceberg.ManifestFiles"
     val DATA_FILE = "org.apache.iceberg.DataFile"
-
-    // Iceberg 1.5.2 uses its own `ReplaceIcebergData` due to lack of `ReplaceData` in Spark 3.4.
-    val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
   }
 
   /**
@@ -238,9 +235,6 @@ object IcebergReflection extends Logging {
     }
   }
 
-  def isReplaceIcebergData(plan: Any): Boolean =
-    plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
-
   private def reflectField(plan: Any, fieldName: String): Option[AnyRef] =
     try {
       val field = plan.getClass.getDeclaredField(fieldName)
@@ -252,19 +246,6 @@ object IcebergReflection extends Logging {
           s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}: ${e.getMessage}")
         None
     }
-
-  def extractReplaceIcebergDataFields(plan: Any): Option[(AnyRef, AnyRef, AnyRef, AnyRef)] = {
-    if (!isReplaceIcebergData(plan)) return None
-    for {
-      table <- reflectField(plan, "table")
-      query <- reflectField(plan, "query")
-      originalTable <- reflectField(plan, "originalTable")
-      write <- reflectField(
-        plan,
-        "write"
-      ) // Option[Write]; field can be Some(null) so kept AnyRef
-    } yield (table, query, originalTable, write)
-  }
 
   /**
    * Loads a class using the thread context classloader first, then falls back to the system
@@ -918,6 +899,26 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /** Names of the partition fields of `spec` sourced from a top-level `unknown` column. */
+  def partitionFieldsWithUnknownSource(spec: Any): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val unknownIds = getMethod(schema.getClass, "columns")
+      .invoke(schema)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .filter(c => fieldTypeOf(c).toString == TypeNames.UNKNOWN)
+      .map(fieldIdOf)
+      .toSet
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .toSeq
+      .filter(f => unknownIds(getMethod(f.getClass, "sourceId").invoke(f).asInstanceOf[Int]))
+      .map(f => getMethod(f.getClass, "name").invoke(f).asInstanceOf[String])
+  }
+
   /**
    * Gets the partition spec from an Iceberg table.
    */
@@ -989,6 +990,19 @@ object IcebergReflection extends Logging {
         logError(s"Iceberg reflection failure: Failed to get table metadata: ${e.getMessage}")
         None
     }
+  }
+
+  /**
+   * The table's UUID, from `Table.uuid()` or its current metadata. A table dropped and created
+   * again at the same location gets a new one.
+   */
+  def getTableUuid(table: Any): Option[String] = {
+    def uuidOf(target: Any): Option[String] =
+      findMethodInHierarchy(target.getClass, "uuid").flatMap { method =>
+        try Option(method.invoke(target)).map(_.toString)
+        catch { case NonFatal(_) => None }
+      }
+    uuidOf(table).orElse(getTableMetadata(table).flatMap(uuidOf))
   }
 
   /**
@@ -1283,6 +1297,24 @@ object IcebergReflection extends Logging {
     columns.asScala.flatMap(walkFieldForDefault).toList
   }
 
+  /**
+   * [[columnsWithInitialDefault]] for only the top-level columns of `schema` whose ids are in
+   * `columnIds`. A scan reads every nested field of such a column that its schema holds, so this
+   * is for the schema the scan reads when that is wider than the query's, as the table's is while
+   * nested schema pruning is off.
+   */
+  def columnsWithInitialDefault(schema: Any, columnIds: Set[Int]): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      getMethod(schema.getClass, "columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala
+      .filter(column => columnIds.contains(fieldIdOf(column)))
+      .flatMap {
+        walkFieldForDefault
+      }
+      .toList
+  }
+
   private def walkFieldForDefault(field: Any): List[String] = {
     import scala.jdk.CollectionConverters._
     val name = getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
@@ -1304,15 +1336,15 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Returns the nested fields of the `fieldIds` columns of `schema` that some schema in the
-   * table's history (`table.schemas()`) lacks or names differently. Each is a dotted path with
-   * the change, for example `items.element.z (renamed from a)`. A data file written under that
-   * older schema lacks the field, or has it under the old name. Fields are matched by id at every
-   * level (struct fields, list elements, map keys and values), so a reorder or a type promotion
-   * is not a change, and an older schema that lacks the column itself is skipped. Throws on
+   * Returns the structs under the `fieldIds` columns of `schema`, at any depth and including the
+   * columns themselves, that share none of their fields with the same struct in some schema in
+   * the table's history (`table.schemas()`). Each is a dotted path, for example
+   * `items.element.s`. A data file written under that older schema has none of the struct's
+   * current fields. Structs are matched by field id at every level (struct fields, list elements,
+   * map keys and values), so an older schema that lacks the column itself is skipped. Throws on
    * reflection failure so the caller can fall back.
    */
-  def nestedFieldsAddedOrRenamed(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
+  def structsWithNoFieldsInCommon(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
     import scala.jdk.CollectionConverters._
     val findField = getMethod(schema.getClass, "findField", classOf[Int])
     def fieldById(s: Any, id: Int): Option[Any] =
@@ -1324,29 +1356,31 @@ object IcebergReflection extends Logging {
       .asScala
       .toSeq
     fieldIds.toSeq.flatMap { id =>
-      fieldById(schema, id).filter(childFields(_).nonEmpty).toSeq.flatMap { field =>
+      fieldById(schema, id).toSeq.flatMap { field =>
         history.flatMap(fieldById(_, id)).flatMap { older =>
-          childFieldsChangedFrom(field, older, fieldName(field))
+          structsWithNoFieldsInCommon(field, older, fieldName(field))
         }
       }
     }.distinct
   }
 
-  /** The nested fields under `field`, at any depth, that `older` lacks or names differently. */
-  private def childFieldsChangedFrom(field: Any, older: Any, path: String): Seq[String] = {
+  /** `field` if it is a struct sharing no field with `older`, plus the same for its children. */
+  private def structsWithNoFieldsInCommon(field: Any, older: Any, path: String): Seq[String] = {
+    val children = childFields(field)
     val olderChildren = childFields(older).map(child => fieldIdOf(child) -> child).toMap
-    childFields(field).flatMap { child =>
-      val name = fieldName(child)
-      val childPath = s"$path.$name"
-      olderChildren.get(fieldIdOf(child)) match {
-        case Some(olderChild) =>
-          val olderName = fieldName(olderChild)
-          val renamed =
-            if (olderName != name) Seq(s"$childPath (renamed from $olderName)") else Nil
-          renamed ++ childFieldsChangedFrom(child, olderChild, childPath)
-        case None => Seq(s"$childPath (added)")
+    val disjoint = isStruct(field) && children.nonEmpty &&
+      !children.exists(child => olderChildren.contains(fieldIdOf(child)))
+    val here = if (disjoint) Seq(path) else Nil
+    here ++ children.flatMap { child =>
+      olderChildren.get(fieldIdOf(child)).toSeq.flatMap { olderChild =>
+        structsWithNoFieldsInCommon(child, olderChild, s"$path.${fieldName(child)}")
       }
     }
+  }
+
+  private def isStruct(field: Any): Boolean = {
+    val fieldType = getMethod(field.getClass, "type").invoke(field)
+    getMethod(fieldType.getClass, "isStructType").invoke(fieldType).asInstanceOf[Boolean]
   }
 
   /** A struct's fields, a list's element, or a map's key and value. Empty for other types. */
@@ -1404,8 +1438,8 @@ object IcebergReflection extends Logging {
   /**
    * Reads a `private final` field from a `SparkWrite` instance via reflection. The field names
    * referenced by callers (`queryId`, `targetFileSize`, `useFanoutWriter`, `outputSpecId`,
-   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.5.2 / 1.8.1 / 1.10.0 versions
-   * Comet supports.
+   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.9.1 / 1.10.0 / 1.11.0
+   * versions Comet supports.
    */
   private def getSparkWriteField(sparkWrite: Any, fieldName: String): Option[Any] =
     sparkWriteClassOpt.flatMap { cls =>
@@ -1414,11 +1448,7 @@ object IcebergReflection extends Logging {
         field.setAccessible(true)
         Option(field.get(sparkWrite))
       } catch {
-        case _: NoSuchFieldException =>
-          // Field may have been renamed across Iceberg versions. Callers that probe multiple
-          // candidate names (e.g. `useFanoutWriter` / `partitionedFanoutEnabled`) should expect
-          // this and `.orElse` onto the alternative.
-          None
+        case _: NoSuchFieldException => None
         case e: Exception =>
           logError(
             s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName: ${e.getMessage}")
@@ -1438,16 +1468,10 @@ object IcebergReflection extends Logging {
   /**
    * Whether the planner would use a fanout writer.
    *
-   * Field name changed between Iceberg releases:
-   *   - 1.5.2 (Spark 3.4 profile): `partitionedFanoutEnabled`
-   *   - 1.8.1+ (Spark 3.5 / 4.0 profiles): `useFanoutWriter`
-   *
-   * Same semantic in both versions. Try the newer name first; fall back to the older one so the
-   * helper resolves across all supported Iceberg versions without a per-version shim.
+   * Iceberg 1.8.1 and later store this as `SparkWrite.useFanoutWriter`.
    */
   def getUseFanoutWriterFromSparkWrite(sparkWrite: Any): Option[Boolean] =
     getSparkWriteField(sparkWrite, "useFanoutWriter")
-      .orElse(getSparkWriteField(sparkWrite, "partitionedFanoutEnabled"))
       .map(_.asInstanceOf[java.lang.Boolean].booleanValue())
 
   /** Output partition spec id; sourced from `SparkWrite.outputSpecId`. */
@@ -1495,8 +1519,7 @@ object IcebergReflection extends Logging {
    * Stamping the table sort order id unconditionally (the previous behaviour) writes the wrong
    * value when Java would have used `unsorted`.
    *
-   * Iceberg 1.5.2 (Spark 3.4 profile) lacks this method on `SparkWriteConf`; we return `None` and
-   * let the caller fall back to `Table.sortOrder().orderId()`.
+   * Returns `None` when the pinned Iceberg version does not expose the resolver.
    */
   def getOutputSortOrderIdFromSparkWrite(sparkWrite: Any): Option[Int] = {
     val writeConf =
@@ -1680,17 +1703,24 @@ object IcebergReflection extends Logging {
    * write detection to decline schemas containing types the native writer cannot reproduce.
    * Reflection failures are deliberately not swallowed: the caller's detection wrapper turns them
    * into a fall-back, so a failed walk reads as "cannot verify" rather than "supported".
+   * `nestedOnly` skips the top-level columns.
    */
-  def findFieldWithTypeIds(schema: Any, typeIds: Set[String]): Option[(String, String)] = {
+  def findFieldWithTypeIds(
+      schema: Any,
+      typeIds: Set[String],
+      nestedOnly: Boolean = false): Option[(String, String)] = {
     val queue = new java.util.ArrayDeque[AnyRef]()
     queue.addAll(
       schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[AnyRef]])
+    var topLevelLeft = if (nestedOnly) queue.size else 0
     while (!queue.isEmpty) {
       val field = queue.poll()
       val fieldType = field.getClass.getMethod("type").invoke(field)
       val typeId = fieldType.getClass.getMethod("typeId").invoke(fieldType)
       val typeIdName = typeId.asInstanceOf[Enum[_]].name()
-      if (typeIds.contains(typeIdName)) {
+      val skip = topLevelLeft > 0
+      if (skip) topLevelLeft -= 1
+      if (!skip && typeIds.contains(typeIdName)) {
         val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
         return Some((name, typeIdName))
       }
@@ -1946,52 +1976,19 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Two version-skew
-   * issues to handle:
-   *
-   *   1. Iceberg 1.8 added a constructor that also takes the snapshot id, and 1.10 removed the
-   *      older one:
-   *      - 1.5.2 (Spark 3.4 profile): `(InputFile, int)` -- 2-arg
-   *      - 1.8+ (Spark 3.5 / 4.x profiles): `(InputFile, int, long)` -- 3-arg, the third being
-   *        the snapshot id. Both forms are package-private, and both leave the manifest's
-   *        `first_row_id` null, so the reader assigns no row ids to the decoded `DataFile`s. On a
-   *        format-version 3 table the commit assigns them, as it does for iceberg-java's files.
-   *
-   * 2. `ManifestFiles.read` on Iceberg 1.5.2 refuses to read a `ManifestFile` whose
-   * `snapshotId()` is `null` (`InheritableMetadataFactory.fromManifest` throws "Cannot read from
-   * ManifestFile with null (unassigned) snapshot ID"). Iceberg 1.8+ relaxed that check. We set
-   * `snapshotId = 0L` via reflection so the read path is happy across versions; the real snapshot
-   * id is stamped onto the embedded `DataFile`s later by `BatchWrite.commit(messages)`, so the
-   * placeholder never reaches storage.
+   * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Iceberg 1.8 and
+   * later use the package-private `(InputFile, int, long)` constructor. The placeholder snapshot
+   * id never reaches storage: `BatchWrite.commit(messages)` stamps the real snapshot id onto the
+   * embedded `DataFile`s.
    */
   private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
     val inputFileClass = loadClass(ClassNames.INPUT_FILE)
     val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
-    // `Constructor[AnyRef]` rather than `Constructor[_]`: the two `try`/`catch` branches
-    // would otherwise infer a top-level existential, which `-Xlint:existential` rejects.
-    val (ctor, args): (java.lang.reflect.Constructor[AnyRef], Array[Object]) =
-      try {
-        val c = cls
-          .getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
-          .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
-        (c, Array[Object](inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L)))
-      } catch {
-        case _: NoSuchMethodException =>
-          val c = cls
-            .getDeclaredConstructor(inputFileClass, classOf[Int])
-            .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
-          (c, Array[Object](inputFile, Integer.valueOf(specId)))
-      }
+    val ctor = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
     ctor.setAccessible(true)
-    val manifest = ctor.newInstance(args: _*).asInstanceOf[AnyRef]
-    try {
-      val snapshotIdField = cls.getDeclaredField("snapshotId")
-      snapshotIdField.setAccessible(true)
-      snapshotIdField.set(manifest, java.lang.Long.valueOf(0L))
-    } catch {
-      case _: NoSuchFieldException => () // field renamed in a future release; soft-fail
-    }
-    manifest
+    ctor
+      .newInstance(inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L))
+      .asInstanceOf[AnyRef]
   }
 
   private def readDataFilesFromManifest(

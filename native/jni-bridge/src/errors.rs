@@ -19,7 +19,7 @@
 
 use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
-use datafusion_comet_common::{SparkError, SparkErrorWithContext};
+use datafusion_comet_common::{error_chain, SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -736,17 +736,14 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
             message: msg,
             throwable,
         },
-        // Handle DataFusion errors containing SparkError or SparkErrorWithContext
-        CometError::DataFusion {
-            msg: _,
-            source: df_error @ DataFusionError::External(e),
-        } => {
-            if let Some(CometError::JavaException {
+        // Handle DataFusion errors carrying a Spark-typed payload at any depth of the
+        // `source()` chain (see `extract_spark_payload`).
+        CometError::DataFusion { msg: _, source } => match extract_spark_payload(source) {
+            Some(SparkPayload::JavaException {
                 class,
                 msg,
                 throwable,
-            }) = e.downcast_ref::<CometError>()
-            {
+            }) => {
                 // A Java exception captured inside a JVM UDF kernel (e.g. Spark codegen
                 // raising INVALID_REGEXP_REPLACE). Re-throw the original throwable so callers
                 // see the exact Spark exception type rather than a wrapped CometNativeException.
@@ -755,38 +752,61 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
                     message: msg,
                     throwable,
                 }
-            } else if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
-                JvmException::Spark {
-                    json: spark_error_with_ctx.to_json(),
-                }
-            } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
-                spark_exception(spark_error)
-            } else if let Some(spark_error) = try_classify_file_read_error(df_error) {
-                spark_exception(&spark_error)
-            } else {
-                // Not a SparkError, use generic exception
-                natural_exception(error)
             }
-        }
-        // Typed file-read errors (corrupt/truncated parquet, object_store) raised by the native
-        // scan -- classified by DataFusionError variant, not message text -- surfaced as
-        // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
-        // falls back to generic handling.
-        CometError::DataFusion { msg: _, source } => {
-            if let Some(exception) = wrapped_external_spark_exception(source) {
-                exception
-            } else if let Some(spark_error) = parquet_external_spark_error(source) {
-                spark_exception(spark_error)
-            } else if let Some(spark_error) = try_classify_file_read_error(source) {
-                spark_exception(&spark_error)
-            } else {
-                generic_exception(error)
-            }
-        }
+            Some(SparkPayload::WithContext(ctx)) => JvmException::Spark {
+                json: ctx.to_json(),
+            },
+            Some(SparkPayload::Bare(spark_error)) => spark_exception(spark_error),
+            // Typed file-read errors (corrupt/truncated parquet, object_store) raised by the
+            // native scan -- classified by DataFusionError variant, not message text -- surfaced
+            // as FAILED_READ_FILE / FileNotFound via the structured SparkError channel.
+            None => match try_classify_file_read_error(source) {
+                Some(spark_error) => spark_exception(&spark_error),
+                None if matches!(source, DataFusionError::External(_)) => natural_exception(error),
+                None => generic_exception(error),
+            },
+        },
         // Handle direct SparkError - serialize to JSON
         CometError::Spark(spark_error) => spark_exception(spark_error),
         _ => generic_exception(error),
     }
+}
+
+/// Payload recovered from a DataFusionError chain.
+enum SparkPayload<'a> {
+    JavaException {
+        class: &'a str,
+        msg: &'a str,
+        throwable: &'a Global<JThrowable<'static>>,
+    },
+    WithContext(&'a SparkErrorWithContext),
+    Bare(&'a SparkError),
+}
+
+/// Returns the first Spark-typed payload found in `err`'s `source()` chain, or `None`.
+///
+/// The payload is usually wrapped by DataFusion (`External`, `Context`, `Shared`, ...) and, for
+/// predicates pushed into the parquet reader, also by Arrow and Parquet errors. Each layer is
+/// checked for a Java throwable first, then a `SparkErrorWithContext`, then a bare `SparkError`.
+fn extract_spark_payload(err: &DataFusionError) -> Option<SparkPayload<'_>> {
+    error_chain(err).find_map(|e| {
+        if let Some(CometError::JavaException {
+            class,
+            msg,
+            throwable,
+        }) = e.downcast_ref::<CometError>()
+        {
+            Some(SparkPayload::JavaException {
+                class,
+                msg,
+                throwable,
+            })
+        } else if let Some(ctx) = e.downcast_ref::<SparkErrorWithContext>() {
+            Some(SparkPayload::WithContext(ctx))
+        } else {
+            e.downcast_ref::<SparkError>().map(SparkPayload::Bare)
+        }
+    })
 }
 
 /// Walks the cause chain for a `CometError` variant that owns its JVM exception class, so class and
@@ -794,21 +814,16 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
 /// `to_exception`, keeping one variant-to-class table. Classification is by variant only -- an
 /// error that merely mentions the same words keeps its normal classification.
 fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exception> {
-    let mut cause = Some(error);
-    while let Some(error) = cause {
-        if let Some(
+    error_chain(error).find_map(|e| match e.downcast_ref::<CometError>() {
+        Some(
             typed @ (CometError::ShuffleSizeLimit(_)
             | CometError::IllegalState(_)
             | CometError::NoSuchElement(_)
             | CometError::NativeUdfNotAllowed(_)
             | CometError::NativeUdfAbi(_)),
-        ) = error.downcast_ref::<CometError>()
-        {
-            return Some(typed.to_exception());
-        }
-        cause = error.source();
-    }
-    None
+        ) => Some(typed.to_exception()),
+        _ => None,
+    })
 }
 
 /// Generic fallback for an error that isn't a structured `SparkError`. Recognises a file-not-found
@@ -833,7 +848,7 @@ fn natural_exception(error: &CometError) -> JvmException<'static> {
     let exception = error.to_exception();
     JvmException::New {
         class: exception.class,
-        message: with_spill_limit_hint(exception.msg),
+        message: with_comet_config_hint(exception.msg),
     }
 }
 
@@ -846,11 +861,34 @@ const SPILL_LIMIT_HINT: &str = "Comet does not use `datafusion.runtime.*` settin
      the spill limit is `spark.comet.maxTempDirectorySize`. It applies to each Comet native plan \
      separately, so an executor can use several times that much disk.";
 
-fn with_spill_limit_hint(message: String) -> String {
-    if message.contains(DATAFUSION_SPILL_LIMIT_KEY) {
-        format!("{message} {SPILL_LIMIT_HINT}")
-    } else {
-        message
+/// The first config key DataFusion's external-sort OOM error tells users to change. Comet never
+/// uses it, and the sort is identified only by the `Context` string around `ResourcesExhausted`,
+/// so this quoted text is what to match on.
+const DATAFUSION_SORT_MEMORY_KEY: &str = "'datafusion.runtime.memory_limit'";
+
+const SORT_MEMORY_HINT: &str = "Comet does not use `datafusion.runtime.memory_limit`, and in \
+     production it keeps `datafusion.execution.sort_spill_reservation_bytes` at DataFusion's \
+     default of 10 MiB. Native operators reserve memory from Spark's off-heap pool, sized by \
+     `spark.memory.offHeap.size`, and each running task gets a share of it. Raise \
+     `spark.memory.offHeap.size` or run fewer tasks per executor. See the Comet tuning guide: \
+     https://datafusion.apache.org/comet/user-guide/latest/tuning.html";
+
+/// DataFusion error text that names settings unavailable for production tuning in Comet,
+/// paired with the hint that points users at the Comet settings to change instead.
+const COMET_CONFIG_HINTS: &[(&str, &str)] = &[
+    (DATAFUSION_SPILL_LIMIT_KEY, SPILL_LIMIT_HINT),
+    (DATAFUSION_SORT_MEMORY_KEY, SORT_MEMORY_HINT),
+];
+
+/// Appends the matching hint on its own line: the DataFusion text it follows can end mid-sentence,
+/// for example with the `Reserved: N` of a memory pool refusal.
+fn with_comet_config_hint(message: String) -> String {
+    match COMET_CONFIG_HINTS
+        .iter()
+        .find(|(datafusion_key, _)| message.contains(datafusion_key))
+    {
+        Some((_, hint)) => format!("{message}\n{hint}"),
+        None => message,
     }
 }
 
@@ -861,59 +899,12 @@ fn spark_exception(spark_error: &SparkError) -> JvmException<'static> {
     }
 }
 
-/// A `SparkError` (or `SparkErrorWithContext`) attached as `DataFusionError::External` keeps its
-/// structured exception when DataFusion wraps it further. A hash join build side returns its input
-/// error as `Shared`, and a repartition wraps it in `Context` before fanning it out, so a scan error
-/// such as `CannotReadFile` can reach the JNI boundary below either wrapper. A bare `External` is
-/// handled by `jvm_exception` directly.
-fn wrapped_external_spark_exception(error: &DataFusionError) -> Option<JvmException<'static>> {
-    use datafusion::common::DataFusionError as DFE;
-    match error {
-        DFE::Context(_, inner) => external_spark_exception(inner),
-        DFE::Shared(inner) => external_spark_exception(inner),
-        _ => None,
-    }
-}
-
-fn external_spark_exception(error: &DataFusionError) -> Option<JvmException<'static>> {
-    use datafusion::common::DataFusionError as DFE;
-    match error {
-        DFE::External(e) => {
-            if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
-                Some(JvmException::Spark {
-                    json: spark_error_with_ctx.to_json(),
-                })
-            } else {
-                e.downcast_ref::<SparkError>().map(spark_exception)
-            }
-        }
-        _ => wrapped_external_spark_exception(error),
-    }
-}
-
-/// A `SparkError` the Parquet reader raised on open arrives as
-/// `DataFusionError::ParquetError(ParquetError::External(spark_error))`. Unwrap it so the error
-/// keeps its own JVM exception class instead of being classified as a file read failure.
-/// `Context` and `Shared` wrappers are looked through, as `try_classify_file_read_error` does.
-fn parquet_external_spark_error(error: &DataFusionError) -> Option<&SparkError> {
-    use datafusion::common::DataFusionError as DFE;
-    match error {
-        DFE::ParquetError(pe) => match pe.as_ref() {
-            ParquetError::External(inner) => inner.downcast_ref::<SparkError>(),
-            _ => None,
-        },
-        DFE::Context(_, inner) => parquet_external_spark_error(inner),
-        DFE::Shared(inner) => parquet_external_spark_error(inner),
-        _ => None,
-    }
-}
-
 /// The `CannotReadFile` error a scan should raise for `error`, if it is a per-file read failure,
 /// classified the same way the JNI conversion does. A `SparkError` the reader raised itself keeps
 /// its own type, so this returns `None` for it. The scan calls this where it still knows which
 /// file failed, so that file can be named in the error.
 pub fn file_read_error(error: &DataFusionError) -> Option<SparkError> {
-    if parquet_external_spark_error(error).is_some() {
+    if extract_spark_payload(error).is_some() {
         return None;
     }
     match try_classify_file_read_error(error)? {
@@ -937,9 +928,8 @@ pub fn file_read_error(error: &DataFusionError) -> Option<SparkError> {
 /// `Internal`/`External`-string or `object_store::Error::Generic`: those also carry non-file
 /// errors (e.g. "Hdfs support is not enabled in this build") that must surface as-is.
 ///
-/// `file_path` is left empty here. The native scan fills it with the file that failed (see
-/// `file_read_error`); for errors raised elsewhere the JVM side fills it from the per-task file
-/// list.
+/// `file_path` is populated from `object_store::Error::NotFound { path, .. }` when available;
+/// otherwise it is left empty and the JVM side fills it from the per-task file list.
 fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
     use datafusion::common::DataFusionError as DFE;
     match error {
@@ -1613,13 +1603,83 @@ mod tests {
         ] {
             let error = CometError::from(error);
             assert!(error.to_string().contains(DATAFUSION_SPILL_LIMIT_KEY));
-            let expected = format!("{error} {SPILL_LIMIT_HINT}");
+            let expected = format!("{error}\n{SPILL_LIMIT_HINT}");
             let (_, class, message, _) = classify(error);
             assert_eq!(class, "org/apache/comet/CometNativeException");
             assert_eq!(message, expected);
         }
 
         let other = CometError::from(io::Error::other("disk gone"));
+        let expected = other.to_string();
+        let (_, _, message, _) = classify(other);
+        assert_eq!(message, expected);
+    }
+
+    /// DataFusion's external-sort OOM error, produced by a real `SortExec` whose memory pool
+    /// cannot hold a single batch, so a rewording in a DataFusion upgrade fails this test instead
+    /// of silently dropping the hint.
+    fn sort_oom_error() -> DataFusionError {
+        use arrow::array::Int32Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::execution::memory_pool::GreedyMemoryPool;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::execution::TaskContext;
+        use datafusion::physical_expr::expressions::col;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort::SortExec;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![3, 1, 2]))],
+        )
+        .unwrap();
+        let input =
+            MemorySourceConfig::try_new_exec(&[vec![batch]], Arc::clone(&schema), None).unwrap();
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            col("a", &schema).unwrap(),
+        )])
+        .unwrap();
+        let sort = SortExec::new(ordering, input);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(GreedyMemoryPool::new(1)))
+            .build_arc()
+            .unwrap();
+        let task_ctx = Arc::new(TaskContext::default().with_runtime(runtime));
+        let mut stream = sort.execute(0, task_ctx).unwrap();
+        futures::executor::block_on(stream.next())
+            .unwrap()
+            .unwrap_err()
+    }
+
+    #[test]
+    fn sort_oom_error_names_the_comet_config() {
+        assert_eq!(
+            datafusion::common::config::ConfigOptions::default()
+                .execution
+                .sort_spill_reservation_bytes,
+            10 * 1024 * 1024
+        );
+
+        for error in [
+            sort_oom_error(),
+            DataFusionError::Shared(Arc::new(sort_oom_error())),
+        ] {
+            let error = CometError::from(error);
+            assert!(error.to_string().contains(DATAFUSION_SORT_MEMORY_KEY));
+            let expected = format!("{error}\n{SORT_MEMORY_HINT}");
+            let (_, class, message, _) = classify(error);
+            assert_eq!(class, "org/apache/comet/CometNativeException");
+            assert_eq!(message, expected);
+        }
+
+        let other = CometError::from(DataFusionError::ResourcesExhausted(
+            "Failed to acquire 1024 bytes".to_string(),
+        ));
         let expected = other.to_string();
         let (_, _, message, _) = classify(other);
         assert_eq!(message, expected);
@@ -1917,67 +1977,35 @@ mod tests {
     /// wrapper and through `Context` and `Shared` wrappers, while an ordinary reader error does
     /// not match.
     #[test]
-    fn parquet_external_spark_error_keeps_its_type() {
+    fn extract_spark_payload_through_parquet_external() {
         let raised = DataFusionError::ParquetError(Box::new(ParquetError::External(Box::new(
             SparkError::ParquetMissingFieldIds {
                 file_path: "a.parquet".to_string(),
             },
         ))));
         assert!(matches!(
-            parquet_external_spark_error(&raised),
-            Some(SparkError::ParquetMissingFieldIds { file_path }) if file_path == "a.parquet"
+            extract_spark_payload(&raised),
+            Some(SparkPayload::Bare(SparkError::ParquetMissingFieldIds { file_path }))
+                if file_path == "a.parquet"
         ));
         let wrapped = DataFusionError::Context("open".to_string(), Box::new(raised));
         assert!(matches!(
-            parquet_external_spark_error(&wrapped),
-            Some(SparkError::ParquetMissingFieldIds { .. })
+            extract_spark_payload(&wrapped),
+            Some(SparkPayload::Bare(
+                SparkError::ParquetMissingFieldIds { .. }
+            ))
         ));
         let shared = DataFusionError::Shared(Arc::new(wrapped));
         assert!(matches!(
-            parquet_external_spark_error(&shared),
-            Some(SparkError::ParquetMissingFieldIds { .. })
+            extract_spark_payload(&shared),
+            Some(SparkPayload::Bare(
+                SparkError::ParquetMissingFieldIds { .. }
+            ))
         ));
         let corrupt = DataFusionError::ParquetError(Box::new(ParquetError::General(
             "corrupt footer".to_string(),
         )));
-        assert!(parquet_external_spark_error(&corrupt).is_none());
-    }
-
-    /// A `CannotReadFile` the scan attached as `External` keeps its structured exception under the
-    /// `Context` and `Shared` wrappers a repartition or a hash join build side adds, as it does bare.
-    #[test]
-    fn external_cannot_read_file_survives_context_and_shared() {
-        let external = || {
-            DataFusionError::External(Box::new(SparkError::CannotReadFile {
-                file_path: "file:/tmp/part-0.parquet".to_string(),
-                message: "corrupt footer".to_string(),
-            }))
-        };
-        let cases = [
-            ("bare", external()),
-            (
-                "context",
-                DataFusionError::Context("repartition".to_string(), Box::new(external())),
-            ),
-            ("shared", DataFusionError::Shared(Arc::new(external()))),
-            (
-                "shared context",
-                DataFusionError::Shared(Arc::new(DataFusionError::Context(
-                    "repartition".to_string(),
-                    Box::new(external()),
-                ))),
-            ),
-        ];
-        for (label, source) in cases {
-            let error = CometError::from(source);
-            match jvm_exception(&error) {
-                JvmException::Spark { json } => {
-                    assert!(json.contains("CannotReadFile"), "{label}: {json}");
-                    assert!(json.contains("part-0.parquet"), "{label}: {json}");
-                }
-                other => panic!("{label}: expected a Spark exception, got {other:?}"),
-            }
-        }
+        assert!(extract_spark_payload(&corrupt).is_none());
     }
 
     #[test]
@@ -2181,6 +2209,49 @@ mod tests {
     }
 
     #[test]
+    fn extract_spark_payload_through_parquet_row_filter() {
+        // Shape produced by a pushed-down parquet row filter once DataFusion keeps the typed
+        // error (apache/datafusion#24638): the parquet reader wraps the ArrowError it gets
+        // from the predicate, which wraps the DataFusionError from the expression.
+        let predicate_err =
+            DataFusionError::from(SparkErrorWithContext::new(SparkError::DivideByZero))
+                .context("Error evaluating filter predicate");
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(ArrowError::ExternalError(Box::new(predicate_err))),
+        )));
+        match extract_spark_payload(&e) {
+            Some(SparkPayload::WithContext(ctx)) => {
+                assert!(matches!(ctx.error, SparkError::DivideByZero))
+            }
+            _ => panic!("expected SparkErrorWithContext in {e:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_spark_payload_keeps_context_through_wrappers() {
+        // A `SparkErrorWithContext` under a wrapper is returned as is, so its SQL context is kept.
+        let e = DataFusionError::from(SparkErrorWithContext::new(SparkError::DivideByZero))
+            .context("outer");
+        assert!(matches!(
+            extract_spark_payload(&e),
+            Some(SparkPayload::WithContext(_))
+        ));
+    }
+
+    #[test]
+    fn extract_spark_payload_ignores_stringified_errors() {
+        // DataFusion 54/55 formats a failing row-filter predicate into a string, so the typed
+        // payload cannot be recovered and the error falls through to generic handling.
+        let e = DataFusionError::ArrowError(
+            Box::new(ArrowError::ComputeError(
+                "Error evaluating filter predicate: External(DivideByZero)".to_string(),
+            )),
+            None,
+        );
+        assert!(extract_spark_payload(&e).is_none());
+    }
+
+    #[test]
     fn classify_non_file_errors_are_not_file_read() {
         // Execution / Internal errors (and object_store Generic config errors, which arrive as
         // Execution strings) must NOT be masked as file-read failures.
@@ -2191,5 +2262,42 @@ mod tests {
         assert!(
             try_classify_file_read_error(&DataFusionError::Internal("bug".to_string())).is_none()
         );
+    }
+
+    /// A `CannotReadFile` the scan attached as `External` keeps its structured exception under the
+    /// `Context` and `Shared` wrappers a repartition or a hash join build side adds, as it does bare.
+    #[test]
+    fn external_cannot_read_file_survives_context_and_shared() {
+        let external = || {
+            DataFusionError::External(Box::new(SparkError::CannotReadFile {
+                file_path: "file:/tmp/part-0.parquet".to_string(),
+                message: "corrupt footer".to_string(),
+            }))
+        };
+        let cases = [
+            ("bare", external()),
+            (
+                "context",
+                DataFusionError::Context("repartition".to_string(), Box::new(external())),
+            ),
+            ("shared", DataFusionError::Shared(Arc::new(external()))),
+            (
+                "shared context",
+                DataFusionError::Shared(Arc::new(DataFusionError::Context(
+                    "repartition".to_string(),
+                    Box::new(external()),
+                ))),
+            ),
+        ];
+        for (label, source) in cases {
+            let error = CometError::from(source);
+            match jvm_exception(&error) {
+                JvmException::Spark { json } => {
+                    assert!(json.contains("CannotReadFile"), "{label}: {json}");
+                    assert!(json.contains("part-0.parquet"), "{label}: {json}");
+                }
+                other => panic!("{label}: expected a Spark exception, got {other:?}"),
+            }
+        }
     }
 }
