@@ -27,7 +27,7 @@ import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.IcebergScanPlanData.distinctResiduals
 import org.apache.comet.tags.ScansTestGroup
 
 @ScansTestGroup
@@ -179,7 +179,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
   }
 
   // Asserts that predicate pushdown actually happens for the types that support it. For each
-  // primitive column it runs an equality filter and inspects the serialized IcebergScanCommon: the
+  // primitive column it runs an equality filter and inspects the scan's serialized pools: the
   // residual pool must be non-empty exactly when the column's type is one Comet maps to an Iceberg
   // literal (pushable), and empty for a gated type (binary). This works because the fuzz table is
   // unpartitioned, so Iceberg's per-file residual is the full filter rather than a partition-pruned
@@ -228,8 +228,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         val (_, cometPlan) = checkSparkAnswer(df.where(col(name) === lit(v)))
         val scans = collectIcebergNativeScans(cometPlan)
         assert(scans.length == 1, s"expected one native scan for '$name'\n$cometPlan")
-        val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
-        val pushed = common.getResidualPoolCount > 0
+        val pushed = distinctResiduals(scans.head).nonEmpty
         if (isPushable(field.dataType)) {
           assert(
             pushed,
@@ -255,8 +254,8 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         assert(scans.length == 1, s"$cometPlan")
         // Older Iceberg leaks manifest streams when commonData forces planning.
         if (!isIcebergVersionLessThan("1.8.0")) {
-          val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
-          assert(common.getResidualPoolCount == 0, s"unexpected residual for $name: $predicate")
+          val residuals = distinctResiduals(scans.head)
+          assert(residuals.isEmpty, s"unexpected residual for $name: $predicate")
         }
       }
     }

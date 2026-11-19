@@ -642,9 +642,13 @@ the risk of accidentally overwriting another maintainer's commits when multiple 
 to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
 changes before retrying; do not switch to `--force` to bypass the check.
 
-For a pull request from a fork, the pull request tier of CI runs on your fork's GitHub runners
-rather than the project's. Enable GitHub Actions on your fork and keep its `main` in sync before you
-push; see [Pull requests from forks](ci.md#pull-requests-from-forks).
+For a pull request from a fork that targets `main`, the pull request tier of CI runs on your fork's
+GitHub runners rather than the project's. Enable GitHub Actions on your fork and keep its `main` in
+sync before you push; see [Pull requests from forks](ci.md#pull-requests-from-forks). Until you do,
+the pull request shows a failed `CI (fork)` check that says **Enable CI on your fork**, and the PR
+tier does not run on it; see [When the fork check finds no run](ci.md#when-the-fork-check-finds-no-run).
+A pull request that targets a release branch keeps the PR tier on the project's runners and has no
+`CI (fork)` check.
 
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 

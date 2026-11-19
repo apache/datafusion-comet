@@ -205,6 +205,7 @@ object CometCast
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         castBuilder.setDecimalZeroAnyExponent(
           SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
+        castBuilder.setDecimalTinyToZero(SparkFixes.castsTinyStringToDecimalZero(SPARK_VERSION))
         // Spark does not apply the 38 integral-digit limit to a string cast to decimal with
         // spark.sql.legacy.allowNegativeScaleOfDecimal.
         castBuilder.setDecimalSkipIntegralDigitLimit(allowNegativeScaleOfDecimal)

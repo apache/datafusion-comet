@@ -16,7 +16,7 @@
 -- under the License.
 
 -- With spark.sql.legacy.disableMapKeyNormalization, Spark 4.0+ leaves FLOAT and DOUBLE map keys as
--- they are, as Spark 3.4 and 3.5 always do (they don't have the flag). So 0.0 and -0.0 are two
+-- they are, as Spark 3.5 always does (it doesn't have the flag). So 0.0 and -0.0 are two
 -- keys and a -0.0 key stays -0.0. map_from_entries and map_from_arrays run Spark's code in the
 -- codegen dispatcher, which has to see the session's flag.
 

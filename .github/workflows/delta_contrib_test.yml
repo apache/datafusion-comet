@@ -50,6 +50,7 @@ jobs:
   contrib-delta:
     name: Delta contrib (Spark ${{ inputs.spark }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
       image: amd64/rust
     steps:
@@ -139,6 +140,7 @@ jobs:
     # Pinned to Spark 3.5, so only that caller runs it: once per ci.yml run.
     if: inputs.spark == '3.5'
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -228,6 +230,7 @@ jobs:
     # Spark-independent, so only the 3.5 caller runs it: once per ci.yml run.
     if: inputs.spark == '3.5'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     steps:
@@ -265,6 +268,7 @@ jobs:
     # Spark-independent, so only the 3.5 caller runs it: once per ci.yml run.
     if: inputs.spark == '3.5'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 

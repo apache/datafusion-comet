@@ -41,7 +41,7 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.tags.ExecTestGroup
 
@@ -636,7 +636,6 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   }
 
   test("AQE DPP remains executable when transition reversion restores a V1 scan") {
-    assume(isSpark35Plus, "Comet AQE DPP query-stage optimizer rules require Spark 3.5+")
     import testImplicits._
 
     withTempDir { dir =>

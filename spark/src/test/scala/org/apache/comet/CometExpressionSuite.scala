@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -49,7 +49,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def arithmeticError(error: Throwable): SparkThrowable =
     causeChain(error)
       .collectFirst {
-        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // SparkArithmeticException is private[spark] in Spark 3.x, so this cross-version test
         // cannot pattern match on its type directly.
         case error: SparkThrowable
             if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
@@ -2421,7 +2421,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("null IN empty list honours legacy null-in-empty behavior") {
     // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
-    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // in effect (SPARK-44550): on by default on Spark 3.5 and whenever ANSI
     // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
     // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
     // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
@@ -2450,7 +2450,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               col("a").isin(),
               !col("a").isin(),
               getColumnFromExpression(emptySet))
-            val legacyEnabled = !CometSparkSessionExtensions.isSpark35Plus ||
+            val legacyEnabled =
               legacy.map(_.toBoolean).getOrElse(!isSpark40Plus || !ansi.toBoolean)
             if (!legacyEnabled) {
               checkSparkAnswerAndImpl(df, native = Seq("in", "inset"))
@@ -2468,7 +2468,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("make_date is not evaluated by empty IN predicates") {
-    assume(isSpark35Plus, "Spark 3.4 always uses legacy empty-IN evaluation")
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
       "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
@@ -3022,7 +3021,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
-    // Spark 3.4/3.5 throw `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
+    // Spark 3.5 throws `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
     // short. Spark 4.x routes them through `MathUtils.negateExact` and agrees with Comet, which
     // always renders `SparkError::ArithmeticOverflow` with the Spark type name.
     def sparkOverflowMsg(dtype: String): String =
@@ -3639,12 +3638,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       ("INT", Int.MinValue.toLong, Int.MaxValue.toLong, "ARITHMETIC_OVERFLOW"),
       ("BIGINT", Long.MinValue, Long.MaxValue, "ARITHMETIC_OVERFLOW"))) {
     test(s"ANSI integral overflow fidelity - $sqlType") {
-      val expectedErrorClass =
-        if (errorClass == "BINARY_ARITHMETIC_OVERFLOW" && !isSpark35Plus) {
-          "_LEGACY_ERROR_TEMP_2044"
-        } else {
-          errorClass
-        }
       val cases = Seq(
         ("+", "try_add", max, 1L),
         ("+", "try_add", min, -1L),
@@ -3680,7 +3673,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
             val expected = structured(sparkError)
             val actual = structured(cometError)
-            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(expected.getErrorClass == errorClass, query)
             assert(actual.getClass == expected.getClass, query)
             assert(actual.getErrorClass == expected.getErrorClass, query)
             assert(actual.getSqlState == expected.getSqlState, query)
@@ -4004,6 +3997,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator(dfWithOverflowSeed)
       val dfWithNullSeed = df.selectExpr("_1", "rand(null) as rnd")
       checkSparkAnswerAndOperator(dfWithNullSeed)
+      val dfWithIntSeed = df.selectExpr("_1", "rand(42) as rnd")
+      checkSparkAnswerAndOperator(dfWithIntSeed)
+      val dfWithNegativeIntSeed = df.selectExpr("_1", "rand(-42) as rnd")
+      checkSparkAnswerAndOperator(dfWithNegativeIntSeed)
+      val dfWithMinIntSeed = df.selectExpr("_1", s"rand(${Int.MinValue}) as rnd")
+      checkSparkAnswerAndOperator(dfWithMinIntSeed)
     }
   }
 
@@ -4016,6 +4015,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperatorWithTol(dfWithOverflowSeed)
       val dfWithNullSeed = df.selectExpr("_1", "randn(null) as randn")
       checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
+      val dfWithIntSeed = df.selectExpr("_1", "randn(42) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithIntSeed)
+      val dfWithNegativeIntSeed = df.selectExpr("_1", "randn(-42) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithNegativeIntSeed)
+      val dfWithMinIntSeed = df.selectExpr("_1", s"randn(${Int.MinValue}) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithMinIntSeed)
     }
   }
 
