@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{ArrayRef, Float64Array, Int32Array, Int64Array};
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::DataType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
@@ -78,6 +79,116 @@ fn f64_array(seed: u64, nulls: bool) -> ArrayRef {
         .collect();
     Arc::new(Float64Array::from(values))
 }
+
+type ToArray = fn(Vec<i64>, Option<NullBuffer>) -> ArrayRef;
+
+#[derive(Clone, Copy)]
+enum Overflow {
+    None,
+    OnePerBatch,
+    /// About 1% of rows.
+    Random,
+    /// Under every null slot of the left operand, which has 10% nulls.
+    UnderNulls,
+}
+
+/// Values in [-1000, 1000], with `max` at the rows that overflow, so that both `+` and `*`
+/// overflow there. Returns the left and right operands.
+fn try_operands(
+    overflow: Overflow,
+    nulls: bool,
+    max: i64,
+    to_array: ToArray,
+) -> (ArrayRef, ArrayRef) {
+    let mut state = 0x1234_5678;
+    let mut side = |left: bool| {
+        let mut values = Vec::with_capacity(NUM_ROWS);
+        let mut valid = Vec::with_capacity(NUM_ROWS);
+        for row in 0..NUM_ROWS {
+            let null = nulls && left && next(&mut state).is_multiple_of(10);
+            let overflows = match overflow {
+                Overflow::None => false,
+                Overflow::OnePerBatch => row == NUM_ROWS / 2,
+                Overflow::Random => next(&mut state).is_multiple_of(100),
+                Overflow::UnderNulls => null,
+            };
+            values.push(if overflows {
+                max
+            } else {
+                (next(&mut state) % 2001) as i64 - 1000
+            });
+            valid.push(!null);
+        }
+        to_array(values, nulls.then(|| NullBuffer::from(valid)))
+    };
+    let left = side(true);
+    (left, side(false))
+}
+
+fn try_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("checked_arithmetic_try");
+    let types: [(&str, DataType, i64, ToArray); 2] = [
+        ("i32", DataType::Int32, i32::MAX as i64, |v, n| {
+            Arc::new(Int32Array::new(
+                v.into_iter().map(|x| x as i32).collect(),
+                n,
+            ))
+        }),
+        ("i64", DataType::Int64, i64::MAX, |v, n| {
+            Arc::new(Int64Array::new(v.into(), n))
+        }),
+    ];
+    for (ty, data_type, max, to_array) in types {
+        for (shape, overflow, nulls) in [
+            ("no_overflow_no_nulls", Overflow::None, false),
+            ("no_overflow_with_nulls", Overflow::None, true),
+            ("one_overflow", Overflow::OnePerBatch, true),
+            ("random_overflow", Overflow::Random, true),
+            ("overflow_under_nulls", Overflow::UnderNulls, true),
+        ] {
+            let (l, r) = try_operands(overflow, nulls, max, to_array);
+            let args = [ColumnarValue::Array(l), ColumnarValue::Array(r)];
+            for (op, f) in [
+                ("add", checked_add as CheckedFn),
+                ("mul", checked_mul as CheckedFn),
+            ] {
+                group.bench_function(format!("try_{op}_{ty}_{shape}"), |b| {
+                    b.iter(|| black_box(f(black_box(&args), &data_type, EvalMode::Try)))
+                });
+            }
+        }
+
+        let (l, r) = try_operands(Overflow::None, true, max, to_array);
+        let scalar = ScalarValue::Int64(Some(42)).cast_to(&data_type).unwrap();
+        let args = [
+            ColumnarValue::Array(Arc::clone(&l)),
+            ColumnarValue::Scalar(scalar),
+        ];
+        group.bench_function(format!("try_add_{ty}_scalar_right_with_nulls"), |b| {
+            b.iter(|| black_box(checked_add(black_box(&args), &data_type, EvalMode::Try)))
+        });
+
+        // try_add(try_add(a, b), c): the second call reads what the first left in null slots.
+        let args = [
+            ColumnarValue::Array(l),
+            ColumnarValue::Array(Arc::clone(&r)),
+        ];
+        group.bench_function(format!("try_add_{ty}_chained_with_nulls"), |b| {
+            b.iter(|| {
+                let sum = checked_add(black_box(&args), &data_type, EvalMode::Try).unwrap();
+                let args = [sum, ColumnarValue::Array(Arc::clone(&r))];
+                black_box(checked_add(&args, &data_type, EvalMode::Try))
+            })
+        });
+    }
+    group.finish();
+}
+
+type CheckedFn = fn(
+    &[ColumnarValue],
+    &DataType,
+    EvalMode,
+) -> Result<ColumnarValue, datafusion::common::DataFusionError>;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("checked_arithmetic");
@@ -195,5 +306,5 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(benches, criterion_benchmark, try_benchmarks);
 criterion_main!(benches);
