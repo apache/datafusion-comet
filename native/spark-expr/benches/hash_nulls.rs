@@ -30,6 +30,9 @@ use std::sync::Arc;
 
 const NUM_ROWS: usize = 8192;
 
+/// Null percentages, from TPC-DS-like to nearly all null.
+const SWEEP: [u32; 11] = [3, 10, 25, 50, 60, 70, 75, 80, 85, 90, 99];
+
 /// Pseudo-random values from a fixed-seed xorshift, so runs are comparable.
 fn xorshift(seed: u64) -> impl FnMut() -> u64 {
     let mut x = seed;
@@ -94,11 +97,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // No nulls, which this path doesn't reach, to show the run's noise.
     murmur3("int32/no_nulls", int32(None));
     murmur3("int32/stride_10%", int32(Some(stride_nulls())));
-    for percent in [3, 10, 50, 90, 99] {
+    // The rates from 25% to 85% leave about 48 down to 10 valid rows in a 64-row chunk, around
+    // `MIN_VALID_FOR_DENSE`. Rerun them when changing it.
+    for percent in SWEEP {
         let nulls = random_nulls(percent as f64 / 100.0);
         murmur3(&format!("int32/random_{percent}%"), int32(Some(nulls)));
     }
-    for percent in [3, 50] {
+    for percent in [3, 50, 75] {
         let nulls = random_nulls(percent as f64 / 100.0);
         murmur3(
             &format!("int64/random_{percent}%"),
@@ -108,7 +113,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 
     // A seed other than 42 keeps xxhash64 on Comet's implementation.
-    for percent in [3, 50, 99] {
+    for percent in SWEEP {
         let nulls = random_nulls(percent as f64 / 100.0);
         let args = vec![
             ColumnarValue::Array(int64(Some(nulls))),
