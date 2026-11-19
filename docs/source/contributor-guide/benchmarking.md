@@ -43,6 +43,42 @@ These can also be run as a suite on a dedicated machine, see
 [Micro Benchmarking on AWS EC2](benchmarking_micro_ec2.md). Published results are in
 [benchmarks/results/micro](https://github.com/apache/datafusion-comet/tree/main/benchmarks/results/micro).
 
+## MIN/MAX Reader Filtering
+
+`CometMinMaxBenchmark` compares one `MIN(k)` or `MAX(k)` over an `INT` Parquet column with
+`spark.comet.exec.aggregate.dynamicFilter.enabled` disabled (`off`) and enabled (`on`). Run it
+with a release build; the make target builds and packages the native library:
+
+```shell
+make benchmark-org.apache.spark.sql.benchmark.CometMinMaxBenchmark -- \
+  1048576 1,4 ascending,descending,random,constant 5 off,on
+```
+
+The arguments are total rows, scan partition counts, layouts, minimum measured iterations, and
+mode order. The example uses one million rows, one or four files/tasks, and at least five measured iterations per
+case. Use `16384 1,4 ascending,descending,random,constant 3 off,on` for a smoke run. The Spark master
+is `local[1]` by default; set `COMET_BENCHMARK_MASTER` to change task concurrency and record it
+alongside results.
+
+Files use uncompressed Parquet v1 pages with dictionary encoding disabled, so even constant
+values reach the row-group size target. Each file has multiple row groups. Ascending input favors
+`MIN` and descending input favors `MAX`; the opposite combinations measure overhead when the bound keeps improving. Random input
+uses deterministic hashed keys, while constant input measures repeated values. Page-index pruning
+and decoder row filtering are disabled to isolate row-group pruning. Only the key is scanned.
+
+Before timing, the suite checks results against Spark, verifies the direct scan/partial aggregate
+plan and task count, and requires attachment in every enabled task. It prints scan output rows,
+requested data bytes, reader data and metadata bytes, pruned row groups, and attachment counters
+from this untimed execution. The timed cases include query planning and result collection, but
+exclude data generation and validation.
+
+Repeat with `on,off` to check case-order effects, including JVM warmup and metadata-cache warmth.
+Compare elapsed time as well as scan metrics: fewer rows or data bytes do not guarantee a faster
+query, especially for small files or when footer inspection and scheduling dominate. Record the
+Comet revision, build flags, Spark/JDK versions, machine, master, arguments, and both mode orders
+with any reported results. See [MIN/MAX reader filtering](../user-guide/latest/tuning/operators.md#minmax-reader-filtering)
+for supported plans and fallback limits.
+
 ```{toctree}
 :hidden:
 
