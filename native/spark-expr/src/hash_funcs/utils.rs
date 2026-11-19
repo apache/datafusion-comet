@@ -34,6 +34,8 @@ fn set_bits(mut bits: u64) -> impl Iterator<Item = usize> {
 
 /// The fewest valid rows in a 64-row chunk for which hashing every row of the chunk and restoring
 /// its null rows costs less than hashing only its valid rows one at a time.
+/// The null rates from 25% to 85% in the `hash_nulls` benchmark put random chunks around this
+/// count, so rerun them when changing the value.
 pub(super) const MIN_VALID_FOR_DENSE: u32 = 16;
 
 /// Hashes the valid rows of a fixed-width column that has nulls, 64 rows at a time. Null rows keep
