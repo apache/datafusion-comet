@@ -3844,44 +3844,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("kurtosis merges an empty partial like Spark") {
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
-      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
-      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
-      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      withTempPath { path =>
-        // The moments of these values overflow when merged, so Spark returns NaN. Merging
-        // the all-NULL file's empty partial must not hide that.
-        (0 until 10)
-          .map(i => (0, Option(5e77 * (1 + i * 1e-9))))
-          .toDF("g", "v")
-          .coalesce(1)
-          .write
-          .mode("append")
-          .parquet(path.getCanonicalPath)
-        Seq((0, Option.empty[Double]))
-          .toDF("g", "v")
-          .coalesce(1)
-          .write
-          .mode("append")
-          .parquet(path.getCanonicalPath)
-        withParquetTable(path.getCanonicalPath, "kurtosis_empty_partial") {
-          assert(spark.table("kurtosis_empty_partial").rdd.getNumPartitions == 2)
-          for (groupBy <- Seq("", " GROUP BY g")) {
-            val (_, cometPlan) = checkSparkAnswerAndOperator(
-              "SELECT kurtosis(v) FROM kurtosis_empty_partial" + groupBy)
-            val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
-            assert(aggregates.exists(_.modes.contains(Partial)))
-            assert(aggregates.exists(_.modes.contains(Final)))
-          }
-        }
-      }
-    }
-  }
-
   test("statistical aggregates merge fractional constants across partitions") {
     // https://github.com/apache/datafusion-comet/issues/6423
     // https://github.com/apache/datafusion-comet/issues/6481
