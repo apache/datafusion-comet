@@ -30,8 +30,8 @@ use datafusion::physical_plan::ColumnarValue;
 /// Spark `base64(bin)`: encodes a binary value as a padded base64 string.
 ///
 /// The second argument is a boolean `chunk` flag mirroring Spark's
-/// `spark.sql.chunkBase64String.enabled`. When `chunk` is true (Spark's default, and the only
-/// behavior on Spark 3.4), the output matches `java.util.Base64.getMimeEncoder()`: lines of at most
+/// `spark.sql.chunkBase64String.enabled`. When `chunk` is true (Spark's default), the output
+/// matches `java.util.Base64.getMimeEncoder()`: lines of at most
 /// 76 characters joined by a CRLF (`\r\n`), with no trailing separator. When false, the output is a
 /// single unwrapped line, matching `java.util.Base64.getMimeEncoder(-1, [])`.
 pub fn spark_base64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {

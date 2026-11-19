@@ -45,8 +45,11 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
-/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
+/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`. `hdfs.` and `hadoop.`
+/// carry the HDFS backend's NameNode declarations and Hadoop client settings.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &[
+    "s3.", "gcs.", "adls.", "client.", "opendal.", "hdfs.", "hadoop.",
+];
 
 /// Pick an OpenDAL storage backend for a URI whose scheme `builtin_storage_schemes` lists for
 /// `access_mode`, or that is an opted-in S3-compliant alias written in lowercase; anything else is
@@ -79,6 +82,7 @@ pub(crate) fn storage_factory_for(
         "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
         "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
         "oss" => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
+        "hdfs" => Ok((Arc::new(OpenDalStorageFactory::HdfsNative), true)),
         // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) route to the S3 backend. Listed
         // last so the built-in backends above stay authoritative even if one of their schemes is
         // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
@@ -302,9 +306,10 @@ fn cached_file_io(
 /// mode; the JVM read and write gates load these lists over JNI. `memory` is write-only: an OpenDAL
 /// memory backend is a fresh empty in-process store the write path assembles manifests in, so a
 /// read finds nothing. `oss` is read-only: no `oss.*` property is forwarded and no test covers it.
+/// `hdfs` is read-only: the write path has not been tested against it.
 pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
     match access_mode {
-        AccessMode::Read => &["file", "gs", "oss", "s3", "s3a"],
+        AccessMode::Read => &["file", "gs", "hdfs", "oss", "s3", "s3a"],
         AccessMode::Write => &["file", "memory", "gs", "s3", "s3a"],
     }
 }
@@ -848,6 +853,158 @@ mod tests {
     }
 
     #[test]
+    fn hdfs_scheme_is_readable_but_not_writable() {
+        assert!(factory_result("hdfs://nn:8020/db/table", AccessMode::Read).is_ok());
+        let err = factory_result("hdfs://nn:8020/db/table", AccessMode::Write).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: hdfs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The JVM declares a nameservice as `hdfs.name-node.<ns>`, and a catalog can declare one with
+    /// Hadoop's own keys under `hadoop.`.
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        let props = HashMap::from([
+            ("hdfs.name-node.ns1".to_string(), "nn1:8020".to_string()),
+            ("hadoop.dfs.ha.namenodes.ns2".to_string(), "a".to_string()),
+            (
+                "hadoop.dfs.namenode.rpc-address.ns2.a".to_string(),
+                "nn2:8020".to_string(),
+            ),
+        ]);
+        let (file_io, _) =
+            build_file_io(&props, "hdfs://ns2/warehouse", "", AccessMode::Read).unwrap();
+        for (key, value) in &props {
+            assert_eq!(file_io.config().get(key), Some(value), "{key}");
+        }
+    }
+
+    /// The cache is shared per executor, and an HDFS `FileIO` keeps its NameNode clients for life.
+    /// Two catalogs that differ only in how they reach HDFS must therefore never share a key, or
+    /// the second would be served by the first one's clients. A regression pin on the key, which
+    /// hashes every property.
+    #[test]
+    fn cache_key_separates_hdfs_catalogs() {
+        let table = "hdfs://nameservice1/warehouse/db/t";
+        let props = |name_node: &str, random_order: &str| {
+            HashMap::from([
+                // What the JVM declares for an `hdfs://nameservice1/...` table.
+                (
+                    "hdfs.name-node.nameservice1".to_string(),
+                    name_node.to_string(),
+                ),
+                (
+                    "hadoop.dfs.client.failover.random.order".to_string(),
+                    random_order.to_string(),
+                ),
+            ])
+        };
+        let key = |props: &HashMap<String, String>| {
+            FileIoCacheKey::new(props, table, "cat", AccessMode::Read)
+        };
+        let base = props("nn1:8020,nn2:8020", "true");
+
+        // Control: the same properties always give the same key, so the inequalities below are
+        // down to the one property that changed.
+        assert!(key(&base).is_some());
+        assert_eq!(key(&base), key(&base.clone()));
+
+        // Only the declaration differs: another NameNode, another list, the same list reordered
+        // (which changes the failover order), and no list at all.
+        for other in [
+            props("nn1:8020,nn3:8020", "true"),
+            props("nn1:8020", "true"),
+            props("nn2:8020,nn1:8020", "true"),
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+        let mut without_name_node = base.clone();
+        without_name_node.remove("hdfs.name-node.nameservice1");
+        assert_ne!(key(&base), key(&without_name_node));
+
+        // Only the `hadoop.dfs.client.failover.*` overrides differ: a changed value, an added
+        // override and a removed one.
+        let mut other_failover = base.clone();
+        other_failover.insert(
+            "hadoop.dfs.client.failover.proxy.provider.nameservice1".to_string(),
+            "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider".to_string(),
+        );
+        let mut without_failover = base.clone();
+        without_failover.remove("hadoop.dfs.client.failover.random.order");
+        for other in [
+            props("nn1:8020,nn2:8020", "false"),
+            other_failover,
+            without_failover,
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+    }
+
+    /// Builds the real HDFS storage from one property the way a `FileIO` does on first use.
+    /// Parsing is all it does: an operator, and with it a NameNode connection, is only made by
+    /// the first storage call, so this needs neither a NameNode nor a runtime. The storage is
+    /// inspected through its serde form, so this is a contract test on the pinned iceberg-rust
+    /// revision and its config field names.
+    fn build_hdfs_storage(key: &str, value: &str) -> Result<serde_json::Value, String> {
+        let config =
+            StorageConfig::from_props(HashMap::from([(key.to_string(), value.to_string())]));
+        let storage = OpenDalStorageFactory::HdfsNative
+            .build(&config)
+            .map_err(|e| e.to_string())?;
+        Ok(serde_json::to_value(&*storage).expect("the storage serializes"))
+    }
+
+    /// One Hadoop option of the parsed storage config.
+    fn parsed_option<'a>(storage: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        storage
+            .pointer("/HdfsNative/config/options")
+            .and_then(|options| options.get(key))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// The contract `CometIcebergNativeScan.hadoopToIcebergHdfsProperties` relies on: it declares
+    /// an HA nameservice as `hdfs.name-node.<nameservice>`, and iceberg-rust expands that into
+    /// Hadoop's own `dfs.ha.namenodes.<ns>` / `dfs.namenode.rpc-address.<ns>.<nn>`, the keys its
+    /// resolver reads for a portless path authority. A portless entry is refused when the
+    /// storage is built, naming the key and the entry.
+    #[test]
+    fn hdfs_nameservice_declaration_is_parsed_by_the_real_storage() {
+        for input in [
+            "nn1:8020,nn2:8020",
+            // Whitespace around entries, a trailing slash and the `hdfs://` prefix are tolerated.
+            " hdfs://nn1:8020/ , nn2:8020 ",
+        ] {
+            let storage = build_hdfs_storage("hdfs.name-node.ns1", input)
+                .unwrap_or_else(|e| panic!("`{input}` should be accepted: {e}"));
+            assert_eq!(
+                parsed_option(&storage, "dfs.ha.namenodes.ns1"),
+                Some("nn0,nn1"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn0"),
+                Some("nn1:8020"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn1"),
+                Some("nn2:8020"),
+                "input `{input}`: {storage}"
+            );
+        }
+
+        // A portless entry would only fail at the first I/O, so it is refused here, and the
+        // error names the offending key and entry rather than the whole list.
+        let err = build_hdfs_storage("hdfs.name-node.ns1", "nn1:8020,nn2").unwrap_err();
+        assert!(
+            err.contains("hdfs.name-node.ns1") && err.contains("nn2") && !err.contains("nn1:8020"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn memory_scheme_is_writable_but_not_readable() {
         // The write path assembles manifests in a fresh in-process memory store. A read against
         // a new memory store can never find data, so the factory must decline it up front.
@@ -948,7 +1105,7 @@ mod tests {
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        let err = factory_result("viewfs://cluster/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
@@ -997,7 +1154,7 @@ mod tests {
     #[test]
     fn unlisted_schemes_are_rejected_for_both_modes() {
         let unlisted = [
-            "hdfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
+            "viewfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
         ];
         for mode in [AccessMode::Read, AccessMode::Write] {
             for scheme in unlisted {
