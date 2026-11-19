@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.arrow
 import java.math.{BigDecimal => JavaBigDecimal, BigInteger}
 import java.nio.ByteOrder
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
@@ -149,6 +150,11 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
 
   private var count: Int = 0
 
+  // The views of unsafe arrays, maps and structs that the writers at any depth keep from one value
+  // to the next. Each holds the last row it read until the batch is finished or the writer reset,
+  // when all are pointed away from their rows: a detach per row would cost what the reuse saves.
+  private val views = UnsafeViews.of(fields)
+
   def write(row: InternalRow): Unit = {
     var i = 0
     row match {
@@ -204,12 +210,14 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
   def finish(): Unit = {
     root.setRowCount(count)
     fields.foreach(_.finish())
+    views.detach()
   }
 
   def reset(): Unit = {
     root.setRowCount(0)
     count = 0
     fields.foreach(_.reset())
+    views.detach()
   }
 }
 
@@ -637,6 +645,58 @@ private[arrow] object ArrowFieldWriter {
 }
 
 /**
+ * The views of unsafe arrays, maps and structs that the writers under an [[ArrowWriter]] keep
+ * from one value to the next, rather than allocating a view per value. Between values a view
+ * holds the last row it read, and the memory behind it: at most one row per nested writer.
+ * [[detach]] points each at an empty value, which [[ArrowWriter]] does once a batch is finished
+ * or reset.
+ */
+private[arrow] final class UnsafeViews(
+    arrays: Array[UnsafeArrayData],
+    maps: Array[UnsafeMapData],
+    rows: Array[UnsafeRow]) {
+  import UnsafeViews._
+
+  def detach(): Unit = {
+    var i = 0
+    while (i < arrays.length) {
+      arrays(i).pointTo(EmptyArray, Platform.LONG_ARRAY_OFFSET.toLong, 8)
+      i += 1
+    }
+    i = 0
+    while (i < maps.length) {
+      maps(i).pointTo(EmptyMap, Platform.LONG_ARRAY_OFFSET.toLong, 24)
+      i += 1
+    }
+    i = 0
+    while (i < rows.length) {
+      rows(i).pointTo(null, 0L, 0)
+      i += 1
+    }
+  }
+}
+
+private[arrow] object UnsafeViews {
+  // An array of no elements and a map of two, for the views to point at between rows. A null base
+  // would not do for either, as `pointTo` reads a header there.
+  private val EmptyArray = Array[Long](0L)
+  private val EmptyMap = Array[Long](8L, 0L, 0L)
+
+  /** Collects the views of the writers under `fields`. */
+  final class Builder {
+    val arrays: ArrayBuffer[UnsafeArrayData] = ArrayBuffer.empty
+    val maps: ArrayBuffer[UnsafeMapData] = ArrayBuffer.empty
+    val rows: ArrayBuffer[UnsafeRow] = ArrayBuffer.empty
+  }
+
+  def of(fields: Array[ArrowFieldWriter]): UnsafeViews = {
+    val builder = new Builder
+    fields.foreach(_.collectViews(builder))
+    new UnsafeViews(builder.arrays.toArray, builder.maps.toArray, builder.rows.toArray)
+  }
+}
+
+/**
  * For a dictionary-encoded input, one more than the output index of the first row written for
  * each dictionary id, or zero. An output row holds an id's bytes only while the input, and with
  * it the dictionary, stays the same: the cache is dropped for a different input vector and at the
@@ -755,6 +815,12 @@ private[arrow] abstract class ArrowFieldWriter {
 
   /** Called before the rows of each input batch, to drop anything cached about the last one. */
   private[arrow] def startInputBatch(): Unit = {}
+
+  /**
+   * Adds to `views` the view of Spark's unsafe data this writer keeps from one value to the next,
+   * if any, and those of the writers under it, for [[ArrowWriter]] to detach after each batch.
+   */
+  private[arrow] def collectViews(views: UnsafeViews.Builder): Unit = {}
 
   /**
    * Whether [[maskNulls]] can null out this field's values under null parents. A list or map
@@ -1625,6 +1691,9 @@ private[arrow] class TimeNanoWriter(val valueVector: TimeNanoVector)
 private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter: ArrowFieldWriter)
     extends ArrowFieldWriter {
 
+  // Pointed at each unsafe array in turn rather than allocating a view per value; see UnsafeViews.
+  private val elements = new UnsafeArrayData
+
   override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
@@ -1643,13 +1712,11 @@ private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter:
     }
   }
 
-  // Each unsafe array gets a view of its own from Spark's getter. A view reused across values
-  // would keep the last row it read reachable after that row's values were copied.
   override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
     if (row.isNullAt(ordinal)) {
       setNull()
     } else {
-      writeElements(row.getArray(ordinal))
+      writeUnsafe(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
     }
     count += 1
   }
@@ -1661,17 +1728,28 @@ private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter:
       if (array.isNullAt(i)) {
         setNull()
       } else {
-        writeElements(array.getArray(i))
+        writeUnsafe(array.getBaseObject, array.getBaseOffset, array.getLong(i))
       }
       count += 1
       i += 1
     }
   }
 
+  /** Sets value `count` to the unsafe array that `offsetAndSize` locates from `baseOffset`. */
+  private def writeUnsafe(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Unit = {
+    elements.pointTo(base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
+    writeElements(elements)
+  }
+
   private def writeElements(array: UnsafeArrayData): Unit = {
     valueVector.startNewValue(count)
     elementWriter.writeArrayElements(array)
     valueVector.endValue(count, array.numElements())
+  }
+
+  override private[arrow] def collectViews(views: UnsafeViews.Builder): Unit = {
+    views.arrays += elements
+    elementWriter.collectViews(views)
   }
 
   // Spark's vectors keep every array's elements in one child vector. The offsets are written in
@@ -1715,6 +1793,9 @@ private[arrow] class StructWriter(
     children: Array[ArrowFieldWriter])
     extends ArrowFieldWriter {
 
+  // Pointed at each unsafe struct in turn, as in ArrayWriter.
+  private val fields = new UnsafeRow(children.length)
+
   override def setNull(): Unit = {
     var i = 0
     while (i < children.length) {
@@ -1739,12 +1820,11 @@ private[arrow] class StructWriter(
     }
   }
 
-  // Each unsafe struct gets a view of its own, as in ArrayWriter.
   override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
     if (row.isNullAt(ordinal)) {
       setNull()
     } else {
-      writeFields(row.getStruct(ordinal, children.length))
+      writeUnsafe(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
     }
     count += 1
   }
@@ -1756,11 +1836,17 @@ private[arrow] class StructWriter(
       if (array.isNullAt(i)) {
         setNull()
       } else {
-        writeFields(array.getStruct(i, children.length))
+        writeUnsafe(array.getBaseObject, array.getBaseOffset, array.getLong(i))
       }
       count += 1
       i += 1
     }
+  }
+
+  /** Sets value `count` to the unsafe struct that `offsetAndSize` locates from `baseOffset`. */
+  private def writeUnsafe(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Unit = {
+    fields.pointTo(base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
+    writeFields(fields)
   }
 
   private def writeFields(struct: UnsafeRow): Unit = {
@@ -1770,6 +1856,11 @@ private[arrow] class StructWriter(
       children(i).writeUnsafeRowField(struct, i)
       i += 1
     }
+  }
+
+  override private[arrow] def collectViews(views: UnsafeViews.Builder): Unit = {
+    views.rows += fields
+    children.foreach(_.collectViews(views))
   }
 
   private val childrenSupportNullMask = children.forall(_.supportsNullMask)
@@ -1835,6 +1926,9 @@ private[arrow] class MapWriter(
     val valueWriter: ArrowFieldWriter)
     extends ArrowFieldWriter {
 
+  // Pointed at each unsafe map in turn, as in ArrayWriter.
+  private val entries = new UnsafeMapData
+
   override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
@@ -1857,12 +1951,11 @@ private[arrow] class MapWriter(
     }
   }
 
-  // Each unsafe map gets a view of its own, as in ArrayWriter.
   override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
     if (row.isNullAt(ordinal)) {
       setNull()
     } else {
-      writeEntries(row.getMap(ordinal))
+      writeUnsafe(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
     }
     count += 1
   }
@@ -1874,11 +1967,23 @@ private[arrow] class MapWriter(
       if (array.isNullAt(i)) {
         setNull()
       } else {
-        writeEntries(array.getMap(i))
+        writeUnsafe(array.getBaseObject, array.getBaseOffset, array.getLong(i))
       }
       count += 1
       i += 1
     }
+  }
+
+  /** Sets value `count` to the unsafe map that `offsetAndSize` locates from `baseOffset`. */
+  private def writeUnsafe(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Unit = {
+    entries.pointTo(base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
+    writeEntries(entries)
+  }
+
+  override private[arrow] def collectViews(views: UnsafeViews.Builder): Unit = {
+    views.maps += entries
+    keyWriter.collectViews(views)
+    valueWriter.collectViews(views)
   }
 
   private def writeEntries(map: UnsafeMapData): Unit = {
