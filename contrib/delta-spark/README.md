@@ -43,7 +43,11 @@ for configuration details.
 | 4.0   | 4.0.x          | supported                                     |
 | 4.1   | 4.3.x          | supported                                     |
 | 3.4   | delta-core 2.4 | not supported (older Delta, would need shims) |
-| 4.2   | none released  | inert until Delta ships a Spark 4.2 release   |
+| 4.2   | 4.4.x          | supported                                     |
+
+Spark 4.2 uses the `delta-spark_4.2_2.13` artifact, pinned to Delta 4.4.1 by
+the `spark-4.2` Maven profile. Earlier Spark profiles keep `delta-spark` with
+their existing version pins.
 
 ## Building and testing
 
@@ -60,7 +64,7 @@ install is the trap the contributor guide warns about:
 
 Run the test suites the same way (`test` instead of `install` on the second
 line). CI runs them via `.github/workflows/delta_contrib_test.yml`: nightly on
-Spark 3.5, 4.0 and 4.1, or on a pull request carrying the `run-delta-tests`
+Spark 3.5, 4.0, 4.1 and 4.2, or on a pull request carrying the `run-delta-tests`
 label.
 `CometDeltaS3Suite` starts MinIO through Testcontainers and cancels itself when
 no Docker daemon is reachable; setting `COMET_DELTA_S3_REQUIRED=1`, as the
@@ -68,3 +72,9 @@ no Docker daemon is reachable; setting `COMET_DELTA_S3_REQUIRED=1`, as the
 
 `dev/` contains a benchmark script (`bench_delta_comet.py`) and a harness for
 running Delta's own test suites against Comet (`run-delta-regression.sh`).
+
+### S3 encryption context
+
+A nonempty effective `fs.s3a.encryption.context` makes the Delta scan fall back to Spark. The fallback also applies on older Hadoop versions that ignore the key. The context is attached to KMS write requests, but Hadoop 3.5 also parses it while initializing an S3 filesystem for reads. A local Delta log or shallow clone can reference S3 data files without initializing that data bucket during metadata reads. Comet therefore declines configured contexts, including valid ones, so Spark performs the same initialization checks before opening those files. Bucket aliases and credential-provider values are included; decline reasons do not print context values. Existing SSE-C and client-side encryption declines still apply.
+
+The MinIO CI jobs run on Spark 3.5 and 4.2. The Spark 4.2 case covers a local shallow clone whose files remain in S3, with valid and malformed global, short-bucket and long-bucket context settings. The unconfigured control must use the native Delta scan; configured reads must fall back, returning rows for valid context and failing like Spark for malformed context.

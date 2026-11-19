@@ -21,6 +21,7 @@ package org.apache.comet.contrib.delta
 
 import java.io.{File, IOException}
 import java.net.URI
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.util.{Locale, UUID}
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,6 +33,7 @@ import org.apache.hadoop.fs.{Path, RawLocalFileSystem}
 import org.apache.hadoop.fs.s3a.{S3AFileSystem, S3AUtils}
 import org.apache.hadoop.security.alias.CredentialProviderFactory
 import org.apache.spark.sql.comet.CometDeltaNativeScanExec
+import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
 import org.apache.spark.sql.execution.SparkPlan
 
@@ -45,6 +47,72 @@ import org.apache.comet.rules.CometScanRule
  * disabled, and the claim hook runs before core's metadata-column guard.
  */
 class DeltaScanContribSuite extends CometDeltaTestBase {
+
+  if (supportsS3EncryptionContext) {
+    // This pins metadata-setup parity; the MinIO local-clone test exercises the admission gate.
+    test("malformed S3 encryption context fails on the driver before Delta scan planning") {
+      val conf = spark.sparkContext.hadoopConfiguration
+      val settings = Map(
+        "fs.s3a.impl" -> classOf[S3AFileSystem].getName,
+        "fs.s3a.impl.disable.cache" -> "true",
+        "fs.s3a.endpoint" -> "http://127.0.0.1:1",
+        "fs.s3a.endpoint.region" -> "us-east-1",
+        "fs.s3a.path.style.access" -> "true",
+        "fs.s3a.connection.ssl.enabled" -> "false",
+        "fs.s3a.bucket.probe" -> "0",
+        "fs.s3a.aws.credentials.provider" ->
+          "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        "fs.s3a.access.key" -> "synthetic-access",
+        "fs.s3a.secret.key" -> "synthetic-secret",
+        "fs.s3a.encryption.algorithm" -> "",
+        "fs.s3a.encryption.context" -> "synthetic-malformed-pair")
+      val original = settings.keys.map(key => key -> Option(conf.getRaw(key))).toMap
+      try {
+        settings.foreach { case (key, value) => conf.set(key, value) }
+        for (algorithm <- Seq("", "AES256", "SSE-KMS", "DSSE-KMS")) {
+          conf.set("fs.s3a.encryption.algorithm", algorithm)
+          val valid = new Configuration(conf)
+          valid.set("fs.s3a.encryption.context", "purpose=synthetic")
+          val fs = new S3AFileSystem()
+          try {
+            fs.initialize(new java.net.URI("s3a://valid-context/"), valid)
+            assert(fs.getUri.getHost == "valid-context")
+          } finally {
+            fs.close()
+          }
+          val errors = scala.collection.mutable.ArrayBuffer.empty[(String, String, Seq[String])]
+          Seq(false, true).foreach { enabled =>
+            withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+              val group = s"malformed-context-${UUID.randomUUID()}"
+              spark.sparkContext.setJobGroup(group, group)
+              try {
+                val error = intercept[IllegalArgumentException] {
+                  spark.read.format("delta").load("s3a://malformed-context/table").collect()
+                }
+                val frames = error.getStackTrace.map(_.toString).toSeq
+                assert(frames.exists(_.contains("S3AEncryption.getS3EncryptionContext")))
+                assert(frames.exists(_.contains("S3AFileSystem.initialize")))
+                assert(spark.sparkContext.statusTracker.getJobIdsForGroup(group).isEmpty)
+                errors += ((
+                  error.getClass.getName,
+                  error.getMessage,
+                  frames.filter(_.startsWith("org.apache.hadoop."))))
+              } finally {
+                spark.sparkContext.clearJobGroup()
+              }
+            }
+          }
+          assert(errors.size == 2)
+          assert(errors.head == errors.last)
+        }
+      } finally {
+        original.foreach {
+          case (key, Some(value)) => conf.set(key, value)
+          case (key, None) => conf.unset(key)
+        }
+      }
+    }
+  }
 
   test("contrib is inert when comet exec is disabled") {
     // The COMET_EXEC_ENABLED gate lives in DeltaScanContrib.tryTransformV1; this pins it there.
@@ -2050,6 +2118,168 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(!reason.get.contains("realSecretValue"))
   }
 
+  test("S3 deletion-vector context gates the real claim path after encryption algorithms") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(4)
+        .coalesce(1)
+        .write
+        .format("delta")
+        .option("delta.enableDeletionVectors", "true")
+        .save(path)
+      val log = DeltaLog.forTable(spark, path)
+      val snapshot = log.update()
+      val files = snapshot.allFiles.collect()
+      assert(files.length == 1)
+      val dv = DeletionVectorDescriptor
+        .onDiskWithAbsolutePath("s3a://context-dv-bucket/deletion_vector.bin", 40, 1)
+      val replaced = files.head.copy(deletionVector = dv).withoutTightBoundStats
+      val commit = new File(dir, f"_delta_log/${snapshot.version + 1}%020d.json")
+      Files.write(
+        commit.toPath,
+        (files.head.remove.json + "\n" + replaced.json + "\n").getBytes(UTF_8))
+      val selected = log.update().allFiles.collect()
+      assert(selected.length == 1)
+      assert(selected.head.absolutePath(log).toUri.getScheme == "file")
+      assert(
+        selected.head.deletionVector
+          .absolutePath(new Path(path))
+          .toUri
+          .getHost == "context-dv-bucket")
+
+      val conf = spark.sparkContext.hadoopConfiguration
+      val contextKey = "fs.s3a.bucket.context-dv-bucket.encryption.context"
+      val algorithmKey = "fs.s3a.bucket.context-dv-bucket.encryption.algorithm"
+      val original = Seq(contextKey, algorithmKey).map(key => key -> Option(conf.getRaw(key)))
+      try {
+        conf.unset(contextKey)
+        conf.unset(algorithmKey)
+        // Plan only: the descriptor intentionally names no real sidecar and must never be read.
+        val baseline = spark.read.format("delta").load(path)
+        assert(deltaNativeScans(baseline).nonEmpty, baseline.queryExecution.executedPlan.toString)
+
+        conf.set(contextKey, "synthetic-malformed-pair")
+        val declined = spark.read.format("delta").load(path)
+        assert(deltaNativeScans(declined).isEmpty)
+        val reasons =
+          new ExtendedExplainInfo().getFallbackReasons(declined.queryExecution.executedPlan)
+        assert(
+          reasons.exists(_.contains("does not support fs.s3a.encryption.context")),
+          reasons.toString)
+        Seq("SSE-C", "CSE-KMS", "CSE-CUSTOM").foreach { algorithm =>
+          conf.set(algorithmKey, algorithm)
+          val encrypted = spark.read.format("delta").load(path)
+          assert(deltaNativeScans(encrypted).isEmpty)
+          val encryptionReasons =
+            new ExtendedExplainInfo().getFallbackReasons(encrypted.queryExecution.executedPlan)
+          assert(
+            encryptionReasons.exists(_.contains(s"fs.s3a.encryption.algorithm=$algorithm")),
+            encryptionReasons.toString)
+          assert(
+            !encryptionReasons.exists(_.contains("does not support fs.s3a.encryption.context")))
+        }
+      } finally {
+        original.foreach {
+          case (key, Some(value)) => conf.set(key, value)
+          case (key, None) => conf.unset(key)
+        }
+      }
+    }
+  }
+
+  test("unsupportedEncryptionContextReason passes absent/empty and non-S3 contexts") {
+    val conf = new Configuration(false)
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
+    conf.set("fs.s3a.encryption.context", "")
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
+    conf.set("fs.s3a.encryption.context", "synthetic-malformed-pair")
+    assert(
+      DeltaScanSupport
+        .unsupportedEncryptionContextReason(conf, Seq(new URI("file:///tmp/data.parquet")))
+        .isEmpty)
+  }
+
+  test(
+    "unsupportedEncryptionContextReason declines global/short/long values without printing them") {
+    val keys = Seq(
+      "fs.s3a.encryption.context",
+      "fs.s3a.bucket.data-bucket.encryption.context",
+      "fs.s3a.bucket.data-bucket.fs.s3a.encryption.context")
+    for (key <- keys; value <- Seq("purpose=synthetic", "synthetic-malformed-pair")) {
+      val conf = new Configuration(false)
+      conf.set(key, value)
+      val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+      assert(reason.exists(_.contains("fs.s3a.encryption.context")))
+      assert(reason.exists(_.contains("data-bucket")))
+      assert(!reason.get.contains(value))
+    }
+    val unrelated = new Configuration(false)
+    unrelated.set("fs.s3a.bucket.other-bucket.encryption.context", "synthetic-malformed-pair")
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(unrelated, DataBucketUris).isEmpty)
+  }
+
+  test(
+    "unsupportedEncryptionContextReason resolves propagated references and preserves fallback") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.encryption.context", s"$${fs.s3a.context.reference}")
+    conf.set("fs.s3a.context.reference", "")
+    conf.set("fs.s3a.bucket.data-bucket.context.reference", "synthetic-malformed-pair")
+    val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+    assert(reason.isDefined)
+    assert(!reason.get.contains("synthetic-malformed-pair"))
+    conf.setBoolean("hadoop.security.credential.clear-text-fallback", false)
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
+    val unresolved = new Configuration(false)
+    unresolved.set("fs.s3a.encryption.context", s"$${unresolved.synthetic.context}")
+    val unresolvedReason =
+      DeltaScanSupport.unsupportedEncryptionContextReason(unresolved, DataBucketUris)
+    assert(unresolvedReason.isDefined)
+    assert(!unresolvedReason.get.contains("unresolved.synthetic.context"))
+  }
+
+  test("unsupportedEncryptionContextReason finds context stored only in JCEKS bucket aliases") {
+    val keys = Seq(
+      "fs.s3a.encryption.context",
+      "fs.s3a.bucket.data-bucket.encryption.context",
+      "fs.s3a.bucket.data-bucket.fs.s3a.encryption.context")
+    keys.foreach { key =>
+      withJceks(Map(key -> "purpose=synthetic")) { conf =>
+        assert(conf.get(key) == null)
+        conf.setBoolean("hadoop.security.credential.clear-text-fallback", false)
+        val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+        assert(reason.isDefined)
+        assert(!reason.get.contains("purpose=synthetic"))
+      }
+    }
+  }
+
+  test(
+    "unsupportedEncryptionContextReason declines unverifiable providers without exposing paths") {
+    for ((key, value) <- Seq(
+        "fs.s3a.security.credential.provider.path" -> "jceks://file/no/synthetic-store.jceks",
+        "hadoop.security.credential.provider.path" -> "jceks://s3a@secret-bucket/secret.jceks")) {
+      val conf = new Configuration(false)
+      conf.set(key, value)
+      val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+      assert(reason.isDefined)
+      assert(!reason.get.contains(value))
+    }
+    val corruptFile = File.createTempFile("comet-context-corrupt", ".jceks")
+    try {
+      Files.write(corruptFile.toPath, Array[Byte](1, 2, 3))
+      val conf = new Configuration(false)
+      conf.set(
+        "hadoop.security.credential.provider.path",
+        "jceks://file" + corruptFile.getAbsolutePath)
+      val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+      assert(reason.isDefined)
+      assert(!reason.get.contains(corruptFile.getAbsolutePath))
+    } finally {
+      corruptFile.delete()
+    }
+  }
+
   test(
     "unsupportedEncryptionAlgorithmReason declines a bucket configured with global SSE-C, " +
       "naming the algorithm key and the algorithm but never the customer-provided key value") {
@@ -2894,6 +3124,10 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
               "effectiveEncryptionAlgorithm's doc)"),
           "fs.s3a.server-side-encryption.key" ->
             "deprecated alias of fs.s3a.encryption.key, same reasoning",
+          "fs.s3a.encryption.context" ->
+            ("handled by unsupportedEncryptionContextReason: declines non-empty or unverifiable " +
+              "Hadoop-effective context for every S3 data/DV bucket, including when a local " +
+              "Delta log did not initialize that bucket's S3A filesystem"),
           "fs.s3a.encryption.cse.kms.region" ->
             ("CSE tuning, newer Hadoop only: consulted solely when the algorithm resolves to " +
               "a CSE variant, and the allowlist gate declines every CSE algorithm outright, " +
