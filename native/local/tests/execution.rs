@@ -474,73 +474,174 @@ async fn partition_order_cancel_releases_running_partitions() {
     wait_released(&refs).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn partition_order_runs_at_most_the_given_number_of_partitions() {
-    let (plan, observations) = observe(ordered_input(6, 3));
-    let mut stream = LocalQuery::new(plan, context(), 2, usize::MAX)
-        .execute()
-        .unwrap();
-    // The first two partitions start with the query; the rest wait for their turn.
-    wait_started(&observations, 2).await;
-    for _ in 0..3 {
-        timeout(DEADLINE, stream.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+/// Partitions planned by a start function, each of which delivers one batch once its gate opens.
+struct Gated {
+    started: Mutex<Vec<usize>>,
+    gates: Vec<Arc<tokio::sync::Semaphore>>,
+    /// Held by each partition's stream until it is dropped.
+    streams: Vec<Arc<()>>,
+}
+
+impl Gated {
+    fn new(partitions: usize) -> Arc<Self> {
+        Arc::new(Self {
+            started: Mutex::new(Vec::new()),
+            gates: (0..partitions)
+                .map(|_| Arc::new(tokio::sync::Semaphore::new(0)))
+                .collect(),
+            streams: (0..partitions).map(|_| Arc::new(())).collect(),
+        })
     }
-    assert_executed_once(&observations, 2);
-    // Finishing the first partition starts the third.
-    timeout(DEADLINE, stream.next())
+
+    fn query(self: &Arc<Self>, max_running: usize, read_ahead: usize) -> LocalQuery {
+        let gated = Arc::clone(self);
+        let start: PartitionStart = Arc::new(move |partition, _| {
+            gated.started.lock().unwrap().push(partition);
+            let gate = Arc::clone(&gated.gates[partition]);
+            let held = Arc::clone(&gated.streams[partition]);
+            let base = partition as i64 * 4;
+            let stream = futures::stream::once(async move {
+                gate.acquire().await.unwrap().forget();
+                Ok(batch(base..base + 4))
+            })
+            .inspect(move |_| {
+                let _ = &held;
+            });
+            Ok(Box::pin(RecordBatchStreamAdapter::new(schema(), stream)))
+        });
+        LocalQuery::from_partitions(
+            schema(),
+            self.gates.len(),
+            start,
+            context(),
+            max_running,
+            read_ahead,
+        )
+    }
+
+    fn open(&self, partition: usize) {
+        self.gates[partition].add_permits(1);
+    }
+
+    fn started(&self) -> Vec<usize> {
+        let mut started = self.started.lock().unwrap().clone();
+        started.sort_unstable();
+        started
+    }
+
+    async fn wait_started(&self, partitions: usize) {
+        timeout(DEADLINE, async {
+            while self.started.lock().unwrap().len() < partitions {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("partitions did not start");
+        // Long enough for a partition started beyond the bound to show up.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(self.started(), (0..partitions).collect::<Vec<_>>());
+    }
+
+    /// Opens every gate and checks that `reader` read every partition in order.
+    async fn read_in_order(&self, reader: tokio::task::JoinHandle<Result<Vec<RecordBatch>>>) {
+        for partition in 0..self.gates.len() {
+            self.open(partition);
+        }
+        let batches = timeout(DEADLINE, reader).await.unwrap().unwrap().unwrap();
+        let expected: Vec<i64> = (0..self.gates.len() as i64 * 4).collect();
+        assert_eq!(ids(&batches), expected);
+        assert_eq!(self.started(), (0..self.gates.len()).collect::<Vec<_>>());
+    }
+
+    async fn wait_dropped(&self, partition: usize) {
+        timeout(DEADLINE, async {
+            while Arc::strong_count(&self.streams[partition]) > 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a finished partition kept its stream");
+    }
+}
+
+fn ids(batches: &[RecordBatch]) -> Vec<i64> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .values()
+                .to_vec()
+        })
+        .collect()
+}
+
+async fn collect_in_order(
+    gated: &Gated,
+    mut stream: impl futures::Stream<Item = Result<RecordBatch>> + Unpin,
+    from: usize,
+) {
+    for partition in from..gated.gates.len() {
+        gated.open(partition);
+    }
+    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.by_ref().try_collect())
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
-    wait_started(&observations, 3).await;
-    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(rest.len(), 6 * 3 - 4);
-    assert_executed_once(&observations, 6);
+    assert_eq!(
+        ids(&rest),
+        (from as i64 * 4..gated.gates.len() as i64 * 4).collect::<Vec<_>>()
+    );
+    assert_eq!(gated.started(), (0..gated.gates.len()).collect::<Vec<_>>());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn partitions_from_a_start_function_are_planned_as_they_start() {
-    let planned = Arc::new(Mutex::new(Vec::new()));
-    let (plans, source) = (Arc::clone(&planned), ordered_input(6, 1));
-    let start: PartitionStart = Arc::new(move |partition, context| {
-        plans.lock().unwrap().push(partition);
-        source.execute(partition, context)
-    });
-    let mut stream = LocalQuery::from_partitions(schema(), 6, start, context(), 2, usize::MAX)
-        .execute()
-        .unwrap();
-    let planned_now = || planned.lock().unwrap().clone();
-    timeout(DEADLINE, async {
-        while planned_now().len() < 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the first two partitions were not planned");
-    timeout(DEADLINE, stream.next())
+async fn partition_order_runs_at_most_the_given_number_of_partitions() {
+    let gated = Gated::new(6);
+    let mut stream = gated.query(2, usize::MAX).execute().unwrap();
+    // Partitions are planned only as they start, and two run at once.
+    gated.wait_started(2).await;
+    // Finishing the first partition starts the third.
+    gated.open(0);
+    let first = timeout(DEADLINE, stream.next())
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    // The third partition is planned only once the first has been delivered.
-    let mut first = planned_now();
-    first.sort_unstable();
-    assert_eq!(first, vec![0, 1]);
-    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(rest.len(), 5);
-    let mut all = planned_now();
-    all.sort_unstable();
-    assert_eq!(all, (0..6).collect::<Vec<_>>());
+    assert_eq!(ids(&[first]), (0..4).collect::<Vec<_>>());
+    gated.wait_started(3).await;
+    collect_in_order(&gated, stream, 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_partition_that_finishes_before_its_turn_gives_up_its_slot() {
+    let gated = Gated::new(6);
+    let reader = tokio::spawn(gated.query(2, usize::MAX).execute().unwrap().try_collect());
+    gated.wait_started(2).await;
+    // While the first partition runs, each later one that finishes drops its operators and
+    // lets the next one start, and its batch waits for its turn.
+    for partition in 1..4 {
+        gated.open(partition);
+        gated.wait_dropped(partition).await;
+        gated.wait_started(partition + 2).await;
+    }
+    gated.read_in_order(reader).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finished_partitions_wait_for_their_turn_within_the_read_ahead_limit() {
+    let gated = Gated::new(6);
+    let reader = tokio::spawn(gated.query(2, 0).execute().unwrap().try_collect());
+    gated.wait_started(2).await;
+    // The second partition finishes, but it holds a batch beyond the read-ahead limit, so no
+    // partition starts beyond the two that are not delivered.
+    gated.open(1);
+    gated.wait_dropped(1).await;
+    gated.wait_started(2).await;
+    gated.read_in_order(reader).await;
 }
 
 /// A first partition that never delivers, and a second one of ten batches.
@@ -582,33 +683,28 @@ async fn partition_order_holds_a_few_batches_beyond_the_limit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partition_order_follows_a_changing_running_limit() {
-    let (plan, observations) = observe(ordered_input(6, 1));
+    let gated = Gated::new(6);
     let limit = Arc::new(AtomicUsize::new(1));
     let current = Arc::clone(&limit);
-    let mut stream = LocalQuery::new(plan, context(), 3, usize::MAX)
+    let mut stream = gated
+        .query(3, usize::MAX)
         .with_running_limit(Arc::new(move || current.load(Ordering::Acquire)))
         .execute()
         .unwrap();
-    let executed = || observations.executions.lock().unwrap().len();
-    wait_started(&observations, 1).await;
+    gated.wait_started(1).await;
     // A limit of zero still runs one partition at a time.
     limit.store(0, Ordering::Release);
-    for partition in 0..2 {
-        timeout(DEADLINE, stream.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        // The next partition starts only once this one ends.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(executed(), partition + 1, "started beyond the limit");
-    }
-    // A higher limit applies to the partitions started from then on.
-    limit.store(usize::MAX, Ordering::Release);
-    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
+    gated.open(0);
+    timeout(DEADLINE, stream.next())
         .await
         .unwrap()
+        .unwrap()
         .unwrap();
-    assert_eq!(rest.len(), 4);
-    assert_executed_once(&observations, 6);
+    assert!(futures::poll!(stream.next()).is_pending());
+    gated.wait_started(2).await;
+    // A higher limit applies to the partitions started from then on, up to the maximum.
+    limit.store(usize::MAX, Ordering::Release);
+    assert!(futures::poll!(stream.next()).is_pending());
+    gated.wait_started(4).await;
+    collect_in_order(&gated, stream, 1).await;
 }
