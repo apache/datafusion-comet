@@ -97,7 +97,8 @@ SELECT id, map_entries(map_from_arrays(keys, vals)), map_entries(map_from_entrie
 FROM float_map_inputs
 
 query
-SELECT size(map_from_arrays(empty_keys, arrays_zip())) FROM float_map_inputs
+SELECT size(map_from_arrays(empty_keys, arrays_zip())), size(map_from_arrays(array(double(id)), array(struct())))
+FROM float_map_inputs
 
 -- Dispatch the whole expression so discarded strings need no intermediate batch buffer.
 query expect_dispatch(map_from_arrays, map_from_entries)

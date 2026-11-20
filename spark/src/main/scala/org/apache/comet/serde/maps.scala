@@ -160,7 +160,7 @@ private object MapBuilderKeySupport {
   // Constructors evaluate their children across the batch and can broadcast a large value
   // before LAST_WIN discards it. Only build entries from fixed-width, eagerly evaluable fields.
   private def safeElement(expr: Expression): Boolean = expr match {
-    case s: CreateNamedStruct => s.valExprs.forall(safeElement)
+    case s: CreateNamedStruct => s.valExprs.nonEmpty && s.valExprs.forall(safeElement)
     case _: UnaryMinus | _: Add | _: Subtract | _: Multiply =>
       isFloatingPoint(expr.dataType) && expr.children.forall(safeElement)
     case c: Cast if isFloatingPoint(c.dataType) =>
