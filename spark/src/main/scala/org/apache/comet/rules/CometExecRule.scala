@@ -1214,21 +1214,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         case op: CometShuffleExchangeExec =>
           // An exchange without an original logical link can inherit an unrelated one from
           // its parent. Clear it so AQE does not associate the exchange with that parent.
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
-            op.originalPlan.logicalLink.foreach(op.setLogicalLink)
-          }
+          copyLogicalLinks(op.originalPlan, op, clearMissing = true)
           op
-
         case op: CometBroadcastExchangeExec =>
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
-            op.originalPlan.logicalLink.foreach(op.setLogicalLink)
-          }
+          copyLogicalLinks(op.originalPlan, op, clearMissing = true)
           op
       }
 
