@@ -130,9 +130,9 @@ object CometExecRule {
       // EmptyRelationExec was introduced in Spark 4.0.
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
       ShimCometArrowEvalPythonExec.nativeOperator ++
-      // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
+      // Resolve WindowGroupLimitExec through its version shim.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
-      // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
+      // Resolve MergeRowsExec through its version shim.
       ShimCometMergeRows.nativeExecs
 
   /**
@@ -165,14 +165,6 @@ object CometExecRule {
    */
   val SKIP_COMET_SHUFFLE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometShuffle")
-
-  /**
-   * Tag set on a `BroadcastExchangeExec` that should be left as a plain Spark broadcast rather
-   * than converted to `CometBroadcastExchangeExec`. Written by [[CometSpark34AqeDppFallbackRule]]
-   * on Spark < 3.5. See that rule's class docstring for the rationale.
-   */
-  val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
-    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
 
   /**
    * The operators `spark.comet.sparkToColumnar.supportedOperatorList` named by default, before
@@ -606,7 +598,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // Spark 3.x: `getWriteFilesOpt` matches the concrete `WriteFilesExec` case class, so a
       // Comet node can never stand in for the write node. Native writes instead replace the whole
       // DataWritingCommandExec and re-implement the write framework inside CometNativeWriteExec.
-      // This path is retained only for 3.4/3.5 and goes away with them.
+      // This path is retained only for Spark 3.5 and goes away with Spark 3.x.
       //
       // `originalPlan` is that command. This rule copies `originalPlan.logicalLink` onto the
       // Comet node, so AQE re-plans the write with the command rather than with whatever child
@@ -636,11 +628,6 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
-          // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep the build-side
-          // broadcast Spark-native so Spark's PlanAdaptiveDynamicPruningFilters can match it.
-          case b: BroadcastExchangeExec
-              if b.getTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG).isDefined =>
-            b
           case b: BroadcastExchangeExec if b.children.forall(_.isInstanceOf[CometNativeExec]) =>
             convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
@@ -986,17 +973,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             }
           case _ => inSub
         }
-      case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+      case sab: SubqueryAdaptiveBroadcastExec =>
         // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
         // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
         // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
         // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
         // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
-        // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
-        //
-        // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
-        // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
-        // matching BHJ's build broadcast so Spark's rule can match it natively.
+        // (queryStageOptimizerRule) unwraps and converts them later.
         assert(
           sab.buildKeys.nonEmpty,
           s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
@@ -1782,12 +1765,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * the backstop that undoes any bridge left under a Spark `BroadcastExchangeExec` after the
    * transform. Skipping here still matters because a bridge under a Spark broadcast breaks
    * Spark's DPP broadcast reuse until it is torn down (the DPP subquery keeps an unbridged copy).
-   * We skip when:
-   *   - the join's own serde is disabled (`joinEnabled`), so it will stay on Spark; or
-   *   - the build-side `BroadcastExchangeExec` carries `SKIP_COMET_BROADCAST_TAG`, which
-   *     `CometSpark34AqeDppFallbackRule` sets on Spark 3.4 to keep the broadcast Spark-native so
-   *     `PlanAdaptiveDynamicPruningFilters` can match it (bridging it would turn DPP off). See
-   *     issue #6008.
+   * We skip when the join's own serde is disabled (`joinEnabled`), so it will stay on Spark.
    */
   private def tagBuildIfProbeNative(
       buildSide: BuildSide,
@@ -1801,12 +1779,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case BuildLeft => (left, right)
       case BuildRight => (right, left)
     }
-    val skipForDpp = buildPlan match {
-      case b: BroadcastExchangeExec =>
-        b.getTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG).isDefined
-      case _ => false
-    }
-    if (!skipForDpp && hasOnlyNativeScans(probePlan)) {
+    if (hasOnlyNativeScans(probePlan)) {
       tagBuildSideScans(buildPlan)
     }
   }

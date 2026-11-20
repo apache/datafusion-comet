@@ -32,8 +32,6 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
-
 // Tests for the broadcast build-side bridge, spark.comet.convert.broadcastBuildSide.enabled (issue
 // #6008). A build-side scan that Comet cannot read natively, such as ORC or an Iceberg table
 // the native reader declines, is converted to Arrow so that the broadcast join runs natively. Each
@@ -214,7 +212,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("Spark 3.4: native Iceberg fact, ORC dimension, AQE DPP (#6008)") {
+  test("native Iceberg fact, ORC dimension, AQE DPP (#6008)") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>
       withTempDir { dir =>
@@ -644,7 +642,6 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     // build (the ORC scan) is not bridged, so CometPlanAdaptiveDynamicPruningFilters must NOT wrap
     // it in a CometBroadcastExchangeExec (that crashed with "Comet execution only takes Arrow
     // Arrays"). It falls back to a Spark DPP broadcast while the join stays native. See issue #6008.
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -846,63 +843,11 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("Spark 3.4 AQE DPP with a V1 Parquet fact and an ORC dimension (#6008)") {
-    // On Spark 3.4, CometScanRule.transformV1Scan has an "AQE Dynamic Partition Pruning requires
-    // Spark 3.5+" fallback that keeps a V1 scan with an AQE DPP filter on Spark. So this Parquet
-    // fact is not native, hasOnlyNativeScans is false, and the build side is never tagged or
-    // bridged. The feature stays out of the way on 3.4: DPP stays live and the answer matches
-    // Spark. The SKIP_COMET_BROADCAST_TAG path needs a native fact; the Iceberg test in
-    // CometBroadcastBuildSideSuite covers it. See #6008.
-    assume(!isSpark35Plus, "This test covers the Spark 3.4 V1-fact DPP fallback")
-    withSQLConf(
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-      withTempDir { dir =>
-        val factPath = s"${dir.getAbsolutePath}/fact.parquet"
-        val dimPath = s"${dir.getAbsolutePath}/dim.orc"
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          spark
-            .range(0, 100)
-            .selectExpr("CAST(id % 10 AS STRING) AS fk", "id AS v")
-            .write
-            .partitionBy("fk")
-            .parquet(factPath)
-          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.orc(dimPath)
-        }
-        spark.read.parquet(factPath).createOrReplaceTempView("dpp34_fact_orc")
-        spark.read.orc(dimPath).createOrReplaceTempView("dpp34_dim_orc")
-        // CAST(d.value AS INT) % 2 = 0 is a filter Spark cannot infer onto f.fk, so the fact is
-        // pruned only via a live DPP subquery.
-        val df = sql("""
-            |SELECT /*+ BROADCAST(d) */ f.v
-            |FROM dpp34_fact_orc f JOIN dpp34_dim_orc d ON f.fk = d.value
-            |WHERE CAST(d.value AS INT) % 2 = 0
-            |""".stripMargin)
-        val (_, cometPlan) = checkSparkAnswer(df)
-        // The non-native V1 fact means the build side is never tagged, so nothing is bridged.
-        assert(
-          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
-          s"3.4: the ORC dimension must not be bridged:\n${cometPlan.treeString}")
-        // DPP is still live - the fact scan keeps a broadcast pruning subquery.
-        val dppSubqueries = collectWithSubqueries(cometPlan) {
-          case s: SubqueryBroadcastExec => s
-          case s: CometSubqueryBroadcastExec => s
-        }
-        assert(
-          dppSubqueries.nonEmpty,
-          s"3.4: expected a live DPP broadcast subquery on the fact scan:\n${cometPlan.treeString}")
-      }
-    }
-  }
-
   test("AQE DPP reuses the broadcast for a UNION ALL dimension (#6008)") {
     // The DPP subquery's build is a CometUnionExec - a columnar CometPlan, not a CometNativeExec.
     // isNativeBuildSide must accept it so CometPlanAdaptiveDynamicPruningFilters converts the
     // subquery's SubqueryBroadcastExec and Spark reuses the join's CometBroadcastExchangeExec as a
     // ReusedExchangeExec. The earlier CometNativeExec-only check dropped the reuse. See #6008.
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
