@@ -145,8 +145,8 @@ class CometInMemoryCachePruningSuite extends CometTestBase {
     "s >= '\ue000'",
     "s < '\u0080'",
     "s LIKE 'prefix%'",
-    // Both prefixes match é (C3 A9). The complete prefix alone can prune the other batches.
-    "startswith(s, 'é') AND startswith(s, CAST(X'C3' AS STRING))",
+    // Both prefixes match é (C3 A9). Only its batch and the batch containing id 0 are needed.
+    "(startswith(s, 'é') AND startswith(s, CAST(X'C3' AS STRING))) OR id = 0",
     "dec >= -1.125 AND dec < 2.125",
     "ts < TIMESTAMP '1960-01-05 00:00:00'",
     "b <=> true",
