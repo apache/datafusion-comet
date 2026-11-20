@@ -37,7 +37,7 @@ use super::regexp_extract_common::{parse_args, ParsedArgs};
 /// non-overlapping match of `pattern`. `idx = 0` returns the entire match. An unmatched
 /// optional group contributes the empty string. No matches yields an empty array. Returns
 /// null when any input is null. Errors when `idx` is out of range for the pattern's group
-/// count.
+/// count and some row matches, as Spark does.
 ///
 /// Note: this uses the Rust `regex` crate, whose syntax differs from Java's regex engine in
 /// some ways. The expression is therefore reported as Incompatible.
@@ -407,6 +407,45 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("group index"), "{msg}");
         assert!(msg.contains("but got -1"), "{msg}");
+    }
+
+    #[test]
+    fn out_of_range_index_without_a_match_returns_empty_array() {
+        for i in [1, -1] {
+            let result = run(vec![
+                array(vec![Some("abc"), None, Some("def")]),
+                pattern(r"\d+"),
+                idx(i),
+            ])
+            .unwrap();
+            assert_eq!(result, vec![Some(vec![]), None, Some(vec![])]);
+        }
+    }
+
+    #[test]
+    fn out_of_range_index_errors_when_one_row_matches() {
+        let err = call_raw(&[
+            array(vec![Some("abc"), Some("a1"), None]),
+            pattern(r"\d+"),
+            idx(1),
+        ])
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("but got 1"), "{err}");
+    }
+
+    #[test]
+    fn out_of_range_index_on_large_utf8_subject() {
+        let large =
+            |v: Vec<Option<&str>>| ColumnarValue::Array(Arc::new(LargeStringArray::from(v)));
+        let result = run(vec![
+            large(vec![Some("abc"), None]),
+            pattern(r"\d+"),
+            idx(1),
+        ])
+        .unwrap();
+        assert_eq!(result, vec![Some(vec![]), None]);
+        assert!(call_raw(&[large(vec![Some("a1")]), pattern(r"\d+"), idx(1)]).is_err());
     }
 
     #[test]

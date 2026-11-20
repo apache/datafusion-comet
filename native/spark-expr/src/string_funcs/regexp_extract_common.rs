@@ -21,7 +21,11 @@
 //! its own per-row loop.
 
 use super::pattern_cache::PatternCache;
-use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
+use arrow::datatypes::DataType;
+use datafusion::common::{
+    cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
+    ScalarValue,
+};
 use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 
@@ -92,18 +96,43 @@ pub(super) fn parse_args<'a>(
         ))
     })?;
 
+    // Spark checks `idx` only on a row where the pattern matches. When no row matches, every
+    // row extracts nothing whatever the index, so any in-range index gives Spark's result.
     let group_count = regex.captures_len() as i32 - 1;
-    if idx < 0 || idx > group_count {
+    let group_idx = if (0..=group_count).contains(&idx) {
+        idx as usize
+    } else if any_row_matches(&regex, &args[0])? {
         return Err(DataFusionError::Execution(format!(
             "The value of parameter `idx` in `{fn_name}` is invalid: \
              Expects group index between 0 and {group_count}, but got {idx}."
         )));
-    }
+    } else {
+        0
+    };
 
     Ok(ParsedArgs::Parsed {
         regex,
-        group_idx: idx as usize,
+        group_idx,
         subject: &args[0],
+    })
+}
+
+fn any_row_matches(regex: &Regex, subject: &ColumnarValue) -> DataFusionResult<bool> {
+    Ok(match subject {
+        ColumnarValue::Array(array) => match array.data_type() {
+            DataType::Utf8 => as_generic_string_array::<i32>(array.as_ref())?
+                .iter()
+                .flatten()
+                .any(|s| regex.is_match(s)),
+            DataType::LargeUtf8 => as_generic_string_array::<i64>(array.as_ref())?
+                .iter()
+                .flatten()
+                .any(|s| regex.is_match(s)),
+            _ => false,
+        },
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(s)))
+        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some(s))) => regex.is_match(s),
+        ColumnarValue::Scalar(_) => false,
     })
 }
 

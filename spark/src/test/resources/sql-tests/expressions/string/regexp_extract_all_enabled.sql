@@ -117,6 +117,25 @@ SELECT regexp_extract_all(s, '\\d+', 1) FROM test_regexp_extract_all_enabled
 query expect_error(group index)
 SELECT regexp_extract_all(s, '(\\d+)-(\\d+)', -1) FROM test_regexp_extract_all_enabled
 
+-- Spark checks idx only on a row where the pattern matches, so an out-of-range idx is not an
+-- error when no row matches
+query
+SELECT regexp_extract_all(s, 'NOMATCH', 1) FROM test_regexp_extract_all_enabled
+
+statement
+CREATE TABLE test_regexp_extract_all_no_digits(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_extract_all_no_digits VALUES ('abc'), (NULL), (''), ('foo-bar')
+
+query
+SELECT regexp_extract_all(s, '\\d+', 1), regexp_extract_all(s, '(\\d+)', 2),
+  regexp_extract_all(s, '(\\d+)', -1)
+FROM test_regexp_extract_all_no_digits
+
+query
+SELECT regexp_extract_all('no digits', '\\d+', 1), regexp_extract_all(NULL, '\\d+', 1)
+
 -- invalid regex syntax (unclosed group): both engines fail at pattern compile time.
 -- Spark surfaces INVALID_PARAMETER_VALUE.PATTERN, Comet surfaces a regex parse error.
 -- Both messages mention `regexp_extract_all`.
