@@ -30,7 +30,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallback
 import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SparkFixes, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, isSharedSubexpression, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometCast
@@ -648,7 +648,8 @@ object CometCast
 
 /**
  * Spark rethrows the child's error unchanged when the optimizer has replaced the cast
- * (SPARK-42286), so only a `Cast` child is wrapped.
+ * (SPARK-42286), and never sees the error of a cast that subexpression elimination evaluates
+ * before it. So only a `Cast` child that the operator does not share is wrapped.
  */
 object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflowInTableInsert] {
 
@@ -657,7 +658,7 @@ object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflo
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     expr.child match {
-      case cast: Cast =>
+      case cast: Cast if !isSharedSubexpression(cast) =>
         exprToProtoInternal(cast, inputs, binding).map { child =>
           val builder = ExprOuterClass.CheckOverflowInTableInsert
             .newBuilder()

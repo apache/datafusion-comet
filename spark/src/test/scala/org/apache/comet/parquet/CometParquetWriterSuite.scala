@@ -1752,7 +1752,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         ("double", "bigint", Seq("1.5", "-2.9", "NULL")),
         ("decimal(20,2)", "decimal(10,2)", Seq("1.25", "-99999999.99", "NULL")),
         ("decimal(20,2)", "int", Seq("1.99", "-7.5")),
-        ("struct<x: bigint>", "struct<x: int>", Seq("named_struct('x', 1)", "NULL")))
+        ("struct<x: bigint>", "struct<x: int>", Seq("named_struct('x', 1)", "NULL")),
+        ("array<bigint>", "array<int>", Seq("array(1, NULL, -2)", "NULL")),
+        ("map<bigint, bigint>", "map<int, int>", Seq("map(1, 2147483647)", "NULL")))
       inserts.foreach { case (sourceType, targetType, values) =>
         withNarrowingTables(sourceType, targetType, values) {
           withTable("comet_narrow_expected") {
@@ -1784,7 +1786,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         ("double", "decimal(10,2)", "1e12"),
         ("decimal(20,2)", "decimal(10,2)", "123456789012.34"),
         ("decimal(20,2)", "int", "3000000000.5"),
-        ("struct<x: bigint>", "struct<x: int>", "named_struct('x', 3000000000)"))
+        ("struct<x: bigint>", "struct<x: int>", "named_struct('x', 3000000000)"),
+        ("array<bigint>", "array<int>", "array(1, 3000000000)"),
+        ("map<bigint, bigint>", "map<int, int>", "map(3000000000, 1)"),
+        ("map<bigint, bigint>", "map<int, int>", "map(1, 3000000000)"))
       overflows.foreach { case (sourceType, targetType, value) =>
         withNarrowingTables(sourceType, targetType, Seq(value)) {
           val error = assertInsertFailsAsSpark("c", nativeWriter)
@@ -1806,6 +1811,21 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           val error = assertInsertFailsAsSpark("CAST(c AS BIGINT)", nativeWriter)
           assert(error.getErrorClass == "CAST_INVALID_INPUT", error)
           assert(error.getQueryContext.nonEmpty, error)
+        }
+      }
+    }
+
+    test(
+      s"a narrowing INSERT with a shared cast fails as Spark does (native writer: $nativeWriter)") {
+      // Subexpression elimination evaluates the cast that both columns share before the checks,
+      // so Spark reports the cast's own error unless it is off.
+      val cases = Seq(true -> "CAST_OVERFLOW", false -> "CAST_OVERFLOW_IN_TABLE_INSERT")
+      cases.foreach { case (eliminate, errorClass) =>
+        withNarrowingTables("bigint", "int, d int", Seq("3000000000")) {
+          withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> eliminate.toString) {
+            val error = assertInsertFailsAsSpark("c, c", nativeWriter)
+            assert(error.getErrorClass == errorClass, error)
+          }
         }
       }
     }

@@ -1396,6 +1396,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
+   * Whether `expr` is a subexpression that the operator's expressions share and Spark eliminates,
+   * so that Spark evaluates it for every row before the expressions that use it. False outside
+   * `withSharedSubexpressions`, where what they share is unknown.
+   */
+  def isSharedSubexpression(expr: Expression): Boolean =
+    !expr.isInstanceOf[LeafExpression] && sharedSubexpressions.value.exists { s =>
+      s.common.nonEmpty && {
+        val promoted = DecimalPrecision.promote(expr)
+        s.common.exists(_.semanticEquals(promoted))
+      }
+    }
+
+  /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
    * Spark evaluates those of a null-intolerant `BinaryExpression` or `TernaryExpression`: each
    * argument after the first only for the rows where no earlier argument is NULL, unless
