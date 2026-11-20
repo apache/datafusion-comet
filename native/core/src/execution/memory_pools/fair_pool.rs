@@ -523,8 +523,10 @@ mod tests {
     async fn a_sort_fits_its_share_with_combined_input_where_it_fits_without() {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 3 * 1024 * 1024);
-        // Another consumer that can spill, such as a second sort in the task, halves the share.
-        let _other_sort = spillable("ExternalSorter[1]", &pool);
+        // Another active consumer that can spill, such as a second sort in the task, halves the
+        // share. A consumer that has not reserved yet takes no share.
+        let other_sort = spillable("ExternalSorter[1]", &pool);
+        hold(&other_sort, 2);
 
         let (rows, spills, _) = sort_small_batches(&pool, false).await.unwrap();
         assert_eq!(rows, 180_000);
@@ -536,7 +538,7 @@ mod tests {
         assert_eq!(rows, 180_000);
         assert!(spills > 0, "the sort over combined input must spill too");
         assert!(combined > 0, "no input batches were combined");
-        assert_eq!(pool.reserved(), 0);
+        assert_eq!(pool.reserved(), other_sort.size());
     }
 
     #[test]

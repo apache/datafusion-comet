@@ -677,17 +677,6 @@ mod tests {
         same_rows(&output, &input);
     }
 
-    #[test]
-    fn a_refused_reservation_flushes_the_held_group_first() {
-        let input = ten_row_batches(4);
-        let one = get_record_batch_memory_size(&input[0]);
-        // Room for two batches and their copy. The third is refused, so the first two go out
-        // combined and the third passes through. The fourth starts a new group.
-        let output = run_in_pool(input.clone(), 1000, 2 * 2 * one);
-        assert_eq!(row_counts(&output), [20, 10, 10]);
-        same_rows(&output, &input);
-    }
-
     #[tokio::test]
     async fn holds_no_memory_while_the_sort_takes_a_batch() {
         let input = ten_row_batches(10);
@@ -711,22 +700,12 @@ mod tests {
     }
 
     #[test]
-    fn after_a_refusal_the_next_batches_pass_through() {
-        let input = ten_row_batches(6);
-        let one = get_record_batch_memory_size(&input[0]);
-        // Room for two batches and their copy, so the third is refused. The ones after it pass
-        // through without asking the pool again.
-        let output = run_in_pool(input.clone(), 1000, 2 * 2 * one);
-        assert_eq!(row_counts(&output), [20, 10, 10, 10, 10]);
-        same_rows(&output, &input);
-    }
-
-    #[test]
     fn combining_resumes_after_the_backoff() {
         let input = ten_row_batches(70);
         let one = get_record_batch_memory_size(&input[0]);
-        // Room for two batches and their copy. The third is refused, it and the next 64 pass
-        // through, and then two more are combined before the next refusal.
+        // Room for two batches and their copy. The third is refused, so the held group goes out
+        // first and the third passes through, then the next 64 pass through under the backoff,
+        // and then two more are combined before the next refusal.
         let output = run_in_pool(input.clone(), 1000, 2 * 2 * one);
         let mut expected = vec![20];
         expected.extend([10; 1 + REFUSED_BACKOFF_BATCHES]);
@@ -766,53 +745,36 @@ mod tests {
 
     #[test]
     fn batches_with_small_dictionary_keys_pass_through() {
+        use arrow::buffer::OffsetBuffer;
         use arrow::datatypes::Int8Type;
-        let batch = |start: usize| {
-            let mut dict = StringDictionaryBuilder::<Int8Type>::new();
+        // Combined, the 200 distinct values would overflow the Int8 keys, wherever the
+        // dictionary sits.
+        let dict = |start: usize| -> ArrayRef {
+            let mut builder = StringDictionaryBuilder::<Int8Type>::new();
             for i in start..start + 10 {
-                dict.append_value(format!("v{i}"));
+                builder.append_value(format!("v{i}"));
             }
-            RecordBatch::try_from_iter([("d", Arc::new(dict.finish()) as ArrayRef)]).unwrap()
+            Arc::new(builder.finish())
         };
-        let input: Vec<_> = (0..20).map(|i| batch(i * 10)).collect();
-        let (output, _) = run(input.clone(), 1000, 0, MAX_GROUP_BYTES);
-        assert_eq!(output, input);
-    }
-
-    #[test]
-    fn batches_with_small_dictionary_keys_in_a_struct_pass_through() {
-        use arrow::datatypes::Int8Type;
-        let batch = |start: usize| {
-            let mut dict = StringDictionaryBuilder::<Int8Type>::new();
-            for i in start..start + 10 {
-                dict.append_value(format!("v{i}"));
-            }
-            let dict: ArrayRef = Arc::new(dict.finish());
-            let field = Field::new("d", dict.data_type().clone(), false);
-            let column = StructArray::new(Fields::from(vec![field]), vec![dict], None);
-            RecordBatch::try_from_iter([("s", Arc::new(column) as ArrayRef)]).unwrap()
-        };
-        // Combined, the 200 distinct values would overflow the Int8 keys.
-        let input: Vec<_> = (0..20).map(|i| batch(i * 10)).collect();
-        let (output, _) = run(input.clone(), 1000, 0, MAX_GROUP_BYTES);
-        assert_eq!(output, input);
-    }
-
-    #[test]
-    fn batches_with_small_dictionary_keys_in_a_list_pass_through() {
-        use arrow::array::ListBuilder;
-        use arrow::datatypes::Int8Type;
-        let batch = |start: usize| {
-            let mut list = ListBuilder::new(StringDictionaryBuilder::<Int8Type>::new());
-            for i in start..start + 10 {
-                list.values().append_value(format!("v{i}"));
-                list.append(true);
-            }
-            RecordBatch::try_from_iter([("l", Arc::new(list.finish()) as ArrayRef)]).unwrap()
-        };
-        let input: Vec<_> = (0..20).map(|i| batch(i * 10)).collect();
-        let (output, _) = run(input.clone(), 1000, 0, MAX_GROUP_BYTES);
-        assert_eq!(output, input);
+        let wraps: [fn(ArrayRef) -> ArrayRef; 3] = [
+            |d| d,
+            |d| {
+                let field = Field::new("d", d.data_type().clone(), false);
+                Arc::new(StructArray::new(Fields::from(vec![field]), vec![d], None))
+            },
+            |d| {
+                let field = Arc::new(Field::new("item", d.data_type().clone(), false));
+                let offsets = OffsetBuffer::from_lengths(std::iter::repeat_n(1, d.len()));
+                Arc::new(ListArray::new(field, offsets, d, None))
+            },
+        ];
+        for wrap in wraps {
+            let input: Vec<_> = (0..20)
+                .map(|i| RecordBatch::try_from_iter([("c", wrap(dict(i * 10)))]).unwrap())
+                .collect();
+            let (output, _) = run(input.clone(), 1000, 0, MAX_GROUP_BYTES);
+            assert_eq!(output, input, "{}", input[0].schema());
+        }
     }
 
     #[tokio::test]
@@ -974,73 +936,6 @@ mod tests {
     async fn a_spilling_multi_key_sort_gives_the_same_result_from_combined_input() {
         // A two-value date first, then a unique id, so both keys decide the order.
         check_spilling_sort(&[("d", false), ("id", true)]).await;
-    }
-
-    /// A sort in a fair pool so tight that it spills about every 50 KiB. It failed with combined
-    /// input when the coalescer still held memory while the sort reserved a combined batch.
-    async fn sort_in_tight_fair_pool(
-        input: Vec<RecordBatch>,
-        coalesce: bool,
-    ) -> Result<MetricsSet> {
-        use datafusion::execution::memory_pool::FairSpillPool;
-        use datafusion::physical_expr::expressions::col;
-        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-        use datafusion::physical_plan::sorts::sort::SortExec;
-
-        let schema = input[0].schema();
-        let runtime = RuntimeEnvBuilder::new()
-            .with_memory_pool(Arc::new(FairSpillPool::new(2560 * 1024)))
-            .build_arc()
-            .unwrap();
-        let config = SessionConfig::new().with_sort_spill_reservation_bytes(64 * 1024);
-        let gate = config.options().execution.sort_in_place_threshold_bytes;
-        let ctx = SessionContext::new_with_config_rt(config, runtime);
-        let source = MemorySourceConfig::try_new_exec(&[input], Arc::clone(&schema), None).unwrap();
-        let coalescer = Arc::new(SortInputCoalesceExec::new(
-            Arc::clone(&source) as _,
-            8192,
-            gate,
-        ));
-        let sort_input: Arc<dyn ExecutionPlan> = if coalesce {
-            Arc::clone(&coalescer) as _
-        } else {
-            source
-        };
-        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
-            col("id", &schema).unwrap(),
-            Default::default(),
-        )])
-        .unwrap();
-        let sort = Arc::new(SortExec::new(ordering, sort_input));
-        collect(sort.execute(0, ctx.task_ctx())?).await?;
-        Ok(coalescer.metrics().unwrap())
-    }
-
-    #[tokio::test]
-    async fn combined_input_does_not_fail_a_sort_in_a_tight_fair_pool() {
-        let input: Vec<_> = (0..4000)
-            .map(|b| {
-                let ids: Vec<i64> = (0..50)
-                    .map(|i| ((b * 50 + i) * 7919 % 200_000) as i64)
-                    .collect();
-                let text = ids.iter().map(|i| format!("value-{i:010}-padding-padding"));
-                RecordBatch::try_from_iter([
-                    ("id", Arc::new(Int64Array::from(ids.clone())) as ArrayRef),
-                    (
-                        "s",
-                        Arc::new(StringArray::from_iter_values(text)) as ArrayRef,
-                    ),
-                ])
-                .unwrap()
-            })
-            .collect();
-        sort_in_tight_fair_pool(input.clone(), false)
-            .await
-            .expect("the plain sort fits");
-        let metrics = sort_in_tight_fair_pool(input, true)
-            .await
-            .expect("the sort over combined batches fits too");
-        assert!(metric(&metrics, "coalesced_input_batches") > 0);
     }
 
     /// A batch of `rows` rows covering nested, decimal, temporal, dictionary and non-ASCII data.
