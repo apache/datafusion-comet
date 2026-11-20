@@ -26,7 +26,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, Literal, StartsWith}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -475,7 +475,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // silently drop rows, so predicates over columns without bounds are not pushed down at all.
   // Null counts and row counts are recorded for every column, so IsNull and IsNotNull stay safe.
   // A column that does have bounds can still be unsafe to prune on through StartsWith; see
-  // prunesOnCollatedPrefix.
+  // hasUnsafePrefix.
   override def buildFilter(
       predicates: Seq[Expression],
       cachedAttributes: Seq[Attribute]): (Int, Iterator[CachedBatch]) => Iterator[CachedBatch] = {
@@ -486,21 +486,22 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     val prunablePredicates = predicates.filter {
       case _: IsNull | _: IsNotNull => true
       case p =>
-        p.references.forall(a => prunable.contains(a.exprId)) && !prunesOnCollatedPrefix(p)
+        p.references.forall(a => prunable.contains(a.exprId)) && !hasUnsafePrefix(p)
     }
 
     super.buildFilter(prunablePredicates, cachedAttributes)
   }
 
   // Spark prunes StartsWith by cutting each bound to the prefix's length in characters, which
-  // assumes a matching value begins with as many characters as the prefix has. That holds under
-  // binary comparison but not under every collation: under UTF8_LCASE, U+0130 is one character
-  // that lowercases to two, so a batch of values beginning with it is pruned against a
-  // two-character prefix they all match. Spark's own cache prunes the same way. A predicate that
-  // holds such a StartsWith anywhere is left out whole, since leaving out a conjunct only prunes
-  // less. Equality and range predicates compare with the collation itself, so they still prune.
-  private def prunesOnCollatedPrefix(predicate: Expression): Boolean = predicate.exists {
-    case StartsWith(left, _) => left.dataType != StringType
+  // assumes a matching value begins with as many characters as the prefix has. Under binary
+  // comparison, C3 matches the first byte of é (C3 A9), yet the first character of the lower
+  // bound é sorts after C3. Collations can also change the character count. Under UTF8_LCASE,
+  // U+0130 is one character that lowercases to two, so a batch of values beginning with it is
+  // pruned against a two-character prefix they all match. A predicate that holds such a
+  // StartsWith anywhere is left out whole, since leaving out a conjunct only prunes less.
+  private def hasUnsafePrefix(predicate: Expression): Boolean = predicate.exists {
+    case StartsWith(left, _) if left.dataType != StringType => true
+    case StartsWith(_, Literal(prefix: UTF8String, _)) => !Utils.isValidUtf8(prefix)
     case _ => false
   }
 
