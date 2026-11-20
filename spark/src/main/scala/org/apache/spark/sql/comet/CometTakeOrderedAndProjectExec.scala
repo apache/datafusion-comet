@@ -46,12 +46,12 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
     if (!isCometShuffleEnabled(op.conf)) {
       return Unsupported(Some("TakeOrderedAndProject requires shuffle to be enabled"))
     }
-    op.projectList.foreach { p =>
-      val o = exprToProto(p, op.child.output)
-      if (o.isEmpty) {
-        return Unsupported(Some(s"unsupported projection: $p"))
-      }
-      o
+    // The same scope as `finalNativePlan`, which serializes the projection at execution
+    val unsupportedProjection = withSharedSubexpressions(op.projectList, certain = true) {
+      op.projectList.find(p => exprToProto(p, op.child.output).isEmpty)
+    }
+    if (unsupportedProjection.isDefined) {
+      return Unsupported(Some(s"unsupported projection: ${unsupportedProjection.get}"))
     }
     op.sortOrder.foreach { s =>
       val o = exprToProto(s, op.child.output)
@@ -139,14 +139,14 @@ case class CometTakeOrderedAndProjectExec(
     }
     // Spark's projection runs on its own over the rows the sort keeps, so only its list can share
     // a subexpression (see QueryPlanSerde.canShortCircuitNulls)
-    withSharedSubexpressions(projectList) {
+    withSharedSubexpressions(projectList, certain = true) {
       selection.flatMap(CometExecUtils.getProjectionNativePlan(projectList, child.output, _))
     }
   }
 
   // Spark's ordering evaluates each sort key on its own, without subexpression elimination
   private def topKNativePlan(offset: Int): Option[OperatorOuterClass.Operator] =
-    withSharedSubexpressions(Seq.empty) {
+    withSharedSubexpressions(Seq.empty, certain = true) {
       CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit, offset)
     }
 
