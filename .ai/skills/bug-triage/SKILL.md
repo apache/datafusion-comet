@@ -221,18 +221,20 @@ Keep only titles that start with `Bug triage results: `, drop any created today,
 and take the one with the latest `createdAt`. Then compare only if **both** hold:
 
 1. It was created within the last 10 days.
-2. Its body has an `## Open critical bugs` section with a table.
+2. Its `## Open critical bugs` section has area headings of the form
+   `### <area> (<N> open...` and a first line starting with `<N> open`.
 
-Reports from before this section existed do not have it. If either condition
-fails, leave out the `vs last week` column entirely and say nothing about a
-trend. Do not estimate the previous count from the old report's critical
-subsection, because that lists only that week's new issues.
+Reports from before this format do not have those headings. If either condition
+fails, leave out `vs last week` entirely and say nothing about a trend. Do not
+estimate the previous count from the old report's critical subsection, because
+that lists only that week's new issues.
 
-If both hold, read the `Open` column of that table, one row per area plus the
-`Total` row, and use the difference from this week's count. An area missing from
-the previous table had zero. Keep a row for an area that dropped to zero when the
-previous table had it, so the drop is visible. The previous counts are what that
-report published; do not recompute them from today's labels.
+If both hold, take each area's `<N> open` from its heading and the total from
+the first line, and use the difference from this week's count. An area missing
+from the previous report had zero. Keep a heading for an area that dropped to
+zero when the previous report had it, so the drop is visible. The previous
+counts are what that report published; do not recompute them from today's
+labels.
 
 ## Step 7: File the Summary Issue
 
@@ -260,29 +262,32 @@ order:
 
    25 open, 2 new this week, 1 fewer than last week.
 
-   | Area                | Open | New | vs last week |
-   | ------------------- | ---: | --: | -----------: |
-   | `area:Iceberg`      |    8 |   1 |           +1 |
-   | `area:expressions`  |    7 |   1 |           -1 |
-   | No area label       |    1 |   0 |            0 |
-   | **Total**           |   25 |   2 |           -1 |
-
-   ### area:Iceberg
+   ### area:Iceberg (8 open, 1 new, +1 vs last week)
 
    - **NEW** <title> (2 days) ([#1234](url)) - one sentence on why it is critical
    - <title> (27 days) ([#1200](url))
+
+   ### area:expressions (7 open, -1 vs last week)
+
+   - <title> (12 days) ([#1180](url))
    ```
 
-   - Order the rows by `Open`, largest first, and leave out areas with no open
-     critical bugs unless the previous table had them.
-   - Under the table, one subsection per area in the same order. List the new
-     issues first, marked `**NEW**` and followed by a one-sentence rationale.
-     Older issues are a title and a link only.
-   - Leave out the `vs last week` column, and the "fewer/more than last week"
-     clause in the first line, when Step 6 says there is nothing to compare.
-     Never write "n/a" or "first week".
+   - Do not add a table. The counts are in the first line and the headings.
+   - Heading form: `### <area> (<N> open[, <N> new][, <+N|-N|0> vs last week])`.
+     Leave out `new` when it is zero. The area is the primary area from Step 6,
+     or `No area label`. Next week's run reads `<N> open` from these headings.
+   - Order the sections by open count, largest first, and leave out areas with no
+     open critical bugs unless the previous report had a heading for them.
+   - Within a section, list the new issues first, marked `**NEW**` and followed
+     by a one-sentence rationale. Older issues are a title, an age and a link
+     only.
+   - Leave out `vs last week` from every heading, and the "fewer/more than last
+     week" clause in the first line, when Step 6 says there is nothing to
+     compare. Never write "n/a" or "first week".
    - The first line says "more" or "fewer" and gives the number; if the total
      did not change, say "the same as last week".
+   - An area that dropped to zero keeps its heading, for example
+     `### area:writer (0 open, -2 vs last week)`, with no bullets.
 
 3. **Needs a decision** — omit any part that is empty; omit the heading if all
    are empty. Each is a bullet per issue in `<title> (27 days) ([#N](url))` form
@@ -356,4 +361,5 @@ summary issue.
 - Do not add or change labels while building the open critical bugs summary;
   it only reads the labels already on the issues
 - Do not show a comparison with last week unless the previous report has an
-  `## Open critical bugs` table and is at most 10 days old
+  `## Open critical bugs` section with per-area counts in its headings and is at
+  most 10 days old
