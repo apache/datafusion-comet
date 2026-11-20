@@ -27,7 +27,9 @@ mod arrow_python_udf;
 #[cfg(feature = "python-udf")]
 pub use arrow_python_udf::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 mod dynamic_filter;
-pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
+pub(crate) use dynamic_filter::{
+    DynamicFilterJoinExec, MinMaxReaderFilterExec, TopKReaderFilterExec,
+};
 pub(crate) mod iceberg_common;
 pub use iceberg_common::clear_file_io_cache;
 mod iceberg_dictionary;
