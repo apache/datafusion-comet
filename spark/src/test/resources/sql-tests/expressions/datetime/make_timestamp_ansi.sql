@@ -23,7 +23,7 @@
 -- class string `DATETIME_FIELD_OUT_OF_BOUNDS` is NOT preserved when the exception is
 -- thrown from a task on the executor side (only the wrapped `Job aborted ... Lost task
 -- ... SparkDateTimeException: <inner message>` form is preserved), so we match the JDK
--- field names which are stable from Spark 3.4 through 4.x.
+-- field names which are stable from Spark 3.5 through 4.x.
 -- Config: spark.sql.session.timeZone=UTC
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true

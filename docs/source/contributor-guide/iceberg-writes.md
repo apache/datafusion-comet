@@ -190,8 +190,8 @@ The gate has these properties, and a new rule has to keep them:
 Most rules are pinned by `CometIcebergWriteDetectionSuite`, and the row lineage rule by
 `CometIcebergWriteActionSuite`. Add a case to the detection suite for any new rule, for
 both the accepted and the declined side. Update the eligibility table in the user guide in the same
-change. Whether each existing restriction is permanent is tracked in
-[#5643](https://github.com/apache/datafusion-comet/issues/5643).
+change, and the user guide's "Plans for each fallback" lists, which record whether each rule is
+planned to be lifted, waiting on another project, or not planned.
 
 ## What Crosses the Boundary
 
@@ -294,7 +294,10 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   held rows then go through `RowPacer`, so the roll grid does not move.
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
-  mismatch fails the task instead of writing NULLs.
+  mismatch fails the task instead of writing NULLs. It first drops top-level `unknown` columns,
+  whose fields `parse_iceberg_schema` prunes. The gate declines a partition field sourced from an
+  `unknown` column: the partition calculator resolves sources by field id in the pruned schema and
+  would fail with `Field not found`.
 - **Deterministic output order.** `FanoutPartitions`, Comet's version of iceberg-rust's
   `FanoutWriter`, closes its files in an order that depends on how the rows arrived and on which
   partitions it closed early, so the fanout path sorts its `DataFile`s by path before returning them
@@ -362,9 +365,21 @@ file in one PUT, which a store without multipart uploads needs and the native wr
 suffix belongs on that list only if it cannot change the written object, where it is written or who
 writes it, and the native writer either does not need it or has its own setting for it, such as
 `spark.comet.iceberg.ioTimeout` for the timeouts. Settings that can change the object, such as
-encryption, ACLs, storage class, signing and the credentials provider, must keep falling back.
-`IgnoredS3FileIOProperties` does the same for `S3FileIO`'s multipart, staging-directory, retry,
-delete-batching and client-preload settings.
+ACLs, storage class and signing, must keep falling back. Encryption and the credential settings
+are admitted only where the write proto reproduces them. `hadoopS3EncryptionProperties`
+translates S3A's server-side encryption into
+`s3.sse.*` with S3A's precedence, where the first key that is set wins even when it is empty, and
+returns `None`, which keeps the encryption keys unsupported, for anything iceberg-rust cannot
+apply. `buildIcebergWriteProto` lets that translation replace the FileIO's own `s3.sse.*`
+properties, which `HadoopFileIO` ignores. `usesS3ACredentialAdapter` decides when the proto names
+`HadoopS3ACredentialProviderAdapter` as `s3.comet.credential.provider.class`: when the FileIO's
+Hadoop configuration sets `fs.s3a.aws.credentials.provider` explicitly and the FileIO properties
+name no provider class of their own. The adapter then runs that same S3A list on the executor, and
+`s3aCredentialAdapterProperties` forwards the explicit `fs.s3a.*` settings and the
+`hadoop.security.credential.*` and `hadoop.security.credstore.*` settings its providers read. The gate and
+`buildIcebergWriteProto` call the same functions on the same configuration, so they cannot
+disagree. On the FileIO side, `IgnoredS3FileIOProperties` ignores
+`S3FileIO`'s multipart, staging-directory, retry, delete-batching and client-preload settings.
 `s3.delete-enabled` is admitted only when it is `true`, because a failed native write task deletes
 its files, which `S3FileIO` keeps when deletes are disabled. Keep those
 allowlists aligned when adding storage support. Reaching

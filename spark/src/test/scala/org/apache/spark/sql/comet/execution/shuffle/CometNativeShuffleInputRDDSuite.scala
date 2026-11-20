@@ -23,7 +23,7 @@ import org.apache.spark.{HashPartitioner, Partition, TaskContext}
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext, PartitionPlanData}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -112,7 +112,8 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
       override def getPreferredLocations(split: Partition): Seq[String] =
         Seq(s"host-${split.index}")
     }
-    val planData = Map("scan-0" -> Array(Array[Byte](1), Array[Byte](2)))
+    val planData =
+      Map("scan-0" -> PartitionPlanData.wrap(Array(Array[Byte](1), Array[Byte](2))))
     val remote = new CometNativeShuffleInputRDD(
       spark.sparkContext,
       Seq(upstream),
@@ -128,7 +129,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
     local.partitions.foreach { part =>
       val input = part.asInstanceOf[CometNativeShuffleInputPartition]
       assert(input.inputPartitions.toSeq == Seq(upstream.partitions(part.index)))
-      assert(input.planDataByKey("scan-0").sameElements(planData("scan-0")(part.index)))
+      assert(input.planDataByKey("scan-0") eq planData("scan-0")(part.index))
       assert(local.preferredLocations(part) == Seq(s"host-${part.index}"))
 
       val context = TaskContext.empty()
@@ -136,7 +137,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         val iterator = local.iterator(part, context).asInstanceOf[CometNativeShuffleInputIterator]
         assert(iterator.partitionIndex == part.index)
         assert(iterator.inputObjects.toSeq == Seq(null))
-        assert(iterator.planDataByKey("scan-0").sameElements(planData("scan-0")(part.index)))
+        assert(iterator.planDataByKey("scan-0") eq planData("scan-0")(part.index))
       } finally {
         context.markTaskCompleted(None)
       }
@@ -207,7 +208,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         CometNativeShuffleInputRDD,
         CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch]) = {
       val perPartitionByKey =
-        Map("scan-0" -> Array.fill(numPartitions)(new Array[Byte](1024)))
+        Map("scan-0" -> Array.fill(numPartitions)(PartitionPlanData(new Array[Byte](1024))))
       val childMetricNode = CometMetricNode(Map.empty)
       val writerMetrics = Map(
         "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
@@ -261,6 +262,6 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
     // Each task's Partition object still carries its own slice so the writer can inject plan data.
     val part = largeRdd.partitions(7).asInstanceOf[CometNativeShuffleInputPartition]
     assert(part.planDataByKey.keySet == Set("scan-0"))
-    assert(part.planDataByKey("scan-0").length == 1024)
+    assert(part.planDataByKey("scan-0").bytes.length == 1024)
   }
 }
