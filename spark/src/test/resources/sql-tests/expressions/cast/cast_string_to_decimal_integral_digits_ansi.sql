@@ -23,7 +23,7 @@
 -- skips the limit, and the same strings fail the second way.
 -- https://github.com/apache/datafusion-comet/issues/7188
 
--- Config: spark.sql.ansi.enabled=true
+-- Config: spark.sql.ansi.enabled=false
 
 statement
 CREATE TABLE test_cast_str_dec_digits_ansi(id int, s string) USING parquet
@@ -32,6 +32,8 @@ CREATE TABLE test_cast_str_dec_digits_ansi(id int, s string) USING parquet
 -- i128 and 40 that do not, a fraction after 40 digits, and leading zeros that do not count.
 -- ids 8 and 9 have more than 38 fractional digits.
 -- ids 10 to 15 are within the limit.
+-- For ids 16 to 18 the exponent makes the 39th fractional digit the rounding digit at scale 2.
+-- The values are 0.999... (carry), -0.005 (tie) and 0.124555 (below the tie).
 statement
 INSERT INTO test_cast_str_dec_digits_ansi VALUES
   (1, '6E+38'),
@@ -49,8 +51,23 @@ INSERT INTO test_cast_str_dec_digits_ansi VALUES
   (13, '-12'),
   (14, '1e-50'),
   (15, NULL),
+  (16, concat('0.', repeat('0', 36), repeat('9', 40), 'e36')),
+  (17, concat('-0.', repeat('0', 36), '005e36')),
+  (18, concat('0.', repeat('0', 36), '124555e36')),
   (20, '0e38'),
   (21, '0E+73')
+
+-- More than 38 fractional digits can round to a value within the target precision in both modes.
+query expect_native(cast)
+SELECT id, cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
+WHERE id IN (8, 9, 16, 17, 18) ORDER BY id
+
+statement
+SET spark.sql.ansi.enabled=true
+
+query expect_native(cast)
+SELECT id, cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
+WHERE id IN (8, 9, 16, 17, 18) ORDER BY id
 
 query expect_error(NUMERIC_OUT_OF_SUPPORTED_RANGE)
 SELECT cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi WHERE id = 1
@@ -94,11 +111,6 @@ SELECT cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi WHERE id = 11
 query
 SELECT id, cast(s as decimal(38,0)) FROM test_cast_str_dec_digits_ansi
 WHERE id IN (11, 12, 13, 14, 15) ORDER BY id
-
--- More than 38 fractional digits can round to a value within the target precision.
-query
-SELECT id, cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
-WHERE id IN (8, 9) ORDER BY id
 
 -- try_cast suppresses both errors
 query

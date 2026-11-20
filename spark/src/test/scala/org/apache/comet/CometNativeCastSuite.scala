@@ -2554,9 +2554,11 @@ class CometNativeCastSuite
 
       withTempPath { dir =>
         val data = roundtripParquet(Seq("1." + "0" * 50).toDF("s"), dir)
-        checkSparkAnswerAndFallbackReason(
-          data.filter(col("s").cast(DecimalType(10, -256)).cast("boolean")),
-          "Decimal scale -256 does not fit in a signed byte")
+        Seq(col("s"), col("s").cast(DecimalType(10, 0))).foreach { input =>
+          checkSparkAnswerAndFallbackReason(
+            data.filter(input.cast(DecimalType(10, -256)).cast("boolean")),
+            "Decimal scale -256 does not fit in a signed byte")
+        }
       }
     }
   }
