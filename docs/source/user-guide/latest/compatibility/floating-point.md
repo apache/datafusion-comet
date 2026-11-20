@@ -188,5 +188,7 @@ With normalization enabled, `map_from_entries` stores `0.0` for a `-0.0` key and
 NaN for any NaN key. Like Spark, `map_from_arrays` preserves the original keys when they are
 distinct. When `LAST_WIN` removes a duplicate, it stores normalized keys throughout that map.
 
-For a struct or array key containing a `FLOAT` or `DOUBLE`, both expressions use
-[codegen dispatch](expressions/map.md).
+The Rust builders accept array columns, literals and simple array and struct constructors,
+including `arrays_zip`. For more complex input expressions or a struct or array key containing
+a `FLOAT` or `DOUBLE`, Comet uses [codegen dispatch](expressions/map.md) so Spark evaluates
+the complete expression.

@@ -88,9 +88,27 @@ FROM float_map_keys_last_win WHERE id = 1
 -- map_from_arrays normalizes -0.0 in that row alone. map_from_entries normalizes it in every row.
 query expect_native(map_from_arrays, map_from_entries)
 WITH t AS (
-  SELECT id, array(3.0D, double('-0.0'), double(id)) AS keys,
+  SELECT id, array(3.0D, -0.0D, double(id)) AS keys,
     array(k, k, CAST(NULL AS ARRAY<STRING>)) AS vals
   FROM float_map_keys_last_win
 )
 SELECT id, map_entries(map_from_arrays(keys, vals)), map_entries(map_from_entries(arrays_zip(keys, vals)))
 FROM t
+
+-- The row counter advances once per row, including when the values array is NULL.
+query expect_dispatch(map_from_entries)
+SELECT id, map_from_entries(arrays_zip(array(d), IF(monotonically_increasing_id() % 2 = 0, array(7), NULL)))
+FROM float_map_keys_last_win
+
+-- The string map keeps the second value for 'a' before the double map consumes its values.
+query expect_dispatch(map_from_arrays)
+SELECT id, map_from_arrays(array(d), map_values(str_to_map(concat('a:0,a:', CAST(id AS STRING)))))
+FROM float_map_keys_last_win
+
+statement
+SET spark.sql.ansi.enabled=true
+
+-- Spark evaluates the shared id + 1 on every row and skips the division when the keys are NULL.
+query expect_dispatch(map_from_arrays)
+SELECT id + 1, map_from_arrays(IF(id = 1, NULL, array(d)), array((id + 1) / (id - 1)))
+FROM float_map_keys_last_win

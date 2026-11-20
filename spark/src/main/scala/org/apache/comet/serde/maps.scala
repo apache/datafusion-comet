@@ -133,7 +133,15 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 }
 
 private object MapBuilderKeySupport {
-  val floatMap: CometScalarFunction[Expression] = CometScalarFunction("spark_float_map")
+  private val floatMap = CometScalarFunction[Expression]("spark_float_map")
+
+  def convertFloatMap(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    withNullShortCircuit(expr, floatMap.convert(expr, inputs, binding)).orElse {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
 
   val nestedFloatingPointReason: String =
     "Spark compares a `FLOAT` or `DOUBLE` inside a struct or array key using SQL ordering, " +
@@ -143,9 +151,29 @@ private object MapBuilderKeySupport {
   def isFloatingPoint(keyType: DataType): Boolean =
     keyType == FloatType || keyType == DoubleType
 
-  def keySupport(keyType: DataType): SupportLevel = {
+  // The dispatcher evaluates the whole builder, including its children, in Spark. Only split
+  // it into native arguments by default when eager or repeated evaluation is safe.
+  private def safeInputNode(expr: Expression): Boolean = expr match {
+    case _: AttributeReference | _: BoundReference | _: Literal | _: GetStructField |
+        _: CreateArray | _: CreateNamedStruct | _: ArraysZip =>
+      true
+    case _: UnaryMinus | _: Add | _: Subtract | _: Multiply => isFloatingPoint(expr.dataType)
+    case c: Cast =>
+      c.child.dataType == NullType ||
+      (isFloatingPoint(c.dataType) && c.child.dataType.isInstanceOf[NumericType])
+    case _ => false
+  }
+
+  val computedInputReason: String =
+    "Floating-point map builders use Spark to preserve evaluation of computed inputs."
+
+  def keySupport(keyType: DataType, children: Seq[Expression]): SupportLevel = {
     if (isFloatingPoint(keyType)) {
-      Compatible()
+      if (children.exists(_.exists(node => !safeInputNode(node)))) {
+        Incompatible(Some(computedInputReason))
+      } else {
+        Compatible()
+      }
     } else if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
       Incompatible(Some(nestedFloatingPointReason))
     } else if (MapKeyDedupPolicySupport.isLastWin) {
@@ -179,6 +207,7 @@ object CometMapFromArrays
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
+      MapBuilderKeySupport.computedInputReason,
       MapBuilderKeySupport.nestedFloatingPointReason,
       MapKeyDedupPolicySupport.incompatibleReason)
 
@@ -186,7 +215,7 @@ object CometMapFromArrays
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel =
-    MapBuilderKeySupport.keySupport(expr.dataType.keyType)
+    MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr.children)
 
   override def convert(
       expr: MapFromArrays,
@@ -194,8 +223,7 @@ object CometMapFromArrays
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     if (MapBuilderKeySupport.isFloatingPoint(keyType)) {
-      val map = MapBuilderKeySupport.floatMap.convert(expr, inputs, binding)
-      return withNullShortCircuit(expr, map)
+      return MapBuilderKeySupport.convertFloatMap(expr, inputs, binding)
     }
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
@@ -242,6 +270,7 @@ object CometMapFromEntries
     Seq(
       keyUnsupportedReason,
       valueUnsupportedReason,
+      MapBuilderKeySupport.computedInputReason,
       MapBuilderKeySupport.nestedFloatingPointReason,
       MapKeyDedupPolicySupport.incompatibleReason)
 
@@ -254,7 +283,7 @@ object CometMapFromEntries
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
     } else {
-      MapBuilderKeySupport.keySupport(expr.dataType.keyType)
+      MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr.children)
     }
   }
 
@@ -263,7 +292,7 @@ object CometMapFromEntries
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (MapBuilderKeySupport.isFloatingPoint(expr.dataType.keyType)) {
-      MapBuilderKeySupport.floatMap.convert(expr, inputs, binding)
+      MapBuilderKeySupport.convertFloatMap(expr, inputs, binding)
     } else {
       super.convert(expr, inputs, binding)
     }

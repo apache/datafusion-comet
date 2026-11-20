@@ -27,6 +27,7 @@ use arrow::datatypes::{ArrowPrimitiveType, DataType, Field, FieldRef, Float32Typ
 use datafusion::common::cast::{as_list_array, as_struct_array};
 use datafusion::common::config::MapKeyDedupPolicy;
 use datafusion::common::{exec_err, internal_err, HashMap, Result};
+use datafusion::logical_expr::function::Hint;
 use datafusion::logical_expr::{
     ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature,
     Volatility,
@@ -110,23 +111,29 @@ impl SparkFloatMap {
         let first_key = key_offsets[0] as usize;
         let first_value = value_offsets[0];
         let raw_keys = &keys.values()[first_key..];
+        let num_rows = match input.key_rows.len() {
+            1 => input.value_rows.len(),
+            n => n,
+        };
 
         // Both outputs start as slices of the input. Materialize each independently once
         // a changed key or a non-contiguous value breaks that invariant.
         let mut output_keys = None;
         let mut value_indices = None;
         let mut len = 0;
-        let mut offsets = Vec::with_capacity(key_offsets.len());
-        let mut nulls = NullBufferBuilder::new(input.key_rows.len());
+        let mut offsets = Vec::with_capacity(num_rows + 1);
+        let mut nulls = NullBufferBuilder::new(num_rows);
         let mut positions = HashMap::new();
-        for row in 0..input.key_rows.len() {
+        for row in 0..num_rows {
+            let key_row = if input.key_rows.len() == 1 { 0 } else { row };
+            let value_row = if input.value_rows.len() == 1 { 0 } else { row };
             let start = len;
             offsets.push(start as i32);
-            let key_range = key_offsets[row] as usize..key_offsets[row + 1] as usize;
-            let value_range = value_offsets[row]..value_offsets[row + 1];
+            let key_range = key_offsets[key_row] as usize..key_offsets[key_row + 1] as usize;
+            let value_range = value_offsets[value_row]..value_offsets[value_row + 1];
             let count = key_range.len();
-            if input.key_rows.is_null(row)
-                || input.value_rows.is_null(row)
+            if input.key_rows.is_null(key_row)
+                || input.value_rows.is_null(value_row)
                 || input
                     .entry_nulls
                     .is_some_and(|nulls| nulls.slice(key_range.start, count).null_count() != 0)
@@ -151,6 +158,7 @@ impl SparkFloatMap {
                     canonicalize_nan(key)
                 };
                 let slot = *positions.entry(bits(compared)).or_insert(len);
+                let prefix_len = len;
                 if slot == len {
                     let stored = if self.normalize && !input.from_arrays {
                         compared
@@ -167,13 +175,14 @@ impl SparkFloatMap {
                 } else if !self.last_win {
                     return Err(SparkError::DuplicatedMapKey {
                         key: java_float_string(key),
+                        key_type: T::DATA_TYPE.to_string(),
                     }
                     .into());
                 }
 
-                if value_index != first_value + slot as i32 {
+                if value_indices.is_some() || (value_index - first_value) as usize != slot {
                     let indices = value_indices.get_or_insert_with(|| {
-                        (first_value..first_value + len as i32).collect::<Vec<_>>()
+                        (first_value..first_value + prefix_len as i32).collect::<Vec<_>>()
                     });
                     indices.resize(len, value_index);
                     indices[slot] = value_index;
@@ -258,7 +267,8 @@ impl ScalarUDFImpl for SparkFloatMap {
         ) {
             return exec_err!("{}: expected length {}", self.name(), args.number_rows);
         }
-        make_scalar_function(|args| self.build(args), vec![])(&args.args)
+        // Reuse the scalar list across rows so LAST_WIN only copies surviving values.
+        make_scalar_function(|args| self.build(args), vec![Hint::AcceptsSingular; 2])(&args.args)
     }
 }
 
@@ -266,6 +276,8 @@ impl ScalarUDFImpl for SparkFloatMap {
 mod tests {
     use super::*;
     use arrow::array::{Float32Array, Float64Array, StringArray};
+    use datafusion::common::utils::SingleRowListArrayBuilder;
+
     fn sliced_rows(values: ArrayRef, lengths: [usize; 4]) -> ArrayRef {
         let rows = ListArray::new(
             Arc::new(Field::new("item", values.data_type().clone(), true)),
@@ -274,6 +286,44 @@ mod tests {
             None,
         );
         Arc::new(rows.slice(1, 3))
+    }
+
+    #[test]
+    fn scalar_values_are_shared_until_gathering_surviving_entries() {
+        let strings = StringArray::from(vec!["first", "last"]);
+        let values = SingleRowListArrayBuilder::new(Arc::new(strings.clone())).build_list_scalar();
+        let keys = ListArray::from_iter_primitive::<Float32Type, _, _>([
+            Some([Some(1.0), Some(2.0)]),
+            None,
+            Some([Some(3.0), Some(3.0)]),
+            Some([Some(4.0), Some(4.0)]),
+        ]);
+        let invoke = |start| {
+            SparkFloatMap::new(true, MapKeyDedupPolicy::LastWin)
+                .invoke_with_args(ScalarFunctionArgs {
+                    args: vec![
+                        ColumnarValue::Array(Arc::new(keys.slice(start, 2))),
+                        ColumnarValue::Scalar(values.clone()),
+                    ],
+                    arg_fields: vec![],
+                    number_rows: 2,
+                    return_field: Arc::new(Field::new("result", DataType::Null, true)),
+                    config_options: Default::default(),
+                })
+                .unwrap()
+                .into_array_of_size(2)
+                .unwrap()
+        };
+        let result = invoke(0);
+        let retained = result.as_map().values().as_string::<i32>();
+        assert!(retained.values().ptr_eq(strings.values()));
+        assert!(result.as_map().is_null(1));
+
+        let result = invoke(2);
+        assert_eq!(
+            result.as_map().values().as_string::<i32>(),
+            &StringArray::from(vec!["last", "last"])
+        );
     }
 
     #[test]

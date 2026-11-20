@@ -126,6 +126,21 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("map_from_arrays reports duplicate floating-point keys using the JVM's formatting") {
+    val f = java.lang.Float.intBitsToFloat(2)
+    val d = java.lang.Double.longBitsToDouble(2L)
+    withParquetTable(Seq((f, d)), "float_keys") {
+      for ((column, key) <- Seq("_1" -> f.toString, "_2" -> d.toString)) {
+        val df =
+          sql(s"SELECT map_from_arrays(array($column, $column), array(1, 2)) FROM float_keys")
+        val plan = df.queryExecution.executedPlan
+        assert(new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+        val error = checkSparkError(df, "DUPLICATED_MAP_KEY")
+        assert(error.getMessageParameters.get("key") == key)
+      }
+    }
+  }
+
   for (codegenEnabled <- Seq("false", "true")) {
     test(s"map_from_arrays short-circuits null keys (codegen=$codegenEnabled)") {
       withSQLConf(

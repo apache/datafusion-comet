@@ -408,7 +408,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Hybrid | Supports `FLOAT` and `DOUBLE` keys in Rust under both deduplication policies. Uses codegen dispatch for keys containing nested floats and for other key types under `LAST_WIN` ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Hybrid | Supports [floating-point keys](compatibility/floating-point.md#map-construction) under both deduplication policies. Uses codegen dispatch for other key types under `LAST_WIN` ([details](compatibility/expressions/map.md)) |
 | `map_from_entries` | ✅ | Hybrid | Same key handling as `map_from_arrays`. Also uses codegen dispatch when the key or value type contains `BINARY` ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |

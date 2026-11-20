@@ -95,6 +95,13 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
         && rawParams.get("filePath").forall(p => p == null || p.toString.isEmpty)
         && taskFilePaths.nonEmpty) {
         rawParams + ("filePath" -> taskFilePaths.mkString(","))
+      } else if (errorJson.errorType == "DuplicatedMapKey") {
+        // Spark renders the key with the running JDK's Float.toString or Double.toString.
+        rawParams.get("keyType") match {
+          case Some("Float32") => rawParams + ("key" -> rawParams("key").toString.toFloat)
+          case Some("Float64") => rawParams + ("key" -> rawParams("key").toString.toDouble)
+          case _ => rawParams
+        }
       } else {
         rawParams
       }
