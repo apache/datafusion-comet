@@ -42,7 +42,7 @@ use datafusion_datasource::{
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use std::{fmt, sync::Arc};
-use url::{Position, Url};
+use url::Url;
 
 /// The URL-encoded Spark path for diagnostics, with the original scheme and without credentials.
 #[derive(Debug, Clone)]
@@ -51,39 +51,60 @@ pub(crate) struct SparkFilePath(Arc<str>);
 impl SparkFilePath {
     pub(crate) fn new(original: &str, url: &Url) -> Self {
         let path = original.split(['?', '#']).next().unwrap_or_default();
-        if url.cannot_be_a_base() && path.contains('@') {
+        if !path.contains('@') {
+            return Self(path.into());
+        }
+        if url.cannot_be_a_base() || path.contains(['\t', '\r', '\n']) {
             return Self("<redacted>".into());
+        }
+        let (_, rest) = path.split_once(':').unwrap_or_default();
+        let body = rest.trim_start_matches('/');
+        let prefix = &path[..path.len() - body.len()];
+        if url.scheme() == "s3"
+            && url.has_host()
+            && rest.starts_with('/')
+            && !prefix.ends_with("://")
+        {
+            return Self::hostless_alias(prefix, body);
         }
         let keep_container = matches!(url.scheme(), "abfs" | "abfss" | "az");
         if url.password().is_none() && (url.username().is_empty() || keep_container) {
             return Self(path.into());
         }
-        let (_, rest) = path.split_once(':').unwrap_or_default();
-        let mut body = rest.trim_start_matches('/');
-        let prefix = &path[..path.len() - body.len()];
-        // Dot segments in a hostless alias can move the promoted bucket. Find the segment
-        // that resolves to the URL we open before taking the suffix in Spark's spelling.
-        let host_and_path = loop {
-            let (segment, tail) = body.split_once('/').unwrap_or((body, ""));
-            if let Some(at) = segment.rfind('@') {
-                if prefix.ends_with("://")
-                    || Url::parse(&format!("{}://{body}", url.scheme())).is_ok_and(|candidate| {
-                        candidate[..Position::AfterPath] == url[..Position::AfterPath]
-                    })
-                {
-                    break &body[at + 1..];
-                }
-            }
-            if prefix.ends_with("://") || tail.is_empty() {
-                break &url[Position::BeforeHost..Position::AfterPath];
-            }
-            body = tail;
+        let authority = body.split('/').next().unwrap_or_default();
+        let Some(at) = authority.rfind('@') else {
+            return Self("<redacted>".into());
         };
+        let host_and_path = &body[at + 1..];
         if keep_container && !url.username().is_empty() {
             Self(format!("{prefix}{}@{host_and_path}", url.username()).into())
         } else {
             Self(format!("{prefix}{host_and_path}").into())
         }
+    }
+
+    // Each segment at depth zero can become the bucket of a hostless S3 alias.
+    // Strip its userinfo even when a later ".." discards it. Keep '@' in object keys.
+    fn hostless_alias(prefix: &str, body: &str) -> Self {
+        let mut shown = String::with_capacity(prefix.len() + body.len());
+        shown.push_str(prefix);
+        let mut depth = 0usize;
+        for part in body.split_inclusive('/') {
+            let segment = part.trim_end_matches('/');
+            if depth == 0 {
+                shown.push_str(part.rsplit_once('@').map_or(part, |(_, host)| host));
+            } else {
+                shown.push_str(part);
+            }
+            match segment {
+                "" if depth == 0 => {}
+                "." | "%2e" | "%2E" => {}
+                ".." | ".%2e" | ".%2E" | "%2e." | "%2E." | "%2e%2e" | "%2e%2E" | "%2E%2e"
+                | "%2E%2E" => depth = depth.saturating_sub(1),
+                _ => depth += 1,
+            }
+        }
+        Self(shown.into())
     }
 }
 
@@ -316,7 +337,14 @@ mod tests {
                 "s3a:///reader:password@bucket/%2e/café@1.parquet",
                 "s3a:///bucket/%2e/café@1.parquet",
             ),
-            ("s3a:///dir/../reader@bucket/café", "s3a:///bucket/café"),
+            (
+                "s3a:///dir/../reader@bucket/café",
+                "s3a:///dir/../bucket/café",
+            ),
+            (
+                "s3a:///reader:password@old/%2e%2E/bucket/café@1",
+                "s3a:///old/%2e%2E/bucket/café@1",
+            ),
             ("s3a:bucket/part@1", "s3a:bucket/part@1"),
             (
                 "HDFS://user@host:8020/%2E/café.parquet",
