@@ -27,7 +27,7 @@ use arrow::{
 };
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
-use num::{BigInt, Signed, ToPrimitive, Zero};
+use num::{BigInt, Integer, Signed, ToPrimitive, Zero};
 use std::sync::Arc;
 
 pub fn spark_decimal_div(
@@ -49,8 +49,8 @@ pub fn spark_decimal_integral_div(
 
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
 // Conversely, Decimal(p1, s1) = Decimal(p2, s2) * Decimal(p3, s3). This means that, in order to
-// get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
-// both s2 and s3 are 38 at max., s1 is 77 at max. DataFusion division cannot handle such scale >
+// get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3. Since
+// both s2 and s3 are 38 at max., s1 is 76 at max. DataFusion division cannot handle such scale >
 // Decimal256Type::MAX_SCALE. Therefore, we need to implement this decimal division using BigInt.
 /// Convert a computed quotient to the `i128` stored in the result array, throwing
 /// ARITHMETIC_OVERFLOW when the integral divide overflow check applies and the quotient
@@ -110,15 +110,15 @@ fn spark_decimal_div_internal(
         )));
     }
 
-    let l_exp = ((s2 + s3 + 1) as u32).saturating_sub(s1 as u32);
-    let r_exp = (s1 as u32).saturating_sub((s2 + s3 + 1) as u32);
+    // Both branches divide once at scale s3. `/` rounds from the remainder.
+    let l_exp = ((s2 + s3) as u32).saturating_sub(s1 as u32);
+    let r_exp = (s1 as u32).saturating_sub((s2 + s3) as u32);
     let result = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
         || p2 as u32 + r_exp > DECIMAL128_MAX_PRECISION as u32
     {
         let ten = BigInt::from(10);
         let l_mul = ten.pow(l_exp);
         let r_mul = ten.pow(r_exp);
-        let five = BigInt::from(5);
         let zero = BigInt::from(0);
         arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
             let l = BigInt::from(l) * &l_mul;
@@ -134,14 +134,20 @@ fn spark_decimal_div_internal(
             // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
             // `try_binary` will never invoke this closure for a zero `r` in legacy/try mode.
             // The fallback `zero.clone()` is therefore unreachable in practice.
-            let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
-            let res = if is_integral_div {
-                div
-            } else if div.is_negative() {
-                div - &five
+            if r.eq(&zero) {
+                return quotient_to_i128(&zero, check_divide_overflow);
+            }
+            let (q, rem) = l.div_rem(&r);
+            // Round half away from zero.
+            let res = if !is_integral_div && rem.abs() * 2 >= r.abs() {
+                if l.is_negative() == r.is_negative() {
+                    q + 1
+                } else {
+                    q - 1
+                }
             } else {
-                div + &five
-            } / &ten;
+                q
+            };
             quotient_to_i128(&res, check_divide_overflow)
         })
     } else {
@@ -161,14 +167,22 @@ fn spark_decimal_div_internal(
             // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
             // `try_binary` will never invoke this closure for a zero `r` in legacy/try mode.
             // The fallback `0` is therefore unreachable in practice.
-            let div = if r == 0 { 0 } else { l / r };
-            let res = if is_integral_div {
-                div
-            } else if div.is_negative() {
-                div - 5
+            if r == 0 {
+                return quotient_to_i128(&0, check_divide_overflow);
+            }
+            let q = l / r;
+            // Round half away from zero. `|q * r| <= |l|`, so the product can't overflow, and
+            // `rem < |r| <= 2^127`, so `2 * rem` fits in `u128`.
+            let rem = (l - q * r).unsigned_abs();
+            let res = if !is_integral_div && 2 * rem >= r.unsigned_abs() {
+                if (l < 0) == (r < 0) {
+                    q + 1
+                } else {
+                    q - 1
+                }
             } else {
-                div + 5
-            } / 10;
+                q
+            };
             quotient_to_i128(&res, check_divide_overflow)
         })
     };
@@ -181,6 +195,9 @@ fn spark_decimal_div_internal(
 mod tests {
     use super::*;
     use crate::SparkError;
+    use num::Integer;
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
 
     fn decimal(value: i128, precision: u8, scale: i8) -> ColumnarValue {
         ColumnarValue::Array(Arc::new(
@@ -253,6 +270,171 @@ mod tests {
                 err.to_string().contains("negative decimal scale"),
                 "unexpected error: {err}"
             );
+        }
+    }
+
+    /// The exact quotient `(l / 10^s1) / (r / 10^s2)` at scale `s3`, truncated for `div` and
+    /// rounded half away from zero for `/`, saturated the way the kernel saturates. Also returns
+    /// whether the exact quotient was halfway between two values at scale `s3`.
+    fn reference_div(
+        l: i128,
+        r: i128,
+        (s1, s2, s3): (i8, i8, i8),
+        is_integral_div: bool,
+    ) -> (i128, bool) {
+        if r == 0 {
+            return (0, false);
+        }
+        let ten = BigInt::from(10);
+        let num = BigInt::from(l) * ten.pow((s2 + s3) as u32);
+        let den = BigInt::from(r) * ten.pow(s1 as u32);
+        let (mut q, rem) = num.div_rem(&den);
+        let twice_rem = rem.abs() * 2;
+        let half = twice_rem == den.abs();
+        if !is_integral_div && twice_rem >= den.abs() {
+            q += num.signum() * den.signum();
+        }
+        (q.to_i128().unwrap_or(i128::MAX), half)
+    }
+
+    /// Values at and around the bounds of precision `p`, values that make exact halves likely,
+    /// and random values, each with both signs.
+    fn test_values(p: u8, rng: &mut StdRng) -> Vec<i128> {
+        let max = 10_i128.pow(p as u32) - 1;
+        let mut v = vec![1, 2, 3, 5, 7, max, max - 1, max / 2, max / 3];
+        v.push(10_i128.pow(p as u32 - 1));
+        for j in [1, 5, 18, 37] {
+            if j < p as u32 {
+                v.push(2 * 10_i128.pow(j));
+                v.push(3 * 10_i128.pow(j));
+            }
+        }
+        v.extend((0..3).map(|_| rng.random_range(1..=max)));
+        v.extend(v.clone().into_iter().map(|x| -x));
+        v.push(0);
+        v
+    }
+
+    #[test]
+    fn test_decimal_div_matches_exact_quotient() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let (mut halves, mut i128_branch, mut bigint_branch) = (0, 0, 0);
+        // Scale combinations that moved to the i128 branch, and to the BigInt branch, when the
+        // kernel removed its extra digit.
+        let (mut to_i128, mut to_bigint) = (0, 0);
+        let precisions: Vec<(u8, Vec<i128>)> = [1u8, 10, 19, 38]
+            .into_iter()
+            .map(|p| (p, test_values(p, &mut rng)))
+            .collect();
+        for (p1, ls) in &precisions {
+            for (p2, rs) in &precisions {
+                let (p1, p2) = (*p1, *p2);
+                // Every pair, plus a null on each side.
+                let (mut lv, mut rv): (Vec<_>, Vec<_>) = ls
+                    .iter()
+                    .flat_map(|&l| rs.iter().map(move |&r| (Some(l), Some(r))))
+                    .unzip();
+                lv.extend([None, Some(1)]);
+                rv.extend([Some(1), None]);
+                let (left, right) = (
+                    Decimal128Array::from(lv.clone()),
+                    Decimal128Array::from(rv.clone()),
+                );
+                for s1 in [0, 1, p1 / 2, p1 - 1, p1] {
+                    for s2 in [0, 1, p2 / 2, p2 - 1, p2] {
+                        for s3 in [0u8, 1, 6, 18, 38] {
+                            let scales = (s1 as i8, s2 as i8, s3 as i8);
+                            let uses_bigint = |extra: u8| {
+                                let l_exp = (s2 + s3 + extra).saturating_sub(s1);
+                                let r_exp = s1.saturating_sub(s2 + s3 + extra);
+                                p1 + l_exp > 38 || p2 + r_exp > 38
+                            };
+                            match (uses_bigint(1), uses_bigint(0)) {
+                                (true, false) => to_i128 += 1,
+                                (false, true) => to_bigint += 1,
+                                _ => {}
+                            }
+                            if uses_bigint(0) {
+                                bigint_branch += 1;
+                            } else {
+                                i128_branch += 1;
+                            }
+                            let left = left
+                                .clone()
+                                .with_data_type(DataType::Decimal128(p1, s1 as i8));
+                            let right = right
+                                .clone()
+                                .with_data_type(DataType::Decimal128(p2, s2 as i8));
+                            let args = [
+                                ColumnarValue::Array(Arc::new(left)),
+                                ColumnarValue::Array(Arc::new(right)),
+                            ];
+                            let ret = DataType::Decimal128(38, s3 as i8);
+                            for is_integral_div in [false, true] {
+                                let result = if is_integral_div {
+                                    spark_decimal_integral_div(&args, &ret, EvalMode::Legacy, true)
+                                } else {
+                                    spark_decimal_div(&args, &ret, EvalMode::Legacy)
+                                };
+                                let ColumnarValue::Array(result) = result.unwrap() else {
+                                    unreachable!()
+                                };
+                                let result = result.as_primitive::<Decimal128Type>();
+                                assert_eq!(result.data_type(), &ret);
+                                for (i, (l, r)) in lv.iter().zip(&rv).enumerate() {
+                                    let (Some(l), Some(r)) = (l, r) else {
+                                        assert!(result.is_null(i));
+                                        continue;
+                                    };
+                                    let (expected, half) =
+                                        reference_div(*l, *r, scales, is_integral_div);
+                                    halves += half as usize;
+                                    assert_eq!(
+                                        result.value(i),
+                                        expected,
+                                        "{l} / {r}, scales {scales:?}, div {is_integral_div}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(halves > 1000, "only {halves} exact halves");
+        assert!(i128_branch > 100 && bigint_branch > 100);
+        assert!(to_i128 > 0 && to_bigint > 0, "{to_i128} {to_bigint}");
+    }
+
+    #[test]
+    fn test_integral_divide_overflow_through_kernel() {
+        // (38, 0) div (38, 0) runs the i128 branch. (38, 0) div (38, 1) runs the BigInt branch.
+        for s2 in [0, 1] {
+            let divisor = 10_i128.pow(s2 as u32);
+            for (dividend, overflows) in [
+                (i64::MAX as i128, false),
+                (i64::MIN as i128, false),
+                (i64::MAX as i128 + 1, true),
+                (i64::MIN as i128 - 1, true),
+            ] {
+                let result = spark_decimal_integral_div(
+                    &[decimal(dividend, 38, 0), decimal(divisor, 38, s2)],
+                    &DataType::Decimal128(38, 0),
+                    EvalMode::Ansi,
+                    true,
+                );
+                if overflows {
+                    assert!(matches!(
+                        spark_error(result),
+                        SparkError::IntegralDivideOverflow
+                    ));
+                } else {
+                    let ColumnarValue::Array(result) = result.unwrap() else {
+                        unreachable!()
+                    };
+                    assert_eq!(result.as_primitive::<Decimal128Type>().value(0), dividend);
+                }
+            }
         }
     }
 
