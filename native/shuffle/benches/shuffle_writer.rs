@@ -25,7 +25,8 @@ use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::physical_expr::expressions::{col, Column};
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{binary, col, lit, Column};
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -467,6 +468,56 @@ fn partitioning_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+/// Hash placement when every row of a task goes to one output partition, as when a V2 write
+/// rebalances on a partition column holding one value per run, such as an hourly or daily `ds`.
+/// The literal key places rows as such a column would, so each partition's rows are contiguous
+/// in the buffered batches. The clustered keys repeat over runs of 48 and 96 rows, just under and
+/// over the shortest average run that is sliced, and a per-row key over the same rows is the
+/// scattered control. `rows_per_batch=8192` makes every output chunk one whole buffered batch,
+/// `rows_per_batch=1000` makes a chunk span several. The writer discards its batches, as in
+/// `partitioning_benchmark`.
+fn contiguous_hash_benchmark(c: &mut Criterion) {
+    const BATCH_SIZE: usize = 8192;
+    const NUM_PARTITIONS: usize = 200;
+
+    let mut group = c.benchmark_group("shuffle_hash_contiguous");
+    for (rows_per_batch, num_batches) in [(BATCH_SIZE, 8), (1000, 66)] {
+        let batches: Vec<_> = (0..num_batches)
+            .map(|b| create_batch_from(b * rows_per_batch, rows_per_batch, true))
+            .collect();
+        let schema = batches[0].schema();
+        let row = col("c0", &schema).unwrap();
+        let mut keys = vec![
+            ("constant".to_string(), lit(20261103i32)),
+            ("per_row".to_string(), Arc::clone(&row)),
+        ];
+        if rows_per_batch == BATCH_SIZE {
+            for run in [48, 96] {
+                let key = binary(Arc::clone(&row), Operator::Divide, lit(run), &schema).unwrap();
+                keys.push((format!("clustered_{run}"), key));
+            }
+        }
+        for (key, expr) in keys {
+            let partitioning = CometPartitioning::Hash(vec![expr], NUM_PARTITIONS);
+            group.bench_function(
+                format!("place+gather (key={key}, rows_per_batch={rows_per_batch})"),
+                |b| {
+                    b.iter_batched(
+                        || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                        |mut repartitioner| {
+                            repartitioner.place(&batches).unwrap();
+                            repartitioner.gather().unwrap();
+                            repartitioner
+                        },
+                        BatchSize::LargeInput,
+                    );
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 /// Benchmarks the per-block IPC encoding cost (schema + record batch) in isolation, using the
 /// `None` codec so that compression does not obscure the schema-encoding cost. Covers a wide flat
 /// schema and a deeply nested schema, where the schema flatbuffer is largest.
@@ -684,6 +735,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark, boolean_state_benchmark, partitioning_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
+    targets = criterion_benchmark, boolean_state_benchmark, partitioning_benchmark, contiguous_hash_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
 }
 criterion_main!(benches);

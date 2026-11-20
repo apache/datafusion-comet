@@ -918,12 +918,14 @@ mod tests {
     /// Every mapped type round-trips under every codec: without lengths, with lengths as the
     /// public constructor allows them (zstd only), and with lengths forced on. The forced case
     /// shows the reader rebuilds offsets whatever the codec, so allowing another codec later is a
-    /// writer-only change.
+    /// writer-only change. Each also round-trips as a slice that starts past row 0, the shape
+    /// positional placement and the row gather's contiguous runs hand the writer.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn offsets_as_lengths_round_trip_every_mapped_type() {
         let batch = offsets_batch();
         let schema = batch.schema();
+        let inputs = [batch.slice(5, 40), batch];
         for codec in CODECS {
             let zstd = matches!(codec, CompressionCodec::Zstd(_));
             for (writer, flagged) in [
@@ -941,18 +943,21 @@ mod tests {
                     true,
                 ),
             ] {
-                let block = write_block(&writer.unwrap(), &batch);
-                assert_eq!(lengths_flagged(&block), flagged, "{codec:?}");
-                assert_eq!(
-                    read_ipc_compressed(&block[16..]).unwrap(),
-                    batch,
-                    "{codec:?}"
-                );
-                assert_eq!(
-                    read_ipc_compressed_validated(&block[16..]).unwrap(),
-                    batch,
-                    "{codec:?} validated"
-                );
+                let writer = writer.unwrap();
+                for input in &inputs {
+                    let block = write_block(&writer, input);
+                    assert_eq!(lengths_flagged(&block), flagged, "{codec:?}");
+                    assert_eq!(
+                        read_ipc_compressed(&block[16..]).unwrap(),
+                        *input,
+                        "{codec:?}"
+                    );
+                    assert_eq!(
+                        read_ipc_compressed_validated(&block[16..]).unwrap(),
+                        *input,
+                        "{codec:?} validated"
+                    );
+                }
             }
         }
     }
