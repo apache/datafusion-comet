@@ -402,10 +402,8 @@ abstract class ParquetReadSuite extends CometTestBase {
           CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
           val df = spark.read.schema(readSchema).parquet(path.toString)
           checkSparkAnswerAndOperator(df.where("id = 1000").select("stored"))
-          if (!pushdown) {
-            // Even Spark 3.5 skips the updater when statistics exclude every row group.
-            checkSparkAnswerAndOperator(df.where("id = 1 AND probe IS NULL").select("id"))
-          }
+          // Even Spark 3.5 skips the updater when statistics exclude every row group.
+          checkSparkAnswerAndOperator(df.where("id = 1 AND probe IS NULL").select("id"))
           if (isSpark40Plus) {
             checkSparkAnswerAndOperator(df.where("id = 1"))
             if (!pushdown) {

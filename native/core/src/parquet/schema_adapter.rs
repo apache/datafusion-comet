@@ -1419,7 +1419,7 @@ impl SparkPhysicalExprAdapter {
         &self,
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
-        if self.parquet_options.pruning_only_filters
+        if self.parquet_options.prune_date_nulls
             && (expr.is::<IsNullExpr>() || expr.is::<IsNotNullExpr>())
         {
             let cast = expr.children()[0];

@@ -135,7 +135,7 @@ use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
 use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type as ParquetType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -233,7 +233,7 @@ pub struct EagerPageIndexReaderFactory {
     // does when the requested schema carries one and `ignoreMissing` is not set.
     require_field_ids: bool,
     stamp_int96_leaves: bool,
-    conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
+    conversion_check: Option<Arc<FileConversionCheck>>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
     next_file_prefetch: Option<Arc<NextFileMetadataPrefetch>>,
 }
@@ -272,16 +272,28 @@ impl EagerPageIndexReaderFactory {
         }
     }
 
-    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation. When row
-    /// filters are enabled, or the file has a `TIMESTAMP(NANOS)` leaf, enforce deferred failures
-    /// at the first data-page read, after format pruning.
+    /// Check physical encodings that Arrow normalizes. Enforce deferred schema errors on
+    /// the first data-page read, after pruning and before row filtering.
     pub(crate) fn with_conversion_check(
         mut self,
         required: SchemaRef,
         options: SparkParquetOptions,
         row_filters: bool,
     ) -> Self {
-        self.conversion_check = Some((required, options, row_filters));
+        let ntz_roots = required
+            .fields()
+            .iter()
+            .filter(|f| contains_ntz(f.data_type()))
+            .map(|f| f.name().to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let match_any_root = options.use_field_id || ntz_roots.iter().any(|name| !name.is_ascii());
+        self.conversion_check = Some(Arc::new(FileConversionCheck {
+            required,
+            options,
+            row_filters,
+            ntz_roots,
+            match_any_root,
+        }));
         self
     }
 
@@ -393,7 +405,7 @@ struct EagerPageIndexReader {
     spark_variant_schema: bool,
     require_field_ids: bool,
     stamp_int96_leaves: bool,
-    conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
+    conversion_check: Option<Arc<FileConversionCheck>>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
     deferred_rejection: Option<RejectOnNonEmpty>,
     next_file_prefetch: Option<Arc<NextFileMetadataPrefetch>>,
@@ -551,21 +563,32 @@ fn is_plain_int64(column: &ColumnDescPtr) -> bool {
         && !matches!(column.logical_type_ref(), Some(LogicalType::Timestamp(_)))
 }
 
-// Only parse the hint when a requested NTZ could read a plain INT64. The adapter
-// resolves exact nested paths, field IDs and Unicode names after the hint check.
-fn may_read_hinted_int64(file: &FileMetaData, required: &Schema, use_field_id: bool) -> bool {
-    has_arrow_schema(file)
-        && required.fields().iter().any(|field| {
-            contains_ntz(field.data_type())
-                && file.schema_descr().columns().iter().any(|column| {
-                    let root = &column.path().parts()[0];
-                    is_plain_int64(column)
-                        && (use_field_id
-                            || root.eq_ignore_ascii_case(field.name())
-                            || !field.name().is_ascii()
-                            || !root.is_ascii())
+#[derive(Debug)]
+struct FileConversionCheck {
+    required: SchemaRef,
+    options: SparkParquetOptions,
+    row_filters: bool,
+    ntz_roots: HashSet<String>,
+    match_any_root: bool,
+}
+
+impl FileConversionCheck {
+    // The adapter resolves exact nested paths, field IDs and Unicode names after this check.
+    fn may_read_hinted_int64(&self, file: &FileMetaData) -> bool {
+        !self.ntz_roots.is_empty()
+            && has_arrow_schema(file)
+            && file
+                .schema_descr()
+                .columns()
+                .iter()
+                .filter(|c| is_plain_int64(c))
+                .any(|c| {
+                    let root = &c.path().parts()[0];
+                    self.match_any_root
+                        || !root.is_ascii()
+                        || self.ntz_roots.contains(&root.to_ascii_lowercase())
                 })
-        })
+    }
 }
 
 /// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
@@ -803,22 +826,19 @@ impl AsyncFileReader for EagerPageIndexReader {
             } else {
                 metadata
             };
-            if let Some((required, conversion_options, row_filters)) =
-                self.conversion_check.as_ref()
-            {
+            if let Some(check) = &self.conversion_check {
                 let file = metadata.file_metadata();
                 let columns = file.schema_descr().columns();
                 // Only this check sees the Parquet type of a nanosecond timestamp leaf, so a
                 // `TIMESTAMP(NANOS)` rejection is deferred from here even without row filters.
                 let has_nanos = columns.iter().any(is_nanos_timestamp);
-                let needs_check = *row_filters
+                let needs_check = check.row_filters
                     || has_nanos
                     || columns.iter().any(|column| {
                         column.self_type().get_basic_info().repetition()
                             == parquet::basic::Repetition::REPEATED
                     });
-                let check_hint =
-                    may_read_hinted_int64(file, required, conversion_options.use_field_id);
+                let check_hint = check.may_read_hinted_int64(file);
                 if !needs_check && !check_hint {
                     return Ok(metadata);
                 }
@@ -834,9 +854,9 @@ impl AsyncFileReader for EagerPageIndexReader {
                 }
                 let schema = mark_parquet_leaves(&schema, file.schema_descr());
                 let rejection = check_file_conversions(
-                    Arc::clone(required),
+                    Arc::clone(&check.required),
                     Arc::new(schema),
-                    conversion_options.clone(),
+                    check.options.clone(),
                 )
                 .map_err(|e| match e {
                     // Keep structured Spark errors directly inside the Parquet wrapper so
@@ -844,7 +864,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     DataFusionError::External(source) => ParquetError::External(source),
                     other => ParquetError::External(Box::new(other)),
                 })?;
-                if *row_filters || has_nanos || has_date_hint {
+                if check.row_filters || has_nanos || has_date_hint {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
                             object_meta.location.clone(),

@@ -323,8 +323,10 @@ pub(crate) fn init_datasource_exec(
     } else {
         file_source
     };
-    spark_parquet_options.pruning_only_filters =
-        !session_config.options().execution.parquet.pushdown_filters;
+    // Row filters need the checked cast when promotion is supported. On Spark 3.5
+    // the footer check above rejects promotion at the first data-page read.
+    spark_parquet_options.prune_date_nulls =
+        !allow_type_promotion || !session_config.options().execution.parquet.pushdown_filters;
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );
