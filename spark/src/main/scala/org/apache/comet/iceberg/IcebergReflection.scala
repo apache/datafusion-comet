@@ -63,6 +63,7 @@ object IcebergReflection extends Logging {
       "org.apache.iceberg.LocationProviders$DefaultLocationProvider"
     val RESOLVING_FILE_IO = "org.apache.iceberg.io.ResolvingFileIO"
     val GCS_FILE_IO = "org.apache.iceberg.gcp.gcs.GCSFileIO"
+    val S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
     val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
