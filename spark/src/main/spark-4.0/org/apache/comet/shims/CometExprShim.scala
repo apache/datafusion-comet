@@ -32,8 +32,6 @@ import org.apache.comet.serde.ExprOuterClass.BinaryOutputStyle
  */
 trait CometExprShim extends Spark4xCometExprShim {
 
-  def getJsonObjectNativeFunctionName: String = "get_json_object"
-
   def binaryOutputStyle: BinaryOutputStyle = {
     SQLConf.get
       .getConf(SQLConf.BINARY_OUTPUT_STYLE)
