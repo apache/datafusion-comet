@@ -250,6 +250,11 @@ impl PhysicalExpr for CheckOverflow {
 
 /// Whether every non-null value of `array` fits `precision`, the check that
 /// `Decimal128Type::is_valid_decimal_precision` makes for one value.
+///
+/// arrow-rs's `PrimitiveArray::validate_decimal_precision` makes the same check slot by slot.
+/// <https://github.com/apache/arrow-rs/issues/12368> proposes this scan for it. Once Comet's
+/// arrow version has that, this function can call `validate_decimal_precision(precision).is_ok()`
+/// if that is as fast.
 #[inline]
 fn fits_precision(array: &Decimal128Array, precision: u8) -> bool {
     let bounds = (

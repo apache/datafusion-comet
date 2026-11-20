@@ -102,7 +102,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     // One overflow in the last row, so the scan reads the whole batch before the slow path runs.
-    // `sparse overflow` and `dense overflow` overflow at row 0 and stop in the first chunk.
+    // `sparse overflow` and `dense overflow` overflow at row 0, where the scan stops.
     let head = build(size - 1, 0, 0);
     let last_row_overflow = concat_batches(&head.schema(), [&head, &build(1, 0, 1)]).unwrap();
     c.bench_function("check_overflow: last row overflow", |b| {
