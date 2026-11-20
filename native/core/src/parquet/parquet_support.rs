@@ -227,6 +227,16 @@ fn parquet_convert_array_impl(
     in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     use DataType::*;
+    // ARROW:schema can preserve a dictionary at a timestamp leaf. Expand its keys first
+    // so the checked conversion sees only referenced values, aligned with ancestor validity.
+    let array = if parquet_options.checked_timestamp_overflow
+        && is_dictionary_millis_to_micros(array.data_type(), to_type)
+    {
+        let dictionary = array.as_any_dictionary();
+        take(dictionary.values(), dictionary.keys(), None)?
+    } else {
+        array
+    };
     let from_type = array.data_type();
     // Only checked millis-to-micros casts consume ancestor visibility. In particular,
     // unchanged array/map siblings must not expand a mask over their backing values.
@@ -421,11 +431,20 @@ fn parquet_convert_array_impl(
     converted.map(|array| (array, true))
 }
 
+pub(super) fn is_dictionary_millis_to_micros(from: &DataType, to: &DataType) -> bool {
+    matches!(
+        (from, to),
+        (DataType::Dictionary(_, value), DataType::Timestamp(TimeUnit::Microsecond, _))
+            if matches!(value.as_ref(), DataType::Timestamp(TimeUnit::Millisecond, _))
+    )
+}
+
 // Struct fields are matched by name/field ID later. This type-only check is conservative
 // until that matching occurs; each selected child is checked again before conversion.
 fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
     match data_type {
         DataType::Timestamp(timestamp_unit, _) => *timestamp_unit == unit,
+        DataType::Dictionary(_, value) => has_timestamp_unit(value, unit),
         DataType::Struct(fields) => fields
             .iter()
             .any(|field| has_timestamp_unit(field.data_type(), unit)),
@@ -2817,21 +2836,28 @@ mod tests {
     fn test_millis_to_micros_nested_visibility() {
         use super::{parquet_convert_array, SparkParquetOptions};
         use arrow::array::{
-            Array, ArrayRef, ListArray, MapArray, StructArray, TimestampMicrosecondArray,
-            TimestampMillisecondArray,
+            Array, ArrayRef, DictionaryArray, Int32Array, ListArray, MapArray, StructArray,
+            TimestampMicrosecondArray, TimestampMillisecondArray,
         };
         use arrow::buffer::{NullBuffer, OffsetBuffer};
-        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use arrow::datatypes::{DataType, Field, Int32Type, TimeUnit};
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
         for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
-            for overflow in [i64::MAX, i64::MIN] {
-                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+            let inputs = [i64::MAX, i64::MIN].into_iter().flat_map(|overflow| {
                 let millis: ArrayRef = Arc::new(
                     TimestampMillisecondArray::from(vec![overflow, 7, overflow])
                         .with_timezone_opt(timezone.clone()),
                 );
+                let dictionary: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(
+                    Int32Array::from(vec![0, 1, 0]),
+                    Arc::clone(&millis),
+                ));
+                [millis, dictionary]
+            });
+            for millis in inputs {
+                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
                 let field = Arc::new(Field::new("ts", millis.data_type().clone(), false));
                 let target_field = Arc::new(Field::new(
                     "ts",
