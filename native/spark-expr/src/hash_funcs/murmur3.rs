@@ -193,7 +193,7 @@ pub fn create_murmur3_hashes<'a>(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     /// Produced by the per-element `hash_list_array!` implementation. An empty list and a null
     /// list both leave the seed untouched.
     const EXPECTED_LIST_OF_STRUCT: [u32; 6] =
@@ -212,12 +212,16 @@ pub(crate) mod tests {
         test_hashes_with_nulls!(create_murmur3_hashes, T, values, expected, u32);
     }
 
-    /// Arrays of every fixed-width kind the hash loops special-case, plus strings, with and
-    /// without nulls.
-    pub(crate) fn length_mismatch_arrays() -> Vec<ArrayRef> {
+    /// The length check lives in the shared `create_hashes_internal!`, so one test covers both
+    /// hashers.
+    #[test]
+    fn test_hashes_buffer_length_mismatch_is_error() {
+        use crate::hash_funcs::create_xxhash64_hashes;
         use arrow::array::{BooleanArray, Decimal128Array, IntervalMonthDayNanoArray};
         use arrow::datatypes::IntervalMonthDayNano;
-        vec![
+        // Every fixed-width kind the hash loops special-case, plus strings, with and without
+        // nulls.
+        let arrays: Vec<ArrayRef> = vec![
             Arc::new(Int32Array::from(vec![1, 2, 3])),
             Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
             Arc::new(Float64Array::from(vec![1.0, -0.0, f64::NAN])),
@@ -233,23 +237,25 @@ pub(crate) mod tests {
                     .unwrap(),
             ),
             Arc::new(Int32Array::from(Vec::<i32>::new())),
-        ]
-    }
-
-    #[test]
-    fn test_hashes_buffer_length_mismatch_is_error() {
-        for array in length_mismatch_arrays() {
+        ];
+        for array in arrays {
             for len in [array.len().saturating_sub(1), array.len() + 1] {
                 if len == array.len() {
                     continue;
                 }
-                let mut hashes = vec![42u32; len];
-                let result = create_murmur3_hashes(&[Arc::clone(&array)], &mut hashes);
-                assert!(
-                    result.is_err(),
+                let columns = [Arc::clone(&array)];
+                let context = format!(
                     "{} array of length {} with {len} hashes",
                     array.data_type(),
                     array.len()
+                );
+                assert!(
+                    create_murmur3_hashes(&columns, &mut vec![42u32; len]).is_err(),
+                    "murmur3: {context}"
+                );
+                assert!(
+                    create_xxhash64_hashes(&columns, &mut vec![42u64; len]).is_err(),
+                    "xxhash64: {context}"
                 );
             }
         }
