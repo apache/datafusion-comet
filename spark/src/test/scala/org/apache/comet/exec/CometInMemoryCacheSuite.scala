@@ -56,7 +56,7 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.rules.{CometCacheBuildRule, CometCacheColumnarRule}
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
@@ -152,7 +152,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3114-L3154
   test("AQE SPARK-42101: cold and warm Comet cache materialization") {
-    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
     withAQECache {
       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
         val left = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c1")
@@ -187,7 +186,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3156-L3176
   test("AQE SPARK-42101: preserve shuffle partitions beside a table cache stage") {
-    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
     withAQECache {
       withSQLConf(
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -207,7 +205,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3178-L3191
   test("AQE SPARK-42101: coalesce the shuffle partitions of a union with a table cache stage") {
-    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
     withAQECache {
       withSQLConf(SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
         val cached = Seq(1).toDF("c").cache()
@@ -281,7 +278,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // https://github.com/apache/datafusion-comet/issues/6202
   test("AQE keeps the operators above a table cache stage native once the stage materializes") {
-    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
     // `t` holds 1000 ids for each k, and the ids for a given k sum to 1000 * k + 4995000.
     val queries = Seq(
       "SELECT k, count(*) FROM t GROUP BY k" -> (0L until 10L).map(k => Row(k, 1000L)),
@@ -357,7 +353,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "id + 1 AS id1, a, s",
           Seq(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true"),
           false),
-        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, false))
+        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, true),
+        // The cache serializer takes an empty struct, which the conversion still declines.
+        ("empty struct", "id + 1 AS id1, a, named_struct() AS e", Nil, false))
       for ((name, projection, confs, converted) <- cases) {
         withSQLConf(
           Seq(
@@ -796,7 +794,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
               }
               assert(transitions.size == (if (enabled) 1 else 0), plan.toString)
               assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty)
-              if (adaptive && isSpark35Plus) {
+              if (adaptive) {
                 assert(collect(plan) {
                   case s: QueryStageExec
                       if s.getClass.getSimpleName == "TableCacheQueryStageExec" =>
@@ -3161,10 +3159,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // adaptively-cached relation that also finalizes the cached plan. EXPLAIN must launch nothing.
     withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-      // Spark caches through a session with some configs forced off, and on 3.4 that list still
-      // includes AQE itself, so the cached plan comes back non-adaptive and there is nothing to
-      // finalize. This conf is what decides that list; 3.5 defaults it on, and 4.0 stopped
-      // disabling AQE either way. Setting it keeps the relation adaptive on every version.
+      // This setting keeps the cached relation adaptive on every supported version.
       SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
@@ -3581,7 +3576,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
   test("Comet in-memory cache keeps the observed metrics recorded in a cached plan") {
     // Spark collects the metrics of an observe() inside a cached plan only through an
     // InMemoryTableScanExec over it, so the scan of such a relation has to stay Spark's. Replaced,
-    // the metrics come back empty, and on Spark 3.4 Observation.get never returns. Nested the way
+    // the metrics come back empty and Observation.get never returns. Nested the way
     // SPARK-35695's test nests it, with a shuffle in the inner cached plan so that AQE plans it,
     // under one more cache that records no metrics of its own. The metrics read through that top
     // scan are only found by following it into the caches it reads.
@@ -3621,7 +3616,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       val observation = Observation("cached_observation")
       val observed = spark.range(10).observe(observation, sum($"id").as("total")).persist()
       observed.collect()
-      // Bounded, so that a regression fails here rather than hanging the suite on Spark 3.4.
+      // Bounded, so that a regression fails here rather than hanging the suite.
       assert(Await.result(Future(observation.get), 1.minute) == Map("total" -> 45L))
 
       val plain = spark.range(0, 100, 1, 2).persist()

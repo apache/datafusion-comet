@@ -92,7 +92,7 @@ case class CometIcebergNativeScanExec(
    * by every construction site), so values resolved through `waitForSubqueries` are visible on
    * both sides.
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[PartitionPlanData]) = {
     // Canonicalized instances set originalPlan = null and are not meant to be executed.
     // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
     // deep inside originalPlan.inputRDD.
@@ -122,29 +122,27 @@ case class CometIcebergNativeScanExec(
 
   def commonData: Array[Byte] = serializedPartitionData._1
 
-  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+  def perPartitionData: Array[PartitionPlanData] = serializedPartitionData._2
 
   // numPartitions for execution - derived from actual DPP-filtered partitions
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  // Like BatchScanExec on Spark 3.5 and later without a key-grouped partitioning, the scan does
-  // not know its partition count while planning, because dynamic partition pruning decides which
-  // tasks survive and its subqueries resolve at execution. AQE reads outputPartitioning while it
-  // optimizes a stage (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // Without a key-grouped partitioning, the scan does not know its partition count while
+  // planning because dynamic partition pruning decides which tasks survive and its subqueries
+  // resolve at execution. AQE reads outputPartitioning while it optimizes a stage, before
   // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.
   //
-  // Spark 3.4's BatchScanExec reports SinglePartition for one input partition, and every supported
-  // version reports a key-grouped partitioning (KeyGroupedPartitioning, called KeyedPartitioning
-  // from Spark 4.2) for a storage-partitioned scan. Spark takes both from the partitions it plans,
-  // before any DPP filtering, and plans the operators above the scan on that basis, with no
-  // exchange for a join or aggregate that the partitioning already satisfies. The scan reports the
-  // same, so reading it resolves no DPP subquery. Otherwise EnsureRequirements, which AQE runs
-  // again over a DPP subquery's converted plan, inserts exchanges inside a native block that is
-  // already serialized (#7422, #7441). serializePartitions keeps one partition for each of Spark's
-  // partitions when DPP prunes some, as Spark does.
+  // A storage-partitioned scan reports a key-grouped partitioning (KeyGroupedPartitioning, called
+  // KeyedPartitioning from Spark 4.2). Spark takes it from the partitions it plans, before any DPP
+  // filtering, and plans the operators above the scan on that basis, with no exchange for a join
+  // or aggregate that the partitioning already satisfies. The scan reports the same, so reading it
+  // resolves no DPP subquery. Otherwise EnsureRequirements, which AQE runs again over a DPP
+  // subquery's converted plan, inserts exchanges inside a native block that is already serialized
+  // (#7441). serializePartitions keeps one partition for each of Spark's partitions when DPP
+  // prunes some, as Spark does.
   override lazy val outputPartitioning: Partitioning =
     if (originalPlan == null) {
       UnknownPartitioning(0)
