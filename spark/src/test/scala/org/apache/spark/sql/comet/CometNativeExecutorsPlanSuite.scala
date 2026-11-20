@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.execution.{InputAdapter, ScalarSubquery, SparkPlan, WholeStageCodegenExec}
-import org.apache.spark.sql.functions.{col, sum}
+import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometRuntimeException}
@@ -124,6 +124,20 @@ class CometNativeExecutorsPlanSuite extends CometNativeExecutorsTestBase {
       val scan = stagesOf(df).head
       assert(scan.getPartitionPlansCount == 1)
       assert(scan.getNumPartitions == 1)
+    }
+  }
+
+  test("an empty range gets one partition") {
+    withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      for (slices <- Seq(4, 0)) {
+        val range = spark.range(1, -2, 1, slices)
+        val Seq(project) = stagesOf(range.selectExpr("id + 1"))
+        assert(project.getInputsCount == 0)
+        assert(project.getNumPartitions == 1)
+        val Seq(producer, aggregate) = stagesOf(range.agg(count("id"), sum("id")))
+        assert(producer.getNumPartitions == 1)
+        assert(aggregate.getInputs(0).getPartitioning.hasSinglePartition)
+      }
     }
   }
 

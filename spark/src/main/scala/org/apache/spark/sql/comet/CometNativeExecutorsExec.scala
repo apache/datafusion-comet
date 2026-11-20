@@ -463,9 +463,12 @@ object CometNativeExecutors {
         }
       }
       // The cluster reads it only for a stage that reads no exchange. A stage that does has as
-      // many partitions as its exchanges deliver.
+      // many partitions as its exchanges deliver. A stage that reads neither and reports no
+      // partitions, such as an empty range, runs one, which produces no rows, since the cluster
+      // refuses a stage with none.
       val numPartitions =
         if (partitionPlans.nonEmpty) partitionPlans.length
+        else if (inputs.isEmpty) block.outputPartitioning.numPartitions.max(1)
         else block.outputPartitioning.numPartitions
       // A stage that reads a range exchange sorts each of its partitions. The cluster merges them
       // in this order instead of range-partitioning the exchange. Without it, the cluster reads
