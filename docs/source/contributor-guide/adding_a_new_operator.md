@@ -833,10 +833,16 @@ val protoExpr = exprToProto(sparkExpr, inputSchema)
 
 ### Restoring the Spark operator (`sparkFallback`)
 
-`CometExec.originalPlan` is the Spark operator this node replaced. `CometExecRule` copies
-`originalPlan.logicalLink` onto the Comet node, which is how AQE finds the node again when it
-re-plans a stage. `RevertNativeForTransitionHeavyStages` calls `sparkFallback(newChildren)` to
-rebuild that Spark operator with the children of the reverted stage.
+`CometExec.originalPlan` is the Spark operator this node replaced. When adaptive query execution
+(AQE) reuses a `CometExec`, `CometExecRule` preserves an existing direct link to a
+`LogicalQueryStage`. It also preserves an inherited stage link if the stage wraps the exact
+logical node referenced by `originalPlan.logicalLink`, even through nested stages. This lets AQE
+find the current stage by identity during replanning. In all other cases, the rule restores the
+direct and inherited tags separately on the Comet node itself, clearing each tag missing from
+`originalPlan`.
+
+`RevertNativeForTransitionHeavyStages` calls `sparkFallback(newChildren)` to rebuild the original
+Spark operator with the children of the reverted stage.
 
 The default implementation is `originalPlan.withNewChildren(newChildren)`. It refuses a null
 `originalPlan`, an `originalPlan` that is one of the node's own children, or a different number of
