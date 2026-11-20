@@ -153,7 +153,10 @@ impl S3StoreTemplate {
         bucket: &str,
     ) -> Result<Self, object_store::Error> {
         let s3_configs = extract_s3_config_options(configs, bucket);
-        debug!("S3 configs for bucket {bucket}: {s3_configs:?}");
+        debug!(
+            "S3 config keys for bucket {bucket}: {:?}",
+            s3_configs.keys()
+        );
 
         // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
         // is required. If no region is explicitly configured, attempt to auto-resolve it by

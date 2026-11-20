@@ -21,6 +21,7 @@
 //! through that file's pending planners and streams. Delegate source operations to preserve
 //! Parquet's projection, filter, and sort pushdown.
 
+use super::objectstore::url_redaction::{without_credentials, without_secrets};
 use arrow::array::RecordBatch;
 use datafusion::common::{
     config::ConfigOptions, tree_node::TreeNodeRecursion, DataFusionError, Result,
@@ -42,10 +43,42 @@ use datafusion_datasource::{
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use std::{fmt, sync::Arc};
+use url::Url;
 
-/// The original URL-encoded Spark path, before object-store aliases and paths are normalized.
+/// The URL-encoded Spark path for diagnostics, with the original scheme and without credentials.
 #[derive(Debug, Clone)]
-pub(crate) struct SparkFilePath(pub Arc<str>);
+pub(crate) struct SparkFilePath(Arc<str>);
+
+impl SparkFilePath {
+    pub(crate) fn new(original: &str, normalized: Url) -> Self {
+        let path = original.split(['?', '#']).next().unwrap_or_default();
+        if !path.contains('@') {
+            return Self(path.into());
+        }
+        // Reuse the parsed URL for ordinary ABFS paths. An alias may have had its scheme
+        // rewritten or its first path segment promoted to the host.
+        let url = if normalized.as_str() == original {
+            normalized
+        } else if let Ok(url) = Url::parse(path) {
+            url
+        } else {
+            return Self("<redacted>".into());
+        };
+        if url.cannot_be_a_base() {
+            return Self("<redacted>".into());
+        }
+        let keep_container = matches!(url.scheme(), "abfs" | "abfss" | "az");
+        if url.password().is_none() && (url.username().is_empty() || keep_container) {
+            return Self(path.into());
+        }
+        let redacted = if keep_container {
+            without_secrets(&url)
+        } else {
+            without_credentials(&url)
+        };
+        Self(redacted.as_str().into())
+    }
+}
 
 /// Delegate scan planning and pushdown to ParquetSource, wrapping only its per-file work.
 pub(crate) struct ParquetErrorContext(Arc<dyn FileSource>);
@@ -256,6 +289,33 @@ mod tests {
     impl Morsel for FailedMorsel {
         fn into_stream(self: Box<Self>) -> BoxStream<'static, Result<RecordBatch>> {
             futures::stream::once(async move { Err(self.0.into()) }).boxed()
+        }
+    }
+
+    #[test]
+    fn diagnostic_path_preserves_file_identity_without_credentials() {
+        use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
+
+        for (original, expected) in [
+            (
+                "s3a://user:password@bucket/part%3F1.parquet?sig=example",
+                "s3a://bucket/part%3F1.parquet",
+            ),
+            (
+                "s3a:///bucket/part.parquet?sig=example",
+                "s3a:///bucket/part.parquet",
+            ),
+            ("hdfs://user@host:8020/f", "hdfs://host:8020/f"),
+            (
+                "abfss://data:password@host/f?sig=example",
+                "abfss://data@host/f",
+            ),
+            ("abfs://data@host/f", "abfs://data@host/f"),
+            ("file:/part@1%23.parquet", "file:/part@1%23.parquet"),
+        ] {
+            let normalized = normalize_object_store_url(original, &Default::default()).unwrap();
+            let path = SparkFilePath::new(original, normalized.url);
+            assert_eq!(path.0.as_ref(), expected);
         }
     }
 
