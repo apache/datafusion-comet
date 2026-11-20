@@ -43,6 +43,12 @@ runs:
     # or TLS failure there used to fail the test step before any test ran.
     # Install it here instead, where a retry costs seconds; the test step then
     # finds Gradle already in place.
+    #
+    # Iceberg does not commit gradle-wrapper.jar. Its gradlew fetches the jar
+    # with `curl -o` (no --fail) only when the file is missing, so a 429 or
+    # other error response is saved as the jar and every later run fails on it
+    # with ClassNotFoundException: GradleWrapperMain (#7713). Remove it after
+    # a failed attempt so the next one downloads it again.
     - name: Install the Gradle distribution
       shell: bash
       run: |
@@ -55,6 +61,7 @@ runs:
             echo "::error::Could not install the Gradle distribution after $attempt attempts."
             exit 1
           fi
+          rm -f gradle/wrapper/gradle-wrapper.jar
           delay=$((15 * attempt))
           echo "::warning::Gradle distribution download failed (attempt $attempt of 3); retrying in ${delay}s."
           sleep "$delay"
