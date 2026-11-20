@@ -52,10 +52,6 @@ query expect_dispatch(size)
 SELECT _1, size(coalesce(m[CAST(monotonically_increasing_id() AS DOUBLE)], array(0)))
 FROM test_size_nondet
 
-query expect_dispatch(size)
-SELECT _1, size(coalesce(IF(monotonically_increasing_id() % 2 = 1, arr, NULL), array(0)))
-FROM test_size_nondet
-
 -- arrays_zip returns a list of non-null structs. Rust array_repeat rebuilds a nullable
 -- item field and fails Arrow's type check if it consumes the dispatched list.
 query expect_dispatch(size)

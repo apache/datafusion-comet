@@ -114,7 +114,7 @@ query expect_fallback(that the kernel repeats)
 SELECT if(k = 1, element_at(m1, 1.0D / x + 1.0D / x), 0) FROM test_map_lookup_shared
 
 -- An imperative aggregate evaluates the lookup through eval, which skips the key on a NULL map.
-query expect_fallback(that the kernel repeats)
+query expect_fallback(Spark may interpret computed arguments)
 SELECT collect_list(element_at(m1, 1.0D / x + 1.0D / x)) FROM test_map_lookup_shared
 
 -- An `if` shares only what it always evaluates, so its else-branch `1.0D / x` is not shared
@@ -306,5 +306,5 @@ SET spark.sql.codegen.wholeStage=false
 statement
 SET spark.sql.codegen.factoryMode=NO_CODEGEN
 
-query expect_fallback(that the kernel repeats)
+query expect_fallback(Spark may interpret computed arguments)
 SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared

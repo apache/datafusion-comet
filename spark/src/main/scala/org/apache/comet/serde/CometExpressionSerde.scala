@@ -153,14 +153,12 @@ trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
           "Spark's generated code for this non-nullable array element_at assigns an " +
             "undeclared null flag"
       })
-      .orElse(SharedSubexpressionArgument.declineReason(expr))
       .orElse {
-        if (QueryPlanSerde.sparkMayInterpret && !expr.children.forall(
-            EvaluationOrder.isUnobservable)) {
-          Some(
-            "Spark may interpret computed arguments whose generated code can behave differently")
+        if (QueryPlanSerde.sparkMayInterpret && expr.children.exists(e =>
+            !EvaluationOrder.isUnobservable(e))) {
+          Some("Spark may interpret computed arguments that the dispatcher would compile")
         } else {
-          None
+          SharedSubexpressionArgument.declineReason(expr)
         }
       }
 

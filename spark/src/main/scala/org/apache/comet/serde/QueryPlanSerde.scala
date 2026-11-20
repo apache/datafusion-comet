@@ -1461,10 +1461,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       kernelShared: Seq[Expression]): Boolean =
     (spark.common.nonEmpty || kernelShared.nonEmpty) && exprs.exists { expr =>
       DecimalPrecision.promote(expr).exists { e =>
-        // Interpreted evaluation reads a shared expression on demand, after the NULL check.
-        val hoisted = kernelShared.exists(_.semanticEquals(e))
-        hoisted != spark.common.exists(_.semanticEquals(e)) ||
-        (hoisted && (!spark.projection || sparkMayInterpret))
+        val inKernel = kernelShared.exists(_.semanticEquals(e))
+        val inSpark = spark.common.exists(_.semanticEquals(e))
+        if (spark.projection) inKernel != inSpark else inKernel || inSpark
       }
     }
 
