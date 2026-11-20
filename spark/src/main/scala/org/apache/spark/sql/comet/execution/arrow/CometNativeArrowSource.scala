@@ -161,7 +161,7 @@ object CometArrowStream extends Logging {
     val first = buffered.head
     val expectedFields = expected.getFields
     val actualFields = (0 until first.numCols()).map { i =>
-      val col = first.column(i). match {
+      val col = first.column(i) match {
         case c: CometVector => c
         case other =>
           throw new IllegalStateException(
