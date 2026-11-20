@@ -1076,7 +1076,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
     // External actions such as foreachPartition or RDD.take can stop reading without adding a
     // physical-plan node. Require a materializing exchange before enabling batch observation.
-    visit(plan, if (producesObjects(plan)) Some(true) else None)
+    // Spark 3.x implements Dataset.isEmpty with executeTake(1) on a zero-column result.
+    val partial = producesObjects(plan) || (!isSpark40Plus && plan.output.isEmpty)
+    visit(plan, if (partial) Some(true) else None)
   }
 
   /**

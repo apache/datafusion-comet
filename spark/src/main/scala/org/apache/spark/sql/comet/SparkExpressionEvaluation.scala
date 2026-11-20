@@ -100,7 +100,10 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
     }
     // Spark 4.2 can precompute a shared term before the first predicate that refers to it.
     val filterCse = isSpark42Plus &&
-      op.conf.getConfString("spark.sql.subexpressionElimination.filterExec.enabled").toBoolean
+      op.conf
+        .getConfString("spark.sql.subexpressionElimination.filterExec.enabled")
+        .trim
+        .toBoolean
     val canReorder = QueryPlanSerde.withSharedSubexpressions(if (filterCse) predicates else Nil) {
       conjuncts.forall(hasMatchingOperandGuards)
     }
