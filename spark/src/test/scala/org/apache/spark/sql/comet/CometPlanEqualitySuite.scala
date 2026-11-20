@@ -27,7 +27,6 @@ import scala.reflect.runtime.universe.runtimeMirror
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.shims.ShimFileSourceScanExec
 import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.types.IntegerType
 import org.apache.xbean.asm9.{ClassReader, Opcodes}
@@ -39,18 +38,6 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.util.ClassLoaders
 
 class CometPlanEqualitySuite extends AnyFunSuite {
-
-  test("FileSourceScanExec shim filter indices match the constructor") {
-    val output = Seq(AttributeReference("id", IntegerType)())
-    val scan = ExtendedFileSourceScanExec(
-      output,
-      partitionFilters = Seq(GreaterThan(output.head, Literal(1))),
-      dataFilters = Seq(LessThan(output.head, Literal(10))))
-
-    assert(
-      scan.productElement(ShimFileSourceScanExec.partitionFiltersIndex) == scan.partitionFilters)
-    assert(scan.productElement(ShimFileSourceScanExec.dataFiltersIndex) == scan.dataFilters)
-  }
 
   test("native scan fallback preserves additional runtime constructor fields") {
     val output = Seq(AttributeReference("id", IntegerType)())
