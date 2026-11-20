@@ -271,9 +271,9 @@ mod tests {
         assert!((est - 1000).abs() <= 40, "union estimate {est}");
     }
 
-    /// A compact-form sketch has to survive a union. `datasketches` 0.3.0 drops the register
-    /// block for compact HLL array modes, which leaves the decoded sketch's own estimate intact
-    /// (it is restored from the HIP accumulator) but makes every union built from it wrong.
+    /// A compact-form sketch has to survive a union. `datasketches` 0.3.0 dropped the register
+    /// block for compact HLL array modes, which left the decoded sketch's own estimate intact
+    /// (it is restored from the HIP accumulator) but made every union built from it wrong.
     #[test]
     fn compact_input_survives_a_union() {
         let mut a = SparkHllSketch::new(12);
