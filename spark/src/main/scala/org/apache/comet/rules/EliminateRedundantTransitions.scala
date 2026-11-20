@@ -178,19 +178,13 @@ case class EliminateRedundantTransitions(session: SparkSession)
         s.withNewChildren(Seq(child))
 
       // Spark also adds `RowToColumnar` even when comet chose native shuffle.
-      // Native shuffle reads only Comet vectors, not Spark's vectors. 
+      // Native shuffle reads only Comet vectors, not Spark's vectors.
       // Switch to row and drop the transition.
-      case s @ CometShuffleExchangeExec(
-             _,
-             RowToColumnarExec(child),
-             _,
-             _, 
-             CometNativeShuffle, 
-             _)
-        if CometShuffleExchangeExec.columnarShuffleSupports(s, child) =>
-          val columnar = s.copy(child = child, shuffleType = CometColumnarShuffle)
-          columnar.copyTagsFrom(s)
-          columnar
+      case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
+          if CometShuffleExchangeExec.columnarShuffleSupports(s, child) =>
+        val columnar = s.copy(child = child, shuffleType = CometColumnarShuffle)
+        columnar.copyTagsFrom(s)
+        columnar
     }
 
     eliminatedPlan match {

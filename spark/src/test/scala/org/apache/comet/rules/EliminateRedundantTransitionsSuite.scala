@@ -24,7 +24,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnionExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan, UnionExec}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 
 import org.apache.comet.CometConf
@@ -93,6 +93,6 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
     assert(result.executeColumnar().map(_.numRows()).sum() == 10)
 
     val e = intercept[SparkException](shuffle.executeColumnar().count())
-    assert(e.getMessage.contains("expects CometVectors"), e.getMessage)
+    assert(e.getMessage.contains("expects CometVector type"), e.getMessage)
   }
 }
