@@ -272,6 +272,8 @@ object CometCast
     }
 
     (fromType, toType) match {
+      case (_, d: DecimalType) if !d.scale.isValidByte =>
+        Unsupported(Some(s"Decimal scale ${d.scale} does not fit in a signed byte"))
       case (NullType, _) => Compatible()
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
