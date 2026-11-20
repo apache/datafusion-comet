@@ -227,15 +227,26 @@ fn parquet_convert_array_impl(
     in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     use DataType::*;
-    // ARROW:schema can preserve a dictionary at a timestamp leaf. Expand its keys first
-    // so the checked conversion sees only referenced values, aligned with ancestor validity.
-    let array = if parquet_options.checked_timestamp_overflow
-        && is_dictionary_millis_to_micros(array.data_type(), to_type)
-    {
-        let dictionary = array.as_any_dictionary();
-        take(dictionary.values(), dictionary.keys(), None)?
-    } else {
-        array
+    let array = match (array.data_type(), to_type) {
+        (Dictionary(_, value), Timestamp(TimeUnit::Microsecond, target_tz))
+            if parquet_options.checked_timestamp_overflow
+                && matches!(value.as_ref(), Timestamp(TimeUnit::Millisecond, _)) =>
+        {
+            let dictionary = array.as_any_dictionary();
+            let millis = dictionary
+                .values()
+                .as_primitive::<TimestampMillisecondType>();
+            if let Ok(micros) =
+                millis.try_unary::<_, TimestampMicrosecondType, _>(checked_millis_to_micros)
+            {
+                let micros = micros.with_timezone_opt(target_tz.clone());
+                return Ok((take(&micros, dictionary.keys(), None)?, true));
+            }
+            // An overflowing entry may be unused or hidden by a null ancestor or slice.
+            // Retry in row order so the plain timestamp conversion can apply parent_nulls.
+            take(dictionary.values(), dictionary.keys(), None)?
+        }
+        _ => array,
     };
     let from_type = array.data_type();
     // Only checked millis-to-micros casts consume ancestor visibility. In particular,
@@ -319,11 +330,7 @@ fn parquet_convert_array_impl(
             // Restore the original child validity: required fields must remain non-null.
             let micros = arrow::array::TimestampMillisecondArray::new(
                 millis.values().clone(), visible)
-                .try_unary::<_, TimestampMicrosecondType, _>(|value| {
-                    value.checked_mul(1_000).ok_or_else(|| SparkError::ParquetTimestampOverflow {
-                        file_path: String::new(),
-                    })
-                })?;
+                .try_unary::<_, TimestampMicrosecondType, _>(checked_millis_to_micros)?;
             let micros = arrow::array::TimestampMicrosecondArray::new(
                 micros.values().clone(), millis.nulls().cloned())
                 .with_timezone_opt(target_tz.clone());
@@ -431,12 +438,12 @@ fn parquet_convert_array_impl(
     converted.map(|array| (array, true))
 }
 
-pub(super) fn is_dictionary_millis_to_micros(from: &DataType, to: &DataType) -> bool {
-    matches!(
-        (from, to),
-        (DataType::Dictionary(_, value), DataType::Timestamp(TimeUnit::Microsecond, _))
-            if matches!(value.as_ref(), DataType::Timestamp(TimeUnit::Millisecond, _))
-    )
+fn checked_millis_to_micros(value: i64) -> Result<i64, SparkError> {
+    value
+        .checked_mul(1_000)
+        .ok_or_else(|| SparkError::ParquetTimestampOverflow {
+            file_path: String::new(),
+        })
 }
 
 // Struct fields are matched by name/field ID later. This type-only check is conservative
@@ -2829,6 +2836,31 @@ mod tests {
                 child.to_data().buffers()[0].as_ptr(),
                 values.to_data().buffers()[0].as_ptr()
             );
+        }
+    }
+
+    #[test]
+    fn test_dictionary_millis_to_micros_preserves_nulls_and_skips_unused_values() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            Array, DictionaryArray, Int8Array, TimestampMicrosecondArray, TimestampMillisecondArray,
+        };
+        use arrow::datatypes::Int8Type;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        let keys = Int8Array::from(vec![Some(1), None, Some(2), Some(1)]);
+        let expected =
+            TimestampMicrosecondArray::from(vec![Some(-7_000), None, None, Some(-7_000)])
+                .with_timezone("UTC");
+        for unused in [0, i64::MAX] {
+            let values = TimestampMillisecondArray::from(vec![Some(unused), Some(-7), None]);
+            let dictionary = DictionaryArray::<Int8Type>::new(keys.clone(), Arc::new(values));
+            let result =
+                parquet_convert_array(Arc::new(dictionary), expected.data_type(), &options)
+                    .unwrap();
+            assert_eq!(result.to_data(), expected.to_data());
         }
     }
 
