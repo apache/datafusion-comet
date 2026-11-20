@@ -229,18 +229,15 @@ case class CometIcebergNativeScanExec(
       "bytes_scanned" -> SQLMetrics.createSizeMetric(sparkContext, "number of bytes scanned"),
       // Native read/decode time, aggregated across tasks. Fed by iceberg-rust's BaselineMetrics
       // (elapsed_compute, in nanoseconds) through the standard JNI metric path.
-      "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sparkContext, "scan time"))
+      "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sparkContext, "scan time"),
+      "narrow_type_splits" -> SQLMetrics.createMetric(
+        sparkContext,
+        "number of file splits with filters not pushed for a narrower column type"))
 
     // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
-    // Splits whose data file stores a filtered column with a narrower type than the table, so the
-    // native scan pushed only part of their residual (iceberg_narrow_types.rs, #7138).
-    val narrowTypeSplitsMetric = SQLMetrics.createMetric(
-      sparkContext,
-      "number of file splits with a narrower column type than the table")
 
-    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric) +
-      ("narrow_type_splits" -> narrowTypeSplitsMetric)
+    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
   }
 
   // Execution id this scan last posted its driver metrics under. Guards against a second post:
@@ -256,8 +253,8 @@ case class CometIcebergNativeScanExec(
    * planFiles(); they live on the driver and are never updated by executor tasks, so without an
    * explicit post the SQL UI never receives their accumulator ids and the scan node shows
    * nothing. Mirrors [[CometScanExec.sendDriverMetrics]] for the Parquet path. The native runtime
-   * metrics (output_rows, bytes_scanned, num_splits, elapsed_compute) travel the separate JNI
-   * path and are not posted here.
+   * metrics (output_rows, bytes_scanned, num_splits, elapsed_compute, narrow_type_splits) travel
+   * the separate JNI path and are not posted here.
    *
    * Called from two places because a native leaf scan does not always run its own
    * doExecuteColumnar: when this scan is fused under a parent native operator (e.g. a CometFilter

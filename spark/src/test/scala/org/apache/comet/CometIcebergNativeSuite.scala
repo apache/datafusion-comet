@@ -42,6 +42,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, LocalTableScanExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.functions.col
@@ -360,12 +361,8 @@ class CometIcebergNativeSuite
     }
   }
 
-  // #7138: a data file can store a narrower type than its column: INT in a BIGINT column after a
-  // promotion, or TINYINT, SMALLINT or FLOAT in a file that add_files, migrate, snapshot or the Java
-  // API appended. iceberg-rust's page index skips every page of such a file for range and IN
-  // predicates, and its row filter casts the literal down to the file's type, so an out-of-range
-  // value becomes NULL and a double literal rounds to float. Each predicate below dropped matching
-  // rows from the narrower file before the native scan checked the file's types.
+  // #7138: predicates that drop rows from a file storing a narrower type, unless the scan stops
+  // pushing that file's residual.
   private val narrowFilePredicates = Seq(
     "id > 0",
     "id < 3",
@@ -380,46 +377,34 @@ class CometIcebergNativeSuite
     "d IN (1.5, 4.0)",
     "d != 1.5",
     "id > 0 OR d < 2.0",
-    "id > 0 AND d >= 0",
-    // Equality is safe on a narrower file, so the scan pushes it without checking the file.
-    "id = 2",
-    "d = 1.5")
+    "id > 0 AND d >= 0")
 
-  private val equalityOnlyPredicates = Set("id = 2", "d = 1.5", "t = 2", "t = 200")
+  // Equality is safe on a narrower file, so it stays pushed.
+  private val equalityPredicates = Seq("id = 2", "d = 1.5")
 
-  /**
-   * Checks each predicate against Spark, and that the scan weakened the residual of the narrower
-   * file's split, and of no other split, unless the predicate holds only equalities.
-   */
-  private def checkNarrowFileScans(
-      table: String,
-      columns: String,
-      predicates: Seq[String]): Unit =
+  /** Runs `query` against Spark and returns its native scan's `narrow_type_splits`. */
+  private def narrowTypeSplits(query: String): Long = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    assertSingleNativeScan(cometPlan)
+    collectIcebergNativeScans(cometPlan).head.metrics("narrow_type_splits").value
+  }
+
+  private def checkNarrowFileScans(table: String, predicates: Seq[String], splits: Long): Unit =
     predicates.foreach { p =>
-      val (_, cometPlan) = checkSparkAnswer(s"SELECT $columns FROM $table WHERE $p")
-      assertSingleNativeScan(cometPlan)
-      val weakened = collectIcebergNativeScans(cometPlan).head.metrics("narrow_type_splits").value
-      val expected = if (equalityOnlyPredicates.contains(p)) 0 else 1
-      assert(weakened == expected, s"narrow_type_splits for `$p`")
+      assert(narrowTypeSplits(s"SELECT * FROM $table WHERE $p") == splits, p)
     }
 
   private def withNarrowFileCatalog(f: File => Unit): Unit =
-    withTempIcebergDir { warehouseDir =>
+    withHadoopCatalog("narrow_cat") {
       withSQLConf(
-        "spark.sql.catalog.narrow_cat" -> "org.apache.iceberg.spark.SparkCatalog",
-        "spark.sql.catalog.narrow_cat.type" -> "hadoop",
-        "spark.sql.catalog.narrow_cat.warehouse" -> warehouseDir.getAbsolutePath,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
-        f(warehouseDir)
-      }
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(withTempIcebergDir(f))
     }
 
   /**
-   * Writes `rows` as one Parquet file with Spark and appends it to `table` through the Java API,
-   * which, unlike Iceberg's writers, does not check the file's types against the table schema.
-   * Returns the file's Parquet schema.
+   * Writes `rows` as one Parquet file and appends it to `table` through the Java API, which does
+   * not check the file's types against the table schema. Returns the file's Parquet schema.
    */
   private def appendParquetFile(
       table: String,
@@ -427,11 +412,7 @@ class CometIcebergNativeSuite
       schema: StructType,
       rows: Seq[Row]): org.apache.parquet.schema.MessageType = {
     val out = new File(dir, s"import_${UUID.randomUUID()}").getAbsolutePath
-    spark
-      .createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
-      .coalesce(1)
-      .write
-      .parquet(out)
+    spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema).write.parquet(out)
     val file = new File(out).listFiles().filter(_.getName.endsWith(".parquet")).head
     val icebergTable = Spark3Util.loadIcebergTable(spark, table)
     icebergTable
@@ -445,15 +426,12 @@ class CometIcebergNativeSuite
           .withFormat(org.apache.iceberg.FileFormat.PARQUET)
           .build())
       .commit()
-    Using.resource(
-      ParquetFileReader.open(HadoopInputFile
-        .fromPath(new Path(file.getAbsolutePath), spark.sessionState.newHadoopConf())))(
-      _.getFooter.getFileMetaData.getSchema)
+    withParquetReader(file.getAbsolutePath)(_.getFooter.getFileMetaData.getSchema)
   }
 
   private def parquetFieldId(id: Int): org.apache.spark.sql.types.Metadata =
     new org.apache.spark.sql.types.MetadataBuilder()
-      .putLong("parquet.field.id", id.toLong)
+      .putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong)
       .build()
 
   test("residuals keep rows from files written before a type promotion (#7138)") {
@@ -461,26 +439,24 @@ class CometIcebergNativeSuite
     withNarrowFileCatalog { _ =>
       val table = "narrow_cat.db.promoted"
       spark.sql(s"CREATE TABLE $table (id INT, d FLOAT) USING iceberg")
-      // One file, so that each predicate below weakens exactly one split.
+      // One file, so each predicate below affects exactly one split.
       spark.sql(s"""
         INSERT INTO $table SELECT /*+ COALESCE(1) */ * FROM VALUES
         (1, 0.1), (2, 1.5), (3, 2.5), (NULL, NULL) AS v(id, d)
       """)
-      // Before the promotion the file stores the column's own types, so it keeps its residual.
-      checkNarrowFileScans(table, "id, d", Seq("id = 2"))
-      val (_, before) = checkSparkAnswer(s"SELECT id FROM $table WHERE id > 1 AND d < 2.0")
-      assert(collectIcebergNativeScans(before).head.metrics("narrow_type_splits").value == 0)
+      // Before the promotion, the file stores the table's types.
+      checkNarrowFileScans(table, Seq("id > 1 AND d < 2.0"), splits = 0)
 
       spark.sql(s"ALTER TABLE $table ALTER COLUMN id TYPE BIGINT")
       spark.sql(s"ALTER TABLE $table ALTER COLUMN d TYPE DOUBLE")
       spark.sql(s"INSERT INTO $table VALUES (4, 4.0), (5, 5.0)")
-      checkNarrowFileScans(table, "id, d", narrowFilePredicates)
+      checkNarrowFileScans(table, narrowFilePredicates, splits = 1)
+      checkNarrowFileScans(table, equalityPredicates, splits = 0)
     }
   }
 
-  // The table's schema history records no change and the table has no name mapping, so nothing in
-  // its metadata shows that the appended file's types differ. A table promoted before Iceberg 0.12,
-  // whose metadata kept only the current schema, looks the same.
+  // Nothing in the table metadata (one schema, no name mapping) shows that the appended file is
+  // narrower, as for a table promoted before Iceberg 0.12.
   test("residuals keep rows from an appended file whose field ids carry narrower types (#7138)") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withNarrowFileCatalog { dir =>
@@ -506,24 +482,21 @@ class CometIcebergNativeSuite
       assert(icebergTable.properties().get("schema.name-mapping.default") == null)
       assert(icebergTable.schemas().size() == 1)
 
-      checkNarrowFileScans(
-        table,
-        "id, t, s, d",
-        narrowFilePredicates ++ Seq(
-          "t < 200",
-          "t IN (1, 200)",
-          "t >= -200",
-          "t != 200",
-          "s < 40000",
-          "s IN (2, 40000)",
-          "t = 2 AND s > 1",
-          "t = 200"))
+      val narrowIntPredicates = Seq(
+        "t < 200",
+        "t IN (1, 200)",
+        "t >= -200",
+        "t != 200",
+        "s < 40000",
+        "s IN (2, 40000)",
+        "t = 2 AND s > 1")
+      checkNarrowFileScans(table, narrowFilePredicates ++ narrowIntPredicates, splits = 1)
+      checkNarrowFileScans(table, equalityPredicates ++ Seq("t = 200"), splits = 0)
     }
   }
 
-  // The shape add_files, migrate and snapshot leave: a file without field ids, resolved through
-  // the table's name mapping. The file lists its columns in another order than the table, so
-  // resolving them by position would read the wrong column.
+  // The shape add_files, migrate and snapshot leave: no field ids, read through the name mapping.
+  // The file's column order differs from the table's, so matching by position would be wrong.
   test("residuals keep rows from an imported file read through a name mapping (#7138)") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withNarrowFileCatalog { dir =>
@@ -555,8 +528,9 @@ class CometIcebergNativeSuite
 
       checkNarrowFileScans(
         table,
-        "id, t, d",
-        narrowFilePredicates ++ Seq("t < 200", "t IN (1, 200)", "t = 2"))
+        narrowFilePredicates ++ Seq("t < 200", "t IN (1, 200)"),
+        splits = 1)
+      checkNarrowFileScans(table, equalityPredicates ++ Seq("t = 2"), splits = 0)
     }
   }
 

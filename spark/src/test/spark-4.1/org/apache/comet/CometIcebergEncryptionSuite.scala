@@ -136,9 +136,8 @@ class CometIcebergEncryptionSuite
         "expected the encrypted read to run natively but found no CometIcebergNativeScanExec:\n" +
           cometPlan)
 
-      // A range filter on an int column makes the scan read each data file's encrypted footer to
-      // check its column types (#7138). Before the promotion no file stores a narrower type; after
-      // it, the files written before it do, and keep their matching rows.
+      // #7138: a range filter makes the scan read each encrypted footer. Only files written before
+      // the promotion are narrower.
       def narrowTypeSplits(query: String): Long = {
         val (_, plan) = checkSparkAnswer(query)
         val scans = collect(plan) { case s: CometIcebergNativeScanExec => s }
