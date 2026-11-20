@@ -553,8 +553,9 @@ A write is eligible only when ALL of the following hold:
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, plus the ignored, encryption and credential settings described below, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                      |
 | Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
-| partition spec                                                                                                                              | any, except a `void` field whose source column was dropped beside a live field, or one sourced from an `unknown` column (see below)                                                                                                                                                                                                                                                                                                                                             |
-| column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`), the v3 types `variant`, `timestamp_ns`, `geometry` and `geography`, `unknown` inside a nested type, and a table whose columns are all `unknown`                                                                                                                                                                                                                                              |
+| partition spec                                                                                                                              | any, except a non-`void` transform sourced from a UUID column, a partition field sourced from an `unknown` column, or a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                            |
+| sort order                                                                                                                                  | any, except a non-`void` transform sourced from a UUID column (see UUID normalization below)                                                                                                                                                                                                                                                                                                                                                                                    |
+| column types                                                                                                                                | any except the v3 types `variant`, `timestamp_ns`, `geometry` and `geography`, `unknown` inside a nested type, and a table whose columns are all `unknown`                                                                                                                                                                                                                                                                                                                      |
 
 Within `write.parquet.*`, everything not listed above must be absent: unvetted keys (e.g.
 `bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions) fall
@@ -706,6 +707,17 @@ or GCS each read is a GET request, so the task waits two request round trips per
 small next to uploading a large file, but a write that produces many small files, such as a fanout
 write over many partitions, pays it for every one of them.
 
+UUID columns, including struct fields, array elements and map keys/values, are normalized
+from Spark strings using Java's `UUID.fromString` rules. This accepts uppercase, shortened
+groups and the other non-canonical forms accepted by Java; an invalid visible value fails the
+task and triggers ordinary write cleanup. UUID leaves use `FIXED_LEN_BYTE_ARRAY(16)` with
+Iceberg field ids, big-endian UUID bytes and the Parquet `UUID` logical annotation, matching
+iceberg-java for top-level and nested columns. `fixed(16)` columns retain binary semantics
+and have no UUID annotation.
+UUID columns used as partition or sort sources currently fall back, because Spark distributes
+and orders the input strings before UUID normalization. UUID data columns remain eligible in
+unpartitioned, clustered and fanout writes partitioned or sorted by other columns.
+
 #### Plans for each fallback
 
 Each eligibility rule above is planned to be lifted, waiting on work in another project, or not
@@ -734,7 +746,8 @@ Planned to be lifted:
   `write.parquet.page-version=v2`, `write.parquet.stats-enabled.column.*`, non-default
   `row-group-check-*` counts, and a zstd level of `0`
   ([#6954](https://github.com/apache/datafusion-comet/issues/6954))
-- `uuid` and `unknown` columns
+- UUID partition or sort sources, nested `unknown` columns, tables whose columns are all
+  `unknown`, and partition fields sourced from an `unknown` column
   ([#6959](https://github.com/apache/datafusion-comet/issues/6959))
 - `hdfs` data locations on a cluster without Kerberos. iceberg-rust's `hdfs-native` backend
   ([apache/iceberg-rust#3111](https://github.com/apache/iceberg-rust/pull/3111)) already serves
@@ -849,15 +862,14 @@ unchanged.
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
 `spark.comet.write.iceberg.enabled` accepts them. They fall into two classes with very
-different blast radius: differences confined to the physical bytes of a data file (cosmetic —
-no reader decision is based on them), and differences visible in manifest metadata (these
+different blast radius: differences confined to the physical bytes of a data file, and
+differences visible in manifest metadata (these
 outlive the write and feed later readers' pruning decisions, so each one is analyzed
 individually below).
 
-#### Physical file layout only (cosmetic)
+#### Physical file layout
 
-No Iceberg reader bases a planning or correctness decision on these; they change the bytes of
-a data file but not what any reader computes from it:
+Iceberg readers use the table schema and recover the same values from these layouts.
 
 - Footer key-value metadata differs: native files carry an `ARROW:schema` entry and no
   `iceberg.schema` entry; iceberg-java files are the opposite.

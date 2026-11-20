@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.benchmark
 
+import scala.collection.mutable
 import scala.concurrent.duration._
 
 import org.apache.spark.SparkConf
@@ -176,7 +177,8 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       statement: String,
       expectedRowsAfter: Long,
       expectShuffle: Option[Boolean],
-      expectSort: Option[Boolean])
+      expectSort: Option[Boolean],
+      uuid: Boolean = false)
 
   private def workloads(values: Int): Seq[Workload] = {
     val insert = s"INSERT INTO $targetTable SELECT * FROM parquetV1Table"
@@ -295,6 +297,11 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     withTempPath { warehouse =>
       configureIcebergHadoopCatalog(warehouse, catalog)
 
+      if (mainArgs.contains("uuid")) {
+        runUuidWorkloads()
+        return
+      }
+
       runBenchmarkWithTable("Iceberg write", 4 * 1024 * 1024) { values =>
         withTempPath { dir =>
           withTempTable("parquetV1Table") {
@@ -302,7 +309,53 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
               spark.sql(corpusQuery).repartition(sourceFiles).write,
               dir.getCanonicalPath + "/parquetV1")
             try {
-              workloads(values).foreach(runWorkload(_, values))
+              val cases = workloads(values)
+              val selected = if (mainArgs.contains("control")) cases.take(1) else cases
+              selected.foreach(runWorkload(_, values))
+            } finally {
+              spark.sql(s"DROP TABLE IF EXISTS $targetTable")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** Select with `...CometIcebergWriteBenchmark uuid`; generation and validation are untimed. */
+  private def runUuidWorkloads(): Unit = {
+    val values = 4 * 1024 * 1024
+    Seq("canonical", "canonical-null", "shortened").foreach { shape =>
+      runBenchmarkWithTable(s"Iceberg UUID $shape", values) { size =>
+        withTempPath { dir =>
+          withTempTable("parquetV1Table") {
+            val hash = "md5(concat('6959:', CAST(value AS STRING)))"
+            val canonical = s"concat(substr($hash, 1, 8), '-', substr($hash, 9, 4), '-', " +
+              s"substr($hash, 13, 4), '-', substr($hash, 17, 4), '-', substr($hash, 21, 12))"
+            val uuid = shape match {
+              case "canonical" => canonical
+              case "canonical-null" => s"IF(PMOD(value, 8) = 0, NULL, $canonical)"
+              case "shortened" => "concat(hex(pmod(value, 2147483647)), '-1-1-1-1')"
+            }
+            saveAsParquetV1Table(
+              spark
+                .sql(s"SELECT value AS id, $uuid AS u FROM $tbl")
+                .repartition(sourceFiles)
+                .write,
+              dir.getCanonicalPath + "/uuid")
+            try {
+              runWorkload(
+                Workload(
+                  title = s"UUID $shape INSERT",
+                  partitionSpec = "",
+                  properties = Nil,
+                  orderBy = None,
+                  prePopulate = false,
+                  statement = s"INSERT INTO $targetTable SELECT * FROM parquetV1Table",
+                  expectedRowsAfter = size.toLong,
+                  expectShuffle = None,
+                  expectSort = None,
+                  uuid = true),
+                size)
             } finally {
               spark.sql(s"DROP TABLE IF EXISTS $targetTable")
             }
@@ -313,6 +366,17 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
   }
 
   private def runWorkload(workload: Workload, values: Int): Unit = {
+    val expectedUuid = if (workload.uuid) {
+      spark.udf.register(
+        "benchmark_normalize_uuid",
+        (value: String) => Option(value).map(java.util.UUID.fromString(_).toString).orNull)
+      Some(
+        spark
+          .sql("SELECT count(*), sum(xxhash64(id, benchmark_normalize_uuid(u))) " +
+            "FROM parquetV1Table")
+          .head())
+    } else None
+    val samples = mutable.LinkedHashMap.empty[String, mutable.ArrayBuffer[Double]]
     // `warmupTime` is a deadline and `minTime` a total across the measured iterations, so both are
     // floors on a case's total cost rather than on one write. The floors are set below the fastest
     // write the corpus produces - the native writer is around half a second here - so that every
@@ -333,6 +397,8 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
 
     arms.foreach { arm =>
       val label = verifyArm(benchmark, arm, workload)
+      val times = mutable.ArrayBuffer.empty[Double]
+      samples(label) = times
       benchmark.addTimerCase(label) { timer =>
         // Neither an insert nor a copy-on-write delete is idempotent. Without rebuilding the table
         // each iteration, an insert would append to the previous iteration's files and a delete
@@ -341,10 +407,33 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         timer.startTiming()
         withSQLConf(arm.confs: _*) { spark.sql(workload.statement) }
         timer.stopTiming()
+        expectedUuid.foreach { expected =>
+          val actual =
+            spark.sql(s"SELECT count(*), sum(xxhash64(id, u)) FROM $targetTable").head()
+          require(actual == expected, s"$label: UUID checksum mismatch: $actual != $expected")
+        }
+        if (timer.iteration >= 0) times += timer.totalTime().toDouble / 1000000.0
       }
     }
 
     benchmark.run()
+    samples.foreach { case (label, times) =>
+      require(times.size >= 5)
+      val sorted = times.sorted
+      val median = (sorted((sorted.size - 1) / 2) + sorted(sorted.size / 2)) / 2
+      benchmark.out.println(
+        f"$label: median=$median%.2f ms, range=${sorted.head}%.2f.." +
+          f"${sorted.last}%.2f ms, rows/s=${values.toDouble * 1000 / median}%.0f")
+    }
+    if (workload.uuid) {
+      def median(label: String): Double = {
+        val sorted = samples(label).sorted
+        (sorted((sorted.size - 1) / 2) + sorted(sorted.size / 2)) / 2
+      }
+      benchmark.out.println(
+        "UUID writer factor (median): " +
+          f"${median("Comet scan") / median("Comet scan + native write")}%.3fX")
+    }
   }
 
   /**
@@ -369,6 +458,26 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     if (remaining != workload.expectedRowsAfter) {
       throw new IllegalStateException(
         s"${arm.name}: table holds $remaining rows, expected ${workload.expectedRowsAfter}")
+    }
+    if (workload.uuid) {
+      // UUID parsing is outside timing, and validation compares normalized values rather than
+      // the original strings (uppercase and shortened groups are legitimate Java inputs).
+      spark.udf.register(
+        "benchmark_normalize_uuid",
+        (value: String) => Option(value).map(java.util.UUID.fromString(_).toString).orNull)
+      val expected = spark
+        .sql(
+          "SELECT sum(xxhash64(id, benchmark_normalize_uuid(u))) " +
+            "FROM parquetV1Table")
+        .head()
+      val actual = spark.sql(s"SELECT sum(xxhash64(id, u)) FROM $targetTable").head()
+      require(actual == expected, s"${arm.name}: UUID checksum mismatch: $actual != $expected")
+      val files = spark
+        .sql(
+          "SELECT count(*), sum(file_size_in_bytes) " +
+            s"FROM $targetTable.data_files")
+        .head()
+      benchmark.out.println(s"${arm.name}: ${files.getLong(0)} files, ${files.getLong(1)} bytes")
     }
 
     val cometOps = collectAcross(plans) { case op if isComet(op) => op }
@@ -429,6 +538,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
           s"BENCH_MAVEN_OPTS). Plans:\n${plans.mkString("\n--\n")}")
     }
     if (arm.expectNativeWrite && nativeWrites.isEmpty) {
+      require(!workload.uuid, s"${arm.name}: UUID benchmark fell back; measurement is invalid")
       warn(
         benchmark,
         s"${workload.title} / ${arm.name}: no CometIcebergWriteExec in the plan. The write fell " +
@@ -455,7 +565,13 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       workload.properties
     // `WHERE false` takes the schema from the source without writing anything, which avoids
     // restating the corpus as DDL and keeps the two in step.
-    spark.sql(s"""
+    if (workload.uuid) {
+      spark.sql(s"""CREATE TABLE $targetTable (id BIGINT) USING iceberg
+        TBLPROPERTIES (${properties.mkString(", ")})""")
+      val table = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, targetTable)
+      table.updateSchema().addColumn("u", org.apache.iceberg.types.Types.UUIDType.get()).commit()
+      spark.sql(s"REFRESH TABLE $targetTable")
+    } else spark.sql(s"""
       CREATE TABLE $targetTable
       USING iceberg
       ${workload.partitionSpec}
