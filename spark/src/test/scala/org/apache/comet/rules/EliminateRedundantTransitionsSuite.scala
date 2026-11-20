@@ -93,6 +93,6 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
     assert(result.executeColumnar().map(_.numRows()).sum() == 10)
 
     val e = intercept[SparkException](shuffle.executeColumnar().count())
-    assert(e.getMessage.contains("expects Arrow-backed Comet vectors"), e.getMessage)
+    assert(e.getMessage.contains("expects CometVectors"), e.getMessage)
   }
 }
