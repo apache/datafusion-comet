@@ -20,6 +20,7 @@
 -- does spark.sql.legacy.disableMapKeyNormalization (map_builders_float_key_gate_legacy.sql).
 
 -- MinSparkVersion: 4.0
+-- ConstantFolding: enabled
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 statement
@@ -41,3 +42,14 @@ SELECT map_from_arrays(array(d, -d), array(1, 2)) FROM float_map_keys_zeros
 
 query expect_error_class(DUPLICATED_MAP_KEY)
 SELECT map_from_arrays(array(f, -f), array(1, 2)) FROM float_map_keys_zeros
+
+-- The builder can share a folded list across the batch.
+query expect_native(map_from_arrays)
+SELECT map_from_arrays(array(d, 1D), array(1, 2)) FROM float_map_keys_zeros
+
+statement
+SET spark.comet.exec.scalaUDF.codegen.enabled=true
+
+-- A native arrays_zip would broadcast the folded list before the builder sees it.
+query expect_dispatch(map_from_entries)
+SELECT map_from_entries(arrays_zip(array(d, 1D), array(1, 2))) FROM float_map_keys_zeros

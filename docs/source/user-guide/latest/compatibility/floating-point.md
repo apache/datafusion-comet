@@ -190,6 +190,7 @@ distinct. When `LAST_WIN` removes a duplicate, it stores normalized keys through
 
 The Rust builders accept array columns, including arrays with variable-width values. They also
 accept directly supported array literals and simple constructors with fixed-width fields.
-`arrays_zip` can combine array columns and these constructors. For other computed inputs or a
-struct or array key containing a `FLOAT` or `DOUBLE`, Comet uses
+`arrays_zip` can combine array columns and these constructors. If Spark folds one zip argument
+to an array literal, Comet dispatches the whole builder to avoid broadcasting the list across
+the batch. For other computed inputs or a struct or array key containing a `FLOAT` or `DOUBLE`, Comet uses
 [codegen dispatch](expressions/map.md) by default so Spark evaluates the complete expression.
