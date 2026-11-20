@@ -151,17 +151,35 @@ private object MapBuilderKeySupport {
   def isFloatingPoint(keyType: DataType): Boolean =
     keyType == FloatType || keyType == DoubleType
 
-  // The dispatcher evaluates the whole builder, including its children, in Spark. Only split
-  // it into native arguments by default when eager or repeated evaluation is safe.
-  private def safeInputNode(expr: Expression): Boolean = expr match {
-    case _: AttributeReference | _: BoundReference | _: Literal | _: GetStructField |
-        _: CreateArray | _: CreateNamedStruct | _: ArraysZip =>
-      true
-    case _: UnaryMinus | _: Add | _: Subtract | _: Multiply => isFloatingPoint(expr.dataType)
-    case c: Cast =>
-      c.child.dataType == NullType ||
-      (isFloatingPoint(c.dataType) && c.child.dataType.isInstanceOf[NumericType])
+  private def isColumn(expr: Expression): Boolean = expr match {
+    case _: AttributeReference | _: BoundReference => true
+    case field: GetStructField => isColumn(field.child)
     case _ => false
+  }
+
+  // Constructors evaluate their children across the batch and can broadcast a large value
+  // before LAST_WIN discards it. Only build entries from fixed-width, eagerly evaluable fields.
+  private def safeElement(expr: Expression): Boolean = expr match {
+    case s: CreateNamedStruct => s.valExprs.forall(safeElement)
+    case _: UnaryMinus | _: Add | _: Subtract | _: Multiply =>
+      isFloatingPoint(expr.dataType) && expr.children.forall(safeElement)
+    case c: Cast if isFloatingPoint(c.dataType) =>
+      (c.child.dataType == NullType || c.child.dataType.isInstanceOf[NumericType]) &&
+      safeElement(c.child)
+    case _ =>
+      (expr.isInstanceOf[Literal] || isColumn(expr)) &&
+      (expr.dataType.isInstanceOf[DecimalType] || UnsafeRow.isFixedLength(expr.dataType))
+  }
+
+  private def simpleArray(expr: Expression): Boolean = expr match {
+    case array: CreateArray => array.children.forall(safeElement)
+    case _ => isColumn(expr)
+  }
+
+  private def safeInput(expr: Expression): Boolean = expr match {
+    case Literal(_, ArrayType(element, _)) => CometLiteral.listLiteralElementSupported(element)
+    case zip: ArraysZip => zip.children.nonEmpty && zip.children.forall(simpleArray)
+    case _ => simpleArray(expr)
   }
 
   val computedInputReason: String =
@@ -169,10 +187,10 @@ private object MapBuilderKeySupport {
 
   def keySupport(keyType: DataType, children: Seq[Expression]): SupportLevel = {
     if (isFloatingPoint(keyType)) {
-      if (children.exists(_.exists(node => !safeInputNode(node)))) {
-        Incompatible(Some(computedInputReason))
-      } else {
+      if (children.forall(safeInput)) {
         Compatible()
+      } else {
+        Incompatible(Some(computedInputReason))
       }
     } else if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
       Incompatible(Some(nestedFloatingPointReason))

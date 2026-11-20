@@ -84,16 +84,26 @@ SELECT map_keys(map_from_entries(array(named_struct('k', -d, 'v', 1), named_stru
   map_values(map_from_entries(array(named_struct('k', -d, 'v', 1), named_struct('k', d, 'v', 2))))
 FROM float_map_keys_last_win WHERE id = 1
 
+statement
+CREATE TABLE float_map_inputs USING parquet AS
+SELECT /*+ COALESCE(1) */ id, array(3.0D, double('-0.0'), double(id)) AS keys,
+  array(k, k, CAST(NULL AS ARRAY<STRING>)) AS vals, CAST(array() AS ARRAY<DOUBLE>) AS empty_keys
+FROM float_map_keys_last_win
+
 -- Only row 3 repeats the key 3.0, replacing its value with NULL at position 0. On Spark 4.0+
 -- map_from_arrays normalizes -0.0 in that row alone. map_from_entries normalizes it in every row.
 query expect_native(map_from_arrays, map_from_entries)
-WITH t AS (
-  SELECT id, array(3.0D, -0.0D, double(id)) AS keys,
-    array(k, k, CAST(NULL AS ARRAY<STRING>)) AS vals
-  FROM float_map_keys_last_win
-)
 SELECT id, map_entries(map_from_arrays(keys, vals)), map_entries(map_from_entries(arrays_zip(keys, vals)))
-FROM t
+FROM float_map_inputs
+
+query
+SELECT size(map_from_arrays(empty_keys, arrays_zip())) FROM float_map_inputs
+
+-- Dispatch the whole expression so discarded strings need no intermediate batch buffer.
+query expect_dispatch(map_from_arrays, map_from_entries)
+SELECT map_from_arrays(array(d, d), array(array('discarded'), k)),
+  map_from_entries(arrays_zip(array(d, d), array('discarded', 'kept')))
+FROM float_map_keys_last_win
 
 -- The row counter advances once per row, including when the values array is NULL.
 query expect_dispatch(map_from_entries)
