@@ -19,7 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CallMethodViaReflection, ElementAt, Expression, ScalaUDF}
+import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType}
+
+import org.apache.comet.serde.QueryPlanSerde.skipsSharedSubexpression
 
 /**
  * Trait for providing serialization logic for expressions.
@@ -112,7 +115,8 @@ trait CometExpressionSerde[T <: Expression] {
  * `Unsupported`, the expression always routes through the dispatcher -- the serde is declaring
  * "no native path exists for this case; run Spark's code in-pipeline." Spark fallback is reserved
  * for the case where the dispatcher itself cannot handle the expression (e.g. the global codegen
- * flag is off, or the kernel rejects the bound tree).
+ * flag is off, or the kernel rejects the bound tree), or an expression that
+ * `dispatchDeclineReason` declines.
  *
  * Contract for `Unsupported` reasons on a `CodegenDispatchFallback` serde: the case must be
  * something `Expression.doGenCode` can compile. If you mark something `Unsupported` because Spark
@@ -122,7 +126,72 @@ trait CometExpressionSerde[T <: Expression] {
  * dispatcher. Every other `Incompatible` expression falls back to Spark, and every other
  * `Unsupported` expression falls back to Spark.
  */
-trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
+trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] =>
+
+  /** Why `expr` must fall back to Spark rather than run through the dispatcher, or `None`. */
+  def dispatchDeclineReason(expr: Expression): Option[String] = None
+}
+
+/** Keeps expressions in Spark when compiling them as separate kernels would change behavior. */
+trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
+  self: CometExpressionSerde[_] =>
+
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput
+      .declineReason(expr)
+      .orElse(expr.collectFirst {
+        case e if e.deterministic && e.children.exists(!_.deterministic) =>
+          "Spark reports a stateful subtree as deterministic, so compiling it separately " +
+            "can change its evaluation"
+        case u: ScalaUDF if !u.udfDeterministic =>
+          "a nondeterministic user function can share state across calls that Spark evaluates " +
+            "together for each row"
+        case _: CallMethodViaReflection =>
+          "a reflected method can share static state across calls that Spark evaluates " +
+            "together for each row"
+        case e: ElementAt if writesUndeclaredNullFlag(e) =>
+          "Spark's generated code for this non-nullable array element_at assigns an " +
+            "undeclared null flag"
+      })
+      .orElse {
+        if (QueryPlanSerde.sparkMayInterpret && expr.children.exists(e =>
+            !EvaluationOrder.isUnobservable(e))) {
+          Some("Spark may interpret computed arguments that the dispatcher would compile")
+        } else {
+          SharedSubexpressionArgument.declineReason(expr)
+        }
+      }
+
+  // BinaryExpression declares the flag only for nullable results. ElementAt still assigns it
+  // in its out-of-bounds and null-element branches even when the literal index rules them out.
+  private def writesUndeclaredNullFlag(e: ElementAt): Boolean = e.left.dataType match {
+    case ArrayType(_, containsNull) => !e.nullable && (!e.failOnError || containsNull)
+    case _ => false
+  }
+}
+
+/** See https://github.com/apache/datafusion-comet/issues/5279. */
+private[serde] object CalendarIntervalOutput {
+
+  private val reason: String =
+    "the result holds a calendar interval, whose microseconds overflow the dispatcher's Arrow " +
+      "nanoseconds beyond about 292 years"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (SupportLevel.containsType(expr.dataType, classOf[CalendarIntervalType])) Some(reason)
+    else None
+}
+
+private[serde] object SharedSubexpressionArgument {
+
+  private val reason: String =
+    "an argument this expression can skip holds a subexpression that the operator's other " +
+      "expressions share or that the kernel repeats. Spark and the dispatcher can evaluate " +
+      "it on different rows"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (skipsSharedSubexpression(expr)) Some(reason) else None
+}
 
 /**
  * Marker for serdes that have a native implementation the user can opt into. Normally these
