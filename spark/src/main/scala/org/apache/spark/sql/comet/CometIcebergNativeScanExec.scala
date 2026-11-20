@@ -233,8 +233,14 @@ case class CometIcebergNativeScanExec(
 
     // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
+    // Splits whose data file stores a filtered column with a narrower type than the table, so the
+    // native scan pushed only part of their residual (iceberg_narrow_types.rs, #7138).
+    val narrowTypeSplitsMetric = SQLMetrics.createMetric(
+      sparkContext,
+      "number of file splits with a narrower column type than the table")
 
-    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
+    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric) +
+      ("narrow_type_splits" -> narrowTypeSplitsMetric)
   }
 
   // Execution id this scan last posted its driver metrics under. Guards against a second post:

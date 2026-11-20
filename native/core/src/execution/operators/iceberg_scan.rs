@@ -47,11 +47,15 @@ use iceberg::{Error, ErrorKind};
 use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::iceberg_common::load_file_io;
+use crate::execution::operators::iceberg_narrow_types::{
+    check_narrow_types, FileSchemas, NarrowTypeCheck,
+};
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
+use iceberg::expr::BoundPredicate;
 use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
 use iceberg::spec::DataFileFormat;
 
@@ -197,13 +201,33 @@ impl IcebergScanExec {
 
         // Fill delete-file sizes as the first step of the task stream so the stats run on the
         // iceberg runtime alongside the reads, not on the calling executor thread (see
-        // fill_delete_file_sizes).
+        // fill_delete_file_sizes). Then check each data file's column types against its residual
+        // (see iceberg_narrow_types), keeping the tasks in order with at most
+        // data_file_concurrency_limit footer reads in flight.
         let fill_io = file_io.clone();
         let concurrency_limit = self.data_file_concurrency_limit;
+        let narrow_type_splits = metrics.narrow_type_splits.clone();
         let task_stream = futures::stream::once(async move {
             let mut tasks = tasks;
             Self::fill_delete_file_sizes(&mut tasks, &fill_io, concurrency_limit).await?;
-            Ok::<_, Error>(futures::stream::iter(tasks.into_iter().map(Ok::<_, Error>)))
+            let schemas = Arc::new(FileSchemas::new(&tasks));
+            let checked = futures::stream::iter(tasks)
+                .map(move |task| {
+                    let file_io = fill_io.clone();
+                    let schemas = Arc::clone(&schemas);
+                    let narrow_type_splits = narrow_type_splits.clone();
+                    async move {
+                        match check_narrow_types(&task, &file_io, &schemas).await? {
+                            NarrowTypeCheck::Weakened(predicate) => {
+                                narrow_type_splits.add(1);
+                                Self::rebuild_task(&task, task.deletes().to_vec(), predicate)
+                            }
+                            NarrowTypeCheck::NotNeeded | NarrowTypeCheck::Unchanged => Ok(task),
+                        }
+                    }
+                })
+                .buffered(concurrency_limit.max(1));
+            Ok::<_, Error>(checked)
         })
         .try_flatten()
         .boxed();
@@ -347,7 +371,7 @@ impl IcebergScanExec {
                     None => Ok(delete.clone()),
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
-            *task = Self::rebuild_task_with_deletes(task, deletes)?;
+            *task = Self::rebuild_task(task, deletes, task.predicate().cloned())?;
         }
         Ok(())
     }
@@ -355,7 +379,7 @@ impl IcebergScanExec {
     /// Copies a delete file with its size set to `size`.
     ///
     /// `FileScanTaskDeleteFile`'s fields are private with no mutator, so, as for the task in
-    /// [`Self::rebuild_task_with_deletes`], the copy goes through the builder, forwarding every
+    /// [`Self::rebuild_task`], the copy goes through the builder, forwarding every
     /// other field through its public accessors. The builder repeats the delete file's validation
     /// on `build()`.
     fn sized_delete_file(
@@ -377,14 +401,16 @@ impl IcebergScanExec {
             .build()
     }
 
-    /// Rebuilds a [`FileScanTask`] carrying a new set of delete files.
+    /// Rebuilds a [`FileScanTask`] carrying a new set of delete files and a new residual.
     ///
-    /// `FileScanTask::deletes` is private with no mutator, so the only way to change a task's
-    /// delete files is to construct a fresh task via the builder, forwarding every other field
-    /// through its public accessors. The builder runs `FileScanTask`'s validation on `build()`.
-    fn rebuild_task_with_deletes(
+    /// `FileScanTask`'s fields are private with no mutator, so the only way to change a task's
+    /// delete files or predicate is to construct a fresh task via the builder, forwarding every
+    /// other field through its public accessors. The builder runs `FileScanTask`'s validation on
+    /// `build()`.
+    fn rebuild_task(
         task: &FileScanTask,
         deletes: Vec<FileScanTaskDeleteFile>,
+        predicate: Option<BoundPredicate>,
     ) -> Result<FileScanTask, Error> {
         FileScanTask::builder()
             .with_file_size_in_bytes(task.file_size_in_bytes())
@@ -397,7 +423,7 @@ impl IcebergScanExec {
             .with_data_file_format(task.data_file_format())
             .with_schema(task.schema_ref())
             .with_project_field_ids(task.project_field_ids().to_vec())
-            .with_predicate(task.predicate().cloned())
+            .with_predicate(predicate)
             .with_deletes(deletes)
             .with_partition(task.partition().cloned())
             .with_partition_spec(task.partition_spec().cloned())
@@ -417,6 +443,9 @@ struct IcebergScanMetrics {
     num_splits: Count,
     /// Total bytes read from storage
     bytes_scanned: Count,
+    /// Splits whose residual was weakened because their data file stores a filtered column with
+    /// a narrower type than the table (see iceberg_narrow_types)
+    narrow_type_splits: Count,
 }
 
 impl IcebergScanMetrics {
@@ -425,6 +454,7 @@ impl IcebergScanMetrics {
             baseline: BaselineMetrics::new(metrics, 0),
             num_splits: MetricBuilder::new(metrics).counter("num_splits", 0),
             bytes_scanned: MetricBuilder::new(metrics).counter("bytes_scanned", 0),
+            narrow_type_splits: MetricBuilder::new(metrics).counter("narrow_type_splits", 0),
         }
     }
 }
