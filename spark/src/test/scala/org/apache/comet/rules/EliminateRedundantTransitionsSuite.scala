@@ -23,7 +23,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
-import org.apache.spark.sql.comet.execution.shuffle.{CometToColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnionExec}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 
