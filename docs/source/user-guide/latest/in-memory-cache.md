@@ -34,10 +34,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.comet.exec.inMemoryCache.enabled=true
 ```
 
-On Spark 3.4, a union of a shuffle and a relation cached in Comet's format keeps every shuffle
-partition. Spark 3.4 has no hook for the rule through which Comet lets AQE coalesce the shuffle
-partitions of a union that Comet runs.
-
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
 cache format it started with however the config is set afterwards. The plugin installs Comet's
@@ -168,11 +164,8 @@ several times faster, at six times the memory.
 The two relations are not comparable to each other — different row counts, and a struct column
 carries several values per row.
 
-Array and map columns are deliberately absent from the benchmark, not from the format — the cache
-stores and projects them, and `CometInMemoryCacheSuite` covers them. They cannot be measured _here_
-because the left column would not exist: it needs Spark's cache scan to bridge into Comet operators,
-and `CometSparkToColumnarExec` declines `ArrayType` and `MapType`, so a query projecting one falls
-back to Spark row execution above the scan and the two columns stop measuring the same boundary.
+Array and map columns are not in the benchmark, though the cache stores and projects them, and
+`CometInMemoryCacheSuite` covers them.
 
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's

@@ -32,7 +32,6 @@ import org.apache.spark.sql.{CometTestBase, SparkSession}
 import org.apache.spark.sql.execution.SparkPlanInfo
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /**
@@ -244,7 +243,6 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
   // native. Older Iceberg writes no lineage columns, so its rewrite stays native.
   test("binPack rewrite of a format-version=3 table keeps row lineage") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
     val writesLineage = icebergVersionAtLeast(1, 10)
 
     withTempIcebergDir { warehouseDir =>
