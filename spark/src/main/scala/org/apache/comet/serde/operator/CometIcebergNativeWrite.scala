@@ -737,7 +737,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   // Compared exactly: Iceberg 1.11 rejects `V1` ("must be v1 or v2"), so a trimmed or
-  // lowercased match would write natively a table whose iceberg-java write fails.
+  // lowercased match would write natively a table whose iceberg-java write fails. Earlier
+  // versions ignore the property and always write v1 pages, so there a fallback only gives up
+  // a native write that would have been safe.
   private val requireParquetPageVersionDefault: TriggerRule = ctx => {
     val key = PropertyKeys.ParquetPageVersion
     ctx.properties
