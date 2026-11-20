@@ -16,9 +16,7 @@
 -- under the License.
 
 -- With spark.sql.legacy.disableMapKeyNormalization, Spark 4.0+ leaves FLOAT and DOUBLE map keys as
--- they are, as Spark 3.5 always does (it doesn't have the flag). So 0.0 and -0.0 are two
--- keys and a -0.0 key stays -0.0. map_from_entries and map_from_arrays run Spark's code in the
--- codegen dispatcher, which has to see the session's flag.
+-- they are, as Spark 3.5 always does. So 0.0 and -0.0 are two keys and a -0.0 key stays -0.0.
 
 -- Config: spark.sql.legacy.disableMapKeyNormalization=true
 
@@ -28,13 +26,13 @@ CREATE TABLE float_map_keys_legacy(d double, f float) USING parquet
 statement
 INSERT INTO float_map_keys_legacy VALUES (0.0, 0.0)
 
-query expect_dispatch(map_from_entries)
+query expect_native(map_from_entries)
 SELECT
   map_keys(map_from_entries(array(named_struct('k', d, 'v', 1), named_struct('k', -d, 'v', 2)))),
   map_keys(map_from_entries(array(named_struct('k', -f, 'v', 1), named_struct('k', 2.5F, 'v', 2))))
 FROM float_map_keys_legacy
 
-query expect_dispatch(map_from_arrays)
+query expect_native(map_from_arrays)
 SELECT
   map_keys(map_from_arrays(array(d, -d), array(1, 2))),
   map_keys(map_from_arrays(array(f, -f), array(1, 2)))

@@ -179,8 +179,18 @@ array whose elements cannot be null in ascending order, Spark's generated code p
 
 ## Map construction
 
-`map_from_arrays` and `map_from_entries` don't build a map natively when its key type holds a
-`FLOAT` or `DOUBLE` at any depth. They run Spark's code through the codegen dispatcher instead, so
-duplicate keys, including NaNs and zeros of either sign, behave as in Spark. `FLOAT` and `DOUBLE`
-values don't affect either function. The expressions' entries in the
-[expression compatibility guide](expressions/map.md) give the reason.
+`map_from_arrays` and `map_from_entries` support `FLOAT` and `DOUBLE` keys in Rust under both
+`spark.sql.mapKeyDedupPolicy` settings. All NaNs represent the same key. On Spark 4.0 and later,
+the builders also treat `-0.0` and `0.0` as the same key unless
+`spark.sql.legacy.disableMapKeyNormalization=true`.
+
+With normalization enabled, `map_from_entries` stores `0.0` for a `-0.0` key and the canonical
+NaN for any NaN key. Like Spark, `map_from_arrays` preserves the original keys when they are
+distinct. When `LAST_WIN` removes a duplicate, it stores normalized keys throughout that map.
+
+The Rust builders accept array columns, including arrays with variable-width values. They also
+accept directly supported array literals and simple constructors with fixed-width fields.
+`arrays_zip` can combine array columns and these constructors. If Spark folds one zip argument
+to an array literal, Comet dispatches the whole builder to avoid broadcasting the list across
+the batch. For other computed inputs or a struct or array key containing a `FLOAT` or `DOUBLE`, Comet uses
+[codegen dispatch](expressions/map.md) by default so Spark evaluates the complete expression.
