@@ -185,7 +185,7 @@ gh issue list \
   --label bug --label priority:critical \
   --state open \
   --limit 300 \
-  --json number,title,labels,url
+  --json number,title,labels,url,createdAt
 ```
 
 **Primary area.** Give each issue exactly one area so the counts add up to the
@@ -199,6 +199,12 @@ step never adds one.
 **New this week.** A critical bug is new if it was in this pass's
 `requires-triage` queue and ended up `bug` + `priority:critical`. That includes
 issues whose author already applied the labels.
+
+**Age.** Every issue in the report shows how old it is, from its `createdAt`.
+Age is the number of whole calendar days (UTC) from the day the issue was
+created to the report date. Write it as `N days`, `1 day`, or `today` for an
+issue created on the report date. Take `createdAt` from the Step 2 fetch for
+issues in this pass and from the fetch above for the other critical bugs.
 
 **Comparison with last week.** Find the previous report:
 
@@ -263,8 +269,8 @@ order:
 
    ### area:Iceberg
 
-   - **NEW** <title> ([#1234](url)) - one sentence on why it is critical
-   - <title> ([#1200](url))
+   - **NEW** <title> (2 days) ([#1234](url)) - one sentence on why it is critical
+   - <title> (27 days) ([#1200](url))
    ```
 
    - Order the rows by `Open`, largest first, and leave out areas with no open
@@ -279,8 +285,8 @@ order:
      did not change, say "the same as last week".
 
 3. **Needs a decision** — omit any part that is empty; omit the heading if all
-   are empty. Each is a bullet per issue in `<title> ([#N](url))` form with one
-   sub-bullet.
+   are empty. Each is a bullet per issue in `<title> (27 days) ([#N](url))` form
+   with one sub-bullet.
    - **Escalations to consider**: the trigger from the guide.
    - **Skipped - needs more info**: what is missing.
    - **Failed to label**: the quoted `gh` error.
@@ -288,8 +294,8 @@ order:
    from this pass, in that order; critical bugs are already in section 2. Omit
    a priority with no issues. Do **not** use a markdown table here.
 
-   - `priority:high`: `<title> ([#N](url))` with a one-sentence rationale
-     sub-bullet.
+   - `priority:high`: `<title> (27 days) ([#N](url))` with a one-sentence
+     rationale sub-bullet.
    - `priority:medium` and `priority:low`: title and link only, no sub-bullets,
      inside a collapsed block:
 
@@ -297,7 +303,7 @@ order:
      <details>
      <summary>priority:medium (5)</summary>
 
-     - <title> ([#1234](url))
+     - <title> (3 days) ([#1234](url))
 
      </details>
      ```
@@ -307,6 +313,8 @@ order:
    rationale.
 
 In every list the issue number is the link target and the title is plain text.
+The age goes right after the title, in the form shown above, on every issue in
+the report including the collapsed lists.
 
 File the issue with `gh`. Use a temp file for the body to keep quoting sane:
 
