@@ -40,7 +40,7 @@ use datafusion_datasource::{
     PartitionedFile, TableSchema,
 };
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use object_store::{path::Path, ObjectStore};
+use object_store::ObjectStore;
 use std::{fmt, sync::Arc};
 use url::{Position, Url};
 
@@ -49,7 +49,7 @@ use url::{Position, Url};
 pub(crate) struct SparkFilePath(Arc<str>);
 
 impl SparkFilePath {
-    pub(crate) fn new(original: &str, url: &Url, key: &Path) -> Self {
+    pub(crate) fn new(original: &str, url: &Url) -> Self {
         let path = original.split(['?', '#']).next().unwrap_or_default();
         if url.cannot_be_a_base() && path.contains('@') {
             return Self("<redacted>".into());
@@ -58,14 +58,18 @@ impl SparkFilePath {
         if url.password().is_none() && (url.username().is_empty() || keep_container) {
             return Self(path.into());
         }
-        // A hostless S3 alias promotes its first path segment to the authority.
-        // Keep Spark's spelling when the suffix after that authority is the key we open.
         let (_, rest) = path.split_once(':').unwrap_or_default();
         let body = rest.trim_start_matches('/');
         let prefix = &path[..path.len() - body.len()];
-        let (authority, suffix) = body.split_once('/').unwrap_or((body, ""));
+        let authority = body.split('/').next().unwrap_or_default();
+        // For a hostless alias, dot segments can change which segment becomes the authority.
+        // Use the raw spelling only if promoting the first segment gives the URL we open.
+        let authority_matches = prefix.ends_with("://")
+            || Url::parse(&format!("{}://{body}", url.scheme())).is_ok_and(|candidate| {
+                candidate[..Position::AfterPath] == url[..Position::AfterPath]
+            });
         let host_and_path = match authority.rfind('@') {
-            Some(at) if Path::from_url_path(suffix).is_ok_and(|p| &p == key) => &body[at + 1..],
+            Some(at) if authority_matches => &body[at + 1..],
             _ => &url[Position::BeforeHost..Position::AfterPath],
         };
         if keep_container && !url.username().is_empty() {
@@ -302,13 +306,14 @@ mod tests {
                 "s3a:///bucket/part.parquet",
             ),
             (
-                "s3a:///reader:password@bucket/café@1.parquet",
-                "s3a:///bucket/café@1.parquet",
+                "s3a:///reader:password@bucket/%2e/café@1.parquet",
+                "s3a:///bucket/%2e/café@1.parquet",
             ),
+            ("s3a:///dir/../reader@bucket/part", "s3a:///bucket/part"),
             ("s3a:bucket/part@1", "s3a:bucket/part@1"),
             (
-                "HDFS://user@host:8020/café.parquet",
-                "HDFS://host:8020/café.parquet",
+                "HDFS://user@host:8020/%2E/café.parquet",
+                "HDFS://host:8020/%2E/café.parquet",
             ),
             (
                 "abfss://data:password@host/f?sig=example",
@@ -321,8 +326,7 @@ mod tests {
             let url = normalize_object_store_url(original, &Default::default())
                 .unwrap()
                 .url;
-            let key = Path::from_url_path(url.path()).unwrap();
-            let path = SparkFilePath::new(original, &url, &key);
+            let path = SparkFilePath::new(original, &url);
             assert_eq!(path.0.as_ref(), expected);
         }
     }
