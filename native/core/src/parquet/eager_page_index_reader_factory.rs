@@ -94,7 +94,7 @@
 //! bring it back.
 
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{contains_ntz, contains_type, SparkParquetOptions};
 use crate::parquet::schema_adapter::{
     check_file_conversions, RejectOnNonEmpty, NANOS_TIMESTAMP_KEY, REPEATED_PRIMITIVE_KEY,
 };
@@ -482,19 +482,21 @@ fn spark_enum_schema(schema: &SchemaDescriptor) -> ParquetResult<Option<Schema>>
     )))
 }
 
+fn has_arrow_schema(file: &FileMetaData) -> bool {
+    file.key_value_metadata()
+        .into_iter()
+        .flatten()
+        .any(|kv| kv.key == ARROW_SCHEMA_META_KEY)
+}
+
 /// Arrow restores advisory `ARROW:schema` types that can differ from Spark's physical Parquet
 /// interpretation. Replace that hint with physical inference and the ENUM string mapping.
 /// Rebuild only the returned metadata; the shared cache retains the original footer.
 /// https://github.com/apache/datafusion-comet/issues/5477
 fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<ParquetMetaData>> {
     let file = metadata.file_metadata();
-    let has_arrow_schema = file.key_value_metadata().is_some_and(|key_values| {
-        key_values
-            .iter()
-            .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
-    });
     let enum_schema = spark_enum_schema(file.schema_descr())?;
-    if !has_arrow_schema && enum_schema.is_none() {
+    if !has_arrow_schema(file) && enum_schema.is_none() {
         return Ok(metadata);
     }
 
@@ -540,6 +542,32 @@ fn is_nanos_timestamp(column: &ColumnDescPtr) -> bool {
     )
 }
 
+fn is_plain_int64(column: &ColumnDescPtr) -> bool {
+    column.physical_type() == parquet::basic::Type::INT64
+        && matches!(
+            column.converted_type(),
+            ConvertedType::NONE | ConvertedType::INT_64
+        )
+        && !matches!(column.logical_type_ref(), Some(LogicalType::Timestamp(_)))
+}
+
+// Only parse the hint when a requested NTZ could read a plain INT64. The adapter
+// resolves exact nested paths, field IDs and Unicode names after the hint check.
+fn may_read_hinted_int64(file: &FileMetaData, required: &Schema, use_field_id: bool) -> bool {
+    has_arrow_schema(file)
+        && required.fields().iter().any(|field| {
+            contains_ntz(field.data_type())
+                && file.schema_descr().columns().iter().any(|column| {
+                    let root = &column.path().parts()[0];
+                    is_plain_int64(column)
+                        && (use_field_id
+                            || root.eq_ignore_ascii_case(field.name())
+                            || !field.name().is_ascii()
+                            || !root.is_ascii())
+                })
+        })
+}
+
 /// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
 /// `TIMESTAMP(NANOS)` leaves the same nanosecond timestamp type. Carry the repeated primitive
 /// and `TIMESTAMP(NANOS)` distinctions in an ephemeral schema used by the conversion check,
@@ -571,6 +599,12 @@ fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
                 });
                 let nanos = column.is_some_and(is_nanos_timestamp);
                 let mut field = field.as_ref().clone();
+                // A Date64 hint can describe INT32 DATE or an unannotated INT64.
+                if column.is_some_and(is_plain_int64)
+                    && contains_type(field.data_type(), &DataType::Date64)
+                {
+                    field = field.with_data_type(DataType::Int64);
+                }
                 if repeated || nanos {
                     let mut metadata = field.metadata().clone();
                     if repeated {
@@ -783,11 +817,21 @@ impl AsyncFileReader for EagerPageIndexReader {
                         column.self_type().get_basic_info().repetition()
                             == parquet::basic::Repetition::REPEATED
                     });
-                if !needs_check {
+                let check_hint =
+                    may_read_hinted_int64(file, required, conversion_options.use_field_id);
+                if !needs_check && !check_hint {
                     return Ok(metadata);
                 }
                 let schema =
                     parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
+                let has_date_hint = check_hint
+                    && schema
+                        .fields()
+                        .iter()
+                        .any(|f| contains_type(f.data_type(), &DataType::Date64));
+                if !needs_check && !has_date_hint {
+                    return Ok(metadata);
+                }
                 let schema = mark_parquet_leaves(&schema, file.schema_descr());
                 let rejection = check_file_conversions(
                     Arc::clone(required),
@@ -800,7 +844,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     DataFusionError::External(source) => ParquetError::External(source),
                     other => ParquetError::External(Box::new(other)),
                 })?;
-                if *row_filters || has_nanos {
+                if *row_filters || has_nanos || has_date_hint {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
                             object_meta.location.clone(),

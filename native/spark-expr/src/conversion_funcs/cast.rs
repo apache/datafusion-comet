@@ -68,7 +68,7 @@ use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResu
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::decode_utf8_spark_lossy;
-use datafusion_comet_common::struct_nulls::{repeated_visibility, Visibility};
+use datafusion_comet_common::struct_nulls::{child_visibility, Visibility};
 use std::{
     fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
@@ -312,20 +312,8 @@ fn cast_array_impl(
         }
     }
 
-    let child_visibility = || {
-        let visible = NullBuffer::union(array.nulls(), parent_visibility.as_ref());
-        match &from_type {
-            List(_) => {
-                let list = array.as_list::<i32>();
-                repeated_visibility(list.value_offsets(), list.values().len(), visible.as_ref())
-            }
-            Map(_, _) => {
-                let map = array.as_map();
-                repeated_visibility(map.value_offsets(), map.entries().len(), visible.as_ref())
-            }
-            _ => visible,
-        }
-    };
+    let child_mask = || child_visibility(array.as_ref(), parent_visibility);
+    let children = Visibility::new(&child_mask);
     let cast_result = match (&from_type, to_type) {
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
         // logical type while preserving length and nullness.
@@ -464,7 +452,7 @@ fn cast_array_impl(
             &from_type,
             to_type,
             cast_options,
-            &Visibility::new(&child_visibility),
+            &children,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(to)) => {
@@ -478,7 +466,7 @@ fn cast_array_impl(
                     Arc::clone(list_array.values()),
                     to.data_type(),
                     cast_options,
-                    &Visibility::new(&child_visibility),
+                    &children,
                 )?,
             };
             Ok(Arc::new(ListArray::new(
@@ -493,7 +481,7 @@ fn cast_array_impl(
             &from_type,
             to_type,
             cast_options,
-            &Visibility::new(&child_visibility),
+            &children,
         )?),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if cast_options.allow_cast_unsigned_ints =>

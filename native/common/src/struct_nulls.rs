@@ -28,7 +28,10 @@
 //! whatever sits in the child slot
 //! (<https://github.com/apache/datafusion-comet/issues/5753>).
 
-use arrow::array::{make_array, Array, ArrayRef, NullBufferBuilder, OffsetSizeTrait, StructArray};
+use arrow::array::{
+    make_array, Array, ArrayRef, AsArray, GenericListViewArray, NullBufferBuilder, OffsetSizeTrait,
+    StructArray,
+};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
@@ -82,8 +85,56 @@ pub fn children_with_parent_nulls(struct_array: &StructArray) -> Result<Vec<Arra
 /// batch and only when one of its selected children needs it.
 pub type Visibility<'a> = LazyCell<Option<NullBuffer>, &'a dyn Fn() -> Option<NullBuffer>>;
 
-/// List/map values can include entries outside a slice or beneath a null parent.
-pub fn repeated_visibility<O: OffsetSizeTrait>(
+/// Map the visible slots of a container to the indices of its children.
+pub fn child_visibility(array: &dyn Array, parent: &Visibility<'_>) -> Option<NullBuffer> {
+    let visible = NullBuffer::union(array.nulls(), parent.as_ref());
+    let nulls = visible.as_ref();
+    match array.data_type() {
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            repeated_visibility(list.value_offsets(), list.values().len(), nulls)
+        }
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            repeated_visibility(list.value_offsets(), list.values().len(), nulls)
+        }
+        DataType::FixedSizeList(_, size) => {
+            // Arrow slices the child values along with a fixed-size list. Expand in those
+            // child coordinates; applying a parent slice offset again would shift the mask.
+            nulls.map(|nulls| nulls.expand(*size as usize))
+        }
+        DataType::ListView(_) => list_view_visibility(array.as_list_view::<i32>(), nulls),
+        DataType::LargeListView(_) => list_view_visibility(array.as_list_view::<i64>(), nulls),
+        DataType::Map(_, _) => {
+            let map = array.as_map();
+            repeated_visibility(map.value_offsets(), map.entries().len(), nulls)
+        }
+        _ => visible,
+    }
+}
+
+fn list_view_visibility<O: OffsetSizeTrait>(
+    list: &GenericListViewArray<O>,
+    nulls: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
+    let mut valid = vec![false; list.values().len()];
+    for (row, (offset, size)) in list
+        .value_offsets()
+        .iter()
+        .zip(list.value_sizes())
+        .enumerate()
+    {
+        if nulls.is_none_or(|nulls| nulls.is_valid(row)) {
+            let start = offset.as_usize();
+            // Views can overlap or be out of order. Accumulate the union of visible ranges;
+            // a null parent must never clear values another parent can see.
+            valid[start..start + size.as_usize()].fill(true);
+        }
+    }
+    Some(NullBuffer::from(valid))
+}
+
+fn repeated_visibility<O: OffsetSizeTrait>(
     offsets: &[O],
     len: usize,
     nulls: Option<&NullBuffer>,

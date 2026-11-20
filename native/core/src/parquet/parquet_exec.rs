@@ -323,11 +323,10 @@ pub(crate) fn init_datasource_exec(
     } else {
         file_source
     };
+    spark_parquet_options.pruning_only_filters =
+        !session_config.options().execution.parquet.pushdown_filters;
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
-        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values)
-            .with_pruning_only_filters(
-                !session_config.options().execution.parquet.pushdown_filters,
-            ),
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );
 
     let file_groups = file_groups
