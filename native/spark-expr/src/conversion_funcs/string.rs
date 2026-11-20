@@ -760,35 +760,7 @@ fn parse_string_to_decimal(
     } else {
         IntegralDigitLimit::Applied { zero_any_exponent }
     };
-    let parsed = parse_decimal_str(trimmed, input_str, precision, scale, limit)?;
-    let scale_adjustment = i64::from(scale) - i64::from(parsed.scale);
-    // `BigDecimal.setScale`, which Spark rescales with, fails when the scale difference does not
-    // fit in an int (e.g. "1e-2147483647" to a negative target scale), so do not round to zero.
-    // Spark raises a raw `ArithmeticException` there in every eval mode. Spark 4.0.5, 4.1.4 and
-    // 4.2.1 skip `setScale` when the value is far below the target scale's ulp (SPARK-60119) and
-    // return 0 for that example; see https://github.com/apache/datafusion-comet/issues/6966 and
-    // https://github.com/apache/datafusion-comet/issues/7187.
-    if i32::try_from(scale_adjustment).is_err() {
-        if (tiny_to_zero && scale_adjustment < 0) || parsed.is_zero() {
-            return Ok(Some(0));
-        }
-        return Err(invalid_decimal_cast(input_str, precision, scale));
-    }
-
-    if scale_adjustment > 38 {
-        return Ok(parsed.is_zero().then_some(0));
-    }
-
-    match parsed.rescale(scale_adjustment) {
-        Some(value) if value == 0 || is_validate_decimal_precision(value, precision) => {
-            Ok(Some(value))
-        }
-        _ => Err(SparkError::NumericValueOutOfRange {
-            value: trimmed.to_string(),
-            precision,
-            scale,
-        }),
-    }
+    parse_decimal_str(trimmed, input_str, precision, scale, limit, tiny_to_zero)
 }
 
 fn invalid_decimal_cast(value: &str, precision: u8, scale: i8) -> SparkError {
@@ -864,31 +836,6 @@ fn counted_digits_exceed_integral_digit_limit(
     }
 }
 
-struct ParsedDecimal<'a> {
-    negative: bool,
-    integral: &'a [u8],
-    fractional: &'a [u8],
-    scale: i32,
-}
-
-impl ParsedDecimal<'_> {
-    fn is_zero(&self) -> bool {
-        self.integral
-            .iter()
-            .chain(self.fractional)
-            .all(|&d| d == b'0')
-    }
-
-    fn rescale(&self, adjustment: i64) -> Option<i128> {
-        // The two slices occupy disjoint decimal places. If we discard integral digits,
-        // the fractional slice contributes zero. Otherwise the integral slice is exact.
-        let integral = rescale_digits(self.integral, adjustment + self.fractional.len() as i64)?;
-        let fractional = rescale_digits(self.fractional, adjustment)?;
-        let magnitude = integral.checked_add(fractional)?;
-        Some(if self.negative { -magnitude } else { magnitude })
-    }
-}
-
 /// Multiply validated digits by `10^shift` and round HALF_UP to an integer magnitude.
 fn rescale_digits(digits: &[u8], shift: i64) -> Option<i128> {
     if shift < 0 {
@@ -908,13 +855,14 @@ fn rescale_digits(digits: &[u8], shift: i64) -> Option<i128> {
     }
 }
 
-fn parse_decimal_str<'a>(
-    s: &'a str,
+fn parse_decimal_str(
+    s: &str,
     original_str: &str,
     precision: u8,
     scale: i8,
     limit: IntegralDigitLimit,
-) -> SparkResult<ParsedDecimal<'a>> {
+    tiny_to_zero: bool,
+) -> SparkResult<Option<i128>> {
     let bytes = s.as_bytes();
 
     let mut pos = 0;
@@ -997,12 +945,39 @@ fn parse_decimal_str<'a>(
         }
     }
 
-    Ok(ParsedDecimal {
-        negative,
-        integral: integral_part,
-        fractional: fractional_part,
-        scale: final_scale,
-    })
+    let adjustment = i64::from(scale) - i64::from(final_scale);
+    let is_zero = || {
+        integral_part
+            .iter()
+            .chain(fractional_part)
+            .all(|&d| d == b'0')
+    };
+    // BigDecimal.setScale checks the number of places to add or drop as a positive int.
+    if adjustment.abs() > i64::from(i32::MAX) {
+        if (tiny_to_zero && adjustment < 0) || is_zero() {
+            return Ok(Some(0));
+        }
+        return Err(invalid_decimal_cast(original_str, precision, scale));
+    }
+    if adjustment > 38 {
+        return Ok(is_zero().then_some(0));
+    }
+
+    // Only one slice can contribute a rounding digit. If we discard integral digits,
+    // the fractional slice contributes zero. Otherwise the integral slice is exact.
+    let integral_shift = i64::from(exponent) + i64::from(scale);
+    let magnitude = rescale_digits(integral_part, integral_shift)
+        .and_then(|whole| whole.checked_add(rescale_digits(fractional_part, adjustment)?));
+    match magnitude {
+        Some(value) if value == 0 || is_validate_decimal_precision(value, precision) => {
+            Ok(Some(if negative { -value } else { value }))
+        }
+        _ => Err(SparkError::NumericValueOutOfRange {
+            value: s.to_string(),
+            precision,
+            scale,
+        }),
+    }
 }
 
 pub(crate) fn cast_string_to_date(
@@ -3015,14 +2990,16 @@ mod tests {
         // `spark.sql.legacy.allowNegativeScaleOfDecimal`, which also lifts the limit on integral
         // digits, so both settings of the limit are checked.
         for skip_integral_digit_limit in [false, true] {
-            for s in [
-                "1e-2147483647",
-                "-1e-2147483647",
-                "12e-2147483647",
-                "99999999999999999999999999999999999999e-2147483647",
+            for (s, scale) in [
+                ("1e-2147483647", -2),
+                ("-1e-2147483647", -2),
+                ("12e-2147483647", -2),
+                ("99999999999999999999999999999999999999e-2147483647", -2),
+                // Dropping exactly 2^31 places exceeds BigDecimal's positive int limit.
+                ("9999999999999999999999999999999999999999e-2147483647", -1),
             ] {
                 let err =
-                    parse_string_to_decimal(s, 10, -2, false, false, skip_integral_digit_limit)
+                    parse_string_to_decimal(s, 10, scale, false, false, skip_integral_digit_limit)
                         .unwrap_err();
                 assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
                 for zero_any_exponent in [false, true] {
@@ -3030,7 +3007,7 @@ mod tests {
                         parse_string_to_decimal(
                             s,
                             10,
-                            -2,
+                            scale,
                             zero_any_exponent,
                             true,
                             skip_integral_digit_limit
@@ -3043,10 +3020,7 @@ mod tests {
                 }
             }
         }
-        // The option only changes a difference below the int range. One above it is a value too
-        // large for any precision, so it stays an error once the limit on integral digits is
-        // skipped (without that, the limit rejects the string first), and a difference that fits
-        // in an int gives the same result either way.
+        // The option only changes drops greater than i32::MAX.
         for tiny_to_zero in [false, true] {
             let err = parse_string_to_decimal("1e2147483647", 10, 2, true, tiny_to_zero, true)
                 .unwrap_err();

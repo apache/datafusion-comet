@@ -117,7 +117,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   def isSupportedDataType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
-    case _: DecimalType => true
+    case d: DecimalType => d.scale.isValidByte
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
     case dt if isTimeType(dt) => true

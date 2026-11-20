@@ -96,8 +96,9 @@ checks the value against the target type. Comet does the same: the result is `NU
 `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, Spark does not apply this limit, and neither
 does Comet.
 
-Comet then rounds to the target scale with ties away from zero. An input with more than 38 digits
-can still fit the target precision after rounding.
+Comet then rounds to the target scale with ties away from zero. A string with more than 38 digits
+can fit the target precision after rounding. A cast to a scale below `-128` falls back to Spark
+because the Arrow decimal type in Rust stores the scale as a signed byte.
 
 Under ANSI mode, a value that parses but is too large for the target type can raise
 `CAST_INVALID_INPUT` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`, when the target scale exceeds
@@ -211,6 +212,8 @@ as `"1.23E+4"`).
 
 ## Decimal with Negative Scale to Integer and Timestamp
 
+The following applies to negative scales from `-128` to `-1`, which fit in the scale field in Arrow Rust.
+
 Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
 `LongType` or `TimestampType` has no native implementation, and neither does casting any of the
 integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
@@ -224,8 +227,8 @@ overflows when the scale is negative. See
 All other cast directions to and from negative-scale decimals run natively: `FloatType` and
 `DoubleType`, `StringType` in both directions (subject to the config gate described above),
 casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
-Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
-not specific to a negative one.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher for both
+positive and negative scales in the supported range.
 
 ## Complex Types
 

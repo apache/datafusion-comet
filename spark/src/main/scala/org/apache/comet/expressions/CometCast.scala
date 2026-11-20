@@ -354,6 +354,8 @@ object CometCast
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
+      case d: DecimalType if !d.scale.isValidByte =>
+        Unsupported(Some(s"Decimal scale ${d.scale} does not fit in a signed byte"))
       case _: DecimalType =>
         Compatible()
       case DataTypes.DateType =>

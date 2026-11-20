@@ -2551,6 +2551,13 @@ class CometNativeCastSuite
       castTest(values, DataTypes.createDecimalType(10, -4), testTry = false)
       val fortyDigits = Seq("1" + "0" * 39).toDF("a")
       castTest(fortyDigits, DataTypes.createDecimalType(10, -35), testTry = false)
+
+      withTempPath { dir =>
+        val data = roundtripParquet(Seq("1." + "0" * 50).toDF("s"), dir)
+        checkSparkAnswerAndFallbackReason(
+          data.filter(col("s").cast(DecimalType(10, -256)).cast("boolean")),
+          "Decimal scale -256 does not fit in a signed byte")
+      }
     }
   }
 
