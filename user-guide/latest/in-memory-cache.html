@@ -617,6 +617,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/expressions.html">Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
@@ -1111,11 +1112,8 @@ changes, and it is the full projection that moves most: nothing has to be inflat
 several times faster, at six times the memory.</p>
 <p>The two relations are not comparable to each other — different row counts, and a struct column
 carries several values per row.</p>
-<p>Array and map columns are deliberately absent from the benchmark, not from the format — the cache
-stores and projects them, and <code class="docutils literal notranslate"><span class="pre">CometInMemoryCacheSuite</span></code> covers them. They cannot be measured <em>here</em>
-because the left column would not exist: it needs Spark’s cache scan to bridge into Comet operators,
-and <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> declines <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> and <code class="docutils literal notranslate"><span class="pre">MapType</span></code>, so a query projecting one falls
-back to Spark row execution above the scan and the two columns stop measuring the same boundary.</p>
+<p>Array and map columns are not in the benchmark, though the cache stores and projects them, and
+<code class="docutils literal notranslate"><span class="pre">CometInMemoryCacheSuite</span></code> covers them.</p>
 <p>Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark’s
 <code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code> feeds those same Comet operators through a <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code>

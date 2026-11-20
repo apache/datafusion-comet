@@ -610,11 +610,13 @@ config and always defers to Spark.</p></li>
 least one result is <code class="docutils literal notranslate"><span class="pre">null</span></code>, <code class="docutils literal notranslate"><span class="pre">exists</span></code> returns <code class="docutils literal notranslate"><span class="pre">null</span></code> when the config is <code class="docutils literal notranslate"><span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">false</span></code> when it
 is <code class="docutils literal notranslate"><span class="pre">false</span></code>. A matching element still returns <code class="docutils literal notranslate"><span class="pre">true</span></code>, while a null input array still returns
 <code class="docutils literal notranslate"><span class="pre">null</span></code>, under either value.</p>
-<p><strong>Comet status.</strong> <code class="docutils literal notranslate"><span class="pre">CometArrayExists</span></code> routes Spark’s <code class="docutils literal notranslate"><span class="pre">ArrayExists</span></code> expression through the JVM
-codegen dispatcher. The dispatcher evaluates the Spark expression carrying the captured
-<code class="docutils literal notranslate"><span class="pre">followThreeValuedLogic</span></code> value inside the Comet pipeline, so both config values preserve Spark’s
-semantics. If the dispatcher is disabled, the affected Comet operator falls back to Spark rather
-than executing with different semantics.</p>
+<p><strong>Comet status.</strong> With the setting <code class="docutils literal notranslate"><span class="pre">true</span></code> (the default), <code class="docutils literal notranslate"><span class="pre">CometArrayExists</span></code> runs a lambda whose body Comet
+supports natively under DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_any_match</span></code>, which has the same three-valued result: NULL when no
+element matches but the predicate was NULL for some. With the setting <code class="docutils literal notranslate"><span class="pre">false</span></code>, and for every other lambda,
+<code class="docutils literal notranslate"><span class="pre">CometArrayExists</span></code> routes Spark’s <code class="docutils literal notranslate"><span class="pre">ArrayExists</span></code> expression through the JVM codegen dispatcher. The dispatcher
+evaluates the Spark expression carrying the captured <code class="docutils literal notranslate"><span class="pre">followThreeValuedLogic</span></code> value inside the Comet pipeline, so
+both config values preserve Spark’s semantics. If the dispatcher is disabled, the affected Comet operator falls
+back to Spark rather than executing with different semantics.</p>
 <p><strong>Test coverage.</strong> <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/array/exists.sql</span></code> uses a
 <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> to run both values and covers null arrays, empty arrays, matching predicates,
 no-match predicates with a null result, and predicates whose every result is null. The default

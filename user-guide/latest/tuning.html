@@ -617,6 +617,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/expressions.html">Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
@@ -908,6 +909,8 @@ sizing splits so that row groups spread evenly across scan tasks.</p></li>
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code>.</p></li>
 <li><p><a class="reference internal" href="tuning/operators.html"><span class="std std-doc">Operator Tuning</span></a>: joins, adaptive partial aggregation, and sorting on
 floating-point values.</p></li>
+<li><p><a class="reference internal" href="tuning/expressions.html"><span class="std std-doc">Expression Tuning</span></a>: lambdas and higher-order functions such as <code class="docutils literal notranslate"><span class="pre">filter</span></code>, and the
+built-in array functions that replace them.</p></li>
 <li><p><a class="reference internal" href="tuning/transitions.html"><span class="std std-doc">Reducing Row/Columnar Conversion Overhead</span></a>: stages in which many
 operators fall back to Spark, and the experimental direct columnar-to-row converter.</p></li>
 </ul>

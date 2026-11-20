@@ -617,6 +617,7 @@ under the License.
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="celeborn.html">Celeborn Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expressions.html">Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
@@ -948,10 +949,9 @@ on Spark.</p>
 converts the child’s rows to Arrow, as the <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.*</span></code> settings do for Spark scans, and shuffles the
 batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
-all of the child’s columns, which rules out calendar intervals, and arrays and maps other than <code class="docutils literal notranslate"><span class="pre">array&lt;string&gt;</span></code> and
-<code class="docutils literal notranslate"><span class="pre">map&lt;string,string&gt;</span></code>. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
-that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet’s memory pools.
-The setting is disabled by default.</p>
+all of the child’s columns, which rules out calendar intervals. A shuffle that hashes a string or a value computed
+from a string stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated
+on the JVM outside Comet’s memory pools. The setting is disabled by default.</p>
 </section>
 <section id="automatic-revert-to-spark-shuffle">
 <h3>Automatic Revert to Spark Shuffle<a class="headerlink" href="#automatic-revert-to-spark-shuffle" title="Link to this heading">#</a></h3>
