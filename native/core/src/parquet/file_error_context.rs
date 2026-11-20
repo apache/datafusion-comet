@@ -59,18 +59,25 @@ impl SparkFilePath {
             return Self(path.into());
         }
         let (_, rest) = path.split_once(':').unwrap_or_default();
-        let body = rest.trim_start_matches('/');
+        let mut body = rest.trim_start_matches('/');
         let prefix = &path[..path.len() - body.len()];
-        let authority = body.split('/').next().unwrap_or_default();
-        // For a hostless alias, dot segments can change which segment becomes the authority.
-        // Use the raw spelling only if promoting the first segment gives the URL we open.
-        let authority_matches = prefix.ends_with("://")
-            || Url::parse(&format!("{}://{body}", url.scheme())).is_ok_and(|candidate| {
-                candidate[..Position::AfterPath] == url[..Position::AfterPath]
-            });
-        let host_and_path = match authority.rfind('@') {
-            Some(at) if authority_matches => &body[at + 1..],
-            _ => &url[Position::BeforeHost..Position::AfterPath],
+        // Dot segments in a hostless alias can move the promoted bucket. Find the segment
+        // that resolves to the URL we open before taking the suffix in Spark's spelling.
+        let host_and_path = loop {
+            let (segment, tail) = body.split_once('/').unwrap_or((body, ""));
+            if let Some(at) = segment.rfind('@') {
+                if prefix.ends_with("://")
+                    || Url::parse(&format!("{}://{body}", url.scheme())).is_ok_and(|candidate| {
+                        candidate[..Position::AfterPath] == url[..Position::AfterPath]
+                    })
+                {
+                    break &body[at + 1..];
+                }
+            }
+            if prefix.ends_with("://") || tail.is_empty() {
+                break &url[Position::BeforeHost..Position::AfterPath];
+            }
+            body = tail;
         };
         if keep_container && !url.username().is_empty() {
             Self(format!("{prefix}{}@{host_and_path}", url.username()).into())
@@ -309,7 +316,7 @@ mod tests {
                 "s3a:///reader:password@bucket/%2e/café@1.parquet",
                 "s3a:///bucket/%2e/café@1.parquet",
             ),
-            ("s3a:///dir/../reader@bucket/part", "s3a:///bucket/part"),
+            ("s3a:///dir/../reader@bucket/café", "s3a:///bucket/café"),
             ("s3a:bucket/part@1", "s3a:bucket/part@1"),
             (
                 "HDFS://user@host:8020/%2E/café.parquet",
