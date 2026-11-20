@@ -448,7 +448,7 @@ object CometNativeExecutors {
       // A block that reads files runs one copy per partition, each naming its own files.
       val (common, perPartition) =
         if (withFiles) filesOf(block, scans.toSeq)
-        else (Map.empty[String, Array[Byte]], Map.empty[String, Array[Array[Byte]]])
+        else (Map.empty[String, Array[Byte]], Map.empty[String, Array[PartitionPlanData]])
       val partitionPlans = if (perPartition.isEmpty) {
         Seq.empty
       } else {
@@ -458,7 +458,7 @@ object CometNativeExecutors {
           counts.values.toSet.size == 1,
           s"The scans of one block must have the same number of partitions, but found $counts")
         (0 until counts.values.head).map { i =>
-          val partitionData = perPartition.map { case (key, data) => key -> data(i) }
+          val partitionData = perPartition.map { case (key, data) => key -> data(i).bytes }
           PlanDataInjector.injectPlanData(base, common, partitionData).toByteString
         }
       }
@@ -485,14 +485,14 @@ object CometNativeExecutors {
      * partition for each, as Spark would return no rows from them.
      */
     private def filesOf(block: CometNativeExec, scans: Seq[CometNativeScanExec])
-        : (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+        : (Map[String, Array[Byte]], Map[String, Array[PartitionPlanData]]) = {
       val found @ (_, perPartition) = PlanDataInjector.findAllPlanData(block)
       if (perPartition.nonEmpty || scans.isEmpty) {
         found
       } else {
         (
           scans.map(scan => scan.sourceKey -> scan.commonData).toMap,
-          scans.map(scan => scan.sourceKey -> Array(noFiles)).toMap)
+          scans.map(scan => scan.sourceKey -> Array(PartitionPlanData(noFiles))).toMap)
       }
     }
 
