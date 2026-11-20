@@ -93,10 +93,10 @@ When `spark.comet.exec.aggregate.dynamicFilter.enabled=true` is captured in an u
 aggregate's plan, its metric map includes these counters. See
 [MIN/MAX reader filtering](tuning/operators.md#minmax-reader-filtering) for eligibility and limits.
 
-| Metric | Description |
-| ------ | ----------- |
-| `dynamic_filter_minmax_filters_attached` | Executions that attach their improving MIN/MAX bound to a native Parquet reader. |
-| `dynamic_filter_minmax_filters_skipped` | Executions of an eligible MIN/MAX aggregate that skip reader attachment, including those exceeding the footer limits or using encryption. |
+| Metric                                   | Description                                                                                                                               |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `dynamic_filter_minmax_filters_attached` | Executions that attach their improving MIN/MAX bound to a native Parquet reader.                                                          |
+| `dynamic_filter_minmax_filters_skipped`  | Executions of an eligible MIN/MAX aggregate that skip reader attachment, including those exceeding the footer limits or using encryption. |
 
 Plans rejected before reader attachment is attempted do not increment either counter. An attached
 filter can still prune nothing, including when a file's schema adaptation disables pruning.

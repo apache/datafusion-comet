@@ -223,12 +223,12 @@ The aggregate still computes the result from the rows the reader emits.
 
 Reader filtering applies only to these plans:
 
-| Requirement | Supported scope |
-| ----------- | --------------- |
-| Aggregate | One unfiltered, non-distinct `MIN` or `MAX`, without grouping. Multiple aggregates, including `MIN` and `MAX` together, are excluded. |
-| Argument | A direct `TINYINT`, `SMALLINT`, `INT`, or `BIGINT` column. |
-| Stage | A partial aggregate consuming input rows. `Final` and `PartialMerge` stages do not produce reader filters. |
-| Input | A direct native Parquet scan in the same Comet pipeline. Expressions, filters, limits, standalone projections, Spark exchanges, and JVM/Arrow boundaries between the aggregate and scan stop attachment. Column projection within the reader remains supported. |
+| Requirement | Supported scope                                                                                                                                                                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aggregate   | One unfiltered, non-distinct `MIN` or `MAX`, without grouping. Multiple aggregates, including `MIN` and `MAX` together, are excluded.                                                                                                                           |
+| Argument    | A direct `TINYINT`, `SMALLINT`, `INT`, or `BIGINT` column.                                                                                                                                                                                                      |
+| Stage       | A partial aggregate consuming input rows. `Final` and `PartialMerge` stages do not produce reader filters.                                                                                                                                                      |
+| Input       | A direct native Parquet scan in the same Comet pipeline. Expressions, filters, limits, standalone projections, Spark exchanges, and JVM/Arrow boundaries between the aggregate and scan stop attachment. Column projection within the reader remains supported. |
 
 Unsupported plans retain ordinary aggregation. Scans with supplied file statistics or encryption
 also skip attachment. Before reading rows, Comet inspects the task's file footers. If any file has
