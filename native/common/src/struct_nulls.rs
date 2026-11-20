@@ -30,6 +30,7 @@
 
 use arrow::array::{make_array, Array, ArrayRef, StructArray};
 use arrow::buffer::NullBuffer;
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
@@ -37,7 +38,8 @@ use std::sync::Arc;
 ///
 /// Skips the work when the parent has no null to contribute, which covers both no null buffer at
 /// all and an all-valid buffer — the latter is what slicing leaves behind. `NullBuffer` stores its
-/// null count, so the test is O(1).
+/// null count, so the test is O(1). A `NullType` child is returned unchanged too: it is null at
+/// every row already, and a `NullArray` cannot carry a null buffer.
 ///
 /// The union only ever adds nulls, so the child's data buffers are untouched and are not
 /// revalidated. Callers on a hot path depend on that: the hash kernels reach this once per element
@@ -49,7 +51,7 @@ pub fn child_with_parent_nulls(
 ) -> Result<ArrayRef, ArrowError> {
     let child = struct_array.column(ordinal);
     match struct_array.nulls() {
-        Some(parent) if parent.null_count() > 0 => {
+        Some(parent) if parent.null_count() > 0 && child.data_type() != &DataType::Null => {
             let combined = NullBuffer::union(Some(parent), child.nulls());
             // SAFETY: only nulls are added; every data buffer and child array is carried over
             // unchanged, which is the same argument `StructArray::flatten` makes.
@@ -77,8 +79,8 @@ pub fn children_with_parent_nulls(struct_array: &StructArray) -> Result<Vec<Arra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
-    use arrow::datatypes::{DataType, Field, Fields};
+    use arrow::array::{Int32Array, NullArray};
+    use arrow::datatypes::{Field, Fields};
 
     fn struct_with(child: ArrayRef, nulls: Option<NullBuffer>) -> StructArray {
         let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
@@ -159,5 +161,22 @@ mod tests {
     fn empty_struct_has_no_children() {
         let sa = StructArray::new_empty_fields(2, Some(NullBuffer::from(vec![true, false])));
         assert!(children_with_parent_nulls(&sa).unwrap().is_empty());
+    }
+
+    /// A `NullType` field of a null struct is returned as is: it is null at every row already, and
+    /// a `NullArray` with a null buffer is invalid.
+    #[test]
+    fn null_type_child_is_returned_unchanged() {
+        let fields: Fields = vec![Arc::new(Field::new("n", DataType::Null, true))].into();
+        let child: ArrayRef = Arc::new(NullArray::new(2));
+        let sa = StructArray::new(
+            fields,
+            vec![Arc::clone(&child)],
+            Some(NullBuffer::from(vec![true, false])),
+        );
+
+        let out = child_with_parent_nulls(&sa, 0).unwrap();
+        assert!(Arc::ptr_eq(&out, &child));
+        assert_eq!(out.logical_null_count(), 2);
     }
 }

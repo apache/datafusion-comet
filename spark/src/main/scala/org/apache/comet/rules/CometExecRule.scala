@@ -53,7 +53,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -963,6 +963,28 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
+  /**
+   * Sorts the input of a window that runs in Spark, a Python one included, when its order may be
+   * false. Spark plans no sort below a window whose child reports the order it needs, and its
+   * window trusts that order. A Comet operator that may not keep the order it reports, such as a
+   * native nested loop join (#6898), then hands the window rows out of order, and it groups them
+   * wrongly.
+   *
+   * The sort is by the whole order the child reports, not only by the part the window needs, or
+   * by the window's own keys when the reported order does not cover them. The window passes that
+   * order on as its own, and Spark planned the operators above around it: a window or a sort
+   * above that needs a longer order got no sort of its own.
+   */
+  private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
+    case window: WindowExecBase
+        if window.requiredChildOrdering.head.nonEmpty &&
+          CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
+      val required = window.requiredChildOrdering.head
+      val reported = window.child.outputOrdering
+      val keys = if (SortOrder.orderingSatisfies(reported, required)) reported else required
+      window.withNewChildren(Seq(SortExec(keys, global = false, child = window.child)))
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -1012,7 +1034,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       if (clearWastedBuildSideBridges(transformed)) {
         transformed = transform(planWithJoinRewritten)
       }
-      var newPlan = revertUnsafePartialAggregates(transformed)
+      var newPlan = sortDoubtedWindowInputs(revertUnsafePartialAggregates(transformed))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)

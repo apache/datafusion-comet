@@ -132,6 +132,7 @@ jobs:
   preflight:
     name: Preflight
     runs-on: ubuntu-slim
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -238,6 +239,7 @@ jobs:
     name: Detect changes
     needs: preflight
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     # `actions: read` is for dev/ci/nightly-base.py, which lists previous
     # scheduled runs to pick the nightly's diff base.
     permissions:
@@ -667,6 +669,7 @@ jobs:
       - iceberg_1_10
       - iceberg_1_11
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - name: Summarize upstream results
         env:
@@ -704,6 +707,7 @@ jobs:
       actions: read
       issues: write
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/github-script@v9
         with:

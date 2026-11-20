@@ -22,21 +22,26 @@ package org.apache.comet.rules
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
+import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 private case class AliasingFallbackCometExec(
@@ -48,7 +53,41 @@ private case class AliasingFallbackCometExec(
     copy(child = newChild)
 }
 
+/**
+ * Supports both output formats over a columnar child, as `ArrowEvalPythonExec` does on Spark 4.2.
+ * Tests only plan it.
+ */
+private case class BothFormatsExec(child: SparkPlan) extends UnaryExecNode {
+  override def output: Seq[Attribute] = child.output
+  override def supportsColumnar: Boolean = child.supportsColumnar
+  override def supportsRowBased: Boolean = true
+  override protected def doExecute(): RDD[InternalRow] =
+    throw new UnsupportedOperationException("BothFormatsExec is only planned")
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    copy(child = newChild)
+}
+
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
+
+  // Spark 4.0+ builds a cache through columnar output only when the cache serializer accepts
+  // columnar input, so this suite installs Comet's. `InMemoryRelation` memoizes the serializer
+  // per JVM: reset it before this suite so the conf below takes effect, and after it so this
+  // suite does not pin Comet's serializer for the suites that follow.
+  override protected def beforeAll(): Unit = {
+    CometInMemoryRelationHelper.clearSerializer()
+    super.beforeAll()
+  }
+
+  override protected def afterAll(): Unit = {
+    try {
+      super.afterAll()
+    } finally {
+      CometInMemoryRelationHelper.clearSerializer()
+    }
+  }
+
+  override protected def sparkConf: SparkConf = super.sparkConf
+    .set(StaticSQLConf.SPARK_CACHE_SERIALIZER.key, classOf[ArrowCachedBatchSerializer].getName)
 
   private def cometIcebergWrite(child: SparkPlan): CometIcebergWriteExec = {
     val output = Seq(
@@ -799,6 +838,142 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         }
         assert(scan.supportsColumnar, s"the reverted scan must use its columnar path:\n$scan")
         assert(countCometExecs(executedPlan) == 0, s"the stage must be reverted:\n$executedPlan")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6687
+  test("transition-heavy revert restores columnar output for a cached AQE result stage") {
+    assume(isSpark40Plus, "Spark builds a cache from AQE's columnar output only from 4.0")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+      // A Spark filter over the native final aggregate puts a transition in the result stage.
+      CometConf.COMET_EXEC_FILTER_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        val query =
+          "SELECT _2, s FROM (SELECT _2, sum(_1) AS s FROM tbl GROUP BY _2) WHERE s > 10"
+        // Take Spark's answer first: once cached, the cache serves every read of the query.
+        var expected = Array.empty[Row]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          expected = sql(query).collect()
+        }
+        val cached = spark.sql(query).cache()
+        try {
+          checkAnswer(cached, expected)
+          val cachedPlan = spark.sharedState.cacheManager
+            .lookupCachedData(cached)
+            .get
+            .cachedRepresentation
+            .cacheBuilder
+            .cachedPlan
+          assert(
+            cachedPlan.supportsColumnar,
+            s"the cache must be built from columnar output:\n$cachedPlan")
+          val resultStage = stripAQEPlan(cachedPlan)
+          assert(
+            countCometExecs(resultStage) == 0,
+            s"the result stage must be reverted:\n$resultStage")
+          assert(
+            resultStage.supportsColumnar,
+            s"the reverted result stage must stay columnar:\n$resultStage")
+        } finally {
+          cached.unpersist()
+        }
+      }
+    }
+  }
+
+  // The plan-only preview holds the whole plan, so under AQE it must keep the stages that AQE
+  // keeps.
+  for ((adaptive, wholePlan) <- Seq((true, false), (true, true), (false, false))) {
+    test(
+      "transition-heavy revert of a result root that supports both formats: " +
+        s"AQE=$adaptive, wholePlan=$wholePlan") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withParquetTable((0 until 10).map(i => (i, i % 10)), "tbl") {
+          val scan = createSparkPlan("SELECT _1, _2 FROM tbl")
+            .collectFirst { case node: FileSourceScanExec => node }
+            .getOrElse(fail("expected a Spark scan"))
+          assert(scan.supportsColumnar, s"test requires a vectorized Spark scan:\n$scan")
+          val rule = RevertNativeForTransitionHeavyStages(spark, wholePlan)
+
+          val overFilter = BothFormatsExec(
+            CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(scan))))
+          assert(overFilter.supportsColumnar && overFilter.supportsRowBased)
+          assert(rule.countTransitions(overFilter) == 1)
+          val filterSparkPlan = rule.revertToSpark(overFilter)
+          assert(!filterSparkPlan.supportsColumnar)
+          val overScan = BothFormatsExec(CometSparkToColumnarExec(ColumnarToRowExec(scan)))
+          assert(rule.countTransitions(overScan) == 1)
+
+          if (adaptive) {
+            // Reverting the native filter would leave a root that outputs only rows, while the
+            // consumer may read columnar batches, so the stage must stay as it is.
+            val kept = rule(overFilter)
+            assert(kept eq overFilter, s"the stage must not be reverted:\n$kept")
+
+            // Over the columnar scan the reverted root still supports both formats, so it needs
+            // no transition on top.
+            val reverted = rule(overScan)
+            assert(
+              reverted == BothFormatsExec(scan),
+              s"the reverted root must keep both formats:\n$reverted")
+          } else {
+            // Without AQE the consumer reads rows, or, for a cache, picks the format from the
+            // root the rule leaves, so both stages are reverted to row output.
+            val revertedFilter = rule(overFilter)
+            assert(
+              revertedFilter == filterSparkPlan,
+              s"the stage must be reverted:\n$revertedFilter")
+            val revertedScan = rule(overScan)
+            assert(
+              revertedScan == ColumnarToRowExec(BothFormatsExec(scan)),
+              s"the reverted stage must output rows:\n$revertedScan")
+          }
+        }
+      }
+    }
+  }
+
+  // Runs on every Spark version, unlike the cache test above. The root decides the format: a root
+  // that cannot output rows was planned for columnar output, and a row-only root for rows.
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy revert keeps the output format of the result root: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        val leaf = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+          .collectFirst { case node: LeafExecNode => node }
+          .getOrElse(fail("expected a leaf node in test plan"))
+        // The reverted filter outputs rows only, so a stage that wants batches needs a transition.
+        assert(!leaf.supportsColumnar, s"test requires a row-only leaf:\n$leaf")
+        val rule = RevertNativeForTransitionHeavyStages(spark)
+
+        val columnarRoot =
+          CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(leaf)))
+        assert(columnarRoot.supportsColumnar && !columnarRoot.supportsRowBased)
+        assert(rule.countTransitions(columnarRoot) == 1)
+        val columnar = rule(columnarRoot)
+        columnar match {
+          case RowToColumnarExec(filter: FilterExec) =>
+            assert(filter.child eq leaf, s"expected the Spark filter over the leaf:\n$columnar")
+          case other => fail(s"expected RowToColumnarExec over the reverted root, got:\n$other")
+        }
+        assert(countCometExecs(columnar) == 0, s"the stage must be reverted:\n$columnar")
+
+        val rowRoot = ColumnarToRowExec(columnarRoot)
+        assert(rowRoot.supportsRowBased && !rowRoot.supportsColumnar)
+        val rows = rule(rowRoot)
+        assert(!rows.supportsColumnar, s"the root must keep rows as its output:\n$rows")
+        assert(rows.collect { case _: RowToColumnarExec => true }.isEmpty, s"got:\n$rows")
+        assert(rows.collect { case _: FilterExec => true }.size == 1, s"got:\n$rows")
+        assert(countCometExecs(rows) == 0, s"the stage must be reverted:\n$rows")
       }
     }
   }

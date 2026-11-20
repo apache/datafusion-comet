@@ -54,7 +54,7 @@ pub use list_agg::SparkListAgg;
 pub use max_min_by::MaxMinBy;
 pub use min_max::SparkMinMax;
 pub use mode::Mode;
-pub use percentile::SparkPercentile;
+pub use percentile::{SparkPercentile, ZeroOrder};
 pub use pivot_first::SparkPivotFirst;
 pub use regr::{Regr, RegrType};
 pub use stddev::Stddev;

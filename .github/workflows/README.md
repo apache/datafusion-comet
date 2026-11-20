@@ -528,6 +528,26 @@ the `java-test`, `rust-test` and `setup-spark-builder` callers. A new job that
 runs `./mvnw` without going through a setup action needs the step before its
 first Maven use.
 
+## Job timeouts
+
+Every job that runs on a runner sets `timeout-minutes`. Without it GitHub's
+default is six hours, so a test suite that hangs holds a runner, and the
+pipeline it belongs to, for six hours before anyone sees a failure. Each limit
+is about two to three times the slowest successful run of that job in November
+2026, rounded up: 180 minutes for the macOS test matrix, 120 for the Spark SQL,
+Iceberg and Delta suites, 90 for native builds and the Linux test matrix, and
+10 to 60 for lint and housekeeping jobs. A job that is legitimately getting
+slower should have its limit raised in the same pull request that makes it
+slower, not removed. A job that hits its limit fails with "The job has exceeded
+the maximum execution time", which is a hang until shown otherwise, not a
+flaky runner.
+
+A reusable workflow's caller cannot set `timeout-minutes`, so the limits live
+on the jobs inside `pr_build_linux.yml`, `spark_sql_test_reusable.yml` and the
+other reusable workflows. The merge queue's
+`check_response_timeout_minutes: 300` (see below) is well above every job
+limit, so a timed-out job fails the entry rather than leaving it waiting.
+
 ## Merge queue
 
 `.asf.yaml` declares a `Merge Queue` ruleset for the default branch, so `main`

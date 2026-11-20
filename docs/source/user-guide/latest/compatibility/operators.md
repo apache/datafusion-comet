@@ -132,12 +132,19 @@ express falls back to Spark and records a fallback reason (see
 [Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
 an operator above the join relies on the order.
 
-Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
-its unmatched rows out of order. The output of a nested loop join
-([#6898](https://github.com/apache/datafusion-comet/issues/6898)) is one such case, and so is a
-cache or checkpoint that one wrote. Comet also declares nothing when it cannot follow the
-order back to its source, as with an RDD checkpoint, and over some caches written by an outer hash
-join whose order does hold ([#6922](https://github.com/apache/datafusion-comet/issues/6922)).
+An outer join falls back to Spark when Comet cannot check the order Spark reports and that order
+reaches the join through an input from the JVM or through a nested loop join. Spark keeps the rows
+in the order they arrive. One such input is an RDD checkpoint. It reaches a native join only with
+`spark.comet.convert.rdd.enabled=true`, which defaults to `false`. Without that setting the
+checkpoint stays a Spark input and the join stays in Spark anyway. Another is a cache written by an
+outer hash join whose own probe input was not a scan
+([#6922](https://github.com/apache/datafusion-comet/issues/6922)). The output of a nested loop
+join can already be out of order when it reaches the join
+([#6898](https://github.com/apache/datafusion-comet/issues/6898)).
+
+When the order Comet cannot check comes only from another native hash join in the same plan, the
+join does not fall back. It runs natively and declares no order, since DataFusion keeps the order
+it can see there.
 
 ## Window Functions
 
@@ -190,6 +197,9 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation (e.g.
+  `UTF8_LCASE`). The native window finds partitions and peers by comparing keys byte by byte, which splits values
+  that the collation ties.
 
 A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
 supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the

@@ -976,6 +976,27 @@ macro_rules! create_hashes_internal {
                         $hash_method
                     );
                 }
+                // Spark hashes YearMonthIntervalType as an int and DayTimeIntervalType as a long.
+                DataType::Interval(IntervalUnit::YearMonth) => {
+                    $crate::hash_array_primitive!(
+                        IntervalYearMonthArray,
+                        col,
+                        i32,
+                        $hashes_buffer,
+                        $hash_method
+                    );
+                }
+                DataType::Duration(TimeUnit::Microsecond) => {
+                    $crate::hash_array_primitive!(
+                        DurationMicrosecondArray,
+                        col,
+                        i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
+                }
+                // Every value of a NullType column is null, and a null leaves the hash unchanged.
+                DataType::Null => {}
                 DataType::Utf8 => {
                     $crate::hash_array!(StringArray, col, $hashes_buffer, $hash_method);
                 }

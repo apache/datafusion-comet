@@ -27,6 +27,7 @@ jobs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Checkout docs sources
         uses: actions/checkout@v7

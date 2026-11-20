@@ -27,6 +27,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BitVectorHelper, IntVector, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector}
+import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
@@ -343,6 +344,47 @@ class UtilsSuite extends CometTestBase {
     }
   }
 
+  test("coalesceBroadcastBatches starts a new batch before a string vector passes the cap") {
+    // VectorAppender cannot grow a string or binary vector past 1 GiB of values (#7192), so a
+    // batch that would take one past the cap starts the next coalesced batch. A small cap shows
+    // it, and only the strings nested in the struct reach it.
+    val numBatches = 4
+    val vectors = (0 until numBatches).map { b =>
+      (
+        fill(new VarCharVector("s", CometArrowAllocator), Seq(s"$b", null)),
+        structOfStrings("st", Seq(s"abc$b", s"def$b")))
+    }
+    try {
+      val batches = vectors.map { case (s, st) =>
+        new ColumnarBatch(Array(cometVector(s), cometVector(st)), 2)
+      }
+      val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toSeq.iterator
+      // Each batch holds 8 bytes of nested values, so two fit under the cap and a third does not.
+      val (coalesced, batchCount, totalRows) =
+        Utils.coalesceBroadcastBatches(bufs, maxValueBytes = 20L)
+      assert(batchCount == numBatches)
+      assert(totalRows == 2L * numBatches)
+
+      val decoded = coalesced.toSeq.map { buf =>
+        val it = Utils.decodeBatches(buf, "test")
+        val out = it.next()
+        val values = (
+          stringValues(out.column(0), out.numRows()),
+          stringValues(out.column(1).getChild(0), out.numRows()))
+        assert(!it.hasNext)
+        values
+      }
+      assert(decoded.map(_._1.length) == Seq(4, 4))
+      assert(decoded.flatMap(_._1) == (0 until numBatches).flatMap(b => Seq(s"$b", null)))
+      assert(decoded.flatMap(_._2) == (0 until numBatches).flatMap(b => Seq(s"abc$b", s"def$b")))
+    } finally {
+      vectors.foreach { case (s, st) =>
+        s.close()
+        st.close()
+      }
+    }
+  }
+
   test("serializeBatches releases the vectors it made when a later column fails") {
     // A materialized constant and a 32-bit copy of a large-offset column are both made before the
     // last column is refused. Nothing outside serializeBatches ever holds them, so it has to
@@ -416,6 +458,18 @@ class UtilsSuite extends CometTestBase {
     }
     vector.setValueCount(values.length)
     vector
+  }
+
+  /** A struct column `name` whose one child, `c`, holds `values`. */
+  private def structOfStrings(name: String, values: Seq[String]): StructVector = {
+    val struct = StructVector.empty(name, CometArrowAllocator)
+    val child =
+      struct.addOrGet("c", FieldType.nullable(ArrowType.Utf8.INSTANCE), classOf[VarCharVector])
+    struct.allocateNew()
+    fill(child, values)
+    values.indices.foreach(struct.setIndexDefined)
+    struct.setValueCount(values.length)
+    struct
   }
 
   /**
