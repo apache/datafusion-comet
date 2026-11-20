@@ -225,6 +225,27 @@ fn parquet_convert_array_impl(
     in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     use DataType::*;
+    let array = match (array.data_type(), to_type) {
+        (Dictionary(_, value), Timestamp(TimeUnit::Microsecond, target_tz))
+            if parquet_options.checked_timestamp_overflow
+                && matches!(value.as_ref(), Timestamp(TimeUnit::Millisecond, _)) =>
+        {
+            let dictionary = array.as_any_dictionary();
+            let millis = dictionary
+                .values()
+                .as_primitive::<TimestampMillisecondType>();
+            if let Ok(micros) =
+                millis.try_unary::<_, TimestampMicrosecondType, _>(checked_millis_to_micros)
+            {
+                let micros = micros.with_timezone_opt(target_tz.clone());
+                return Ok((take(&micros, dictionary.keys(), None)?, true));
+            }
+            // An overflowing entry may be unused or hidden by a null ancestor or slice.
+            // Retry in row order so the plain timestamp conversion can apply parent_nulls.
+            take(dictionary.values(), dictionary.keys(), None)?
+        }
+        _ => array,
+    };
     let from_type = array.data_type();
     // Only checked millis-to-micros casts consume ancestor visibility. In particular,
     // unchanged array/map siblings must not expand a mask over their backing values.
@@ -307,11 +328,7 @@ fn parquet_convert_array_impl(
             // Restore the original child validity: required fields must remain non-null.
             let micros = arrow::array::TimestampMillisecondArray::new(
                 millis.values().clone(), visible)
-                .try_unary::<_, TimestampMicrosecondType, _>(|value| {
-                    value.checked_mul(1_000).ok_or_else(|| SparkError::ParquetTimestampOverflow {
-                        file_path: String::new(),
-                    })
-                })?;
+                .try_unary::<_, TimestampMicrosecondType, _>(checked_millis_to_micros)?;
             let micros = arrow::array::TimestampMicrosecondArray::new(
                 micros.values().clone(), millis.nulls().cloned())
                 .with_timezone_opt(target_tz.clone());
@@ -419,11 +436,20 @@ fn parquet_convert_array_impl(
     converted.map(|array| (array, true))
 }
 
+fn checked_millis_to_micros(value: i64) -> Result<i64, SparkError> {
+    value
+        .checked_mul(1_000)
+        .ok_or_else(|| SparkError::ParquetTimestampOverflow {
+            file_path: String::new(),
+        })
+}
+
 // Struct fields are matched by name/field ID later. This type-only check is conservative
 // until that matching occurs; each selected child is checked again before conversion.
 fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
     match data_type {
         DataType::Timestamp(timestamp_unit, _) => *timestamp_unit == unit,
+        DataType::Dictionary(_, value) => has_timestamp_unit(value, unit),
         DataType::Struct(fields) => fields
             .iter()
             .any(|field| has_timestamp_unit(field.data_type(), unit)),
@@ -2703,24 +2729,56 @@ mod tests {
     }
 
     #[test]
+    fn test_dictionary_millis_to_micros_preserves_nulls_and_skips_unused_values() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            Array, DictionaryArray, Int8Array, TimestampMicrosecondArray, TimestampMillisecondArray,
+        };
+        use arrow::datatypes::Int8Type;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        let keys = Int8Array::from(vec![Some(1), None, Some(2), Some(1)]);
+        let expected =
+            TimestampMicrosecondArray::from(vec![Some(-7_000), None, None, Some(-7_000)])
+                .with_timezone("UTC");
+        for unused in [0, i64::MAX] {
+            let values = TimestampMillisecondArray::from(vec![Some(unused), Some(-7), None]);
+            let dictionary = DictionaryArray::<Int8Type>::new(keys.clone(), Arc::new(values));
+            let result =
+                parquet_convert_array(Arc::new(dictionary), expected.data_type(), &options)
+                    .unwrap();
+            assert_eq!(result.to_data(), expected.to_data());
+        }
+    }
+
+    #[test]
     fn test_millis_to_micros_nested_visibility() {
         use super::{parquet_convert_array, SparkParquetOptions};
         use arrow::array::{
-            Array, ArrayRef, ListArray, MapArray, StructArray, TimestampMicrosecondArray,
-            TimestampMillisecondArray,
+            Array, ArrayRef, DictionaryArray, Int32Array, ListArray, MapArray, StructArray,
+            TimestampMicrosecondArray, TimestampMillisecondArray,
         };
         use arrow::buffer::{NullBuffer, OffsetBuffer};
-        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use arrow::datatypes::{DataType, Field, Int32Type, TimeUnit};
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
         for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
-            for overflow in [i64::MAX, i64::MIN] {
-                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+            let inputs = [i64::MAX, i64::MIN].into_iter().flat_map(|overflow| {
                 let millis: ArrayRef = Arc::new(
                     TimestampMillisecondArray::from(vec![overflow, 7, overflow])
                         .with_timezone_opt(timezone.clone()),
                 );
+                let dictionary: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(
+                    Int32Array::from(vec![0, 1, 0]),
+                    Arc::clone(&millis),
+                ));
+                [millis, dictionary]
+            });
+            for millis in inputs {
+                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
                 let field = Arc::new(Field::new("ts", millis.data_type().clone(), false));
                 let target_field = Arc::new(Field::new(
                     "ts",

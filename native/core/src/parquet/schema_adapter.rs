@@ -4272,6 +4272,49 @@ pub(crate) mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn nested_dictionary_timestamp_millis_checks_overflow() -> Result<(), DataFusionError> {
+        use datafusion_comet_common::{error_chain, SparkError};
+
+        let millis: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![Some(0), None, Some(0), Some(1)]),
+            Arc::new(TimestampMillisecondArray::from(vec![7, i64::MAX])),
+        )?);
+        let batch = struct_batch(Field::new("ts", millis.data_type().clone(), true), millis)?;
+        let schema = struct_schema(vec![Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]);
+
+        let valid = roundtrip(&batch.slice(0, 3), Arc::clone(&schema)).await?;
+        let values = valid.column(0).as_struct().column(0);
+        assert_eq!(
+            values.as_primitive::<TimestampMicrosecondType>(),
+            &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000)])
+        );
+
+        let err = roundtrip(&batch, Arc::clone(&schema)).await.unwrap_err();
+        assert!(
+            matches!(
+                error_chain(&err).find_map(|e| e.downcast_ref::<SparkError>()),
+                Some(SparkError::ParquetTimestampOverflow { .. })
+            ),
+            "{err}"
+        );
+
+        let mut options = default_options();
+        options.checked_timestamp_overflow = false;
+        let mut stream = scan_parquet(&batch, schema, options)?;
+        let unchecked = stream.next().await.unwrap()?;
+        let values = unchecked.column(0).as_struct().column(0);
+        assert_eq!(
+            values.as_primitive::<TimestampMicrosecondType>(),
+            &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000), None])
+        );
+        Ok(())
+    }
+
     /// Positive: a requested nested field missing from the file still reads as null while
     /// the present field is passed through.
     #[tokio::test]
