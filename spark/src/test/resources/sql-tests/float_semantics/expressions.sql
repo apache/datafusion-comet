@@ -354,15 +354,16 @@ WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_fl
 SELECT id, array_min(array(l, r)) FROM p
 
 -- element_at on a map, DOUBLE
--- Spark looks a key up in its SQL ordering, so a map with a float key falls back to Spark
--- (map_builders_float_key_gate.sql, expressions/map/element_at_map.sql). `map(l, 1)[r]` is not
--- here: Spark's optimizer rewrites it to a CASE over the keys, which comparison.sql covers.
-query expect_fallback(Spark looks a key up in its SQL ordering)
+-- Spark looks a key up in its SQL ordering, which Comet's native map lookup does not match for a
+-- float key, so the lookup runs through codegen dispatch (expressions/map/element_at_map.sql).
+-- `map(l, 1)[r]` is not here: Spark's optimizer rewrites it to a CASE over the keys, which
+-- comparison.sql covers.
+query expect_dispatch(element_at)
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
 SELECT id, element_at(map(l, 1), r) FROM p WHERE l IS NOT NULL
 
 -- element_at on a map, FLOAT
-query expect_fallback(Spark looks a key up in its SQL ordering)
+query expect_dispatch(element_at)
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
 SELECT id, element_at(map(l, 1), r) FROM p WHERE l IS NOT NULL
 
