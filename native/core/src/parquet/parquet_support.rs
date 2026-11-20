@@ -350,9 +350,9 @@ fn parquet_convert_array_impl(
 
             Ok(Arc::new(string_array))
         }
-        // Unannotated BINARY read as a string. Spark's cast replaces malformed UTF-8 with
-        // U+FFFD, where Arrow's safe cast below would return NULL. Top-level columns don't
-        // reach this arm (#7032). The reader keeps a file's ARROW:schema types, so an Arrow
+        // Unannotated BINARY read as a string. Comet uses JVM-compatible replacement
+        // decoding. Columns DataFusion coerces to strings during the read bypass this
+        // conversion (#7032). The reader keeps a file's ARROW:schema types, so an Arrow
         // writer's `LargeBinary` or `BinaryView` arrives as is; Spark's cast takes only
         // `Binary`, and converting `LargeBinary` reuses its value buffer.
         (Binary | LargeBinary | BinaryView, Utf8) => {
@@ -383,6 +383,10 @@ fn parquet_convert_array_impl(
         // keeps the dictionary, succeeds (#7254).
         (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
             let dictionary = array.as_any_dictionary();
+            // An all-null batch can have no dictionary entries. normalized_keys requires one.
+            if dictionary.values().is_empty() {
+                return Ok((new_null_array(to_type, array.len()), true));
+            }
             let keys = dictionary.normalized_keys();
             let key_nulls = dictionary.keys().nulls();
             let (values, _) = parquet_convert_array_impl(

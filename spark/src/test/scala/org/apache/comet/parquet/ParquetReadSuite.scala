@@ -97,6 +97,11 @@ abstract class ParquetReadSuite extends CometTestBase {
   // With binaryAsString, Spark maps unannotated BINARY to StringType:
   // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaConverter.scala#L344-L350
   test("native scan casts Arrow dictionary binary values with Spark semantics") {
+    checkDictionaryBinaryAsString(ArrowType.Binary.INSTANCE, inferSchema = true)
+    checkDictionaryBinaryAsString(ArrowType.LargeBinary.INSTANCE, inferSchema = false)
+  }
+
+  private def checkDictionaryBinaryAsString(valueType: ArrowType, inferSchema: Boolean): Unit = {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "dictionary-binary.parquet")
       val parquetSchema = MessageTypeParser.parseMessageType("""message root {
@@ -107,7 +112,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         "value",
         new FieldType(
           true,
-          ArrowType.Binary.INSTANCE,
+          valueType,
           new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
         Collections.emptyList[ArrowField]())
       val arrowSchema = new ArrowSchema(Collections.singletonList(arrowField))
@@ -131,18 +136,25 @@ abstract class ParquetReadSuite extends CometTestBase {
           row.add(0, Binary.fromConstantByteArray(bytes))
           writer.write(row)
         }
+        writer.write(new SimpleGroup(parquetSchema))
       } finally {
         writer.close()
       }
 
-      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "true") {
-        withParquetTable(path.toString, "dictionary_binary") {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperator(sql("SELECT value FROM dictionary_binary"))
-          assert(
-            collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
-            "Expected a CometNativeScanExec")
-        }
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> inferSchema.toString) {
+        val reader = if (inferSchema) spark.read else spark.read.schema("value string")
+        val df = reader.parquet(path.toString)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        assert(
+          collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+          "Expected a CometNativeScanExec")
+        checkAnswer(
+          df.selectExpr("hex(value)", "value IS NULL"),
+          Seq(
+            Row("66EFBFBD6F", false),
+            Row("66EFBFBD6F", false),
+            Row("76616C6964", false),
+            Row(null, true)))
       }
     }
   }

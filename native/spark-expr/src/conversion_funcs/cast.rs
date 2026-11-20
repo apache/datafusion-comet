@@ -1094,6 +1094,12 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
             }
         };
         written.expect("writing to a string builder cannot fail");
+        // Replacement bytes can grow a Parquet value buffer beyond its offset range.
+        // append_value would panic when recording the end of this row.
+        let end = builder.values_slice().len();
+        if end > O::MAX_OFFSET {
+            return Err(ArrowError::OffsetOverflowError(end));
+        }
         builder.append_value("");
     }
     let strings = builder.finish();
