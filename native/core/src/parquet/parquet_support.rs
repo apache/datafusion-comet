@@ -19,12 +19,13 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::field_resolver::FieldResolver;
 use crate::parquet::name_fold::fold_names;
 use arrow::array::{
-    make_array, BooleanBufferBuilder, FixedSizeBinaryArray, GenericListViewArray, MapArray,
-    OffsetSizeTrait, StringArray,
+    downcast_dictionary_array, make_array, AnyDictionaryArray, FixedSizeBinaryArray,
+    GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::{can_cast_types, take};
 use arrow::datatypes::{FieldRef, Fields};
+use arrow::error::ArrowError;
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -383,30 +384,33 @@ fn parquet_convert_array_impl(
         // keeps the dictionary, succeeds (#7254).
         (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
             let dictionary = array.as_any_dictionary();
-            // An all-null batch can have no dictionary entries. normalized_keys requires one.
+            // An all-null batch can have no dictionary entries.
             if dictionary.values().is_empty() {
                 return Ok((new_null_array(to_type, array.len()), true));
             }
-            let keys = dictionary.normalized_keys();
-            let key_nulls = dictionary.keys().nulls();
             let (values, _) = parquet_convert_array_impl(
-                referenced_dictionary_values(dictionary.values(), &keys, key_nulls)?,
+                referenced_dictionary_values(dictionary)?,
                 to_type,
                 parquet_options,
                 None,
                 in_map_key,
             )?;
-            let decoded_bytes =
-                decoded_bytes(values.as_string::<i32>().value_offsets(), &keys, key_nulls);
-            if decoded_bytes > i32::MAX as usize {
-                return Err(DataFusionError::Execution(format!(
-                    "Decoding the dictionary-encoded BINARY values of one batch as strings \
-                     takes {decoded_bytes} bytes, more than the {} a string column holds. \
-                     Lower spark.comet.batchSize so that a batch holds fewer rows.",
-                    i32::MAX
-                )));
-            }
-            Ok(take(values.as_ref(), dictionary.keys(), None)?)
+            take(values.as_ref(), dictionary.keys(), None).map_err(|err| match err {
+                ArrowError::OffsetOverflowError(_) => {
+                    let decoded_bytes = decoded_bytes(
+                        values.as_string::<i32>().value_offsets(),
+                        &dictionary.normalized_keys(),
+                        dictionary.keys().nulls(),
+                    );
+                    DataFusionError::Execution(format!(
+                        "Decoding the dictionary-encoded BINARY values of one batch as strings \
+                         takes {decoded_bytes} bytes, more than the {} a string column holds. \
+                         Lower spark.comet.batchSize so that a batch holds fewer rows.",
+                        i32::MAX
+                    ))
+                }
+                err => err.into(),
+            })
         }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
@@ -670,23 +674,16 @@ fn parquet_convert_map_to_map(
 /// every batch read from the row group, so a wide ill-formed entry that one batch uses would
 /// otherwise be decoded again for each of the others. A dictionary of up to 64 KiB is returned as
 /// is: decoding it costs less than finding the referenced entries.
-fn referenced_dictionary_values(
-    values: &ArrayRef,
-    keys: &[usize],
-    key_nulls: Option<&NullBuffer>,
-) -> DataFusionResult<ArrayRef> {
+fn referenced_dictionary_values(dictionary: &dyn AnyDictionaryArray) -> DataFusionResult<ArrayRef> {
     const SMALL_DICTIONARY_BYTES: usize = 64 * 1024;
+    let values = dictionary.values();
     if values.get_buffer_memory_size() <= SMALL_DICTIONARY_BYTES {
         return Ok(Arc::clone(values));
     }
-    let mut referenced = BooleanBufferBuilder::new(values.len());
-    referenced.append_n(values.len(), false);
-    for (row, key) in keys.iter().enumerate() {
-        if key_nulls.is_none_or(|nulls| nulls.is_valid(row)) {
-            referenced.set_bit(*key, true);
-        }
-    }
-    let referenced = referenced.finish();
+    let referenced = downcast_dictionary_array!(
+        dictionary => dictionary.occupancy(),
+        t => unreachable!("dictionary key type validated by Arrow: {t}"),
+    );
     if referenced.count_set_bits() == values.len() {
         return Ok(Arc::clone(values));
     }
@@ -1371,68 +1368,60 @@ mod tests {
     /// ill-formed entry another batch uses stays hidden behind a null.
     #[test]
     fn referenced_dictionary_values_hides_unreferenced_entries() {
-        use super::referenced_dictionary_values;
-        use arrow::array::{Array, ArrayRef, BinaryArray};
+        use arrow::array::{Array, ArrayRef, BinaryArray, DictionaryArray, Int32Array};
         use arrow::buffer::NullBuffer;
+        use arrow::datatypes::Int32Type;
         use std::sync::Arc;
 
+        let select = |values: &ArrayRef, keys: Int32Array| {
+            let dictionary = DictionaryArray::<Int32Type>::new(keys, Arc::clone(values));
+            super::referenced_dictionary_values(&dictionary).unwrap()
+        };
         let wide = vec![0xFF; 86_016];
         let values: ArrayRef = Arc::new(BinaryArray::from(vec![
             b"normal".as_slice(),
             wide.as_slice(),
             b"other".as_slice(),
         ]));
-        let hidden = referenced_dictionary_values(&values, &[0, 2, 0], None).unwrap();
+        let hidden = select(&values, Int32Array::from(vec![0, 2, 0]));
         assert!(hidden.is_valid(0));
         assert!(hidden.is_null(1));
         assert!(hidden.is_valid(2));
 
         // A null key's entry doesn't count as referenced.
         let nulls = NullBuffer::from(vec![true, false, true]);
-        let hidden = referenced_dictionary_values(&values, &[0, 1, 0], Some(&nulls)).unwrap();
+        let hidden = select(&values, Int32Array::new(vec![0, 1, 0].into(), Some(nulls)));
         assert!(hidden.is_null(1));
 
         // Every entry referenced, or a small dictionary: the values are returned as they are.
-        let all = referenced_dictionary_values(&values, &[0, 1, 2], None).unwrap();
+        let all = select(&values, Int32Array::from(vec![0, 1, 2]));
         assert!(Arc::ptr_eq(&all, &values));
         let small: ArrayRef = Arc::new(BinaryArray::from(vec![b"a".as_slice(), b"b"]));
-        let same = referenced_dictionary_values(&small, &[0], None).unwrap();
+        let same = select(&small, Int32Array::from(vec![0]));
         assert!(Arc::ptr_eq(&same, &small));
     }
 
-    /// The bytes a batch's keys expand a decoded dictionary to are counted from the decoded
-    /// values, so that a batch past what a string column holds is reported before `take`
-    /// overflows the offsets. The error itself needs a 2 GiB batch and is not exercised here.
     #[test]
-    fn nested_dictionary_binary_to_string_counts_decoded_bytes() {
-        use super::{decoded_bytes, parquet_convert_array, SparkParquetOptions};
-        use arrow::array::{Array, ArrayRef, AsArray, BinaryArray, DictionaryArray, Int32Array};
-        use arrow::buffer::NullBuffer;
+    fn dictionary_binary_to_string_reports_full_size_on_overflow() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{DictionaryArray, Int32Array, LargeBinaryArray};
         use arrow::datatypes::{DataType, Int32Type};
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let offsets = [0, 1 << 30, (1 << 30) + 5];
-        assert_eq!(decoded_bytes(&offsets, &[0, 0, 0], None), 3 << 30);
-        let nulls = NullBuffer::from(vec![true, false, true]);
-        assert_eq!(
-            decoded_bytes(&offsets, &[0, 0, 1], Some(&nulls)),
-            (1 << 30) + 5
-        );
-
-        // The expanded, decoded size is checked, not the input's: 8 keys that reference one
-        // 1 KiB entry decode to 24 KiB, which fits.
-        let wide = vec![0xFF; 1024];
-        let values = BinaryArray::from(vec![b"one".as_slice(), wide.as_slice()]);
-        let input: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(
-            Int32Array::from(vec![1; 8]),
-            Arc::new(values),
-        ));
+        // Each non-null key references 264,000 replacement bytes. Arrow checks
+        // the offsets before allocating the expanded buffer (#7254).
+        let wide = vec![0xFF; 88_000];
+        let values = LargeBinaryArray::from(vec![wide.as_slice()]);
+        let mut keys = vec![Some(0); 8192];
+        keys[0] = None;
+        let input = DictionaryArray::<Int32Type>::new(Int32Array::from(keys), Arc::new(values));
         let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
-        let result = parquet_convert_array(input, &DataType::Utf8, &options).unwrap();
-        let strings = result.as_string::<i32>();
-        assert_eq!(strings.len(), 8);
-        assert_eq!(strings.value(7).len(), 3 * 1024);
+        let error = parquet_convert_array(Arc::new(input), &DataType::Utf8, &options)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2162424000 bytes"), "{error}");
+        assert!(error.contains("spark.comet.batchSize"), "{error}");
     }
 
     /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
