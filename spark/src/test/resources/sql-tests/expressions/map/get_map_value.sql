@@ -31,18 +31,42 @@ SELECT m['x'], m['missing'] FROM test_map
 query spark_answer_only
 SELECT map('a', 1, 'b', 2)['a'], map('a', 1, 'b', 2)['missing'], map('a', 1, 'b', 2)[NULL]
 
--- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce fall back to
--- Spark. `x[key]` routes through `GetMapValue` / `CometMapExtract` (the `element_at` form in
+-- Map key types whose Spark equality native `map_extract` cannot reproduce are dispatched.
+-- `x[key]` routes through `GetMapValue` / `CometMapExtract` (the `element_at` form in
 -- `element_at_map.sql` exercises the same guard on `CometElementAt`). A `map<double,int>` column
 -- is used rather than a `map(...)` literal because Spark's `SimplifyExtractValueOps` rewrites
 -- `map(...)[key]` over a literal map into a `CASE` before it can reach the native lookup. Spark
 -- compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key and returns `7`;
 -- native lookup compares the raw Arrow values.
+-- `-0.0D` because a decimal `-0.0` has no signed zero.
 statement
 CREATE TABLE test_map_double(m map<double, int>) USING parquet
 
 statement
 INSERT INTO test_map_double VALUES (map(CAST(0 AS DOUBLE), 7)), (map(CAST(1 AS DOUBLE), 8)), (NULL)
 
-query expect_fallback(Spark looks a key up in its SQL ordering)
-SELECT m[CAST(-0.0 AS DOUBLE)] FROM test_map_double
+query expect_dispatch(getmapvalue)
+SELECT m[-0.0D] FROM test_map_double
+
+-- A NaN key is found by a NaN lookup, as `nanSafeCompareDoubles` treats NaN as equal to itself.
+statement
+INSERT INTO test_map_double VALUES (map(CAST('NaN' AS DOUBLE), 9))
+
+query expect_dispatch(getmapvalue)
+SELECT m[CAST('NaN' AS DOUBLE)] FROM test_map_double
+
+statement
+CREATE TABLE test_map_struct_key(m map<struct<a:int, b:string>, int>, k int) USING parquet
+
+statement
+INSERT INTO test_map_struct_key VALUES
+  (map(named_struct('a', 1, 'b', 'x'), 7), 1),
+  (map(named_struct('a', 2, 'b', 'y'), 8), 3),
+  (map(named_struct('a', 3, 'b', 'z'), 9), NULL),
+  (NULL, 1)
+
+query expect_dispatch(getmapvalue)
+SELECT m[named_struct('a', k, 'b', 'x')],
+       m[named_struct('a', k, 'b', CAST(NULL AS STRING))],
+       m[CAST(NULL AS STRUCT<a:int, b:string>)]
+FROM test_map_struct_key

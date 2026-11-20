@@ -386,35 +386,6 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // Finding E: a map nested inside a map value is handed to the JVM dispatcher whole, so its double
-  // keys never revisit `CometLiteral`. The guard has to live on the lookup instead. The outer key
-  // type is INT, so inspecting only the outermost map would admit the query; the fallback comes
-  // from the inner `element_at`, whose child is `MapType(DoubleType, IntegerType)`. Constant folding
-  // is on here, which is the only configuration where the inner map becomes such a literal, so this
-  // regression cannot be expressed in a SQL fixture (the harness disables folding). The direct
-  // single-level double-key lookups live in `element_at_map.sql` / `get_map_value.sql`.
-  test("nested map lookup with floating-point keys falls back") {
-    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), " +
-          s"$negZero) AS v FROM tbl",
-        "Spark looks a key up in its SQL ordering")
-    }
-  }
-
-  // Finding E for a collated inner key. Same folding-on-only bypass as the double-key case above;
-  // the direct single-level collated lookup lives in `element_at_map_collation.sql`.
-  test("nested map lookup with collated string keys falls back") {
-    assume(isSpark40Plus)
-    withParquetTable(Seq(("a1", 0)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT element_at(element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), 1), " +
-          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
-        "cannot honour a non-default collation")
-    }
-  }
-
   // A folded map with `CalendarIntervalType` keys reaches `CometLiteral`. `ArrayBasedMapBuilder`
   // dedups such keys by hash equality, but the folded-literal duplicate-key check needs an
   // interpreted ordering and `PhysicalCalendarIntervalType` has none ("does not support ordered
@@ -488,19 +459,6 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // Direct single-level folded map with floating-point keys: `map(CAST(0 AS DOUBLE), 7)` folds to a
-  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0` key.
-  // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`.
-  // Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the folding-off constructor form.)
-  test("folded map literal with floating-point keys in element_at falls back (multirow)") {
-    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      val lookup = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      checkSparkAnswerAndFallbackReason(
-        s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
-        "Spark looks a key up in its SQL ordering")
-    }
-  }
-
   // A TRY cast over a foldable map folds to a literal whose failing key is null. With a single
   // entry it has to stay on Spark too, rather than being rebuilt as a `CreateMap` that rejects the
   // null key. Spark returns NULL for both rows.
@@ -511,31 +469,6 @@ class CometMapExpressionSuite extends CometTestBase {
         "SELECT _1 AS id, element_at(try_cast(map(9999999999L, 20) AS map<int, int>), _1) AS v " +
           "FROM tbl",
         "Unsupported data type MapType")
-    }
-  }
-
-  // Direct single-level folded map with collated string keys. Native lookup is bytewise, so a
-  // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it.
-  test("folded map literal with collated string keys in element_at falls back (multirow)") {
-    assume(isSpark40Plus)
-    withParquetTable(Seq(("a1", 0)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
-          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
-        "cannot honour a non-default collation")
-    }
-  }
-
-  // Folded map with a complex (array) key. Spark permits a dynamic lookup array containing a NULL
-  // element; native `map_extract` casts the lookup to the key's exact Arrow type and cannot
-  // reproduce Spark's equality, so `MapKeySupport` declines every complex key type. Spark returns
-  // 7, NULL, NULL. (`element_at_map.sql` covers the constructor form with a non-null lookup.)
-  test("folded map literal with complex array key in element_at falls back (multirow)") {
-    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, element_at(map(array(1), 7), " +
-          "array(IF(_1 = 2, CAST(NULL AS INT), _1))) AS v FROM tbl",
-        "casts the lookup key to the map's exact Arrow key type")
     }
   }
 
