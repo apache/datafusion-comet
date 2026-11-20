@@ -78,10 +78,7 @@ case class CometNativeScanExec(
   override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
     // AQE rewrites DPP placeholders in the live scan before transition reversion.
     // The frozen originalPlan can still contain unexecutable SubqueryAdaptiveBroadcastExecs.
-    val restoredScan =
-      originalPlan.copy(partitionFilters = partitionFilters, dataFilters = dataFilters)
-    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
-    restoredScan
+    CometScanUtils.copyScanWithFilters(originalPlan, partitionFilters, dataFilters)
   }
 
   override lazy val metadata: Map[String, String] =
