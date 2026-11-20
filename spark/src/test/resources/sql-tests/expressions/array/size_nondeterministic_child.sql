@@ -21,11 +21,12 @@
 -- Config: spark.sql.legacy.sizeOfNull=false
 
 statement
-CREATE TABLE test_size_nondet(_1 int, arr array<int>) USING parquet
+CREATE TABLE test_size_nondet(_1 int, arr array<int>, m map<double, array<int>>) USING parquet
 
 statement
 INSERT INTO test_size_nondet
-SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)) FROM range(0, 16, 1, 1)
+SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)), map(1D, array(10, 20))
+FROM range(0, 16, 1, 1)
 
 query expect_dispatch(size)
 SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>))) AS s
@@ -42,6 +43,22 @@ FROM test_size_nondet
 -- A column array makes the dispatched kernel copy a ListVector
 query expect_dispatch(size)
 SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
+FROM test_size_nondet
+
+-- Only the second row matches key 1. If coalesce evaluates the lookup again on that
+-- row alone, the second counter starts at 0 and the lookup returns NULL.
+query expect_dispatch(size)
+SELECT _1, size(coalesce(m[CAST(monotonically_increasing_id() AS DOUBLE)], array(0)))
+FROM test_size_nondet
+
+query expect_dispatch(size)
+SELECT _1, size(coalesce(IF(monotonically_increasing_id() % 2 = 1, arr, NULL), array(0)))
+FROM test_size_nondet
+
+-- arrays_zip returns a list of non-null structs. Rust array_repeat rebuilds a nullable
+-- item field and fails Arrow's type check if it consumes the dispatched list.
+query expect_dispatch(size)
+SELECT _1, size(array_repeat(arrays_zip(array(map(_1, monotonically_increasing_id()))), 2))
 FROM test_size_nondet
 
 statement

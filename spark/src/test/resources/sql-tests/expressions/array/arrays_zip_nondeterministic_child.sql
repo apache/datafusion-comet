@@ -81,6 +81,6 @@ statement
 SET spark.sql.codegen.factoryMode=NO_CODEGEN
 
 -- The counter advances even on the NULL-array row in an interpreted projection.
-query expect_fallback(evaluates later arguments differently on NULL inputs)
+query expect_dispatch(arrays_zip)
 SELECT x, arrays_zip(IF(x = 0, NULL, array(x)), array(map(1, monotonically_increasing_id())))
 FROM test_arrays_zip_nondet_pair

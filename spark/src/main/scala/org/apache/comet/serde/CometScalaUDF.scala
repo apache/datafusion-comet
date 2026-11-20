@@ -22,8 +22,10 @@ package org.apache.comet.serde
 import scala.util.control.NonFatal
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, ExpressionSet, If, IsNull, KnownNotNull, LambdaFunction, Literal, NamedLambdaVariable, Or, RuntimeReplaceable, ScalaUDF}
-import org.apache.spark.sql.types.BinaryType
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, ExpressionSet, If, IsNull, KnownNotNull, LambdaFunction, Literal, NamedLambdaVariable, Or, RuntimeReplaceable, ScalaUDF, UnaryExpression}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
+import org.apache.spark.sql.types.{BinaryType, DataType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
@@ -32,6 +34,17 @@ import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
+
+/** Emits a call to the bound child's eval method against the dispatcher's Arrow-backed row. */
+private case class InterpretedKernelExpr(child: Expression)
+    extends UnaryExpression
+    with CodegenFallback {
+  override def dataType: DataType = child.dataType
+  override def nullable: Boolean = child.nullable
+  override def eval(input: InternalRow): Any = child.eval(input)
+  override protected def withNewChildInternal(newChild: Expression): InterpretedKernelExpr =
+    copy(child = newChild)
+}
 
 /**
  * Routes scalar `ScalaUDF` (Scala and Java UDFs) through the codegen dispatcher.
@@ -131,8 +144,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
   def emitJvmCodegenDispatch(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] =
-    tryJvmCodegenDispatch(expr, inputs, binding) match {
+      binding: Boolean,
+      interpreted: Boolean = false): Option[Expr] =
+    tryJvmCodegenDispatch(expr, inputs, binding, interpreted) match {
       case Right(proto) => Some(proto)
       case Left(reason) =>
         withFallbackReason(expr, reason)
@@ -147,7 +161,8 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
   private def tryJvmCodegenDispatch(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Either[String, Expr] = {
+      binding: Boolean,
+      interpreted: Boolean = false): Either[String, Expr] = {
     val exprName = CometExplainInfo.exprDisplayName(expr)
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       return Left(
@@ -217,7 +232,8 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val bytes =
       try {
         val serializer = SparkEnv.get.closureSerializer.newInstance()
-        val buffer = serializer.serialize(DispatchOccurrence.tag(boundExpr))
+        val kernelExpr = if (interpreted) InterpretedKernelExpr(boundExpr) else boundExpr
+        val buffer = serializer.serialize(DispatchOccurrence.tag(kernelExpr))
         val serialized = new Array[Byte](buffer.remaining())
         buffer.get(serialized)
         serialized

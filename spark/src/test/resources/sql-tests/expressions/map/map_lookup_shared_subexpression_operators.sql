@@ -20,6 +20,7 @@
 
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
+-- Config: spark.sql.subexpressionElimination.filterExec.enabled=false
 -- Config: spark.sql.shuffle.partitions=10
 
 statement
@@ -34,6 +35,10 @@ INSERT INTO test_map_lookup_shared_ops VALUES
   (map(0.5D, 7), map(0.5D, 8), 1.0D),
   (map(0.25D, 1), map(0.25D, 2), 3.0D),
   (map(0.125D, 3), map(0.125D, 4), 7.0D)
+
+-- The whole-stage filter skips the repeated division on the NULL map where x is zero.
+query expect_fallback(that the kernel repeats)
+SELECT x FROM test_map_lookup_shared_ops WHERE element_at(m1, 1.0D / x + 1.0D / x) IS NULL
 
 -- Native shuffle declines; JVM columnar shuffle evaluates the keys with Spark's projection
 query expect_error(DIVIDE_BY_ZERO)
@@ -67,6 +72,13 @@ query expect_fallback(unsupported projection)
 SELECT element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
 FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
 LIMIT 10
+
+-- Top-K serializes its sort keys again at execution, without sharing across keys.
+query expect_fallback(unsupported sort order)
+SELECT x
+FROM test_map_lookup_shared_ops
+ORDER BY element_at(m1, 1.0D / (x + 1.0D) + 1.0D / (x + 1.0D)), x
+LIMIT 2
 
 -- The decline does not depend on ANSI mode
 statement

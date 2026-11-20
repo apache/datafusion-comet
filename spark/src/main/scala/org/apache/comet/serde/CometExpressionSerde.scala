@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArraysZip, Attribute, ElementAt, Expression, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CallMethodViaReflection, ElementAt, Expression, ScalaUDF}
 import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType}
 
 import org.apache.comet.serde.QueryPlanSerde.skipsSharedSubexpression
@@ -143,20 +143,22 @@ trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
         case u: ScalaUDF if !u.udfDeterministic =>
           "a nondeterministic user function can share state across calls that Spark evaluates " +
             "together for each row"
+        case _: CallMethodViaReflection =>
+          "a reflected method can share static state across calls that Spark evaluates " +
+            "together for each row"
         case e: ElementAt if writesUndeclaredNullFlag(e) =>
           "Spark's generated code for this non-nullable array element_at assigns an " +
             "undeclared null flag"
-        case a @ (_: ArraysZip | _: ArrayAppend)
-            if QueryPlanSerde.sparkMayInterpret && hasObservableLaterArgument(a.children) =>
-          s"${a.prettyName} evaluates later arguments differently on NULL inputs " +
-            "when Spark uses interpreted evaluation"
       })
       .orElse(SharedSubexpressionArgument.declineReason(expr))
-
-  // ArraysZip.eval evaluates every child, while doGenCode stops after the first NULL.
-  // ArrayAppend.eval skips the item for a NULL array, while doGenCode always evaluates it.
-  private def hasObservableLaterArgument(children: Seq[Expression]): Boolean =
-    children.dropWhile(!_.nullable).drop(1).exists(e => !EvaluationOrder.isUnobservable(e))
+      .orElse {
+        if (QueryPlanSerde.sparkMayInterpret && !QueryPlanSerde.sparkEvaluatesInterpreted &&
+          !expr.children.forall(EvaluationOrder.isUnobservable)) {
+          Some("Spark may interpret these arguments, which can change their evaluation order")
+        } else {
+          None
+        }
+      }
 
   // BinaryExpression declares the flag only for nullable results. ElementAt still assigns it
   // in its out-of-bounds and null-element branches even when the literal index rules them out.

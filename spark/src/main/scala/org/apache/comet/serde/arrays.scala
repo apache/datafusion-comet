@@ -1298,16 +1298,24 @@ object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable
 object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFallback {
 
   private val nondeterministicReason: String =
-    "When Spark returns NULL for `size(NULL)`, the native NULL guard would evaluate a " +
-      "nullable nondeterministic operand twice."
+    "A nondeterministic operand needs codegen dispatch when the Rust implementation requires " +
+      "a NULL guard, coalesce duplicates a stateful input, or a nested expression can dispatch."
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
 
   private def needsNullGuard(expr: Size): Boolean =
     !expr.legacySizeOfNull && expr.child.nullable
 
+  // Even without a size guard, a nested serializer can duplicate state (coalesce) or pass
+  // a dispatched collection to a Rust kernel with different item nullability (array_repeat).
+  private def needsWholeOperand(child: Expression): Boolean = child.exists {
+    case c: Coalesce => c.children.dropRight(1).exists(NullGuardSupport.isNondeterministic)
+    case e => exprSerdeMap.get(e.getClass).exists(_.isInstanceOf[GatedCodegenDispatchFallback])
+  }
+
   override def getSupportLevel(expr: Size): SupportLevel = {
-    if (needsNullGuard(expr) && NullGuardSupport.isNondeterministic(expr.child)) {
+    if (NullGuardSupport.isNondeterministic(expr.child) &&
+      (needsNullGuard(expr) || needsWholeOperand(expr.child))) {
       Unsupported(Some(nondeterministicReason))
     } else {
       expr.child.dataType match {

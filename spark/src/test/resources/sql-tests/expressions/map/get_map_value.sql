@@ -55,6 +55,12 @@ INSERT INTO test_map_double VALUES (map(CAST('NaN' AS DOUBLE), 9))
 query expect_dispatch(getmapvalue)
 SELECT m[CAST('NaN' AS DOUBLE)] FROM test_map_double
 
+-- A reflected method can access static fields shared by the two lookups.
+query expect_fallback(a reflected method can share static state)
+SELECT m[CAST(reflect('java.lang.Integer', 'toString', 0) AS DOUBLE)],
+       m[CAST(reflect('java.lang.Integer', 'toString', 1) AS DOUBLE)]
+FROM test_map_double
+
 statement
 CREATE TABLE test_map_struct_key(m map<struct<a:int, b:string>, int>, k int) USING parquet
 
@@ -77,6 +83,24 @@ SET spark.sql.ansi.enabled=true
 
 query expect_dispatch(getmapvalue)
 SELECT m[element_at(array(named_struct('a', k, 'b', 'x')), 1)] FROM test_map_struct_key
+
+statement
+CREATE TABLE test_map_interpreted(
+  m1 map<double, int>, m2 map<array<bigint>, int>, x int, n int, r string)
+USING parquet
+
+statement
+INSERT INTO test_map_interpreted VALUES (map(1D, 7), map(array(1L), 8), 0, NULL, '1')
+
+-- CollectList.update calls eval. With a nullable replacement, array_join.eval returns '1'
+-- where Spark's generated code before 4.2 returns NULL (SPARK-57200).
+query expect_dispatch(getmapvalue)
+SELECT collect_list(m1[CAST(array_join(array(CAST(NULL AS STRING)), ',', r) AS DOUBLE)])
+FROM test_map_interpreted
+
+-- array_repeat.eval checks n first, so a NULL count skips the division by zero.
+query expect_dispatch(getmapvalue)
+SELECT collect_list(m2[array_repeat(10 DIV x, n)]) FROM test_map_interpreted
 
 -- Spark disables its compile-failure retry during tests. Use its interpreted projection
 -- as the reference for the non-ANSI bounds check, which assigns an undeclared null flag.
