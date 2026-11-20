@@ -165,7 +165,7 @@ object CometArrowStream extends Logging {
         case c: CometVector => c
         case other =>
           throw new IllegalStateException(
-            s"$name expects CometVector type, but column $i is a ${other.getClass.getName} ")
+            s"$name expects CometVector type, but column $i is a ${other.getClass.getName}")
       }
 
       // The Arrow C Stream exports the producer's actual Arrow schema. If the
