@@ -33,8 +33,29 @@ pub fn decode_remote_shuffle_batch(
     bytes: &[u8],
     expected_types: &[DataType],
 ) -> Result<RecordBatch> {
+    normalize_remote_batch(
+        read_validated_remote_batch(bytes, expected_types)?,
+        expected_types,
+    )
+}
+
+/// The first half of `decode_remote_shuffle_batch`: reads and validates a remote block but keeps
+/// its dictionaries, so a caller can split the block before expanding them.
+pub fn read_validated_remote_batch(
+    bytes: &[u8],
+    expected_types: &[DataType],
+) -> Result<RecordBatch> {
     let batch = crate::read_ipc_compressed_validated(bytes)?;
     validate_remote_schema(&batch, expected_types)?;
+    Ok(batch)
+}
+
+/// The second half of `decode_remote_shuffle_batch`: decodes the dictionaries of a validated block,
+/// or of a row slice of one, and stamps the declared types.
+pub fn normalize_remote_batch(
+    batch: RecordBatch,
+    expected_types: &[DataType],
+) -> Result<RecordBatch> {
     if batch
         .columns()
         .iter()

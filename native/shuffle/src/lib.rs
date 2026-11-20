@@ -21,6 +21,7 @@ pub mod bench_support;
 mod codec_context;
 pub(crate) mod comet_partitioning;
 pub mod decoded_batch_coalescer;
+mod dictionary_split;
 pub mod ipc;
 pub(crate) mod metrics;
 mod offsets_as_lengths;
@@ -38,8 +39,12 @@ pub(crate) mod writers;
 
 pub use codec_context::ShuffleCodecContext;
 pub use comet_partitioning::{CometPartitioning, RoundRobinStrategy};
+pub use dictionary_split::{dictionary_expansion_ranges, MAX_EXPANDED_BYTES};
 pub use ipc::{read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache};
-pub use remote_schema::{decode_remote_shuffle_batch, validate_remote_schema};
+pub use remote_schema::{
+    decode_remote_shuffle_batch, normalize_remote_batch, read_validated_remote_batch,
+    validate_remote_schema,
+};
 pub use schema_align::SchemaAlignExec;
 pub use shuffle_writer::{PartitionOffsets, ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
