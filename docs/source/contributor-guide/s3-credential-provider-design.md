@@ -130,19 +130,19 @@ STS endpoint selection (`configure_sts_endpoint`) overrides the SDK's own endpoi
 
 `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` differ in what they consume:
 
-| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                       |
-| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
-| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`    |
-| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                        |
-| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry    |
-| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry        |
-| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes |
+| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                                                           |
+| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`                                        |
+| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                                                            |
+| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry                                        |
+| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry                                            |
+| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes for a read and 1 minute for a write |
 
-The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader or writer. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
+The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. A write uses 1 minute instead. reqsign reloads a credential with less than 2 minutes left, so a write asks the SPI for every request, as the Parquet path does. A data file stays open while its rows arrive, and an AWS SDK v1 session provider keeps handing out its current credential until a minute before it expires, so the 5-minute window could sign a file's later parts with an expired token. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
 
 ## Property-bag handling on the Iceberg path
 
-The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`/`opendal.`) is applied native-side in `iceberg_common.rs::build_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
+The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`/`opendal.`/`hdfs.`/`hadoop.`) is applied native-side in `iceberg_common.rs::build_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
 
 `IcebergScanExec` derives a redacting `Debug`, and the `FileIO` cache key's `Debug` omits the property bag, so plan dumps and tracing do not leak it.
 

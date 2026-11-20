@@ -28,7 +28,6 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{ArrayType, BinaryType, StructField, StructType}
 
@@ -70,12 +69,6 @@ class CometVariantTypeSuite extends AnyFunSuite {
         assert(QueryPlanSerde.serializeDataType(ArrayType(variantType)).isDefined)
         assert(!QueryPlanSerde.supportedDataType(variantType))
         assert(!QueryPlanSerde.supportedDataType(ArrayType(variantType), allowComplex = true))
-        assert(
-          !CometNativeColumnarToRowExec.supportsSchema(
-            StructType(Seq(StructField("v", variantType)))))
-        assert(
-          !CometNativeColumnarToRowExec.supportsSchema(
-            StructType(Seq(StructField("nested", ArrayType(variantType))))))
         assert(!CometScanTypeChecker().isTypeSupported(variantType, "v", ListBuffer.empty))
         assert(
           !CometScanTypeChecker()
