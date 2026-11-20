@@ -32,6 +32,7 @@
 use std::mem::size_of;
 use std::sync::Arc;
 
+use datafusion::common::DataFusionError;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::parquet::{ParquetAccessPlan, RowGroupAccess};
@@ -45,8 +46,10 @@ use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
 use roaring::{RoaringBitmap, RoaringTreemap};
 
+use crate::errors::CometError;
 use crate::execution::operators::ExecutionError;
 use crate::execution::operators::ExecutionError::GeneralError;
+use datafusion_comet_common::is_refusal;
 use datafusion_comet_proto::spark_operator::DeltaSparkDvDescriptor;
 
 const NATIVE_MAGIC: i32 = 1681511376;
@@ -710,10 +713,12 @@ async fn attach_access_plan(
         admission_bound_bytes(dv.cardinality, row_counts.len(), page_bound_selectors)?;
     let reservation = partition_reservation.new_empty();
     reservation.try_grow(admission_bytes).map_err(|e| {
-        GeneralError(format!(
-            "Deletion vector access plan for {file_path} needs up to {admission_bytes} \
-             bytes to construct, exceeding the execution memory pool: {e}"
-        ))
+        reservation_error(e, |e| {
+            format!(
+                "Deletion vector access plan for {file_path} needs up to {admission_bytes} \
+                 bytes to construct, exceeding the execution memory pool: {e}"
+            )
+        })
     })?;
 
     let plan = build_access_plan(&metadata, &deleted, file.range.as_ref())
@@ -763,11 +768,13 @@ async fn attach_access_plan(
         .min(total_rows);
     let retained_bytes_bound = reader_peak_bytes(reader_selector_bound, row_counts.len())?;
     reservation.try_resize(retained_bytes_bound).map_err(|e| {
-        GeneralError(format!(
-            "Deletion vector access plan for {file_path} retains {selector_count} row \
-             selectors, needing up to {retained_bytes_bound} bytes at the reader's \
-             normalization peak, exceeding the execution memory pool: {e}"
-        ))
+        reservation_error(e, |e| {
+            format!(
+                "Deletion vector access plan for {file_path} retains {selector_count} row \
+                 selectors, needing up to {retained_bytes_bound} bytes at the reader's \
+                 normalization peak, exceeding the execution memory pool: {e}"
+            )
+        })
     })?;
 
     // Keyed by concrete type: the parquet opener looks up
@@ -784,13 +791,41 @@ async fn attach_access_plan(
         .with_extension(DvAccessPlanReservation(reservation)))
 }
 
+/// The error for a reservation that the memory pool failed with `e`: `refused(e)` if the pool
+/// refused the memory, and otherwise `e` itself (see [`is_refusal`]). An exception Spark threw
+/// stays that exception, which the JNI boundary rethrows as itself.
+fn reservation_error(
+    e: DataFusionError,
+    refused: impl FnOnce(&DataFusionError) -> String,
+) -> ExecutionError {
+    if is_refusal(&e) {
+        return GeneralError(refused(&e));
+    }
+    if let DataFusionError::External(inner) = e.find_root() {
+        if let Some(CometError::JavaException {
+            class,
+            msg,
+            throwable,
+        }) = inner.downcast_ref::<CometError>()
+        {
+            return ExecutionError::JavaException {
+                class: class.clone(),
+                msg: msg.clone(),
+                throwable: Arc::clone(throwable),
+            };
+        }
+    }
+    e.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
-    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, UnboundedMemoryPool};
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use jni::objects::{Global, JThrowable};
     use parquet::arrow::ArrowWriter;
     use parquet::file::metadata::ParquetMetaDataReader;
     use parquet::file::properties::WriterProperties;
@@ -1683,6 +1718,80 @@ mod tests {
             0,
             "a rejected reservation must not leak bytes into the pool"
         );
+    }
+
+    /// A pool with room to spare that fails every `try_grow` with an exception Spark threw, as a
+    /// pool backed by Spark does once a spill of another consumer has failed.
+    #[derive(Debug)]
+    struct ThrowingPool {
+        inner: UnboundedMemoryPool,
+        throwable: Arc<Global<JThrowable<'static>>>,
+    }
+
+    impl std::fmt::Display for ThrowingPool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "ThrowingPool({})", self.inner)
+        }
+    }
+
+    impl MemoryPool for ThrowingPool {
+        fn name(&self) -> &str {
+            "ThrowingPool"
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.inner.grow(reservation, additional)
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.inner.shrink(reservation, shrink)
+        }
+
+        fn try_grow(&self, _: &MemoryReservation, _: usize) -> datafusion::common::Result<()> {
+            Err(CometError::JavaException {
+                class: "org.apache.spark.memory.SparkOutOfMemoryError".to_string(),
+                msg: "[SPILL_OUT_OF_MEMORY] Error while calling spill()".to_string(),
+                throwable: Arc::clone(&self.throwable),
+            }
+            .into())
+        }
+
+        fn reserved(&self) -> usize {
+            self.inner.reserved()
+        }
+    }
+
+    /// An exception Spark threw while the access plan reserves its memory fails the scan with
+    /// that exception, not with a message that the plan exceeds the pool.
+    #[tokio::test]
+    async fn attach_access_plans_fails_with_the_exception_spark_threw() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A null reference stands in for the throwable, since no JVM runs here.
+        let throwable: Arc<Global<JThrowable<'static>>> = Arc::new(Global::null());
+        let pool: Arc<dyn MemoryPool> = Arc::new(ThrowingPool {
+            inner: UnboundedMemoryPool::default(),
+            throwable: Arc::clone(&throwable),
+        });
+        let runtime_env = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::clone(&pool))
+                .build()
+                .unwrap(),
+        );
+        let scan_file = alternating_dv_scan_file(&runtime_env, tmp.path(), 1024);
+
+        let err = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ExecutionError::JavaException { throwable: thrown, .. }
+                    if Arc::ptr_eq(thrown, &throwable)
+            ),
+            "{err:?}"
+        );
+        assert_eq!(pool.reserved(), 0);
     }
 
     /// A pool with room for the plan succeeds, reserves exactly the reader-lifecycle peak

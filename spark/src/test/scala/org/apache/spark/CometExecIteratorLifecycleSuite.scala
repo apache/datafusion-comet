@@ -19,7 +19,7 @@
 
 package org.apache.spark
 
-import java.io.ByteArrayInputStream
+import java.io.{ByteArrayInputStream, IOException}
 import java.lang.ref.WeakReference
 import java.util.Properties
 import java.util.concurrent.TimeUnit
@@ -33,13 +33,14 @@ import org.apache.arrow.vector.BigIntVector
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
 import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, CometNativeScanExec, CometProjectExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.functions.{col, udf}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.JsonProtocol
@@ -451,6 +452,60 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         // Guards against a vacuous pass: the sort must hold memory when the first plan closes.
         assert(heldBySort.length == 1 && heldBySort.head > 0, heldBySort.mkString(", "))
         assert(warnings.isEmpty, warnings.mkString("\n"))
+      }
+    }
+  }
+
+  test("a native sort fails with the exception Spark threw while spilling another consumer") {
+    // When Spark cannot grant what the sort asks for, it spills the task's other consumers, and
+    // throws if a spill fails. DataFusion's sort takes any error from its pool for a refusal, so
+    // it spills and asks again, and the pool has to fail that request with the same exception
+    // even though Spark could now grant it.
+    withTempPath { path =>
+      spark
+        .range(0, 1000000, 1, 1)
+        .selectExpr("id", "CAST(id AS STRING) AS s")
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        withSQLConf(
+          // One task reads the whole file, however large.
+          SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
+          val sorted = sql("SELECT * FROM tbl SORT BY id DESC")
+          val plan = sorted.queryExecution.executedPlan
+          assert(plan.find(_.isInstanceOf[CometSortExec]).isDefined, s"Expected a sort:\n$plan")
+          val rdd = sorted.queryExecution.toRdd
+          assert(rdd.getNumPartitions == 1)
+
+          val results = rdd
+            .mapPartitions { rows =>
+              val context = TaskContext.get()
+              val other = new FailsToSpillOnce(context.taskMemoryManager())
+              context.addTaskCompletionListener[Unit](_ => other.freeMemory(other.getUsed))
+              // Takes all the off-heap memory the task can get, then leaves the sort room for its
+              // merge reservation and its first batches.
+              assert(other.acquireMemory(1L << 40) > (8L << 20))
+              other.freeMemory(8L << 20)
+              val outcome =
+                try {
+                  rows.foreach(_ => ())
+                  "finished"
+                } catch {
+                  case e: Throwable => s"${e.getClass.getName}: ${e.getMessage}"
+                }
+              Iterator.single((outcome, other.spills))
+            }
+            .collect()
+
+          assert(results.length == 1)
+          val (outcome, spills) = results.head
+          assert(outcome.startsWith("org.apache.spark.memory.SparkOutOfMemoryError: "), outcome)
+          assert(outcome.contains("injected spill failure"), outcome)
+          // The first spill failed, and the task stopped there instead of making Spark spill again.
+          assert(spills == 1, outcome)
+        }
       }
     }
   }
@@ -952,6 +1007,26 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       TaskContext.get().markTaskCompleted(None)
       assert(closes.get() == 1, s"the input reader closed ${closes.get()} times")
     }
+  }
+}
+
+/**
+ * An off-heap consumer whose first spill fails, as a Spark consumer's does when it cannot write
+ * its spill file, and whose later spills free everything it holds.
+ */
+private class FailsToSpillOnce(taskMemoryManager: TaskMemoryManager)
+    extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP) {
+
+  var spills = 0
+
+  override def spill(size: Long, trigger: MemoryConsumer): Long = {
+    spills += 1
+    if (spills == 1) {
+      throw new IOException("injected spill failure")
+    }
+    val freed = getUsed
+    freeMemory(freed)
+    freed
   }
 }
 

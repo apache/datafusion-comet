@@ -80,6 +80,7 @@ use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use serde::{Deserialize, Serialize};
 
+use datafusion_comet_common::is_refusal;
 use datafusion_comet_proto::spark_operator::{
     CompressionCodec as ProtoCompressionCodec, IcebergParquetWriteSettings, IcebergWrite,
     IcebergWriteCommon, IcebergWriterMode as ProtoIcebergWriterMode,
@@ -1359,7 +1360,8 @@ impl InnerWriter {
     /// partitions, the one holding the most first, until what is left fits, and this returns how
     /// many it closed. The unpartitioned and clustered writers hold one file open and cannot close
     /// it early, so the pool's refusal stands. Any other error from a resize fails the task (see
-    /// [`is_refusal`]).
+    /// [`is_refusal`]): closing partitions would swallow it, because once the resize is down to a
+    /// shrink it no longer calls Spark.
     async fn reserve(
         &mut self,
         reservation: &MemoryReservation,
@@ -1482,16 +1484,6 @@ impl InnerWriter {
 fn write_consumer(partition: usize, writer_mode: ProtoIcebergWriterMode) -> MemoryConsumer {
     MemoryConsumer::new(format!("IcebergWriteExec[{partition}]"))
         .with_can_spill(writer_mode == ProtoIcebergWriterMode::IcebergWriterFanout)
-}
-
-/// Whether `e`, from resizing a reservation, is the pool refusing the memory, which every pool
-/// reports as `ResourcesExhausted` and a fanout write answers by closing partitions early. A pool
-/// backed by Spark can also fail a resize with an exception Spark threw: a spill of another
-/// consumer that failed, or the `InterruptedException` of a task killed while it waited for
-/// memory. That comes back as another kind of error and has to fail the task. Closing partitions
-/// would swallow it, because once the resize is down to a shrink it no longer calls Spark.
-fn is_refusal(e: &DataFusionError) -> bool {
-    matches!(e.find_root(), DataFusionError::ResourcesExhausted(_))
 }
 
 fn parse_iceberg_schema(json: &str) -> DFResult<IcebergSchemaRef> {

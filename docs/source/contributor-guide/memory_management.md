@@ -336,6 +336,19 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
   is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
+- When Spark throws while acquiring memory, for instance because a spill of another consumer
+  failed, every later `try_grow` of the task fails with that exception, without asking Spark and
+  before the fair pool checks its own limits. A later `grow` records the full amount as
+  overcommit, also without asking Spark. The exception is not `ResourcesExhausted`, so an operator
+  that checks for a refusal, such as the shuffle repartitioner, fails the task rather than
+  spilling, and one that takes any error for a refusal and asks again, such as DataFusion's sort,
+  fails when it asks again. The JNI boundary rethrows the exception as itself, unless an operator
+  has wrapped it in `Context` or `Shared`, which turns it into a `CometNativeException`. Nothing
+  checks for the failure when a plan's output ends, so the exception is still only logged if no
+  operator returns it: if no `try_grow` follows a failed `grow` in the task, or if every `try_grow`
+  that fails comes from DataFusion's sort-merge join, whose `materializing_stream.rs` and
+  `bitwise_stream.rs` take any error for a refusal, spill the batch and carry on
+  ([issue #7615](https://github.com/apache/datafusion-comet/issues/7615)).
 
 `CometFairMemoryPool` exists because Spark cannot ask a native operator to spill. Spark limits each
 task to an even share of its off-heap pool among the tasks that hold memory from it. Once one

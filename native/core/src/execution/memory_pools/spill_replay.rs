@@ -322,31 +322,6 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_spark_call_during_the_replay_is_not_recorded() {
-        for (name, pool_type, task_attempt_id) in [
-            ("greedy_unified", MemoryPoolType::GreedyUnified, -3017),
-            ("fair_unified", MemoryPoolType::FairUnified, -3018),
-        ] {
-            let fake = FakeSpark::failing();
-            let config = MemoryPoolConfig::new(pool_type, 1000);
-            let pool = create_pool(&config, task_attempt_id, &RunningTasks::default(), || {
-                fake.memory()
-            });
-            let merge = spillable("FinalHashAggregateStream[0]", &pool);
-            let replay = merge.new_empty();
-            merge.grow(90);
-
-            // Only a refusal is recorded. A JNI error goes back to the aggregate.
-            let err = replay.try_grow(30).unwrap_err();
-            assert!(
-                !matches!(err, DataFusionError::ResourcesExhausted(_)),
-                "{name}: {err}"
-            );
-            assert_eq!(pool.reserved(), 90, "{name}");
-        }
-    }
-
-    #[test]
     fn a_final_aggregate_is_tracked_across_its_reservations_until_it_unregisters() {
         let pool = Arc::new(SpillReplayPool::new(
             -3019,

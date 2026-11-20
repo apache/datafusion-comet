@@ -30,7 +30,7 @@ mod utils;
 
 pub use calendar::{civil_from_days, days_from_civil};
 pub use error::{
-    decimal_overflow_error, error_chain, unwrap_arrow_external_error, SparkError,
+    decimal_overflow_error, error_chain, is_refusal, unwrap_arrow_external_error, SparkError,
     SparkErrorWithContext, SparkResult,
 };
 pub use ffi_offsets::zero_offsets;
