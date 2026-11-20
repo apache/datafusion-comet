@@ -21,7 +21,6 @@
 //! through that file's pending planners and streams. Delegate source operations to preserve
 //! Parquet's projection, filter, and sort pushdown.
 
-use super::objectstore::url_redaction::{without_credentials, without_secrets};
 use arrow::array::RecordBatch;
 use datafusion::common::{
     config::ConfigOptions, tree_node::TreeNodeRecursion, DataFusionError, Result,
@@ -41,42 +40,39 @@ use datafusion_datasource::{
     PartitionedFile, TableSchema,
 };
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use object_store::ObjectStore;
+use object_store::{path::Path, ObjectStore};
 use std::{fmt, sync::Arc};
-use url::Url;
+use url::{Position, Url};
 
 /// The URL-encoded Spark path for diagnostics, with the original scheme and without credentials.
 #[derive(Debug, Clone)]
 pub(crate) struct SparkFilePath(Arc<str>);
 
 impl SparkFilePath {
-    pub(crate) fn new(original: &str, normalized: Url) -> Self {
+    pub(crate) fn new(original: &str, url: &Url, key: &Path) -> Self {
         let path = original.split(['?', '#']).next().unwrap_or_default();
-        if !path.contains('@') {
-            return Self(path.into());
-        }
-        // Reuse the parsed URL for ordinary ABFS paths. An alias may have had its scheme
-        // rewritten or its first path segment promoted to the host.
-        let url = if normalized.as_str() == original {
-            normalized
-        } else if let Ok(url) = Url::parse(path) {
-            url
-        } else {
-            return Self("<redacted>".into());
-        };
-        if url.cannot_be_a_base() {
+        if url.cannot_be_a_base() && path.contains('@') {
             return Self("<redacted>".into());
         }
         let keep_container = matches!(url.scheme(), "abfs" | "abfss" | "az");
         if url.password().is_none() && (url.username().is_empty() || keep_container) {
             return Self(path.into());
         }
-        let redacted = if keep_container {
-            without_secrets(&url)
-        } else {
-            without_credentials(&url)
+        // A hostless S3 alias promotes its first path segment to the authority.
+        // Keep Spark's spelling when the suffix after that authority is the key we open.
+        let (_, rest) = path.split_once(':').unwrap_or_default();
+        let body = rest.trim_start_matches('/');
+        let prefix = &path[..path.len() - body.len()];
+        let (authority, suffix) = body.split_once('/').unwrap_or((body, ""));
+        let host_and_path = match authority.rfind('@') {
+            Some(at) if Path::from_url_path(suffix).is_ok_and(|p| &p == key) => &body[at + 1..],
+            _ => &url[Position::BeforeHost..Position::AfterPath],
         };
-        Self(redacted.as_str().into())
+        if keep_container && !url.username().is_empty() {
+            Self(format!("{prefix}{}@{host_and_path}", url.username()).into())
+        } else {
+            Self(format!("{prefix}{host_and_path}").into())
+        }
     }
 }
 
@@ -305,16 +301,28 @@ mod tests {
                 "s3a:///bucket/part.parquet?sig=example",
                 "s3a:///bucket/part.parquet",
             ),
-            ("hdfs://user@host:8020/f", "hdfs://host:8020/f"),
+            (
+                "s3a:///reader:password@bucket/café@1.parquet",
+                "s3a:///bucket/café@1.parquet",
+            ),
+            ("s3a:bucket/part@1", "s3a:bucket/part@1"),
+            (
+                "HDFS://user@host:8020/café.parquet",
+                "HDFS://host:8020/café.parquet",
+            ),
             (
                 "abfss://data:password@host/f?sig=example",
                 "abfss://data@host/f",
             ),
             ("abfs://data@host/f", "abfs://data@host/f"),
             ("file:/part@1%23.parquet", "file:/part@1%23.parquet"),
+            ("file:/part.parquet#fragment", "file:/part.parquet"),
         ] {
-            let normalized = normalize_object_store_url(original, &Default::default()).unwrap();
-            let path = SparkFilePath::new(original, normalized.url);
+            let url = normalize_object_store_url(original, &Default::default())
+                .unwrap()
+                .url;
+            let key = Path::from_url_path(url.path()).unwrap();
+            let path = SparkFilePath::new(original, &url, &key);
             assert_eq!(path.0.as_ref(), expected);
         }
     }

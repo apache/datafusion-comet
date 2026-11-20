@@ -770,10 +770,10 @@ impl PhysicalPlanner {
             }
             let url = normalized.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
-            partitioned_file.object_meta.location = path;
             partitioned_file
                 .extensions
-                .insert(SparkFilePath::new(&file.file_path, url));
+                .insert(SparkFilePath::new(&file.file_path, &url, &path));
+            partitioned_file.object_meta.location = path;
 
             // Process partition values
             let partition_values: Result<Vec<_>, _> = file
