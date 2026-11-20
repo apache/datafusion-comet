@@ -298,6 +298,10 @@ for production, so do not turn it off to avoid an entry on this page.
   differ only in such bytes distinct: they match Spark in a release build, and a debug build
   panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
+  An exception is a top-level column that reaches Comet's schema adapter as binary. This can happen
+  when the reader retains the binary dictionary type declared in `ARROW:schema`, or when Comet
+  matches a binary field to the requested string field by a different name. Comet uses the same
+  `U+FFFD` replacement as for nested values.
 - **Field-id reads where one file column matches a field by id and a sibling by name.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
   level. Inside a struct, it returns the values of the field matched by id. Spark's own readers
@@ -371,9 +375,9 @@ With `spark.comet.write.parquet.enabled=true`:
   ([#7035](https://github.com/apache/datafusion-comet/issues/7035)).
 - **A `DATE` column read as `INTERVAL YEAR TO MONTH`.** Spark reads it, and Comet fails the read
   ([#5188](https://github.com/apache/datafusion-comet/issues/5188)).
-- **A nested dictionary-encoded BINARY column, read as STRING, whose batch decodes to more than
-  2 GiB.** In a struct field, list element, map key or map value, Comet expands the dictionary
-  into one string array per batch, whose offsets hold at most 2,147,483,647 bytes. A batch of
+- **A dictionary-encoded BINARY column, read as STRING, whose batch decodes to more than
+  2 GiB.** When the file's `ARROW:schema` declares a binary dictionary, Comet expands it into
+  one string array per batch, whose offsets hold at most 2,147,483,647 bytes. A batch of
   `spark.comet.batchSize` rows (8192 by default) fails the scan when the values its rows reference
   add up to more, counting each reference of a shared entry, even for a query that never reads the
   strings. Values that are not valid UTF-8 decode to up to three times their size, since each

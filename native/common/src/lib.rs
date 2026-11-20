@@ -40,4 +40,4 @@ pub use schema::{
 };
 pub use struct_nulls::{child_with_parent_nulls, children_with_parent_nulls};
 pub use utf8::decode_string_arrays;
-pub use utils::{bytes_to_i128, decode_utf8_spark_lossy};
+pub use utils::{bytes_to_i128, decode_utf8_spark_lossy, decoded_utf8_spark_lossy_len};
