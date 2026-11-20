@@ -1,6 +1,6 @@
 ---
 name: bug-triage
-description: Triage open Comet issues marked `requires-triage` per the project bug triage guide. Classifies each issue as a bug or an enhancement, applies the recommended type (`bug`/`enhancement`), priority, and area labels, removes `requires-triage`, and files a dated summary issue listing what was done. A human reviews the summary issue and closes it when satisfied.
+description: Triage open Comet issues marked `requires-triage` per the project bug triage guide. Classifies each issue as a bug or an enhancement, applies the recommended type (`bug`/`enhancement`), priority, and area labels, removes `requires-triage`, and files a dated summary issue that opens with all open critical bugs by area (with the change from last week) and then lists what was triaged. A human reviews the summary issue and closes it when satisfied.
 ---
 
 <!--
@@ -35,7 +35,10 @@ each one it:
 3. Applies those labels via `gh` (`bug` or `enhancement`, plus priority/area),
    ensuring `bug` and `enhancement` are never both present.
 4. Removes the `requires-triage` label.
-5. Records the decision (with rationale) in a single dated summary issue.
+5. Files a single dated summary issue. It opens with every open critical bug
+   grouped by area, marks the ones new this week, and compares the counts with
+   the previous report when that report has them. The issues triaged in this
+   pass follow, kept short for a 30 minute review.
 
 `requires-triage` is auto-applied to **every** new issue, not just bug reports,
 so the first decision for each issue is always bug vs. enhancement.
@@ -120,8 +123,8 @@ priority is unclear):
 - **Do not** remove `requires-triage`.
 - **Do not** comment on the issue or ask the reporter for more info from this
   skill (that is the human reviewer's call).
-- Record it in the summary under a "Skipped — needs more info" section so the
-  reviewer can follow up.
+- Record it in the summary under "Skipped - needs more info" (in the "Needs a
+  decision" section) so the reviewer can follow up.
 
 Guessing is worse than skipping.
 
@@ -168,7 +171,64 @@ If `gh issue edit` fails for any issue, leave that issue's `requires-triage`
 label intact and record the failure in the summary under a "Failed to label"
 section.
 
-## Step 6: File the Summary Issue
+## Step 6: Build the Open Critical Bugs Summary
+
+The report opens with the state of **all** open critical bugs, not just this
+week's. Build it after Step 5 so that critical bugs labeled in this pass are
+included.
+
+Fetch every open critical bug:
+
+```bash
+gh issue list \
+  --repo apache/datafusion-comet \
+  --label bug --label priority:critical \
+  --state open \
+  --limit 300 \
+  --json number,title,labels,url
+```
+
+**Primary area.** Give each issue exactly one area so the counts add up to the
+total. Use the first label from this list that the issue carries:
+`area:Iceberg`, `area:Delta`, `area:udf`, `area:writer`, `area:shuffle`,
+`area:joins`, `area:aggregation`, `area:memory`, `area:ffi`, `area:scan`,
+`area:expressions`, `area:ci`. An issue with none of them goes under
+`No area label`. Only read the labels that are already on the issue here; this
+step never adds one.
+
+**New this week.** A critical bug is new if it was in this pass's
+`requires-triage` queue and ended up `bug` + `priority:critical`. That includes
+issues whose author already applied the labels.
+
+**Comparison with last week.** Find the previous report:
+
+```bash
+gh issue list \
+  --repo apache/datafusion-comet \
+  --search '"Bug triage results:" in:title' \
+  --state all \
+  --limit 20 \
+  --json number,title,createdAt,body
+```
+
+Keep only titles that start with `Bug triage results: `, drop any created today,
+and take the one with the latest `createdAt`. Then compare only if **both** hold:
+
+1. It was created within the last 10 days.
+2. Its body has an `## Open critical bugs` section with a table.
+
+Reports from before this section existed do not have it. If either condition
+fails, leave out the `vs last week` column entirely and say nothing about a
+trend. Do not estimate the previous count from the old report's critical
+subsection, because that lists only that week's new issues.
+
+If both hold, read the `Open` column of that table, one row per area plus the
+`Total` row, and use the difference from this week's count. An area missing from
+the previous table had zero. Keep a row for an area that dropped to zero when the
+previous table had it, so the drop is visible. The previous counts are what that
+report published; do not recompute them from today's labels.
+
+## Step 7: File the Summary Issue
 
 Compute today's date in `YYYY-MM-DD` form (use the system date, not memory):
 
@@ -178,44 +238,75 @@ TRIAGE_DATE=$(date -u +%Y-%m-%d)
 
 Title: `Bug triage results: ${TRIAGE_DATE}`
 
-Body: a markdown report with these sections, in this order:
+The report is read in a 30 minute meeting, so keep it short. Detail goes where a
+decision is needed; everything else is a title and a link. Sections, in this
+order:
 
-1. **Header**
-   - Date, total issues processed, count of bugs vs. enhancements, and counts
-     per priority
-   - Link to `docs/source/contributor-guide/bug_triage.md`
-   - Note that labels have already been applied; the reviewer should spot-check
-     and close this issue when satisfied
-2. **Bugs** — one subsection per priority, ordered highest priority first
-   (`priority:critical`, then `priority:high`, then `priority:medium`, then
-   `priority:low`). Omit any subsection whose count is zero. Do **not** use a
-   markdown table anywhere in this section; use nested bullet lists only.
-
-   Within each subsection, one top-level bullet per issue:
+1. **Header** — three lines at most: the date; issues processed with the split
+   into bugs and enhancements; bugs by priority for this pass. Link to
+   `docs/source/contributor-guide/bug_triage.md`. Say that labels are already
+   applied and the reviewer should close the issue when satisfied.
+2. **Open critical bugs** — the heading must be exactly `## Open critical bugs`,
+   because next week's run looks for it. Use this layout:
 
    ```
-   ### priority:critical
+   ## Open critical bugs
 
-   - <issue title> ([#1234](https://github.com/apache/datafusion-comet/issues/1234))
-     - Area labels: `area:expressions`, `area:scan`
-     - Rationale: one sentence tying the call to the guide
+   25 open, 2 new this week, 1 fewer than last week.
+
+   | Area                | Open | New | vs last week |
+   | ------------------- | ---: | --: | -----------: |
+   | `area:Iceberg`      |    8 |   1 |           +1 |
+   | `area:expressions`  |    7 |   1 |           -1 |
+   | No area label       |    1 |   0 |            0 |
+   | **Total**           |   25 |   2 |           -1 |
+
+   ### area:Iceberg
+
+   - **NEW** <title> ([#1234](url)) - one sentence on why it is critical
+   - <title> ([#1200](url))
    ```
 
-   The issue number (not the title) is the link target. The title is plain
-   text. If there are no area labels, write `Area labels: none`.
+   - Order the rows by `Open`, largest first, and leave out areas with no open
+     critical bugs unless the previous table had them.
+   - Under the table, one subsection per area in the same order. List the new
+     issues first, marked `**NEW**` and followed by a one-sentence rationale.
+     Older issues are a title and a link only.
+   - Leave out the `vs last week` column, and the "fewer/more than last week"
+     clause in the first line, when Step 6 says there is nothing to compare.
+     Never write "n/a" or "first week".
+   - The first line says "more" or "fewer" and gives the number; if the total
+     did not change, say "the same as last week".
 
-3. **Enhancements** (omit section if empty) — one top-level bullet per issue in
-   the same `<title> ([#N](url))` form, with an `Area labels:` sub-bullet and a
-   one-sentence rationale for classifying it as an enhancement. Enhancements
-   have no priority subsections.
-4. **Escalations to consider** (omit section if empty) — bullet per issue with
-   the same `<title> ([#N](url))` form, plus a sub-bullet explaining the
-   trigger from the guide.
-5. **Skipped — needs more info** (omit if empty) — bullet per issue with the
-   same `<title> ([#N](url))` form, plus a sub-bullet explaining what is
-   missing.
-6. **Failed to label** (omit if empty) — bullet per issue with the same
-   `<title> ([#N](url))` form, plus a sub-bullet quoting the `gh` error.
+3. **Needs a decision** — omit any part that is empty; omit the heading if all
+   are empty. Each is a bullet per issue in `<title> ([#N](url))` form with one
+   sub-bullet.
+   - **Escalations to consider**: the trigger from the guide.
+   - **Skipped - needs more info**: what is missing.
+   - **Failed to label**: the quoted `gh` error.
+4. **Other new bugs** — `priority:high`, `priority:medium` and `priority:low`
+   from this pass, in that order; critical bugs are already in section 2. Omit
+   a priority with no issues. Do **not** use a markdown table here.
+
+   - `priority:high`: `<title> ([#N](url))` with a one-sentence rationale
+     sub-bullet.
+   - `priority:medium` and `priority:low`: title and link only, no sub-bullets,
+     inside a collapsed block:
+
+     ```
+     <details>
+     <summary>priority:medium (5)</summary>
+
+     - <title> ([#1234](url))
+
+     </details>
+     ```
+
+5. **Enhancements** — omit if empty. The count in the summary line, then titles
+   and links only inside a collapsed `<details>` block, with no area labels or
+   rationale.
+
+In every list the issue number is the link target and the title is plain text.
 
 File the issue with `gh`. Use a temp file for the body to keep quoting sane:
 
@@ -236,8 +327,10 @@ Report back:
 
 1. Number of `requires-triage` issues processed
 2. Counts per priority that were applied
-3. Number skipped (needs more info) and number failed
-4. URL of the new summary issue
+3. Open critical bugs: total, how many are new, and the change from last week
+   (or that there was no comparable previous report)
+4. Number skipped (needs more info) and number failed
+5. URL of the new summary issue
 
 Do not paste the full per-issue listing back into the chat; it is in the
 summary issue.
@@ -252,3 +345,7 @@ summary issue.
 - Do not re-label issues that were skipped or failed (leave `requires-triage`
   in place so they show up in the next pass)
 - Do not include AI/Claude attribution in the summary issue
+- Do not add or change labels while building the open critical bugs summary;
+  it only reads the labels already on the issues
+- Do not show a comparison with last week unless the previous report has an
+  `## Open critical bugs` table and is at most 10 days old
