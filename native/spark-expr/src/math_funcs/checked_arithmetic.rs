@@ -15,13 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrowNativeTypeOp, BooleanBufferBuilder, PrimitiveArray};
+use arrow::array::{
+    new_null_array, Array, ArrowNativeTypeOp, BooleanBufferBuilder, PrimitiveArray,
+};
 use arrow::array::{ArrayRef, AsArray};
 
 use crate::{divide_by_zero_error, EvalMode, SparkError};
 use array::{Datum, Scalar};
 use arrow::array;
-use arrow::buffer::NullBuffer;
+use arrow::buffer::{BooleanBuffer, NullBuffer, ScalarBuffer};
 use arrow::compute::kernels::{arity, numeric};
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Float16Type, Float32Type, Float64Type, Int16Type, Int32Type,
@@ -94,20 +96,177 @@ where
     None
 }
 
-fn try_arithmetic_kernel<T>(
+fn try_div_kernel<T>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
-    op: MathOp,
 ) -> Result<ArrayRef, DataFusionError>
 where
     T: ArrowPrimitiveType,
 {
+    checked_binary(left, right, |l, r| l.div_checked(r))
+}
+
+/// Wrapping integer arithmetic that also reports whether the exact result overflowed. Add and
+/// sub test sign bits, because the signed `overflowing_add` and `overflowing_sub` don't
+/// vectorize (apache/arrow-rs#12058).
+trait TryArithmetic: ArrowNativeTypeOp {
+    fn try_add(self, rhs: Self) -> (Self, bool);
+    fn try_sub(self, rhs: Self) -> (Self, bool);
+    fn try_mul(self, rhs: Self) -> (Self, bool);
+}
+
+macro_rules! impl_try_arithmetic {
+    ($native:ty, $mul:expr) => {
+        impl TryArithmetic for $native {
+            #[inline]
+            fn try_add(self, rhs: Self) -> (Self, bool) {
+                let res = self.wrapping_add(rhs);
+                (res, (self ^ res) & (rhs ^ res) < 0)
+            }
+            #[inline]
+            fn try_sub(self, rhs: Self) -> (Self, bool) {
+                let res = self.wrapping_sub(rhs);
+                (res, (self ^ rhs) & (self ^ res) < 0)
+            }
+            #[inline]
+            fn try_mul(self, rhs: Self) -> (Self, bool) {
+                $mul(self, rhs)
+            }
+        }
+    };
+}
+
+// The narrower types multiply in the next wider type. `i64` uses `overflowing_mul`, because in
+// `i128` it measured 0.65x on `x86-64-v3` in apache/arrow-rs#12058.
+impl_try_arithmetic!(i8, |l: i8, r: i8| {
+    let wide = l as i16 * r as i16;
+    (wide as i8, wide != wide as i8 as i16)
+});
+impl_try_arithmetic!(i16, |l: i16, r: i16| {
+    let wide = l as i32 * r as i32;
+    (wide as i16, wide != wide as i16 as i32)
+});
+impl_try_arithmetic!(i32, |l: i32, r: i32| {
+    let wide = l as i64 * r as i64;
+    (wide as i32, wide != wide as i32 as i64)
+});
+impl_try_arithmetic!(i64, i64::overflowing_mul);
+
+fn try_integer_arithmetic<T>(
+    left: &ColumnarValue,
+    right: &ColumnarValue,
+    op: MathOp,
+) -> Result<ColumnarValue, DataFusionError>
+where
+    T: ArrowPrimitiveType,
+    T::Native: TryArithmetic,
+{
     match op {
-        MathOp::Add => checked_binary(left, right, |l, r| l.add_checked(r)),
-        MathOp::Sub => checked_binary(left, right, |l, r| l.sub_checked(r)),
-        MathOp::Mul => checked_binary(left, right, |l, r| l.mul_checked(r)),
-        MathOp::Div => checked_binary(left, right, |l, r| l.div_checked(r)),
+        MathOp::Add => try_binary::<T, _>(left, right, T::Native::try_add),
+        MathOp::Sub => try_binary::<T, _>(left, right, T::Native::try_sub),
+        MathOp::Mul => try_binary::<T, _>(left, right, T::Native::try_mul),
+        MathOp::Div => Err(DataFusionError::Internal(
+            "try_integer_arithmetic doesn't divide".to_string(),
+        )),
     }
+}
+
+fn scalar_value<T: ArrowPrimitiveType>(
+    scalar: &ScalarValue,
+) -> Result<Option<T::Native>, DataFusionError> {
+    let array = scalar.to_array()?;
+    let array = array.as_primitive::<T>();
+    Ok(array.is_valid(0).then(|| array.value(0)))
+}
+
+/// Wrapping values and whether any of them overflowed, in one pass.
+fn values_and_overflow<T: ArrowNativeTypeOp>(
+    results: impl Iterator<Item = (T, bool)>,
+) -> (ScalarBuffer<T>, bool) {
+    let mut overflow = false;
+    let values: Vec<T> = results
+        .map(|(value, o)| {
+            overflow |= o;
+            value
+        })
+        .collect();
+    (values.into(), overflow)
+}
+
+/// Spark's try mode: a row whose result overflows is null. When no row overflowed, the result's
+/// validity is the inputs' validity. Otherwise a second pass finds the rows that didn't
+/// overflow. Rows under a null may overflow and take that pass too. Their values are left as
+/// computed.
+fn try_binary<T, F>(
+    left: &ColumnarValue,
+    right: &ColumnarValue,
+    op: F,
+) -> Result<ColumnarValue, DataFusionError>
+where
+    T: ArrowPrimitiveType,
+    F: Fn(T::Native, T::Native) -> (T::Native, bool),
+{
+    let (values, nulls, valid) = match (left, right) {
+        (ColumnarValue::Array(l), ColumnarValue::Array(r)) => {
+            let (l, r) = (l.as_primitive::<T>(), r.as_primitive::<T>());
+            if l.len() != r.len() {
+                return Err(DataFusionError::Internal(format!(
+                    "try arithmetic on arrays of length {} and {}",
+                    l.len(),
+                    r.len()
+                )));
+            }
+            // Equal slice lengths let LLVM drop the bounds checks in the bitmap pass.
+            let (lv, rv) = (l.values().as_ref(), &r.values()[..l.len()]);
+            let (values, overflow) =
+                values_and_overflow(lv.iter().zip(rv.iter()).map(|(&a, &b)| op(a, b)));
+            let valid =
+                overflow.then(|| BooleanBuffer::collect_bool(lv.len(), |i| !op(lv[i], rv[i]).1));
+            (values, NullBuffer::union(l.nulls(), r.nulls()), valid)
+        }
+        (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
+            let Some(r) = scalar_value::<T>(r)? else {
+                return Ok(ColumnarValue::Array(new_null_array(&T::DATA_TYPE, l.len())));
+            };
+            let l = l.as_primitive::<T>();
+            let lv = l.values();
+            let (values, overflow) = values_and_overflow(lv.iter().map(|&a| op(a, r)));
+            let valid =
+                overflow.then(|| BooleanBuffer::collect_bool(lv.len(), |i| !op(lv[i], r).1));
+            (values, l.nulls().cloned(), valid)
+        }
+        (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
+            let Some(l) = scalar_value::<T>(l)? else {
+                return Ok(ColumnarValue::Array(new_null_array(&T::DATA_TYPE, r.len())));
+            };
+            let r = r.as_primitive::<T>();
+            let rv = r.values();
+            let (values, overflow) = values_and_overflow(rv.iter().map(|&b| op(l, b)));
+            let valid =
+                overflow.then(|| BooleanBuffer::collect_bool(rv.len(), |i| !op(l, rv[i]).1));
+            (values, r.nulls().cloned(), valid)
+        }
+        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => {
+            let value = match (scalar_value::<T>(l)?, scalar_value::<T>(r)?) {
+                (Some(l), Some(r)) => match op(l, r) {
+                    (value, false) => Some(value),
+                    (_, true) => None,
+                },
+                _ => None,
+            };
+            return Ok(ColumnarValue::Scalar(ScalarValue::new_primitive::<T>(
+                value,
+                &T::DATA_TYPE,
+            )?));
+        }
+    };
+    let nulls = match valid {
+        Some(valid) => NullBuffer::union(nulls.as_ref(), Some(&NullBuffer::new(valid))),
+        None => nulls,
+    };
+    Ok(ColumnarValue::Array(Arc::new(PrimitiveArray::<T>::new(
+        values, nulls,
+    ))))
 }
 
 fn integer_type_name(data_type: &DataType) -> Result<&'static str, DataFusionError> {
@@ -344,7 +503,17 @@ fn checked_arithmetic_internal(
         return ansi_arithmetic_kernel(left, right, op, data_type);
     }
 
-    // Materialize operands for Try-mode and float division
+    if op != MathOp::Div {
+        match data_type {
+            DataType::Int8 => return try_integer_arithmetic::<Int8Type>(left, right, op),
+            DataType::Int16 => return try_integer_arithmetic::<Int16Type>(left, right, op),
+            DataType::Int32 => return try_integer_arithmetic::<Int32Type>(left, right, op),
+            DataType::Int64 => return try_integer_arithmetic::<Int64Type>(left, right, op),
+            _ => {}
+        }
+    }
+
+    // Materialize operands for division
     let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
         (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
         (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
@@ -357,25 +526,21 @@ fn checked_arithmetic_internal(
     };
 
     let result_array = match data_type {
-        DataType::Int8 => try_arithmetic_kernel(
+        DataType::Int8 => try_div_kernel(
             left_arr.as_primitive::<Int8Type>(),
             right_arr.as_primitive::<Int8Type>(),
-            op,
         ),
-        DataType::Int16 => try_arithmetic_kernel(
+        DataType::Int16 => try_div_kernel(
             left_arr.as_primitive::<Int16Type>(),
             right_arr.as_primitive::<Int16Type>(),
-            op,
         ),
-        DataType::Int32 => try_arithmetic_kernel(
+        DataType::Int32 => try_div_kernel(
             left_arr.as_primitive::<Int32Type>(),
             right_arr.as_primitive::<Int32Type>(),
-            op,
         ),
-        DataType::Int64 => try_arithmetic_kernel(
+        DataType::Int64 => try_div_kernel(
             left_arr.as_primitive::<Int64Type>(),
             right_arr.as_primitive::<Int64Type>(),
-            op,
         ),
         DataType::Float16 if op == MathOp::Div => {
             if is_ansi_mode {
@@ -384,10 +549,9 @@ fn checked_arithmetic_internal(
                     right_arr.as_primitive::<Float16Type>(),
                 )
             } else {
-                try_arithmetic_kernel(
+                try_div_kernel(
                     left_arr.as_primitive::<Float16Type>(),
                     right_arr.as_primitive::<Float16Type>(),
-                    op,
                 )
             }
         }
@@ -398,10 +562,9 @@ fn checked_arithmetic_internal(
                     right_arr.as_primitive::<Float32Type>(),
                 )
             } else {
-                try_arithmetic_kernel(
+                try_div_kernel(
                     left_arr.as_primitive::<Float32Type>(),
                     right_arr.as_primitive::<Float32Type>(),
-                    op,
                 )
             }
         }
@@ -412,10 +575,9 @@ fn checked_arithmetic_internal(
                     right_arr.as_primitive::<Float64Type>(),
                 )
             } else {
-                try_arithmetic_kernel(
+                try_div_kernel(
                     left_arr.as_primitive::<Float64Type>(),
                     right_arr.as_primitive::<Float64Type>(),
-                    op,
                 )
             }
         }
@@ -432,6 +594,8 @@ fn checked_arithmetic_internal(
 mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int32Array};
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
 
     fn int32_args(left: Vec<Option<i32>>, right: Vec<Option<i32>>) -> Vec<ColumnarValue> {
         vec![
@@ -708,6 +872,172 @@ mod tests {
         }
         check!(Int8Type, i8);
         check!(Int16Type, i16);
+    }
+
+    /// Checks every row of a try-mode result against exact `i128` arithmetic: the row is null
+    /// when either operand is null or the exact result doesn't fit `T`.
+    fn check_try_against_i128<T>(left: ColumnarValue, right: ColumnarValue, op: MathOp, len: usize)
+    where
+        T: ArrowPrimitiveType,
+        T::Native: Into<i128> + TryFrom<i128>,
+    {
+        let args = [left, right];
+        let result = checked_arithmetic_internal(&args, &T::DATA_TYPE, op, EvalMode::Try)
+            .unwrap()
+            .into_array(len)
+            .unwrap();
+        let result = result.as_primitive::<T>();
+        assert_eq!(result.len(), len);
+        let [l, r] = args.map(|a| a.into_array(len).unwrap());
+        let (l, r) = (l.as_primitive::<T>(), r.as_primitive::<T>());
+        for i in 0..len {
+            let expected = l
+                .is_valid(i)
+                .then(|| l.value(i).into())
+                .and_then(|a: i128| {
+                    let b: i128 = r.is_valid(i).then(|| r.value(i).into())?;
+                    let exact = match op {
+                        MathOp::Add => a + b,
+                        MathOp::Sub => a - b,
+                        MathOp::Mul => a * b,
+                        MathOp::Div => unreachable!(),
+                    };
+                    T::Native::try_from(exact).ok()
+                });
+            let actual = result.is_valid(i).then(|| result.value(i));
+            assert_eq!(
+                actual.map(Into::into),
+                expected.map(Into::into),
+                "{:?} {op:?} row {i}: {:?} and {:?}",
+                T::DATA_TYPE,
+                l.is_valid(i).then(|| l.value(i).into()),
+                r.is_valid(i).then(|| r.value(i).into()),
+            );
+        }
+    }
+
+    fn native<T: ArrowPrimitiveType>(v: i128) -> T::Native
+    where
+        T::Native: TryFrom<i128>,
+    {
+        T::Native::try_from(v).ok().unwrap()
+    }
+
+    fn type_bounds<T: ArrowPrimitiveType>() -> (i128, i128) {
+        let bits = 8 * std::mem::size_of::<T::Native>() as u32;
+        (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+    }
+
+    fn try_overflow_cases<T>(rng: &mut StdRng)
+    where
+        T: ArrowPrimitiveType,
+        T::Native: Into<i128> + TryFrom<i128>,
+    {
+        let (min, max) = type_bounds::<T>();
+        let scalar = |v: Option<i128>| {
+            ColumnarValue::Scalar(
+                ScalarValue::new_primitive::<T>(v.map(native::<T>), &T::DATA_TYPE).unwrap(),
+            )
+        };
+        let array = |v: &[Option<i128>]| {
+            ColumnarValue::Array(Arc::new(PrimitiveArray::<T>::from_iter(
+                v.iter().map(|v| v.map(native::<T>)),
+            )) as ArrayRef)
+        };
+
+        // Every pair of edge values, with no null mask, in each layout.
+        let mut pool = vec![min, min + 1, -2, -1, 0, 1, 2, max - 1, max];
+        pool.extend((0..7).map(|_| rng.random_range(min..=max)));
+        let (ls, rs): (Vec<_>, Vec<_>) = pool
+            .iter()
+            .flat_map(|&a| pool.iter().map(move |&b| (Some(a), Some(b))))
+            .unzip();
+        let (ls, rs) = (array(&ls), array(&rs));
+        let pool_array = array(&pool.iter().copied().map(Some).collect::<Vec<_>>());
+        let n = pool.len();
+        for op in [MathOp::Add, MathOp::Sub, MathOp::Mul] {
+            check_try_against_i128::<T>(ls.clone(), rs.clone(), op, n * n);
+            for &v in &pool {
+                check_try_against_i128::<T>(scalar(Some(v)), pool_array.clone(), op, n);
+                check_try_against_i128::<T>(pool_array.clone(), scalar(Some(v)), op, n);
+                for &w in &pool {
+                    check_try_against_i128::<T>(scalar(Some(v)), scalar(Some(w)), op, 1);
+                }
+            }
+            // A null scalar makes every row null.
+            check_try_against_i128::<T>(scalar(None), pool_array.clone(), op, n);
+            check_try_against_i128::<T>(pool_array.clone(), scalar(None), op, n);
+            check_try_against_i128::<T>(scalar(None), scalar(Some(1)), op, 1);
+        }
+
+        // One overflowing row moved through a sliced batch of 300 rows, valid and null, in each
+        // layout. The arrays hold small random values elsewhere. In the null case, the other null
+        // slots hold a value that overflows too, so some batches overflow only under nulls.
+        const LEN: usize = 300;
+        const OFFSET: usize = 5;
+        for op in [MathOp::Add, MathOp::Sub, MathOp::Mul] {
+            // (left, right) pairs that overflow. The filler, in [-10, 10], doesn't overflow with
+            // the scalar side of either pair.
+            let (array_left, scalar_left) = match op {
+                MathOp::Add => ((max, 1), (1, max)),
+                MathOp::Sub => ((min, 1), (-2, max)),
+                MathOp::Mul => ((max, 2), (2, max)),
+                MathOp::Div => unreachable!(),
+            };
+            for k in 0..LEN {
+                for null_row in [false, true] {
+                    let side = |overflow: i128, rng: &mut StdRng| {
+                        let mut values = Vec::with_capacity(LEN + OFFSET + 1);
+                        let mut valid = Vec::with_capacity(LEN + OFFSET + 1);
+                        for i in 0..LEN + OFFSET + 1 {
+                            let null = null_row && (i == k + OFFSET || rng.random_bool(0.1));
+                            values.push(if i == k + OFFSET || null {
+                                overflow
+                            } else {
+                                rng.random_range(-10..=10)
+                            });
+                            valid.push(!null);
+                        }
+                        let array = PrimitiveArray::<T>::new(
+                            values.into_iter().map(native::<T>).collect(),
+                            Some(NullBuffer::from(valid)),
+                        )
+                        .slice(OFFSET, LEN);
+                        ColumnarValue::Array(Arc::new(array) as ArrayRef)
+                    };
+                    let (a, b) = array_left;
+                    let (l, r) = (side(a, rng), side(b, rng));
+                    check_try_against_i128::<T>(l.clone(), r, op, LEN);
+                    check_try_against_i128::<T>(l, scalar(Some(b)), op, LEN);
+                    let (a, b) = scalar_left;
+                    let r = side(b, rng);
+                    check_try_against_i128::<T>(scalar(Some(a)), r, op, LEN);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_scalar_operands_return_scalar() {
+        for (l, expected) in [(1, Some(3)), (i32::MAX, None)] {
+            let args = [
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(l))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(2))),
+            ];
+            match checked_add(&args, &DataType::Int32, EvalMode::Try).unwrap() {
+                ColumnarValue::Scalar(ScalarValue::Int32(v)) => assert_eq!(v, expected),
+                other => panic!("expected an Int32 scalar, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_integer_arithmetic_matches_i128() {
+        let mut rng = StdRng::seed_from_u64(42);
+        try_overflow_cases::<Int8Type>(&mut rng);
+        try_overflow_cases::<Int16Type>(&mut rng);
+        try_overflow_cases::<Int32Type>(&mut rng);
+        try_overflow_cases::<Int64Type>(&mut rng);
     }
 
     #[test]
