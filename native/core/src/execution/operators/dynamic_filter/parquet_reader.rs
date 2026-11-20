@@ -29,10 +29,12 @@ use datafusion::physical_expr::expressions::{
 };
 use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 
 use crate::parquet::file_error_context::ParquetErrorContext;
 use datafusion_comet_operators::CometFilterExec;
+
+use crate::execution::operators::SortedInputExec;
 
 mod schema_adapter;
 
@@ -97,6 +99,17 @@ pub(super) fn try_attach_parquet_reader_filter(
             try_attach_parquet_reader_filter(&filter.input, predicate, config)?
                 .map(|reader| filter.with_execution_input(reader)),
         );
+    }
+    // It only declares its input's order, which dropping rows below it keeps.
+    if let Some(sorted) = input.downcast_ref::<SortedInputExec>() {
+        return try_attach_parquet_reader_filter(sorted.input(), predicate, config)?
+            .map(|reader| {
+                Arc::clone(input).replace_children(
+                    vec![reader],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )
+            })
+            .transpose();
     }
     // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND
     // chains of inferred null checks. A reader predicate can cross those direct

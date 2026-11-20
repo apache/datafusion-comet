@@ -47,7 +47,7 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelp
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.functions.{col, count, lit, max, min, sum}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
@@ -3954,12 +3954,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("a window that stays in Spark over a nested loop join sorts the join's rows again") {
-    // A native nested loop join emits its rows build row by build row, out of the streamed side's
-    // order that it reports (#6898), and Spark plans no sort above it. A window that runs in Spark
-    // there, one without partition keys or one with a collated key, gets its input sorted again.
-    // One partition, so no exchange comes between the join and the window, with or without AQE.
-    // With AQE, the stage's own pass can make the added sort native and then the window above it.
+  test("a window over a nested loop join over a sorted cache keeps the join in Spark") {
+    // Spark plans no sort above a nested loop join that reports its streamed side's order, but
+    // the native join emits its rows build row by build row (#6898), so the join stays in Spark.
+    // A window above it, one without partition keys or one with a collated key, then sees the
+    // rows in order, with no sort of its own. It runs in Spark as well, since the join's rows
+    // have no way into a native plan. One partition, so no exchange comes between the join and
+    // the window, with or without AQE.
     Seq(false, true).foreach { aqe =>
       withConversions(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
         try {
@@ -3997,16 +3998,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
             withClue(s"$plan\n") {
               assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == aqe)
               val finalPlan = stripAQEPlan(plan)
-              val joins = collect(finalPlan) { case j: CometBroadcastNestedLoopJoinExec => j }
-              assert(joins.nonEmpty)
-              val windowInputs = collect(finalPlan) {
-                case w: WindowExec => w.child
-                case w: CometWindowExec => w.child
-              }
-              assert(windowInputs.nonEmpty && windowInputs.forall {
-                case _: SortExec | _: CometSortExec | WholeStageCodegenExec(_: SortExec) => true
-                case _ => false
-              })
+              assert(collect(finalPlan) { case j: BroadcastNestedLoopJoinExec => j }.nonEmpty)
+              assert(collect(finalPlan) { case j: CometBroadcastNestedLoopJoinExec => j }.isEmpty)
+              assert(collect(finalPlan) { case w: WindowExec => w }.size == 1)
+              assert(collect(finalPlan) { case w: CometWindowExec => w }.isEmpty)
+              val sorts = collect(finalPlan) { case s @ (_: CometSortExec | _: SortExec) => s }
+              assert(sorts.isEmpty)
             }
           }
         } finally {
@@ -4016,21 +4013,29 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  // The lower window has no PARTITION BY, so it stays in Spark, and needs only v's order. Its
-  // input reports (v, w), so Spark plans no sort of its own for the window ordered by (v, w)
-  // above, or for a sortWithinPartitions by (v, w).
-  private def checkOrderAboveSparkWindow(rowCount: Long, buildRows: Long): Unit = {
+  // A broadcast left outer hash join runs as DataFusion's right outer join, and the native filter
+  // under it keeps the serde from seeing that the join declared its order on the probe input, so
+  // a window that stays in Spark above the join doubts the (v, w) order the join reports. The
+  // lower window has no PARTITION BY, so it stays in Spark, and needs only v's order. Spark plans
+  // no sort of its own for the window ordered by (v, w) above, or for a sortWithinPartitions by
+  // (v, w), so the sort put under the lower window has to be by both. The join's rows arrive in
+  // (v, w) order either way, so a sort by v alone loses that order only when it spills: the test
+  // without a spill checks the sort's keys, and the spilling test checks the rows as well.
+  private def checkOrderAboveSparkWindow(rowCount: Long): Unit = {
     withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       try {
-        val pairs = spark.range(buildRows).toDF("z").hint("broadcast")
+        // A match for v = 0 and v = 1 only, so the join has unmatched rows, which it would move
+        // if its probe input declared no order.
+        val small = spark.range(2).toDF("z").hint("broadcast")
         val lower = spark
           .range(0, rowCount, 1, 1)
           .selectExpr("id % 4 AS v", "id AS w")
           .sortWithinPartitions("v", "w")
           .cache()
-          .join(pairs, col("w") % 2 <= col("z"))
+          .where("w >= 0")
+          .join(small, col("v") === col("z"), "left_outer")
           .selectExpr("v", "w", "sum(w) OVER (ORDER BY v) AS s")
         val upper = lower.selectExpr("*", "row_number() OVER (ORDER BY v, w) AS r")
         val upperPlan = upper.queryExecution.executedPlan
@@ -4041,7 +4046,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
         val plan = sorted.queryExecution.executedPlan
         assert(collect(plan) { case w: WindowExec => w }.size == 1, plan)
         assertOnlySortUnderLowerWindow(plan)
-        assert(collect(plan) { case j: CometBroadcastNestedLoopJoinExec => j }.size == 1, plan)
+        val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+        assert(
+          joins.size == 1 && joins.head.joinType == LeftOuter &&
+            joins.head.buildSide == BuildRight &&
+            joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0,
+          plan)
         val rows = sorted.collect().map(r => (r.getLong(0), r.getLong(1)))
         val outOfOrder = rows.sliding(2).collectFirst {
           case Array(a, b) if Ordering[(Long, Long)].gt(a, b) => s"$a comes before $b"
@@ -4073,20 +4083,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(keys.map { case a: Attribute => a.name; case e => e.toString } == Seq("v", "w"), plan)
   }
 
-  test("a window that stays in Spark over a nested loop join keeps the order its input reports") {
-    // Over two build rows the native join emits its rows build row by build row, out of (v, w)
-    // order. A sort by v alone under the lower window would leave w out of order.
-    checkOrderAboveSparkWindow(4000, 2)
+  test("a Spark window over an outer hash join over a native filter sorts by the whole order") {
+    // The rows stay in order under a sort by v alone here, so this checks the sort's keys.
+    checkOrderAboveSparkWindow(4000)
   }
 
-  test("a spilling sort under a window that stays in Spark keeps the order its input reports") {
-    // Over one build row the join keeps (v, w) order. A sort by v alone under the lower window
-    // may reorder the rows that tie on v when it merges its spill files.
+  test("a spilling sort under a Spark window over an outer hash join keeps the whole order") {
+    // A sort by v alone may reorder the rows that tie on v when it merges its spill files.
     val key = "spark.shuffle.spill.numElementsForceSpillThreshold"
     val conf = SparkEnv.get.conf
     val previous = conf.getOption(key)
     conf.set(key, "10000")
-    try checkOrderAboveSparkWindow(200000, 1)
+    try checkOrderAboveSparkWindow(200000)
     finally previous.fold(conf.remove(key))(conf.set(key, _))
   }
 
