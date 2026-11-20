@@ -144,7 +144,9 @@ fn is_arithmetic_error(error: &DataFusionError) -> bool {
     error_chain(error)
         .find_map(|e| {
             if let Some(CometError::JavaException { class, .. }) = e.downcast_ref::<CometError>() {
-                Some(class == "org.apache.spark.SparkArithmeticException")
+                Some(SparkError::is_arithmetic_exception_class(
+                    &class.replace('.', "/"),
+                ))
             } else if let Some(e) = e.downcast_ref::<SparkErrorWithContext>() {
                 Some(e.error.is_arithmetic())
             } else {

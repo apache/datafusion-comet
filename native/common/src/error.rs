@@ -740,8 +740,14 @@ impl SparkError {
 
     /// Whether Spark raises this error as a `SparkArithmeticException`.
     pub fn is_arithmetic(&self) -> bool {
+        Self::is_arithmetic_exception_class(self.exception_class())
+    }
+
+    /// Whether `class`, a JNI class name such as `org/apache/spark/SparkArithmeticException`, is
+    /// `SparkArithmeticException` or Comet's subclass of it.
+    pub fn is_arithmetic_exception_class(class: &str) -> bool {
         matches!(
-            self.exception_class(),
+            class,
             "org/apache/spark/SparkArithmeticException"
                 | "org/apache/spark/sql/comet/CastOverflowException"
         )
