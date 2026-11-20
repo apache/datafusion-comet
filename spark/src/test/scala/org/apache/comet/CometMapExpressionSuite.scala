@@ -22,7 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.ArrayContains
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -255,6 +255,36 @@ class CometMapExpressionSuite extends CometTestBase {
             checkSparkAnswerAndOperator(df.select(size(col("map2"))))
             checkSparkAnswerAndOperator(
               sql("SELECT size(CASE WHEN id < 50 THEN map1 ELSE map2 END) FROM t1"))
+          }
+        }
+      }
+    }
+  }
+
+  test("float map builders read key normalization on each execution of the same plan") {
+    assume(isSpark40Plus)
+    val disableNormalization = "spark.sql.legacy.disableMapKeyNormalization"
+    withTable("map_normalization") {
+      sql("CREATE TABLE map_normalization(k ARRAY<DOUBLE>, v ARRAY<INT>) USING parquet")
+      sql("INSERT INTO map_normalization VALUES (array(0.0D, double('-0.0')), array(1, 2))")
+      for (comet <- Seq(false, true)) {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> comet.toString,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN",
+          disableNormalization -> "false") {
+          val df = sql(
+            "SELECT map_values(map_from_arrays(k, v)), " +
+              "map_values(map_from_entries(arrays_zip(k, v))) FROM map_normalization")
+          assert(df.collect().toSeq == Seq(Row(Seq(2), Seq(2))))
+          if (comet) {
+            assertExpressionImpl(
+              df.queryExecution.executedPlan,
+              native = Seq("map_from_arrays", "map_from_entries"),
+              dispatched = Seq.empty)
+          }
+          withSQLConf(disableNormalization -> "true") {
+            assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
           }
         }
       }

@@ -53,8 +53,7 @@ private[serde] object MapKeySupport {
    * disagree:
    *   - `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal and all `NaN`s as equal, so
    *     Spark answers a `-0.0` lookup from a `+0.0` key where native finds nothing, on every
-   *     version. (How `ArrayBasedMapBuilder` treats float keys when it builds a map differs by
-   *     version; see `MapBuilderKeySupport`.)
+   *     version, regardless of how `ArrayBasedMapBuilder` treats the keys during construction.
    *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
    *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
    *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
@@ -133,34 +132,39 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-/**
- * Shared gate for the native map builders, `map_from_arrays` and `map_from_entries`, which tell
- * keys apart by their bits. A key type that holds a float at any depth is `Incompatible` on every
- * Spark version; `floatingPointReason` explains why.
- */
 private object MapBuilderKeySupport {
-  val floatingPointReason: String =
-    "Spark finds duplicate map keys that hold a `FLOAT` or `DOUBLE` by value, so NaNs with " +
-      "different bits are one key, and so are `-0.0` and `0.0` inside a struct or array key. " +
-      "From Spark 4.0, a `-0.0` key is also normalized to `0.0`, unless " +
-      "`spark.sql.legacy.disableMapKeyNormalization` is set. Comet's native map construction " +
-      "compares the keys' bits ([#6549](https://github.com/apache/datafusion-comet/issues/6549))."
+  val floatMap: CometScalarFunction[Expression] = CometScalarFunction("spark_float_map")
 
-  def hasFloatingPointKey(dataType: MapType): Boolean =
-    SupportLevel.containsType(dataType.keyType, classOf[FloatType], classOf[DoubleType])
+  val nestedFloatingPointReason: String =
+    "Spark compares a `FLOAT` or `DOUBLE` inside a struct or array key using SQL ordering, " +
+      "where signed zeros are equal and all NaNs are equal. Comet's native map builders " +
+      "compare their bits for these nested keys."
+
+  def isFloatingPoint(keyType: DataType): Boolean =
+    keyType == FloatType || keyType == DoubleType
+
+  def keySupport(keyType: DataType): SupportLevel = {
+    if (isFloatingPoint(keyType)) {
+      Compatible()
+    } else if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
+      Incompatible(Some(nestedFloatingPointReason))
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible()
+    }
+  }
 }
 
 private object MapKeyDedupPolicySupport {
   val incompatibleReason: String =
-    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
-      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
-      "does not implement LAST_WIN dedup semantics."
+    s"Comet's native map builders support `${SQLConf.MAP_KEY_DEDUP_POLICY.key}=" +
+      s"${SQLConf.MapKeyDedupPolicy.LAST_WIN}` only for `FLOAT` and `DOUBLE` keys."
 
   val nullKeyReason: String =
-    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
-      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
-      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
-      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
+    "Spark rejects a `NULL` map key. For key types other than `FLOAT` and `DOUBLE`, " +
+      "Comet's native map builders can produce a map with a `NULL` key " +
+      "([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
 
   def isLastWin: Boolean =
     SQLConf.get
@@ -174,28 +178,27 @@ object CometMapFromArrays
     with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapBuilderKeySupport.floatingPointReason, MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(
+      MapBuilderKeySupport.nestedFloatingPointReason,
+      MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
-  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
-      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else {
-      Compatible(None)
-    }
-  }
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel =
+    MapBuilderKeySupport.keySupport(expr.dataType.keyType)
 
   override def convert(
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    if (MapBuilderKeySupport.isFloatingPoint(keyType)) {
+      val map = MapBuilderKeySupport.floatMap.convert(expr, inputs, binding)
+      return withNullShortCircuit(expr, map)
+    }
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
@@ -239,7 +242,7 @@ object CometMapFromEntries
     Seq(
       keyUnsupportedReason,
       valueUnsupportedReason,
-      MapBuilderKeySupport.floatingPointReason,
+      MapBuilderKeySupport.nestedFloatingPointReason,
       MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getCompatibleNotes(): Seq[String] =
@@ -250,12 +253,19 @@ object CometMapFromEntries
       Incompatible(Some(keyUnsupportedReason))
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
-    } else if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
-      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
-      Compatible(None)
+      MapBuilderKeySupport.keySupport(expr.dataType.keyType)
+    }
+  }
+
+  override def convert(
+      expr: MapFromEntries,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (MapBuilderKeySupport.isFloatingPoint(expr.dataType.keyType)) {
+      MapBuilderKeySupport.floatMap.convert(expr, inputs, binding)
+    } else {
+      super.convert(expr, inputs, binding)
     }
   }
 }

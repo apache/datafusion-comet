@@ -907,6 +907,14 @@ object CometExecIterator extends Logging {
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
+    // Spark initializes ArrayBasedMapBuilder.keyNormalizer on the task's first put.
+    val normalizationKey = "spark.sql.legacy.disableMapKeyNormalization"
+    val disableNormalization = !CometSparkSessionExtensions.isSpark40Plus ||
+      SQLConf.get.getConfString(normalizationKey, "false").trim.toBoolean
+    builder.putEntries(normalizationKey, disableNormalization.toString)
+    val dedupPolicy = SQLConf.MAP_KEY_DEDUP_POLICY
+    builder.putEntries(dedupPolicy.key, SQLConf.get.getConf(dedupPolicy).toString)
+
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were
     // written, so defaults from `createWithDefault(...)` would otherwise not cross JNI, and

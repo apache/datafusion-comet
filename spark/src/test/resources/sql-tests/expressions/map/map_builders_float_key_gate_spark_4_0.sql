@@ -20,6 +20,7 @@
 -- does spark.sql.legacy.disableMapKeyNormalization (map_builders_float_key_gate_legacy.sql).
 
 -- MinSparkVersion: 4.0
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 statement
 CREATE TABLE float_map_keys_zeros(d double, f float) USING parquet

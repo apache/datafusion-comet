@@ -63,6 +63,7 @@ use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStr
 use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_shuffle::decoded_batch_coalescer::DecodedBatchCoalescer;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
+use datafusion_comet_spark_expr::SparkFloatMap;
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
@@ -146,7 +147,8 @@ use crate::execution::spark_config::{
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
     COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_DISABLE_MAP_KEY_NORMALIZATION,
+    SPARK_EXECUTOR_CORES, SPARK_MAP_KEY_DEDUP_POLICY,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::CometParquetScanOptions;
@@ -1183,6 +1185,16 @@ pub(crate) fn comet_session_context(
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
     register_datafusion_spark_function(&session_ctx);
+    let normalize_keys = !spark_config.get_bool(SPARK_DISABLE_MAP_KEY_NORMALIZATION);
+    let dedup_policy = spark_config
+        .get(SPARK_MAP_KEY_DEDUP_POLICY)
+        .map(|policy| policy.parse())
+        .transpose()?
+        .unwrap_or_default();
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFloatMap::new(
+        normalize_keys,
+        dedup_policy,
+    )));
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
 
