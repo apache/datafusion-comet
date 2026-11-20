@@ -147,10 +147,7 @@ case class CometIcebergNativeScanExec(
     if (originalPlan == null) {
       UnknownPartitioning(0)
     } else {
-      originalPlan.outputPartitioning match {
-        case _: UnknownPartitioning => UnknownPartitioning(0)
-        case reported => reported
-      }
+      originalPlan.outputPartitioning
     }
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
