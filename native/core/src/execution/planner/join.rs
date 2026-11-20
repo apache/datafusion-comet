@@ -218,6 +218,10 @@ fn reduce_before_sort(
     let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
         return Ok(None);
     };
+    // Removing duplicates before a fetch can bring new keys into the first N rows.
+    if sort.fetch().is_some() {
+        return Ok(None);
+    }
     let input = sort.input();
     let ([(_, key)], [options]) = (params.join_on.as_mut_slice(), sort_options) else {
         return Ok(None);
@@ -317,8 +321,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             .collect();
 
         let reducer = if join.right_key_reduction_enabled
-            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
-                if sort.fetch.is_none() && sort.skip.is_none())
+            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort)) if sort.skip.is_none())
         {
             reduce_before_sort(planner, &mut join_params, &sort_options)?
         } else {

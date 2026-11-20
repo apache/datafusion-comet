@@ -1815,8 +1815,8 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("right key reduction coalesces two nullable INT columns") {
-    val left = Seq[java.lang.Integer](null, 0, 5, 7, 9).map(Tuple1(_))
+  test("right key reduction coalesces nullable integer columns with and without a literal") {
+    val left = Seq[java.lang.Integer](null, -1, 0, 5, 7, 9).map(Tuple1(_))
     val keys = Seq[(java.lang.Integer, java.lang.Integer)]((5, 9), (null, 7), (null, null))
     val right = Seq.fill(8192)(keys).flatten
     withSQLConf(
@@ -1827,16 +1827,24 @@ class CometJoinSuite extends CometTestBase {
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "true") {
       withParquetTable(left, "reduction_left") {
         withParquetTable(right, "reduction_right") {
-          val df = sql("""SELECT /*+ MERGE(r) */ l._1 FROM reduction_left l
-                         |LEFT SEMI JOIN reduction_right r ON l._1 = coalesce(r._1, r._2)""".stripMargin)
-          assert(df.collect().map(_.getInt(0)).sorted.toSeq == Seq(5, 7))
-          val join = collectFirst(df.queryExecution.executedPlan) {
-            case j: CometSortMergeJoinExec =>
-              j
-          }.get
-          val input = join.longMetric("right_key_reduction_input_rows").value
-          val output = join.longMetric("right_key_reduction_output_rows").value
-          assert(input == right.size && output > 0 && output < input)
+          for ((keyType, key, expected) <- Seq(
+              ("INT", "coalesce(r.a, r.b)", Seq(5, 7)),
+              ("TINYINT", "coalesce(r.a, r.b, -1Y)", Seq(-1, 5, 7)),
+              ("SMALLINT", "coalesce(r.a, r.b, -1S)", Seq(-1, 5, 7)))) {
+            val df = sql(s"""SELECT /*+ MERGE(r) */ l._1 FROM reduction_left l
+                            |LEFT SEMI JOIN (
+                            |  SELECT CAST(_1 AS $keyType) AS a, CAST(_2 AS $keyType) AS b
+                            |  FROM reduction_right
+                            |) r ON CAST(l._1 AS $keyType) = $key""".stripMargin)
+            assert(df.collect().map(_.getInt(0)).sorted.toSeq == expected, keyType)
+            val plan = df.queryExecution.executedPlan
+            val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+              .getOrElse(fail(plan.treeString))
+            assert(join.rightKeys.head.dataType.sql == keyType)
+            val input = join.longMetric("right_key_reduction_input_rows").value
+            val output = join.longMetric("right_key_reduction_output_rows").value
+            assert(input == right.size && output > 0 && output < input, plan.treeString)
+          }
         }
       }
     }

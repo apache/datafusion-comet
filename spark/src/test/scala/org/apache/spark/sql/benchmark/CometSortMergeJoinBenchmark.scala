@@ -21,9 +21,9 @@ package org.apache.spark.sql.benchmark
 
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.comet.{CometSortExec, CometSortMergeJoinExec}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.comet.{CometProjectExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
@@ -34,14 +34,24 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometSortMergeJoinBenchmark
  * }}}
- * Pass `--many-map-only` to run only the small shuffle-block control.
+ * Pass `--many-map-only` to run only the small shuffle-block control. Use the following command
+ * for the coalesced right key cases.
+ * {{{
+ *   COMET_BENCHMARK_MASTER='local[4]' BENCH_HEAP=4g \
+ *   JAVA_TOOL_OPTIONS='-Dspark.memory.offHeap.enabled=true -Dspark.memory.offHeap.size=1g' \
+ *   make benchmark-org.apache.spark.sql.benchmark.CometSortMergeJoinBenchmark -- --coalesced-keys-only
+ * }}}
+ * Each input warms up twice per mode and measures all six permutations of baseline, projection
+ * only and reduction. Repeat with `--reverse` to reverse the input and round order in a fresh
+ * JVM. Action time covers SQL planning through collection. Reduction time sums batch
+ * deduplication attempts across tasks, excluding projection and packing of small output batches.
  */
 object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
 
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
       .setAppName("CometSortMergeJoinBenchmark")
-      .set("spark.master", "local[5]")
+      .set("spark.master", sys.env.getOrElse("COMET_BENCHMARK_MASTER", "local[5]"))
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
       .set(
@@ -69,7 +79,19 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
     SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1")
 
+  private val reductionConfigs = cometConfigs ++ Map(
+    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+    CometConf.COMET_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_ENABLED.key -> "true",
+    CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+    CometConf.COMET_SHUFFLE_MODE.key -> "native")
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    val reverse = mainArgs.contains("--reverse")
+    if (mainArgs.contains("--coalesced-keys-only")) {
+      runCoalescedKeyBenchmark(reverse)
+      return
+    }
     runManyMapBenchmark()
     if (mainArgs.contains("--many-map-only")) {
       return
@@ -139,13 +161,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         }
 
         runBenchmark("SortMergeJoin - right key reduction") {
-          val settings = cometConfigs ++ Map(
-            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-            SQLConf.SHUFFLE_PARTITIONS.key -> "1",
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> "native")
+          val settings = reductionConfigs + (SQLConf.SHUFFLE_PARTITIONS.key -> "1")
           withSQLConf(settings.toSeq: _*) {
             val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
             for ((table, distinctKeys, batchSize) <- Seq(
@@ -173,6 +189,8 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
           }
         }
 
+        runCoalescedKeyBenchmark(reverse)
+
         runBenchmark("SortMergeJoin - right outer") {
           runExpressionBenchmark(
             "right outer",
@@ -180,6 +198,122 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
             "SELECT /*+ MERGE(p) */ count(*) FROM probe p RIGHT JOIN build b ON p.k = b.k",
             cometConfigs)
         }
+      }
+    }
+  }
+
+  private def runCoalescedKeyBenchmark(reverse: Boolean): Unit = {
+    val settings = reductionConfigs ++ Map(
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "false",
+      // Avoid an inferred isnotnull(coalesce(a, b)) filter before the projection-only shuffle.
+      SQLConf.CONSTRAINT_PROPAGATION_ENABLED.key -> "false",
+      SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8192")
+    withTempPath { dir =>
+      withTempTable("coalesce_probe", "coalesce_build") {
+        val probe = s"${dir.getAbsolutePath}/probe"
+        // Every eighth event misses all four build tables.
+        spark
+          .range(0, 131072, 1, 4)
+          .selectExpr(
+            "id AS event_id",
+            "CAST(IF(id % 8 = 7, 8388608 + id, (id * 48271) % 128) AS INT) AS k")
+          .write
+          .parquet(probe)
+        spark.read.parquet(probe).createOrReplaceTempView("coalesce_probe")
+        val inputs =
+          for (rows <- Seq(1048576, 8388608); keys <- Seq(128, rows)) yield (rows, keys)
+        for ((rows, keys) <- (if (reverse) inputs.reverse else inputs)) {
+          val build = s"${dir.getAbsolutePath}/build-$rows-$keys"
+          spark
+            .range(0, rows.toLong, 1, 4)
+            .selectExpr(s"CAST((id * 48271) % $keys AS INT) AS k", "id % 3 = 0 AS fallback")
+            .selectExpr("IF(fallback, NULL, k) AS a", "IF(fallback, k, NULL) AS b")
+            .write
+            .parquet(build)
+          spark.read.parquet(build).createOrReplaceTempView("coalesce_build")
+          withSQLConf(settings.toSeq: _*) {
+            compareCoalescedKeys(rows, keys, reverse)
+          }
+        }
+      }
+    }
+  }
+
+  private def compareCoalescedKeys(rows: Int, keys: Int, reverse: Boolean): Unit = {
+    val name = s"left semi, $keys distinct coalesced right keys in $rows rows"
+    val modes = Seq("baseline", "projection", "reduction")
+    val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
+    val shuffled = "(SELECT a, b FROM coalesce_build DISTRIBUTE BY coalesce(a, b))"
+    case class Sample(
+        mode: String,
+        actionNs: Long,
+        reductionNs: Long,
+        sortRows: Long,
+        spills: Long)
+
+    def run(mode: String): Sample = {
+      val enabled = mode == "reduction"
+      val (table, key) = mode match {
+        case "projection" => (s"(SELECT coalesce(a, b) AS k FROM $shuffled)", "r.k")
+        case _ => (shuffled, "coalesce(r.a, r.b)")
+      }
+      val query = s"""SELECT /*+ MERGE(r) */ count(*), sum(p.event_id)
+                     |FROM coalesce_probe p LEFT SEMI JOIN $table r ON p.k = $key
+                     |WHERE p.k IS NOT NULL""".stripMargin
+      spark.conf.set(flag, enabled)
+      val start = System.nanoTime()
+      val df = spark.sql(query)
+      val result = df.collect()
+      val elapsed = System.nanoTime() - start
+      require(result.toSeq == Seq(Row(114688L, 7516078080L)))
+      val plan = df.queryExecution.executedPlan
+      val join = plan.collectFirst { case j: CometSortMergeJoinExec => j }.get
+      val sort = join.right.asInstanceOf[CometSortExec]
+      val input = if (mode == "projection") {
+        val project = sort.child.asInstanceOf[CometProjectExec]
+        require(project.output.size == 1)
+        project.child
+      } else {
+        sort.child
+      }
+      val shuffle = input.asInstanceOf[CometShuffleExchangeExec]
+      require(shuffle.shuffleType == CometNativeShuffle && shuffle.output.size == 2)
+      require(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled == enabled)
+      val sortRows = sort.longMetric("output_rows").value
+      require(if (enabled && keys < rows) sortRows < rows else sortRows == rows)
+      if (enabled) {
+        require(join.longMetric("right_key_reduction_input_rows").value == rows)
+        require(join.longMetric("right_key_reduction_output_rows").value == sortRows)
+        if (keys == rows)
+          require(join.longMetric("right_key_reduction_bypass_rows").value == rows)
+      }
+      val reductionNs = if (enabled) join.longMetric("right_key_reduction_time").value else 0L
+      Sample(mode, elapsed, reductionNs, sortRows, sort.longMetric("spill_count").value)
+    }
+
+    def medianMs(times: Seq[Long]): Double = {
+      val sorted = times.sorted
+      (sorted((sorted.size - 1) / 2) + sorted(sorted.size / 2)) / 2e6
+    }
+
+    runBenchmark(name) {
+      val out = new Benchmark(name, rows.toLong, output = output).out
+      val rounds = modes.permutations.toList
+      val order = if (reverse) rounds.reverse else rounds
+      (order.head ++ order.head.reverse).foreach(run)
+      val measured = order.flatten.map(run)
+      for (mode <- modes) {
+        val samples = measured.filter(_.mode == mode)
+        val sortRows = samples.map(_.sortRows).distinct.mkString(",")
+        val spills = samples.map(_.spills).sum
+        val actions = samples.map(_.actionNs)
+        val reduction = samples.map(_.reductionNs)
+        out.println(s"rows=$rows keys=$keys mode=$mode sortRows=$sortRows totalSpills=$spills " +
+          f"medianActionMs=${medianMs(actions)}%.2f medianReductionMs=${medianMs(reduction)}%.2f " +
+          s"actionNs=${actions.mkString(",")}")
       }
     }
   }
