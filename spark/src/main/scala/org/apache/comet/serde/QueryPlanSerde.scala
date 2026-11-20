@@ -414,6 +414,25 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     serdeGroups.map(_._2).reduce(_ ++ _)
 
   /**
+   * The serde for expression class `cls`: core's if it has one, otherwise one registered by a
+   * [[CometExpressionContrib]].
+   */
+  def serdeFor(cls: Class[_]): Option[CometExpressionSerde[_]] =
+    serdeFor(cls, CometExpressionContrib.registered)
+
+  /** `serdeFor` against an explicit contrib registry, so tests need not load the real one. */
+  private[comet] def serdeFor(
+      cls: Class[_],
+      contribSerdes: Map[Class[_ <: Expression], CometExpressionSerde[_]])
+      : Option[CometExpressionSerde[_]] = {
+    // The maps' key type is invariant in its bound; a non-Expression class just misses.
+    val key = cls.asInstanceOf[Class[_ <: Expression]]
+    val core = exprSerdeMap.get(key)
+    // An explicit branch rather than `orElse`, which would allocate a closure on every lookup.
+    if (core.isDefined) core else contribSerdes.get(key)
+  }
+
+  /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
   val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = {
@@ -1120,7 +1139,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           exprToProtoInternal(child, inputs, binding)
 
         case expr =>
-          QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
+          QueryPlanSerde.serdeFor(expr.getClass) match {
             case Some(handler) =>
               convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
             case _ =>
