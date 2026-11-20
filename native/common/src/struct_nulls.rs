@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Pushing a struct's null mask down into its children.
+//! Propagating parent visibility to nested children.
 //!
 //! Arrow stores a `StructArray`'s children with their own validity, independent of the parent's
 //! null buffer, so at a row where the struct itself is null a child buffer can still hold a value
@@ -28,10 +28,11 @@
 //! whatever sits in the child slot
 //! (<https://github.com/apache/datafusion-comet/issues/5753>).
 
-use arrow::array::{make_array, Array, ArrayRef, StructArray};
+use arrow::array::{make_array, Array, ArrayRef, NullBufferBuilder, OffsetSizeTrait, StructArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
+use std::cell::LazyCell;
 use std::sync::Arc;
 
 /// The parent's nulls unioned into one child, or the child unchanged when there is nothing to push.
@@ -74,6 +75,41 @@ pub fn children_with_parent_nulls(struct_array: &StructArray) -> Result<Vec<Arra
             .collect(),
         _ => Ok(struct_array.columns().to_vec()),
     }
+}
+
+/// Slots visible through the ancestors of a nested array. A checked leaf requests its
+/// mask after field resolution, so each ancestor computes the mask at most once per
+/// batch and only when one of its selected children needs it.
+pub type Visibility<'a> = LazyCell<Option<NullBuffer>, &'a dyn Fn() -> Option<NullBuffer>>;
+
+/// List/map values can include entries outside a slice or beneath a null parent.
+pub fn repeated_visibility<O: OffsetSizeTrait>(
+    offsets: &[O],
+    len: usize,
+    nulls: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
+    let start = offsets[0].as_usize();
+    let end = offsets.last().unwrap().as_usize();
+    let mut visible = NullBufferBuilder::new(len);
+    if start > 0 {
+        visible.append_n_nulls(start);
+    }
+    if let Some(nulls) = nulls.filter(|n| n.null_count() > 0) {
+        for (valid, range) in nulls.iter().zip(offsets.windows(2)) {
+            let count = range[1].as_usize() - range[0].as_usize();
+            if valid {
+                visible.append_n_non_nulls(count);
+            } else if count > 0 {
+                visible.append_n_nulls(count);
+            }
+        }
+    } else {
+        visible.append_n_non_nulls(end - start);
+    }
+    if end < len {
+        visible.append_n_nulls(len - end);
+    }
+    visible.finish()
 }
 
 #[cfg(test)]

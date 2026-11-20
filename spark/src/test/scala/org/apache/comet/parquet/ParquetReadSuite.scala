@@ -367,9 +367,12 @@ abstract class ParquetReadSuite extends CometTestBase {
       |    optional int32 d(DATE);
       |  }
       |  optional int64 stored(TIMESTAMP(MICROS,false));
+      |  optional int32 probe(DATE);
       |}
       |""".stripMargin)
-    val readSchema = "id INT, d TIMESTAMP_NTZ, s STRUCT<d: TIMESTAMP_NTZ>, stored TIMESTAMP_NTZ"
+    val readSchema =
+      "id INT, d TIMESTAMP_NTZ, s STRUCT<d: TIMESTAMP_NTZ>, " +
+        "stored TIMESTAMP_NTZ, probe TIMESTAMP_NTZ"
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "days.parquet")
       // Keep the positive and negative overflows in distinct row groups, away from id = 1.
@@ -383,9 +386,10 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           val record = new SimpleGroup(schema)
           record.add(0, id)
-          record.add(1, day)
+          if (id % 3 != 0) record.add(1, day)
           record.addGroup(2).add(0, day)
           record.add(3, id.toLong)
+          if (id < 1500) record.add(4, id)
           writer.write(record)
         }
       } finally {
@@ -400,6 +404,19 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df.where("id = 1000").select("stored"))
           if (isSpark40Plus) {
             checkSparkAnswerAndOperator(df.where("id = 1"))
+            if (!pushdown) {
+              // Null counts on probe must exclude the group at 1000 for IS NULL and the
+              // group at 2000 for IS NOT NULL before the reader converts the nested date.
+              checkSparkAnswerAndOperator(df.where("id <= 1500 AND probe IS NULL").select("s"))
+              checkSparkAnswerAndOperator(
+                df.where("id >= 1499 AND probe IS NOT NULL").select("s"))
+              // Both overflow groups contain nulls in d. The reader must convert d in
+              // those groups before the residual filter selects its nulls.
+              val error =
+                checkSparkError(df.where("d IS NULL").select("id"), "FAILED_READ_FILE.NO_HINT")
+              assert(error.getCause.getClass == classOf[ArithmeticException])
+              assert(error.getCause.getMessage == "long overflow")
+            }
             for (id <- Seq(1000, 2000); column <- Seq("d", "s")) {
               val selected = df.where(s"id = $id").select(column)
               val error = checkSparkError(selected, "FAILED_READ_FILE.NO_HINT")

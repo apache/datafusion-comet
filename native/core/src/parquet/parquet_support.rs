@@ -24,7 +24,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::{can_cast_types, take};
-use arrow::datatypes::{ArrowPrimitiveType, Date32Type, FieldRef, Fields};
+use arrow::datatypes::{ArrowPrimitiveType, Date32Type, Date64Type, FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -41,6 +41,7 @@ use datafusion::execution::object_store::{
 };
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::struct_nulls::{repeated_visibility, Visibility};
 use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
 use log::debug;
@@ -210,7 +211,14 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
-    parquet_convert_array_impl(array, to_type, parquet_options, None, false).map(|(array, _)| array)
+    parquet_convert_array_impl(
+        array,
+        to_type,
+        parquet_options,
+        &Visibility::new(&|| None),
+        false,
+    )
+    .map(|(array, _)| array)
 }
 
 // The boolean records whether any requested leaf exists in the file schema, independent
@@ -221,52 +229,39 @@ fn parquet_convert_array_impl(
     array: ArrayRef,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
-    parent_nulls: Option<&NullBuffer>,
+    parent_nulls: &Visibility<'_>,
     in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     use DataType::*;
     let from_type = array.data_type();
-    // Only checked conversions need a mask for values hidden below a null parent or slice.
-    let checked_timestamp_overflow = may_read_date_as_ntz(from_type, to_type)
-        || (parquet_options.checked_timestamp_overflow
-            && contains_type(from_type, |dt| {
-                matches!(dt, Timestamp(TimeUnit::Millisecond, _))
-            })
-            && contains_type(to_type, |dt| {
-                matches!(dt, Timestamp(TimeUnit::Microsecond, _))
-            }));
-    let visible = if checked_timestamp_overflow {
-        NullBuffer::union(array.nulls(), parent_nulls)
-    } else {
-        None
-    };
+    let visible = || NullBuffer::union(array.nulls(), parent_nulls.as_ref());
 
     // Try Comet specific handlers first, then arrow-rs cast if supported, and fail otherwise.
     let converted: DataFusionResult<ArrayRef> = match (from_type, to_type) {
-        (Struct(_), Struct(_)) => return parquet_convert_struct_to_struct(
-            array.as_struct(),
-            from_type,
-            to_type,
-            parquet_options,
-            visible.as_ref(),
-            in_map_key,
-        ),
+        (Struct(_), Struct(_)) => {
+            return parquet_convert_struct_to_struct(
+                array.as_struct(),
+                from_type,
+                to_type,
+                parquet_options,
+                &Visibility::new(&visible),
+                in_map_key,
+            )
+        }
         (
             List(_) | LargeList(_) | FixedSizeList(_, _) | ListView(_) | LargeListView(_),
-            List(to_inner_type) | LargeList(to_inner_type) | FixedSizeList(to_inner_type, _)
-                | ListView(to_inner_type) | LargeListView(to_inner_type),
+            List(to_inner_type)
+            | LargeList(to_inner_type)
+            | FixedSizeList(to_inner_type, _)
+            | ListView(to_inner_type)
+            | LargeListView(to_inner_type),
         ) => {
             let data = array.to_data();
-            let child_visibility = if checked_timestamp_overflow {
-                list_child_visibility(array.as_ref(), visible.as_ref())
-            } else {
-                None
-            };
             let (cast_field, field_overlap) = parquet_convert_array_impl(
                 make_array(data.child_data()[0].clone()),
                 to_inner_type.data_type(),
                 parquet_options,
-                child_visibility.as_ref(),
+                &Visibility::new(&|| list_child_visibility(array.as_ref(), visible().as_ref())),
                 in_map_key,
             )?;
             if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
@@ -283,10 +278,12 @@ fn parquet_convert_array_impl(
                 _ => unreachable!(),
             };
             // Retain the source offsets, sizes and null buffer while replacing its values.
-            let resolved = make_array(data.into_builder()
-                .data_type(resolved_type)
-                .child_data(vec![cast_field.to_data()])
-                .build()?);
+            let resolved = make_array(
+                data.into_builder()
+                    .data_type(resolved_type)
+                    .child_data(vec![cast_field.to_data()])
+                    .build()?,
+            );
             let output = if resolved.data_type() == to_type {
                 resolved
             } else {
@@ -294,10 +291,9 @@ fn parquet_convert_array_impl(
             };
             return Ok((output, field_overlap));
         }
-        (
-            Timestamp(TimeUnit::Millisecond, _),
-            Timestamp(TimeUnit::Microsecond, target_tz),
-        ) if checked_timestamp_overflow => {
+        (Timestamp(TimeUnit::Millisecond, _), Timestamp(TimeUnit::Microsecond, target_tz))
+            if parquet_options.checked_timestamp_overflow =>
+        {
             // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
             // direct and dictionary values, independent of CAST evaluation mode:
             // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
@@ -308,14 +304,23 @@ fn parquet_convert_array_impl(
             // pruning paths, including nested predicates.
             checked_micros(
                 array.as_primitive::<TimestampMillisecondType>(),
-                visible,
+                visible(),
                 1_000,
                 target_tz.clone(),
             )
         }
         (Date32, Timestamp(TimeUnit::Microsecond, None)) => {
             // Spark 4.x's DateToTimestampNTZUpdater calls daysToMicros at UTC.
-            checked_micros(array.as_primitive::<Date32Type>(), visible, 86_400_000_000, None)
+            checked_micros(
+                array.as_primitive::<Date32Type>(),
+                visible(),
+                86_400_000_000,
+                None,
+            )
+        }
+        (Date64, Timestamp(TimeUnit::Microsecond, None)) => {
+            // ARROW:schema can restore a physical INT32 DATE as milliseconds.
+            checked_micros(array.as_primitive::<Date64Type>(), visible(), 1_000, None)
         }
         (Dictionary(_, values), _) if may_read_date_as_ntz(values, to_type) => {
             // An ARROW:schema dictionary can include days no row references.
@@ -337,9 +342,16 @@ fn parquet_convert_array_impl(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
-        (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            return parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow, in_map_key)
-            ,
+        (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to => {
+            return parquet_convert_map_to_map(
+                array.as_map(),
+                to_type,
+                parquet_options,
+                *ordered_to,
+                &Visibility::new(&visible),
+                in_map_key,
+            );
+        }
         // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
         // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
         (FixedSizeBinary(16), Utf8) => {
@@ -352,9 +364,8 @@ fn parquet_convert_array_impl(
                 .iter()
                 .map(|opt_bytes| {
                     opt_bytes.map(|bytes| {
-                        let uuid = uuid::Uuid::from_bytes(
-                            bytes.try_into().expect("Expected 16 bytes")
-                        );
+                        let uuid =
+                            uuid::Uuid::from_bytes(bytes.try_into().expect("Expected 16 bytes"));
                         uuid.to_string()
                     })
                 })
@@ -393,7 +404,9 @@ fn parquet_convert_array_impl(
         // the batch into one string array with 32-bit offsets, so a batch whose rows reference
         // wide entries many times can decode past `i32::MAX` bytes and fail where Spark, which
         // keeps the dictionary, succeeds (#7254).
-        (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
+        (Dictionary(_, value_type), Utf8)
+            if matches!(value_type.as_ref(), Binary | LargeBinary) =>
+        {
             let dictionary = array.as_any_dictionary();
             let keys = dictionary.normalized_keys();
             let key_nulls = dictionary.keys().nulls();
@@ -401,7 +414,7 @@ fn parquet_convert_array_impl(
                 referenced_dictionary_values(dictionary.values(), &keys, key_nulls)?,
                 to_type,
                 parquet_options,
-                None,
+                &Visibility::new(&|| None),
                 in_map_key,
             )?;
             let decoded_bytes =
@@ -453,50 +466,29 @@ where
     Ok(Arc::new(micros))
 }
 
-pub(super) fn contains_ntz(data_type: &DataType) -> bool {
-    contains_type(data_type, |dt| {
-        matches!(dt, DataType::Timestamp(TimeUnit::Microsecond, None))
-    })
-}
-
-// Struct fields are matched by name/field ID later. This type-only check is conservative
-// until that matching occurs; each selected child is checked again before conversion.
 pub(super) fn may_read_date_as_ntz(physical_type: &DataType, target_type: &DataType) -> bool {
-    contains_ntz(target_type) && contains_type(physical_type, |dt| matches!(dt, DataType::Date32))
+    match (physical_type, target_type) {
+        (DataType::Date32 | DataType::Date64, DataType::Timestamp(TimeUnit::Microsecond, None)) => {
+            true
+        }
+        (DataType::Dictionary(_, value), _) => may_read_date_as_ntz(value, target_type),
+        _ => false,
+    }
 }
 
-fn contains_type(data_type: &DataType, matches: fn(&DataType) -> bool) -> bool {
+pub(super) fn contains_ntz(data_type: &DataType) -> bool {
     match data_type {
-        DataType::Struct(fields) => fields
-            .iter()
-            .any(|field| contains_type(field.data_type(), matches)),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => true,
+        DataType::Struct(fields) => fields.iter().any(|field| contains_ntz(field.data_type())),
         DataType::List(field)
         | DataType::LargeList(field)
         | DataType::FixedSizeList(field, _)
         | DataType::ListView(field)
         | DataType::LargeListView(field)
-        | DataType::Map(field, _) => contains_type(field.data_type(), matches),
-        DataType::Dictionary(_, values) => contains_type(values, matches),
-        _ => matches(data_type),
+        | DataType::Map(field, _) => contains_ntz(field.data_type()),
+        DataType::Dictionary(_, values) => contains_ntz(values),
+        _ => false,
     }
-}
-
-// List/map values can include entries outside a slice or beneath a null parent.
-fn repeated_visibility<O: OffsetSizeTrait>(
-    offsets: &[O],
-    len: usize,
-    nulls: Option<&NullBuffer>,
-) -> Option<NullBuffer> {
-    if nulls.is_none() && offsets[0].as_usize() == 0 && offsets.last().unwrap().as_usize() == len {
-        return None;
-    }
-    let mut valid = vec![false; len];
-    for (row, range) in offsets.windows(2).enumerate() {
-        if nulls.is_none_or(|nulls| nulls.is_valid(row)) {
-            valid[range[0].as_usize()..range[1].as_usize()].fill(true);
-        }
-    }
-    Some(NullBuffer::from(valid))
 }
 
 fn list_child_visibility(array: &dyn Array, nulls: Option<&NullBuffer>) -> Option<NullBuffer> {
@@ -592,7 +584,7 @@ fn parquet_convert_struct_to_struct(
     from_type: &DataType,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
-    parent_nulls: Option<&NullBuffer>,
+    parent_nulls: &Visibility<'_>,
     in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     match (from_type, to_type) {
@@ -647,8 +639,7 @@ fn parquet_convert_map_to_map(
     to_data_type: &DataType,
     parquet_options: &SparkParquetOptions,
     to_ordered: bool,
-    parent_nulls: Option<&NullBuffer>,
-    checked_timestamp_overflow: bool,
+    parent_nulls: &Visibility<'_>,
     in_map_key: bool,
 ) -> Result<(ArrayRef, bool), DataFusionError> {
     match to_data_type {
@@ -660,23 +651,26 @@ fn parquet_convert_map_to_map(
                 "map is missing value field".to_string(),
             ))?;
 
-            let child_visibility = if checked_timestamp_overflow {
-                repeated_visibility(from.value_offsets(), from.keys().len(), parent_nulls)
-            } else {
-                None
+            let mask = || {
+                repeated_visibility(
+                    from.value_offsets(),
+                    from.keys().len(),
+                    parent_nulls.as_ref(),
+                )
             };
+            let child_visibility = Visibility::new(&mask);
             let (key_array, key_overlap) = parquet_convert_array_impl(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
-                child_visibility.as_ref(),
+                &child_visibility,
                 true,
             )?;
             let (value_array, value_overlap) = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
-                child_visibility.as_ref(),
+                &child_visibility,
                 in_map_key,
             )?;
             let field_overlap = key_overlap || value_overlap;
@@ -2578,6 +2572,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn widening_sibling_of_date_and_ntz_skips_parent_visibility() {
+        use super::{parquet_convert_array_impl, SparkParquetOptions, Visibility};
+        use arrow::array::new_null_array;
+        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+
+        let list = |int| {
+            let fields = vec![
+                Field::new("d", DataType::Date32, true),
+                Field::new("t", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+                Field::new("i", int, true),
+            ];
+            DataType::new_list(DataType::Struct(fields.into()), true)
+        };
+        let array = new_null_array(&list(DataType::Int32), 1);
+        let target = list(DataType::Int64);
+        let opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        parquet_convert_array_impl(
+            array,
+            &target,
+            &opts,
+            &Visibility::new(&|| panic!("no leaf needs the parent mask")),
+            false,
+        )
+        .unwrap();
     }
 
     #[test]

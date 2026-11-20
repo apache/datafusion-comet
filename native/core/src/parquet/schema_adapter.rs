@@ -32,7 +32,7 @@ use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::{Column, IsNotNullExpr, IsNullExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -55,6 +55,7 @@ use std::sync::Arc;
 /// to inject Spark-compatible casts where needed.
 #[derive(Clone, Debug)]
 pub struct SparkPhysicalExprAdapterFactory {
+    pruning_only_filters: bool,
     /// Spark-specific parquet options for type conversions
     parquet_options: SparkParquetOptions,
     /// Default values for columns that may be missing from the physical schema.
@@ -69,9 +70,16 @@ impl SparkPhysicalExprAdapterFactory {
         default_values: Option<HashMap<Column, ScalarValue>>,
     ) -> Self {
         Self {
+            pruning_only_filters: false,
             parquet_options,
             default_values,
         }
+    }
+
+    /// Enable only when the scan projects columns and uses predicates solely for pruning.
+    pub(super) fn with_pruning_only_filters(mut self, enabled: bool) -> Self {
+        self.pruning_only_filters = enabled;
+        self
     }
 }
 
@@ -388,7 +396,7 @@ fn parquet_primitive_name(dt: &DataType) -> &'static str {
         DataType::Float64 => "DOUBLE",
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary => "BINARY",
         // Spark stores DATE as INT32 with a DATE logical-type annotation.
-        DataType::Date32 => "INT32",
+        DataType::Date32 | DataType::Date64 => "INT32",
         // Spark stores TIMESTAMP as INT64 with a timestamp annotation, or as
         // INT96 (legacy nanos). arrow-rs surfaces both as `Timestamp`; without
         // the original physical name we report INT64, which matches the
@@ -620,7 +628,10 @@ fn spark_has_updater(
             (DataType::Int32, DataType::Int64)
                 | (DataType::Float32, DataType::Float64)
                 | (DataType::Int32, DataType::Float64)
-                | (DataType::Date32, DataType::Timestamp(_, None))
+                | (
+                    DataType::Date32 | DataType::Date64,
+                    DataType::Timestamp(_, None)
+                )
         );
         if is_disallowed_promotion {
             return false;
@@ -1092,6 +1103,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         );
 
         Ok(Arc::new(SparkPhysicalExprAdapter {
+            pruning_only_filters: self.pruning_only_filters,
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
             parquet_options: self.parquet_options.clone(),
@@ -1116,6 +1128,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
 /// 3. Handle case-insensitive column matching
 #[derive(Debug)]
 struct SparkPhysicalExprAdapter {
+    pruning_only_filters: bool,
     /// The logical schema expected by the query
     logical_file_schema: SchemaRef,
     /// The physical schema of the actual file being read
@@ -1405,9 +1418,32 @@ impl SparkPhysicalExprAdapter {
                     }
                 }
             }
-            Ok(Transformed::no(e))
+            self.adapt_date_null_check(e)
         })
         .data()
+    }
+
+    /// DataFusion requires a bare column to prune by null count. DATE -> NTZ preserves
+    /// validity, so use the physical column for these statistics. The scan separately
+    /// adapts the projected column and still checks every decoded day for overflow.
+    fn adapt_date_null_check(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        if self.pruning_only_filters && (expr.is::<IsNullExpr>() || expr.is::<IsNotNullExpr>()) {
+            let cast = expr.children()[0];
+            if cast.is::<CometCastColumnExpr>() {
+                let source = cast.children()[0];
+                if may_read_date_as_ntz(
+                    &source.data_type(&self.physical_file_schema)?,
+                    &cast.data_type(&self.physical_file_schema)?,
+                ) {
+                    let source = Arc::clone(source);
+                    return Ok(Transformed::yes(expr.with_new_children(vec![source])?));
+                }
+            }
+        }
+        Ok(Transformed::no(expr))
     }
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
@@ -1601,7 +1637,7 @@ impl SparkPhysicalExprAdapter {
             )?));
         }
 
-        Ok(Transformed::no(expr))
+        self.adapt_date_null_check(expr)
     }
 
     /// Replace missing columns with defaults cast to the logical schema, propagating conversion
@@ -2703,6 +2739,40 @@ pub(crate) mod test {
             msg.contains("Found: INT64") && msg.contains("Expected: date"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_date_with_date64_hint_read_as_ntz() -> Result<(), DataFusionError> {
+        use arrow::array::Date64Array;
+        use parquet::file::properties::WriterProperties;
+
+        // Coercion writes INT32 DATE while the Arrow footer hint retains Date64.
+        let days = i64::MAX / 86_400_000_000 + 1;
+        let values: ArrayRef = Arc::new(Date64Array::from(vec![days * 86_400_000]));
+        let batch = RecordBatch::try_from_iter([("d", values)])?;
+        let props = WriterProperties::builder().set_coerce_types(true).build();
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer =
+            ArrowWriter::try_new(File::create(&filename)?, batch.schema(), Some(props))?;
+        writer.write(&batch)?;
+        writer.close()?;
+
+        let ntz = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let required = Arc::new(Schema::new(vec![Field::new("d", ntz, false)]));
+        for (promote, expected) in [(true, "long overflow"), (false, "Found: INT32")] {
+            let mut options = default_options();
+            options.allow_type_promotion = promote;
+            let mut stream = scan_parquet_file(
+                filename.clone(),
+                Arc::clone(&required),
+                options,
+                None,
+                false,
+            )?;
+            let error = stream.next().await.unwrap().unwrap_err().to_string();
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
         Ok(())
     }
 
