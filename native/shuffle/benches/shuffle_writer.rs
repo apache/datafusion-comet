@@ -497,7 +497,8 @@ fn schema_encoding_benchmark(c: &mut Criterion) {
 }
 
 /// Compare context lifetimes through the production local block encoder. Both arms reuse
-/// the writer and destination capacity; only the Arrow IPC context lifetime differs.
+/// the writer and destination capacity; only the lifetime of the codec context (the Arrow IPC
+/// scratch, the zstd context and the LZ4 frame encoder) differs.
 fn ipc_context_reuse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("shuffle_ipc_context");
     for rows in [128, 8192] {

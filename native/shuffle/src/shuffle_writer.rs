@@ -740,7 +740,7 @@ mod test {
             "one spill burst across all partitions must create the zstd context exactly once"
         );
         assert!(
-            !repartitioner.partition_writer().holds_zstd_cctx(),
+            !repartitioner.partition_writer().holds_workspaces(),
             "a finished spill burst must not keep the zstd context cached"
         );
 
@@ -752,7 +752,7 @@ mod test {
             "the next burst re-creates the context once, not per block"
         );
         assert!(
-            !repartitioner.partition_writer().holds_zstd_cctx(),
+            !repartitioner.partition_writer().holds_workspaces(),
             "finish_all must release the zstd context"
         );
     }

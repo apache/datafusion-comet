@@ -177,7 +177,8 @@ pub(crate) mod tests {
     }
 
     /// Isolate context reuse with warmed destination buffers. RSS and dictionary streams
-    /// currently create their own StreamWriter context, so they are negative controls.
+    /// currently create their own StreamWriter context, so they are negative controls, except
+    /// that local dictionary streams still reuse the LZ4 frame encoder.
     #[test]
     fn ipc_context_reuse_allocations() {
         const BLOCKS: usize = 100;
@@ -209,6 +210,7 @@ pub(crate) mod tests {
                     CompressionCodec::Snappy,
                     CompressionCodec::Zstd(1),
                 ] {
+                    let savings = savings || (!rss && matches!(codec, CompressionCodec::Lz4Frame));
                     let writer = if rss {
                         ShuffleBlockWriter::try_new_rss(batch.schema(), codec.clone())
                     } else {

@@ -22,6 +22,7 @@ mod codec_context;
 pub(crate) mod comet_partitioning;
 pub mod decoded_batch_coalescer;
 pub mod ipc;
+mod lz4_frame;
 pub(crate) mod metrics;
 mod offsets_as_lengths;
 pub(crate) mod partitioners;

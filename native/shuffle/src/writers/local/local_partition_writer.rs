@@ -156,8 +156,8 @@ impl LocalPartitionWriter {
     }
 
     #[cfg(test)]
-    pub(crate) fn holds_zstd_cctx(&self) -> bool {
-        self.codec_context.holds_zstd_cctx()
+    pub(crate) fn holds_workspaces(&self) -> bool {
+        self.codec_context.holds_workspaces()
     }
 
     #[cfg(test)]
@@ -392,15 +392,15 @@ impl PartitionWriter for LocalPartitionWriter {
         self.partition_offsets.set(offsets)?;
 
         // The shuffle output is complete; nothing else encodes through this context.
-        self.codec_context.release_zstd();
+        self.codec_context.release_workspaces();
 
         Ok(())
     }
 
     fn write_burst_complete(&mut self) {
-        // A spill burst just ended and the next encode may be a long time coming; the zstd
-        // workspace is native memory no reservation tracks, so don't sit on it.
-        self.codec_context.release_zstd();
+        // A spill burst just ended and the next encode may be a long time coming; the codec
+        // workspaces are native memory no reservation tracks, so don't sit on them.
+        self.codec_context.release_workspaces();
     }
 }
 
