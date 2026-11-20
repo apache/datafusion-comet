@@ -55,8 +55,8 @@ case class CometSubqueryAdaptiveBroadcastExec(
     with UnaryExecNode {
 
   // This node must be converted to CometSubqueryBroadcastExec by
-  // CometPlanAdaptiveDynamicPruningFilters before execution. If we reach doExecute(),
-  // the rule didn't run (e.g., Spark 3.4 where injectQueryStageOptimizerRule is unavailable).
+  // CometPlanAdaptiveDynamicPruningFilters before execution. Reaching doExecute() means the
+  // conversion rule did not run.
   protected override def doExecute(): RDD[InternalRow] = {
     throw QueryExecutionErrors.executeCodePathUnsupportedError(
       "CometSubqueryAdaptiveBroadcastExec (should have been converted by " +

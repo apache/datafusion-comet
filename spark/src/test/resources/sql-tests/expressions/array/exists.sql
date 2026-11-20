@@ -15,7 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Higher-order function exists. Runs through Comet's codegen dispatcher.
+-- Higher-order function exists. Runs through Comet's codegen dispatcher, or natively when the lambda
+-- allows it and three-valued logic is on (see array_exists_native_lambda.sql).
 -- ConfigMatrix: spark.sql.legacy.followThreeValuedLogicInArrayExists=false,true
 
 statement

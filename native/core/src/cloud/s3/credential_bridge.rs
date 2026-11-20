@@ -44,10 +44,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Expiry the Iceberg path assumes when the provider does not report one. It bounds how long a
-/// long-lived reader or writer reuses a credential, but it can outlast a short-lived credential,
-/// so a provider that knows the expiry should report it. Shared with the IRSA web-identity
-/// provider (`super::web_identity`).
+/// long-lived reader reuses a credential, but it can outlast a short-lived credential, so a
+/// provider that knows the expiry should report it. Shared with the IRSA web-identity provider
+/// (`super::web_identity`).
 pub(crate) const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
+
+/// Expiry a write assumes when the provider does not report one. reqsign reloads a credential
+/// with less than two minutes left, so a write asks the provider for every request, as the
+/// Parquet path does. A data file stays open while its rows arrive, and an AWS SDK v1 session
+/// provider keeps handing out its current credential until a minute before it expires, so the
+/// read window could sign a file's later parts with an expired token. It must stay above
+/// reqsign's 10 second signing headroom.
+const WRITE_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(60);
 
 /// How long before its expiry a bridge stops reusing a credential and asks the provider again. It
 /// matches the refresh-ahead of the other credential caches Comet keeps, and it covers object_store,
@@ -177,6 +185,31 @@ pub enum AccessMode {
     Write = 1,
 }
 
+/// A reference to a provider registered with the JVM dispatcher. `ensureInitialized` takes it, and
+/// dropping the last bridge that shares it gives it back with `release`, so the dispatcher can
+/// close a provider once nothing reads through it, such as after a catalog re-vends credentials
+/// with a later expiry.
+struct ProviderHandle(i64);
+
+impl Drop for ProviderHandle {
+    fn drop(&mut self) {
+        let released = JVMClasses::with_env(|env| -> Result<(), ExecutionError> {
+            unsafe {
+                jni_static_call!(env,
+                    comet_s3_credential_dispatcher.release(self.0) -> ()
+                )?
+            };
+            Ok(())
+        });
+        if let Err(e) = released {
+            warn!(
+                "Failed to release S3 credential provider handle {}: {e}",
+                self.0
+            );
+        }
+    }
+}
+
 /// Credential provider that delegates to the JVM SPI via JNI. Instances live in the executor's
 /// FileIO and object store caches, so one serves many tasks. `handle` is the JVM-side identity
 /// for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
@@ -196,7 +229,7 @@ pub struct CometS3CredentialBridge {
     bucket: String,
     path: String,
     mode: AccessMode,
-    handle: i64,
+    handle: Arc<ProviderHandle>,
     bucket_jstr: Arc<Global<JString<'static>>>,
     path_jstr: Arc<Global<JString<'static>>>,
     /// The credential this bridge last fetched, while it is fresh. A derived bridge starts with an
@@ -209,7 +242,7 @@ impl fmt::Debug for CometS3CredentialBridge {
         f.debug_struct("CometS3CredentialBridge")
             .field("provider_class", &self.provider_class)
             .field("dispatch_key", &self.dispatch_key)
-            .field("handle", &self.handle)
+            .field("handle", &self.handle.0)
             .field("bucket", &self.bucket)
             .field("path", &self.path)
             .field("mode", &self.mode)
@@ -256,7 +289,7 @@ impl CometS3CredentialBridge {
             bucket,
             path,
             mode,
-            handle,
+            handle: Arc::new(ProviderHandle(handle)),
             bucket_jstr,
             path_jstr,
             cache: CredentialCache::default(),
@@ -282,7 +315,7 @@ impl CometS3CredentialBridge {
             bucket: self.bucket.clone(),
             path,
             mode: self.mode,
-            handle: self.handle,
+            handle: Arc::clone(&self.handle),
             bucket_jstr: Arc::clone(&self.bucket_jstr),
             path_jstr,
             cache: CredentialCache::default(),
@@ -333,7 +366,7 @@ impl CometS3CredentialBridge {
             bucket,
             path,
             mode: self.mode,
-            handle: self.handle,
+            handle: Arc::clone(&self.handle),
             bucket_jstr,
             path_jstr,
             cache: CredentialCache::default(),
@@ -347,7 +380,7 @@ impl CometS3CredentialBridge {
             let creds_obj: JObject = unsafe {
                 jni_static_call!(env,
                     comet_s3_credential_dispatcher.get_credentials_for_path(
-                        self.handle,
+                        self.handle.0,
                         self.bucket_jstr.as_obj(),
                         self.path_jstr.as_obj(),
                         mode
@@ -399,7 +432,7 @@ impl CometS3CredentialBridge {
             let locations: JObject = unsafe {
                 jni_static_call!(env,
                     comet_s3_credential_dispatcher.get_policy_locations(
-                        self.handle,
+                        self.handle.0,
                         self.bucket_jstr.as_obj()
                     ) -> JObject
                 )?
@@ -573,11 +606,12 @@ impl IcebergProvideCredential for CometS3CredentialBridge {
                 if WARNED_MISSING_EXPIRY.set(()).is_ok() {
                     warn!(
                         "CometS3CredentialProvider returned credentials without expiration; \
-                     defaulting to {}s expiry to bound opendal caching",
-                        DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs()
+                     assuming {}s for reads and {}s for writes to bound opendal caching",
+                        DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs(),
+                        WRITE_EXPIRY_WHEN_UNKNOWN.as_secs()
                     );
                 }
-                Some(Timestamp::now() + DEFAULT_EXPIRY_WHEN_UNKNOWN)
+                Some(Timestamp::now() + unknown_expiry(self.mode))
             }
         };
 
@@ -587,6 +621,14 @@ impl IcebergProvideCredential for CometS3CredentialBridge {
             session_token: raw.session_token,
             expires_in,
         }))
+    }
+}
+
+/// How long the Iceberg path assumes a credential without a reported expiry lasts.
+fn unknown_expiry(mode: AccessMode) -> Duration {
+    match mode {
+        AccessMode::Read => DEFAULT_EXPIRY_WHEN_UNKNOWN,
+        AccessMode::Write => WRITE_EXPIRY_WHEN_UNKNOWN,
     }
 }
 
@@ -683,6 +725,27 @@ mod tests {
             cache.get_or_fetch(now(), fetch).unwrap();
             assert_eq!(fetches.load(SeqCst), 2, "expiration {expiration}");
         }
+    }
+
+    /// reqsign keeps a credential while it has more than two minutes left and signs with one that
+    /// has at least 10 seconds left. A write's assumed expiry falls between the two, so reqsign
+    /// asks the provider again for every request, while a read's lets it keep the credential.
+    #[test]
+    fn a_write_asks_again_for_a_credential_without_an_expiry() {
+        use reqsign_core::SigningCredential;
+        let assumed = |mode| IcebergAwsCredential {
+            access_key_id: "key".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: None,
+            expires_in: Some(Timestamp::now() + unknown_expiry(mode)),
+        };
+        let write = assumed(AccessMode::Write);
+        assert!(
+            !write.is_valid(),
+            "reqsign would keep the write's credential"
+        );
+        assert!(write.is_valid_at(Timestamp::now() + Duration::from_secs(10)));
+        assert!(assumed(AccessMode::Read).is_valid());
     }
 
     #[test]

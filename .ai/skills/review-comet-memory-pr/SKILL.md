@@ -103,24 +103,33 @@ configuration, from the inside out:
 - [ ] **`fair_unified` holds the consumers that can spill to a share of the task's share.** The
       task's share is `spark.memory.offHeap.size` divided by the tasks on the executor running
       native plans, which `RunningTasks` counts while each task holds its task-shared pool, or
-      `pool_size` if that is smaller. A consumer that can spill is
-      refused if what it holds plus the request exceeds what the consumers that cannot spill leave
-      of the task's share, divided by the registered consumers that can spill, or if the task's
-      total plus the request exceeds the task's share. A consumer that cannot spill is refused only
-      if the task's total plus the request exceeds `pool_size`, which binds before Spark's own
-      limit only while the deprecated fraction is below `1 / N`. With eight running tasks, a 16 GiB
-      pool and two consumers that can spill, each may hold 1 GiB, or 768 MiB while a merge holds
-      512 MiB. The pool keeps a running total for each consumer id, so the sibling reservations
-      that `new_empty()`, `split()` and `take()` create count against one share. A PR that checks
-      `reservation.size()` instead lets an operator with several reservations, such as a sort's
-      streaming merge, take other consumers' shares. It also depends on when DataFusion updates the
-      size, which is after it calls `try_grow` but before it calls `shrink`. A PR that limits a
-      consumer that cannot spill to a share, or sizes the shares from the whole pool, brings back
-      #7088: one operator takes the task's share from Spark and a merge or hash join build fails
-      the task. If the PR changes any of these comparisons it changes when every query spills, so
-      it needs benchmark evidence, not reasoning.
-- [ ] **The consumers that divide the task's share are every consumer that can spill in the
-      task**, across every native plan, because the pool is task-shared.
+      `pool_size` if that is smaller. A consumer that can spill is refused if what it holds plus
+      the request exceeds what the consumers that cannot spill leave of the task's share, divided
+      by the active consumers that can spill, itself included, or if the task's total plus
+      the request exceeds the task's share. A consumer that cannot spill is refused only if the
+      task's total plus the request exceeds `pool_size`, which binds before Spark's own limit only
+      while the deprecated fraction is below `1 / N`. With eight running tasks, a 16 GiB pool and
+      two active consumers that can spill, each may hold 1 GiB, or 768 MiB while a merge
+      holds 512 MiB. The pool keeps a running total for each consumer id, so the sibling
+      reservations that `new_empty()`, `split()` and `take()` create count against one share. A PR
+      that checks `reservation.size()` instead lets an operator with several reservations, such as
+      a sort's streaming merge, take other consumers' shares. It also depends on when DataFusion
+      updates the size, which is after it calls `try_grow` but before it calls `shrink`. A PR that
+      limits a consumer that cannot spill to a share, or sizes the shares from the whole pool,
+      brings back #7088: one operator takes the task's share from Spark and a merge or hash join
+      build fails the task. If the PR changes any of these comparisons it changes when every query
+      spills, so it needs benchmark evidence, not reasoning.
+- [ ] **The consumers that divide the task's share are the active consumers in the task that can
+      spill**, across every native plan, because the pool is task-shared. A consumer is active
+      while it holds more than its low-water mark, the least it has held since its first
+      reservation. DataFusion registers every operator's consumer before any batch flows, and from
+      DataFusion 56 an aggregate also reserves its initial table then. A PR that divides by the
+      registered consumers, or counts a consumer for its first reservation, again holds a blocking
+      operator, such as a sort, to a fraction of the task's share while the operators above it have
+      not started (#7628). The exception is a sort that has not started, which counts for every
+      consumer but another sort: `ExternalSorter` fails when its first request is refused, and a hash
+      aggregate below it keeps its output reserved until it has emitted all of it. A PR that drops the
+      exception lets an aggregate fill the share and fails the sort above it.
 - [ ] **Task-shared pool lifetime.** `acquire_task_shared_pool` keeps a process-wide
       `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. The returned `Arc` is the only
       lifetime handle, so there is no explicit release to forget and a `createPlan` that fails
