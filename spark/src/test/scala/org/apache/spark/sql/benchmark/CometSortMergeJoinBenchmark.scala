@@ -43,8 +43,9 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  * }}}
  * Each input warms up twice per mode and measures all six permutations of baseline, projection
  * only and reduction. Repeat with `--reverse` to reverse the input and round order in a fresh
- * JVM. Action time covers SQL planning through collection. Reduction time sums batch
- * deduplication attempts across tasks, excluding projection and packing of small output batches.
+ * JVM. Action time covers SQL planning through collection. Reduction time sums the time spent
+ * attempting deduplication and copying bypassed keys across tasks. Key projection and packing
+ * small output batches are outside this timer.
  */
 object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
 
