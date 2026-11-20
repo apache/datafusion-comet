@@ -134,7 +134,21 @@ case class CometIcebergNativeScanExec(
   // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
+  //
+  // A storage-partitioned scan reports a key-grouped partitioning (KeyGroupedPartitioning, called
+  // KeyedPartitioning from Spark 4.2). Spark takes it from the partitions it plans, before any DPP
+  // filtering, and plans the operators above the scan on that basis, with no exchange for a join
+  // or aggregate that the partitioning already satisfies. The scan reports the same, so reading it
+  // resolves no DPP subquery. Otherwise EnsureRequirements, which AQE runs again over a DPP
+  // subquery's converted plan, inserts exchanges inside a native block that is already serialized
+  // (#7441). serializePartitions keeps one partition for each of Spark's partitions when DPP
+  // prunes some, as Spark does.
+  override lazy val outputPartitioning: Partitioning =
+    if (originalPlan == null) {
+      UnknownPartitioning(0)
+    } else {
+      originalPlan.outputPartitioning
+    }
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 

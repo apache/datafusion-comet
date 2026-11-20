@@ -7259,6 +7259,101 @@ class CometIcebergNativeSuite
     }
   }
 
+  // The fact table is partitioned on the column the DPP join uses and the two dimension tables on
+  // theirs, so Spark reads every scan key-grouped and joins the dimensions without a shuffle. The
+  // drops sit in a finally because a table left behind by a failing test makes the next test fail
+  // on CREATE TABLE, which hides that test's own result.
+  private def withStoragePartitionedDppTables(f: => Unit): Unit = {
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.V2_BUCKETING_ENABLED.key -> "true",
+        SQLConf.V2_BUCKETING_PUSH_PART_VALUES_ENABLED.key -> "true",
+        "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        try {
+          spark.sql("""
+            CREATE TABLE aqe_cat.db.spj_dpp_fact (amount INT, store_id INT)
+            USING iceberg PARTITIONED BY (store_id)
+          """)
+          spark.sql("""
+            CREATE TABLE aqe_cat.db.spj_dpp_dim_a (id INT, country STRING)
+            USING iceberg PARTITIONED BY (id)
+          """)
+          spark.sql("""
+            CREATE TABLE aqe_cat.db.spj_dpp_dim_b (id INT, name STRING)
+            USING iceberg PARTITIONED BY (id)
+          """)
+          spark.sql(
+            "INSERT INTO aqe_cat.db.spj_dpp_fact SELECT CAST(id AS INT), CAST(id % 10 AS INT) " +
+              "FROM range(0, 100)")
+          spark.sql(
+            "INSERT INTO aqe_cat.db.spj_dpp_dim_a SELECT CAST(id AS INT), " +
+              "IF(id < 3, 'X', 'Y') FROM range(0, 10)")
+          spark.sql(
+            "INSERT INTO aqe_cat.db.spj_dpp_dim_b SELECT CAST(id AS INT), concat('n', id) " +
+              "FROM range(0, 10)")
+          f
+        } finally {
+          Seq("spj_dpp_fact", "spj_dpp_dim_a", "spj_dpp_dim_b").foreach { table =>
+            spark.sql(s"DROP TABLE IF EXISTS aqe_cat.db.$table")
+          }
+        }
+      }
+    }
+  }
+
+  // The build side of the broadcast that prunes the fact scan joins the two dimensions, which
+  // needs no shuffle because both scans are key-grouped on id, and so does an aggregate on id
+  // above that join. AQE plans the converted subquery again, and EnsureRequirements has to find
+  // each requirement already met rather than put an exchange in it, because AQE has no logical
+  // link for one (#7441). The hint picks the join operator, so both Comet joins are covered.
+  for {
+    (shape, column, projection, grouping) <- Seq(
+      ("storage-partitioned join", "name", "a.id, b.name", ""),
+      (
+        "aggregate over a storage-partitioned join",
+        "cnt",
+        "a.id, count(*) AS cnt",
+        "GROUP BY a.id"))
+    (hint, joinClass) <- Seq[(String, Class[_ <: SparkPlan])](
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec])
+  } {
+    test(s"AQE DPP - $shape on the DPP build side, $hint (#7441)") {
+      assume(icebergAvailable, "Iceberg not available")
+      withStoragePartitionedDppTables {
+        val query =
+          s"""SELECT /*+ BROADCAST(d) */ f.store_id, f.amount, d.$column
+             |FROM aqe_cat.db.spj_dpp_fact f JOIN (
+             |  SELECT /*+ $hint(a, b) */ $projection
+             |  FROM aqe_cat.db.spj_dpp_dim_a a JOIN aqe_cat.db.spj_dpp_dim_b b ON a.id = b.id
+             |  WHERE a.country = 'X'
+             |  $grouping
+             |) d ON f.store_id = d.id""".stripMargin
+        val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
+        assertNoLeftoverCSAB(cometPlan)
+        assert(
+          collectIcebergDPPSubqueries(cometPlan).nonEmpty,
+          s"Expected the fact scan to carry a DPP filter:\n$cometPlan")
+        assert(
+          collectWithSubqueries(cometPlan) { case p if joinClass.isInstance(p) => p }.nonEmpty,
+          s"Expected a ${joinClass.getSimpleName} in the plan or in the DPP subquery's plan:\n" +
+            cometPlan)
+        assert(
+          collectWithSubqueries(cometPlan) { case e: ShuffleExchangeLike => e }.isEmpty,
+          s"Expected no exchange in the plan or in the DPP subquery's plan:\n$cometPlan")
+      }
+    }
+  }
+
   // TPC-DS q64 shape (#6264): a broadcast of (fact SMJ other) per UNION ALL branch, with the
   // dimension join above it. The two broadcasts differ only in the DPP filter of the fact scan
   // inside a child shuffle stage, so they must not be reused for each other.

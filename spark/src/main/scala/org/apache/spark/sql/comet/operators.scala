@@ -45,7 +45,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanExecBase
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
@@ -747,16 +747,51 @@ abstract class CometExec extends CometPlan {
  * Declares the distribution of the Spark operator that a Comet operator replaces. Without it
  * AQE's OptimizeSkewInRebalancePartitions can split a skewed partition under an operator that
  * needs its input clustered, because ValidateRequirements has nothing to reject, and one key then
- * yields several rows. Mix it into operators that replace a clustering aggregate, window or join.
+ * yields several rows. Mix it into operators that replace a clustering aggregate or window. A
+ * join mixes in [[CometDelegatesJoinChildDistribution]] instead.
  */
 trait CometDelegatesRequiredChildDistribution extends CometExec {
   override def requiredChildDistribution: Seq[Distribution] =
     originalPlan.requiredChildDistribution
 }
 
+/**
+ * [[CometDelegatesRequiredChildDistribution]] for a join. A storage-partitioned join, whose sides
+ * are key-grouped scans that Spark joins with no exchange, declares no requirement. No shuffle
+ * sits below it for AQE to split. EnsureRequirements only accepts such a join when it is Spark's
+ * own join operator, and in Spark 4.1 only over Spark's own scans. So when AQE plans a DPP
+ * subquery's converted plan again, it would put an exchange under each side that it has no
+ * logical link for (#7441). The sides are the join's current children, which are Comet operators,
+ * because conversion works bottom-up and AQE can later swap in query stages.
+ */
+trait CometDelegatesJoinChildDistribution extends CometDelegatesRequiredChildDistribution {
+  override def requiredChildDistribution: Seq[Distribution] =
+    if (children.forall(CometExec.isStoragePartitioned)) {
+      children.map(_ => UnspecifiedDistribution)
+    } else {
+      super.requiredChildDistribution
+    }
+}
+
 object CometExec {
   final class InvalidSparkFallbackException(message: String)
       extends IllegalArgumentException(message)
+
+  /**
+   * Whether `plan` reads only key-grouped scans, with no shuffle above them. This is how Spark
+   * plans each side of a storage-partitioned join. A scan counts only when the scan it replaces
+   * or wraps was planned key-grouped, so a table read without grouping does not.
+   */
+  private[comet] def isStoragePartitioned(plan: SparkPlan): Boolean =
+    !plan.exists(_.isInstanceOf[ShuffleExchangeLike]) &&
+      plan.collectLeaves().forall {
+        // Spark's own scans, and CometBatchScanExec, which extends DataSourceV2ScanExecBase.
+        case scan: DataSourceV2ScanExecBase => scan.keyGroupedPartitioning.isDefined
+        // originalPlan is null on a canonicalized copy
+        case scan: CometIcebergNativeScanExec =>
+          scan.originalPlan != null && scan.originalPlan.keyGroupedPartitioning.isDefined
+        case _ => false
+      }
 
   // An unique id for each CometExecIterator, used to identify the native query execution.
   private val curId = new java.util.concurrent.atomic.AtomicLong()
@@ -3456,7 +3491,7 @@ case class CometHashJoinExec(
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometBinaryExec
-    with CometDelegatesRequiredChildDistribution {
+    with CometDelegatesJoinChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3846,7 +3881,7 @@ case class CometSortMergeJoinExec(
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometBinaryExec
-    with CometDelegatesRequiredChildDistribution {
+    with CometDelegatesJoinChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
