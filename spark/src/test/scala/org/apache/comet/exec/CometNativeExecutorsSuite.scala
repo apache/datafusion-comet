@@ -369,6 +369,16 @@ class CometNativeExecutorsSuite
     }
   }
 
+  nativeExecutorsTest("an empty range returns no rows") {
+    withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      for (slices <- Seq(4, 0)) {
+        def range = spark.range(1, -2, 1, slices)
+        checkOnCluster(range.selectExpr("id + 1"))
+        checkOnCluster(range.agg(count("id"), sum("id")))
+      }
+    }
+  }
+
   nativeExecutorsTest("scalar subquery") {
     withTable { path =>
       spark.read.parquet(path).createOrReplaceTempView("t")
