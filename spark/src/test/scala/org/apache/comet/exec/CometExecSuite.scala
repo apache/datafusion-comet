@@ -32,9 +32,10 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate, Final}
 import org.apache.spark.sql.catalyst.plans.logical.Expand
+import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
@@ -1402,6 +1403,16 @@ class CometExecSuite extends CometTestBase {
         }
         assert(dppScans.size == 1, s"Expected one DPP native scan:\n${cometPlan.treeString}")
         assert(dppScans.head.bucketedScan, s"Expected a bucketed scan:\n${cometPlan.treeString}")
+        // Spark plans the join's shuffles before Comet replaces the scan, so the plan shape
+        // above holds even if the scan stops reporting its bucket layout. Check it directly.
+        val partitioning = dppScans.head.outputPartitioning
+        val isBucketLayout = partitioning match {
+          case HashPartitioning(Seq(key: AttributeReference), 4) => key.name == "k"
+          case _ => false
+        }
+        assert(
+          isBucketLayout,
+          s"Expected HashPartitioning(k, 4) from the bucketed scan, got $partitioning")
         assertAqeDppShape(cometPlan, expectedCometSubqueryBroadcasts = Some(1))
         // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 partitions.
         assert(
