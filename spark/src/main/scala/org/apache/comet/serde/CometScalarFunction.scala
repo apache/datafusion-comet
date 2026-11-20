@@ -50,7 +50,7 @@ object CometScalarFunction {
    * Product / Java field names that indicate ANSI / eval-mode sensitive Spark expressions.
    *
    * Detection uses Java reflection (not `Product.productElementNames`) so the check compiles on
-   * Scala 2.12 used by Spark 3.4 / 3.5.
+   * Scala 2.12 used by Spark 3.5.
    */
   private val AnsiSensitiveFields: Set[String] =
     Set("failOnError", "evalMode", "nullOnOverflow", "ansiEnabled", "evalContext")
