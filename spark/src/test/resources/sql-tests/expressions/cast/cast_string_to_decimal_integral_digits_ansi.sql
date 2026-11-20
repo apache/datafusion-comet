@@ -30,6 +30,7 @@ CREATE TABLE test_cast_str_dec_digits_ansi(id int, s string) USING parquet
 
 -- ids 1 to 7 have more than 38 integral digits: an exponent that adds them, 39 digits that fit an
 -- i128 and 40 that do not, a fraction after 40 digits, and leading zeros that do not count.
+-- ids 8 and 9 have more than 38 fractional digits.
 -- ids 10 to 15 are within the limit.
 statement
 INSERT INTO test_cast_str_dec_digits_ansi VALUES
@@ -40,6 +41,8 @@ INSERT INTO test_cast_str_dec_digits_ansi VALUES
   (5, '9999999999999999999999999999999999999999.5'),
   (6, '0.1e40'),
   (7, '000000000000000000000000000000000000000000000000001e38'),
+  (8, concat('1.', repeat('0', 50))),
+  (9, concat('0.', repeat('0', 40), '1')),
   (10, '12345678901'),
   (11, '99999999999999999999999999999999999999'),
   (12, '1.5'),
@@ -92,6 +95,11 @@ query
 SELECT id, cast(s as decimal(38,0)) FROM test_cast_str_dec_digits_ansi
 WHERE id IN (11, 12, 13, 14, 15) ORDER BY id
 
+-- More than 38 fractional digits can round to a value within the target precision.
+query
+SELECT id, cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
+WHERE id IN (8, 9) ORDER BY id
+
 -- try_cast suppresses both errors
 query
 SELECT id, try_cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi
@@ -104,6 +112,9 @@ SET spark.sql.legacy.allowNegativeScaleOfDecimal=true
 
 query expect_error(NUMERIC_VALUE_OUT_OF_RANGE)
 SELECT cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi WHERE id = 2
+
+query expect_error(NUMERIC_VALUE_OUT_OF_RANGE)
+SELECT cast(s as decimal(10,2)) FROM test_cast_str_dec_digits_ansi WHERE id = 3
 
 query expect_error(NUMERIC_VALUE_OUT_OF_RANGE)
 SELECT cast(s as decimal(38,0)) FROM test_cast_str_dec_digits_ansi WHERE id = 2

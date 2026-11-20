@@ -2549,6 +2549,8 @@ class CometNativeCastSuite
       // testTry=false: try_cast uses SQL string interpolation (toType.sql → "DECIMAL(10,-4)")
       // which the SQL parser rejects regardless of allowNegativeScaleOfDecimal.
       castTest(values, DataTypes.createDecimalType(10, -4), testTry = false)
+      val fortyDigits = Seq("1" + "0" * 39).toDF("a")
+      castTest(fortyDigits, DataTypes.createDecimalType(10, -35), testTry = false)
     }
   }
 
