@@ -24,7 +24,7 @@ use crate::float_semantics::{
     compare_float_array_scalar, compare_floats, spark_equality_ignoring_nulls,
 };
 use arrow::array::{
-    new_null_array, Array, ArrayRef, AsArray, GenericListArray, ListArray, OffsetSizeTrait,
+    Array, ArrayRef, AsArray, BooleanArray, GenericListArray, ListArray, OffsetSizeTrait,
     PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
@@ -44,13 +44,7 @@ pub(super) fn invoke_match(
         (ColumnarValue::Array(list), _) => Some(list.len()),
         _ => None,
     };
-    let len = rows.unwrap_or(1);
-    let result = if matches!(needle, ColumnarValue::Scalar(value) if value.is_null()) {
-        let data_type = udf.return_type(&[array.data_type(), needle.data_type()])?;
-        new_null_array(&data_type, len)
-    } else {
-        evaluate(&array.to_array_of_size(len)?, needle)?
-    };
+    let result = evaluate(&array.to_array_of_size(rows.unwrap_or(1))?, needle)?;
     match rows {
         None => Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
             &result, 0,
@@ -71,19 +65,32 @@ pub(super) fn invoke_with_mask<M: ScalarUDFImpl + MatchOperation<i32>>(
         let Some(list) = array.as_list_opt::<i32>() else {
             return exec_err!("{} takes a list, got {}", udf.name(), array.data_type());
         };
-        if let ColumnarValue::Scalar(needle) = needle {
+        // array_contains accepts a null scalar of any type. For array_remove, let
+        // the row matcher validate the element type even when the needle is null.
+        if op == Operator::IsNotDistinctFrom
+            && matches!(needle, ColumnarValue::Scalar(value) if value.is_null())
+        {
+            return Ok(Arc::new(BooleanArray::new_null(list.len())));
+        }
+        if let ColumnarValue::Scalar(
+            value @ (ScalarValue::Float32(Some(_)) | ScalarValue::Float64(Some(_))),
+        ) = needle
+        {
             let offsets = list.value_offsets();
             let elements = list.values().slice(
                 offsets[0] as usize,
                 (offsets[list.len()] - offsets[0]) as usize,
             );
-            if let Some(mask) = compare_float_array_scalar(op, elements.as_ref(), needle)? {
+            if let Some(mask) = compare_float_array_scalar(op, elements.as_ref(), value)? {
                 return from_mask(list, &elements, mask.into_parts().0);
             }
         }
-        MatchRows::new(list, needle)?.evaluate::<M>()
+        MatchRows::new(list, needle)?.evaluate::<M>(spark_equality_ignoring_nulls)
     })
 }
+
+pub(super) type EqualityBuilder =
+    fn(&dyn Array, &dyn Array) -> Result<Box<dyn Fn(usize, usize) -> bool + Send + Sync>>;
 
 /// Consume a predicate over non-null element and needle indices. The float specialization
 /// lets removal copy the surviving elements directly from the typed buffer.
@@ -107,8 +114,10 @@ pub(super) struct MatchRows<'a, O: OffsetSizeTrait> {
 
 impl<'a, O: OffsetSizeTrait> MatchRows<'a, O> {
     pub fn new(array: &'a GenericListArray<O>, needle: &ColumnarValue) -> Result<Self> {
-        // invoke_match handles null scalars. A non-null scalar needs only one slot.
         let (needles, nulls) = match needle {
+            ColumnarValue::Scalar(value) if value.is_null() => {
+                (value.to_array()?, Some(NullBuffer::new_null(array.len())))
+            }
             ColumnarValue::Scalar(value) => (value.to_array()?, array.nulls().cloned()),
             ColumnarValue::Array(values) => (
                 Arc::clone(values),
@@ -122,14 +131,13 @@ impl<'a, O: OffsetSizeTrait> MatchRows<'a, O> {
         })
     }
 
-    pub fn evaluate<M: MatchOperation<O>>(&self) -> Result<ArrayRef> {
+    pub fn evaluate<M: MatchOperation<O>>(&self, equality: EqualityBuilder) -> Result<ArrayRef> {
         let elements = self.array.values();
         match (elements.data_type(), self.needles.data_type()) {
             (DataType::Float32, DataType::Float32) => self.match_floats::<M, Float32Type>(),
             (DataType::Float64, DataType::Float64) => self.match_floats::<M, Float64Type>(),
             _ => {
-                let equal =
-                    spark_equality_ignoring_nulls(elements.as_ref(), self.needles.as_ref())?;
+                let equal = equality(elements.as_ref(), self.needles.as_ref())?;
                 M::apply(self, equal)
             }
         }

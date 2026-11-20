@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use super::array_match::{invoke_match, MatchOperation, MatchRows};
+use crate::float_semantics::spark_equality_by_ordinal;
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Date32Array, Decimal128Array, GenericListArray,
     Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, OffsetSizeTrait, StringArray,
@@ -70,7 +71,7 @@ fn position<O: OffsetSizeTrait>(
         DataType::LargeUtf8 => typed_position!(LargeStringArray),
         _ => {}
     }
-    rows.evaluate::<SparkArrayPositionFunc>()
+    rows.evaluate::<SparkArrayPositionFunc>(spark_equality_by_ordinal)
 }
 
 impl<O: OffsetSizeTrait> MatchOperation<O> for SparkArrayPositionFunc {
@@ -143,12 +144,11 @@ mod tests {
 
     // ArraysBase.isTypeSupported rejects structs, so this case is only reachable from Rust.
     #[test]
-    fn test_struct_float_field_signed_zero_position() -> Result<()> {
-        use arrow::array::{Float64Builder, StructBuilder};
+    fn struct_position_compares_signed_zeros_by_field_ordinal() -> Result<()> {
+        use arrow::array::{Float64Builder, StructArray, StructBuilder};
 
         let fields = vec![Arc::new(Field::new("a", DataType::Float64, true))];
-        let mut values_builder =
-            StructBuilder::new(fields.clone(), vec![Box::new(Float64Builder::new())]);
+        let mut values_builder = StructBuilder::new(fields, vec![Box::new(Float64Builder::new())]);
         for v in [-0.0, 1.0] {
             values_builder
                 .field_builder::<Float64Builder>(0)
@@ -164,6 +164,7 @@ mod tests {
             None,
         );
 
+        let fields = vec![Arc::new(Field::new("A", DataType::Float64, true))];
         let mut element_builder = StructBuilder::new(fields, vec![Box::new(Float64Builder::new())]);
         element_builder
             .field_builder::<Float64Builder>(0)
@@ -174,8 +175,10 @@ mod tests {
 
         let result = position(&array, &ColumnarValue::Array(Arc::new(element)))?;
         let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
-        // {-0.0} is the first element and now matches {0.0}, matching Spark.
         assert_eq!(result, &Int64Array::from(vec![1]));
+
+        let empty_struct = StructArray::new_empty_fields(1, None);
+        assert!(position(&array, &ColumnarValue::Array(Arc::new(empty_struct))).is_err());
         Ok(())
     }
 }

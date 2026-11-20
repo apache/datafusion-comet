@@ -66,6 +66,15 @@ pub(crate) fn spark_equality_ignoring_nulls(
     right: &dyn Array,
 ) -> Result<Box<dyn Fn(usize, usize) -> bool + Send + Sync>> {
     check_types(left, right)?;
+    spark_equality_by_ordinal(left, right)
+}
+
+/// Like [`spark_equality_ignoring_nulls`], pairing struct fields by ordinal as Arrow does.
+/// The recursive comparator checks field counts and child types as it pairs them.
+pub(crate) fn spark_equality_by_ordinal(
+    left: &dyn Array,
+    right: &dyn Array,
+) -> Result<Box<dyn Fn(usize, usize) -> bool + Send + Sync>> {
     let compare = comparator(left, right, true, false)?;
     Ok(Box::new(move |i, j| compare(i, j).is_eq()))
 }
@@ -188,6 +197,9 @@ fn struct_comparator(
     equality: bool,
     nulls: bool,
 ) -> Result<DynComparator> {
+    if left.as_struct().num_columns() != right.as_struct().num_columns() {
+        return internal_err!("Cannot compare structs with different numbers of fields");
+    }
     let fields = left
         .as_struct()
         .columns()

@@ -364,6 +364,7 @@ mod tests {
         let array = list(&[Some(vec![Some(1.0)])]);
         for value in [
             ColumnarValue::Scalar(ScalarValue::Float32(Some(1.0))),
+            ColumnarValue::Scalar(ScalarValue::Float32(None)),
             ColumnarValue::Array(Arc::new(Float32Array::from(vec![1.0f32]))),
         ] {
             assert!(invoke(ColumnarValue::Array(Arc::clone(&array)), value, 1).is_err());
