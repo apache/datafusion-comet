@@ -23,6 +23,15 @@ CREATE TABLE folded_array_map_literals(id INT, value BIGINT) USING parquet
 statement
 INSERT INTO folded_array_map_literals SELECT CAST(id AS INT), id FROM range(0, 3, 1, 1)
 
+-- sequence folds to an UnsafeArrayData literal. Project it over a table so Comet's
+-- literal serializer reads it instead of evaluating the sequence expression.
+query
+SELECT sequence(1, 5) AS arr FROM folded_array_map_literals
+
+-- The nested sequences also fold to UnsafeArrayData, exercising recursive list serialization.
+query
+SELECT array(sequence(1, 3), sequence(4, 5)) AS arr FROM folded_array_map_literals
+
 -- The whole array folds to one ArrayType(MapType(...), containsNull=true) literal.
 -- The NULL element and the rebuilt populated map must retain identical map types.
 -- Three rows in one file exercise broadcasting the folded literal across a batch.
