@@ -22,13 +22,20 @@
 -- One file of 1300 rows, so each block of 256 rows is four aligned 64-row chunks and the last 20
 -- rows are a partial chunk. Each block has its own validity pattern. Blocks 1 and 2 have 16 and
 -- 15 valid rows per chunk, one at and one below `MIN_VALID_FOR_DENSE`, so they choose different
--- branches. Update them if that constant changes.
+-- branches. Update them if that constant changes. Each column is a type that reaches the loop
+-- through its own instantiation of `hash_array_primitive` or `hash_array_primitive_float`.
 statement
 CREATE TABLE test_hash_fixed_width_nulls USING parquet AS
 SELECT /*+ COALESCE(1) */ id, IF(is_null, NULL, CAST(id * 7919 - 5000000 AS INT)) AS i,
   IF(is_null, NULL, id * 1000000007 - 1000000000000) AS l,
-  IF(is_null, NULL, CASE id % 97 WHEN 0 THEN double('-0.0') WHEN 1 THEN double('NaN')
-    ELSE id / 7.0 - 50 END) AS d
+  IF(is_null, NULL, dv) AS d,
+  IF(is_null, NULL, CAST(dv AS FLOAT)) AS f,
+  IF(is_null, NULL, CAST(CASE id % 89 WHEN 0 THEN -128 WHEN 1 THEN 127 ELSE id % 256 - 128 END
+    AS TINYINT)) AS b,
+  IF(is_null, NULL, CAST(CASE id % 89 WHEN 0 THEN -32768 WHEN 1 THEN 32767
+    ELSE id * 37 % 65536 - 32768 END AS SMALLINT)) AS s,
+  IF(is_null, NULL, date_add(DATE '1969-12-01', CAST(id * 13 AS INT) - 5000)) AS dt,
+  IF(is_null, NULL, timestamp_micros(id * 997002991 - 500000000000)) AS ts
 FROM (
   SELECT id, CASE CAST(id DIV 256 AS INT)
     WHEN 0 THEN id % 256 = 128
@@ -37,11 +44,16 @@ FROM (
     WHEN 3 THEN id % 3 = 0
     WHEN 4 THEN id % 256 BETWEEN 1 AND 69
     ELSE id % 2 = 0
-  END AS is_null
+  END AS is_null,
+  CASE id % 97 WHEN 0 THEN double('-0.0') WHEN 1 THEN double('NaN')
+    WHEN 2 THEN double('Infinity') WHEN 3 THEN double('-Infinity') ELSE id / 7.0 - 50 END AS dv
   FROM range(0, 1300, 1, 1)
 )
 
--- A float argument keeps xxhash64 on Comet's kernel at the default seed.
+-- A float argument keeps xxhash64 on Comet's kernel at the default seed. Negating a column sets
+-- the sign bit of its NaN rows.
 query expect_native(hash, xxhash64)
-SELECT id, hash(i), hash(l), hash(d), xxhash64(d), xxhash64(i, d)
+SELECT id, hash(i), hash(l), hash(d), hash(-d), hash(f), hash(-f), hash(b), hash(s), hash(dt),
+  hash(ts), hash(b, s, dt, ts, f), xxhash64(d), xxhash64(-d), xxhash64(f), xxhash64(-f),
+  xxhash64(i, d), xxhash64(b, s, dt, ts, f)
 FROM test_hash_fixed_width_nulls ORDER BY id
