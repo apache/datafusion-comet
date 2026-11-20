@@ -25,6 +25,11 @@ statement
 INSERT INTO test_size_invoke SELECT id FROM range(0, 4, 1, 1)
 
 -- make_valid_utf8 lowers to an Invoke whose deterministic flag ignores its receiver.
-query expect_dispatch(size)
+query expect_fallback(reports a stateful subtree as deterministic)
 SELECT id, size(IF(make_valid_utf8(CAST(monotonically_increasing_id() % 2 AS STRING)) = '0',
   array(1), CAST(NULL AS ARRAY<INT>))) FROM test_size_invoke
+
+-- Compiling the zip alone would expose its non-nullable struct items to native array_repeat.
+query expect_fallback(reports a stateful subtree as deterministic)
+SELECT id, array_repeat(arrays_zip(array(make_valid_utf8(CAST(monotonically_increasing_id() AS STRING)))), 2)
+FROM test_size_invoke

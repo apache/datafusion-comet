@@ -18,14 +18,15 @@
 -- The native NULL guard serializes the child twice, so a nondeterministic child would drift
 -- between the copies and is dispatched instead.
 
--- Config: spark.sql.legacy.sizeOfNull=false
+-- ConfigMatrix: spark.sql.legacy.sizeOfNull=true,false
 
 statement
-CREATE TABLE test_size_nondet(_1 int, arr array<int>, m map<double, array<int>>) USING parquet
+CREATE TABLE test_size_nondet(_1 int, arr array<int>, m map<double, array<int>>, x bigint) USING parquet
 
 statement
 INSERT INTO test_size_nondet
-SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)), map(1D, array(10, 20))
+SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)), map(1D, array(10, 20)),
+  IF(id = 0, NULL, id - 1)
 FROM range(0, 16, 1, 1)
 
 query expect_dispatch(size)
@@ -61,16 +62,7 @@ query expect_dispatch(size)
 SELECT _1, size(array_repeat(arrays_zip(array(map(_1, monotonically_increasing_id()))), 2))
 FROM test_size_nondet
 
-statement
-SET spark.sql.legacy.sizeOfNull=true
-
-query expect_native(size)
-SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
-FROM test_size_nondet
-
-statement
-SET spark.sql.ansi.enabled=true
-
+-- Equality skips the counter on the first row, where x is NULL. The next row matches 0.
 query expect_dispatch(size)
-SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
+SELECT _1, size(IF(x = monotonically_increasing_id(), array(1), array(1, 2)))
 FROM test_size_nondet

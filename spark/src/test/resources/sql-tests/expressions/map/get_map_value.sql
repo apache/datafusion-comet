@@ -92,14 +92,17 @@ USING parquet
 statement
 INSERT INTO test_map_interpreted VALUES (map(1D, 7), map(array(1L), 8), 0, NULL, '1')
 
+query expect_dispatch(getmapvalue)
+SELECT collect_list(m1[1D]) FROM test_map_interpreted
+
 -- CollectList.update calls eval. With a nullable replacement, array_join.eval returns '1'
 -- where Spark's generated code before 4.2 returns NULL (SPARK-57200).
-query expect_dispatch(getmapvalue)
+query expect_fallback(Spark may interpret computed arguments)
 SELECT collect_list(m1[CAST(array_join(array(CAST(NULL AS STRING)), ',', r) AS DOUBLE)])
 FROM test_map_interpreted
 
 -- array_repeat.eval checks n first, so a NULL count skips the division by zero.
-query expect_dispatch(getmapvalue)
+query expect_fallback(Spark may interpret computed arguments)
 SELECT collect_list(m2[array_repeat(10 DIV x, n)]) FROM test_map_interpreted
 
 -- Spark disables its compile-failure retry during tests. Use its interpreted projection

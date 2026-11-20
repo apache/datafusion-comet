@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BinaryExpression, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GetStructField, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BinaryExpression, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GetStructField, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, MonotonicallyIncreasingID, Multiply, NamedLambdaVariable, Not, Or, Rand, Randn, Remainder, Reverse, Sequence, Size, Slice, SortArray, SparkPartitionID, StartsWith, Substring, Subtract, Upper, Uuid, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -1298,24 +1298,26 @@ object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable
 object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFallback {
 
   private val nondeterministicReason: String =
-    "A nondeterministic operand needs codegen dispatch when the Rust implementation requires " +
-      "a NULL guard, coalesce duplicates a stateful input, or a nested expression can dispatch."
+    "A composite nondeterministic operand needs codegen dispatch so its state advances on " +
+      "the same rows as in Spark."
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
 
-  private def needsNullGuard(expr: Size): Boolean =
-    !expr.legacySizeOfNull && expr.child.nullable
-
-  // Even without a size guard, a nested serializer can duplicate state (coalesce) or pass
-  // a dispatched collection to a Rust kernel with different item nullability (array_repeat).
-  private def needsWholeOperand(child: Expression): Boolean = child.exists {
-    case c: Coalesce => c.children.dropRight(1).exists(NullGuardSupport.isNondeterministic)
-    case e => exprSerdeMap.get(e.getClass).exists(_.isInstanceOf[GatedCodegenDispatchFallback])
+  // CreateArray is non-nullable, so size omits its guard. Both engines evaluate each
+  // direct input once per row. Nested operations can skip or duplicate a stateful input.
+  private def isSimpleArray(child: Expression): Boolean = child match {
+    case a: CreateArray =>
+      a.children.forall {
+        case _: Attribute | _: BoundReference | _: Literal | _: MonotonicallyIncreasingID |
+            _: SparkPartitionID | _: Rand | _: Randn | _: Uuid =>
+          true
+        case _ => false
+      }
+    case _ => false
   }
 
   override def getSupportLevel(expr: Size): SupportLevel = {
-    if (NullGuardSupport.isNondeterministic(expr.child) &&
-      (needsNullGuard(expr) || needsWholeOperand(expr.child))) {
+    if (NullGuardSupport.isNondeterministic(expr.child) && !isSimpleArray(expr.child)) {
       Unsupported(Some(nondeterministicReason))
     } else {
       expr.child.dataType match {
@@ -1336,7 +1338,7 @@ object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFal
     // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
     // a NULL child must give NULL. The guard serializes the child twice, which would run an
     // expensive child such as a Scala UDF twice per row.
-    if (!needsNullGuard(expr)) {
+    if (expr.legacySizeOfNull || !expr.child.nullable) {
       return scalarFunctionExprToProto("size", arrayExprProto)
     }
 

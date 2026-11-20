@@ -208,7 +208,7 @@ The tables below list every Spark built-in expression with its current status.
 | `cardinality` | ✅ | Hybrid | Alias for `size` |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
 | `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | Hybrid | A nondeterministic operand uses codegen dispatch when a NULL guard or `coalesce` would evaluate it twice, or it contains a nested lookup or collection operation that can use codegen dispatch. |
+| `size` | ✅ | Hybrid | A nondeterministic operand uses codegen dispatch, except for a direct `array` of columns, literals, and Rust-implemented generators such as `monotonically_increasing_id()`. |
 
 ---
 

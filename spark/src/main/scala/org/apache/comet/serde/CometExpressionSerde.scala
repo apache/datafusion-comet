@@ -140,6 +140,9 @@ trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
     CalendarIntervalOutput
       .declineReason(expr)
       .orElse(expr.collectFirst {
+        case e if e.deterministic && e.children.exists(!_.deterministic) =>
+          "Spark reports a stateful subtree as deterministic, so compiling it separately " +
+            "can change its evaluation"
         case u: ScalaUDF if !u.udfDeterministic =>
           "a nondeterministic user function can share state across calls that Spark evaluates " +
             "together for each row"
@@ -152,9 +155,10 @@ trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
       })
       .orElse(SharedSubexpressionArgument.declineReason(expr))
       .orElse {
-        if (QueryPlanSerde.sparkMayInterpret && !QueryPlanSerde.sparkEvaluatesInterpreted &&
-          !expr.children.forall(EvaluationOrder.isUnobservable)) {
-          Some("Spark may interpret these arguments, which can change their evaluation order")
+        if (QueryPlanSerde.sparkMayInterpret && !expr.children.forall(
+            EvaluationOrder.isUnobservable)) {
+          Some(
+            "Spark may interpret computed arguments whose generated code can behave differently")
         } else {
           None
         }

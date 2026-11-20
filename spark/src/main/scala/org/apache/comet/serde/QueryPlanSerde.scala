@@ -1336,26 +1336,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   private val interpretedInput = new DynamicVariable(false)
-  private val generatorInput = new DynamicVariable(false)
 
   // CodegenFallback includes imperative aggregates, whose update calls child.eval directly.
   // GenerateExec can also interpret its generator if it ends up outside a whole-stage stage.
   def withChildEvaluation[T](parent: Expression)(f: => T): T = parent match {
-    case _: CodegenFallback => interpretedInput.withValue(true)(f)
-    case _: Generator => generatorInput.withValue(true)(f)
+    case _: CodegenFallback | _: Generator => interpretedInput.withValue(true)(f)
     case _ => f
   }
 
-  private def noCodegen: Boolean =
-    SQLConf.get
+  private[serde] def sparkMayInterpret: Boolean =
+    interpretedInput.value || SQLConf.get
       .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
       .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
-
-  private[serde] def sparkMayInterpret: Boolean =
-    interpretedInput.value || generatorInput.value || noCodegen
-
-  private[serde] def sparkEvaluatesInterpreted: Boolean =
-    interpretedInput.value || (!SQLConf.get.wholeStageEnabled && (generatorInput.value || noCodegen))
 
   /**
    * The subexpressions that occur more than once in the expressions of the operator being
@@ -1519,9 +1511,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             s"${CometExplainInfo.exprDisplayName(expr)}: codegen dispatch: $reason")
           None
         case None =>
-          val interpreted =
-            h.isInstanceOf[GatedCodegenDispatchFallback] && sparkEvaluatesInterpreted
-          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding, interpreted).map(h -> _)
+          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
       }
     case _ => None
   }
