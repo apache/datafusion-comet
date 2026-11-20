@@ -1702,7 +1702,7 @@ fn timestamp_parser<T: TimeZone>(
 ///
 /// Hours must be 0–18 and minutes 0–59, with a maximum absolute offset of 18:00.
 /// A trailing colon ("+8:") is rejected.
-fn parse_sign_offset(s: &str) -> Option<i32> {
+pub(super) fn parse_sign_offset(s: &str) -> Option<i32> {
     if s.is_empty() {
         return Some(0);
     }

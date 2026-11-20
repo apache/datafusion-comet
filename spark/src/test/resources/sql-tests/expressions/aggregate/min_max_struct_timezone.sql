@@ -48,7 +48,7 @@ SELECT g,
   max(struct(coalesce(dt, DATE'2000-01-01') AS dt, coalesce(t, TIMESTAMP'2000-01-01 00:00:00') AS t))
 FROM test_mm_struct_tz GROUP BY g ORDER BY g
 
--- The timestamp field is computed natively from a date, which depends on the session time zone.
+-- The timestamp field is computed from a date in the session time zone.
 query
 SELECT g,
   min(struct(CAST(coalesce(dt, DATE'2000-01-01') AS TIMESTAMP) AS t, coalesce(s, '') AS s)),

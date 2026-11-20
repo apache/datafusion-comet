@@ -358,6 +358,90 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("Parquet DATE read as TIMESTAMP_NTZ checks overflow in decoded row groups") {
+    val schema = MessageTypeParser.parseMessageType("""
+      |message root {
+      |  required int32 id;
+      |  optional int32 d(DATE);
+      |  optional group s {
+      |    optional int32 d(DATE);
+      |  }
+      |  optional int64 stored(TIMESTAMP(MICROS,false));
+      |  optional int32 probe(DATE);
+      |}
+      |""".stripMargin)
+    val readSchema =
+      "id INT, d TIMESTAMP_NTZ, s STRUCT<d: TIMESTAMP_NTZ>, " +
+        "stored TIMESTAMP_NTZ, probe TIMESTAMP_NTZ"
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "days.parquet")
+      // Keep the positive and negative overflows in distinct row groups, away from id = 1.
+      val writer = createParquetWriter(schema, path, rowGroupSize = 4096)
+      try {
+        (0 until 3000).foreach { id =>
+          val day = id match {
+            case 1000 => 106751992
+            case 2000 => -106751992
+            case _ => id
+          }
+          val record = new SimpleGroup(schema)
+          record.add(0, id)
+          if (id % 3 != 0) record.add(1, day)
+          record.addGroup(2).add(0, day)
+          record.add(3, id.toLong)
+          if (id < 1500) record.add(4, id)
+          writer.write(record)
+        }
+      } finally {
+        writer.close()
+      }
+
+      Seq(false, true).foreach { pushdown =>
+        withSQLConf(
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          val df = spark.read.schema(readSchema).parquet(path.toString)
+          checkSparkAnswerAndOperator(df.where("id = 1000").select("stored"))
+          // Even Spark 3.5 skips the updater when statistics exclude every row group.
+          checkSparkAnswerAndOperator(df.where("id = 1 AND probe IS NULL").select("id"))
+          if (isSpark40Plus) {
+            checkSparkAnswerAndOperator(df.where("id = 1"))
+            if (!pushdown) {
+              // Null counts on probe must exclude the group at 1000 for IS NULL and the
+              // group at 2000 for IS NOT NULL before the reader converts the nested date.
+              checkSparkAnswerAndOperator(df.where("id <= 1500 AND probe IS NULL").select("s"))
+              checkSparkAnswerAndOperator(
+                df.where("id >= 1499 AND probe IS NOT NULL").select("s"))
+              // Both overflow groups contain nulls in d. The reader must convert d in
+              // those groups before the residual filter selects its nulls.
+              val error =
+                checkSparkError(df.where("d IS NULL").select("id"), "FAILED_READ_FILE.NO_HINT")
+              assert(error.getCause.getClass == classOf[ArithmeticException])
+              assert(error.getCause.getMessage == "long overflow")
+            }
+            for (id <- Seq(1000, 2000); column <- Seq("d", "s")) {
+              val selected = df.where(s"id = $id").select(column)
+              val error = checkSparkError(selected, "FAILED_READ_FILE.NO_HINT")
+              assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+              assert(error.getCause.getClass == classOf[ArithmeticException])
+              assert(error.getCause.getMessage == "long overflow")
+            }
+          } else {
+            // Spark 3.5 has no DateToTimestampNTZUpdater even when the value fits.
+            val selected = df.where("id = 1").select("d")
+            checkCometOperators(stripAQEPlan(selected.queryExecution.executedPlan))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+            for (error <- Seq(sparkError, cometError)) {
+              assert(
+                error.exists(
+                  causeChain(_).exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException])))
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("TIMESTAMP_MILLIS overflow fails in native scan") {
     // Spark routes both TimestampType and TimestampNTZType through LongAsMicrosUpdater:
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L140-L164

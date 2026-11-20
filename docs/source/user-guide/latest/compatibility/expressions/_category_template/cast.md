@@ -123,18 +123,27 @@ Supported input formats match Spark exactly:
 
 ## Date to Timestamp
 
-Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast interprets each
-date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
-are handled correctly, including spring-forward gaps (where midnight may not exist) and
-fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
-`LocalDate.atStartOfDay(zoneId)` behavior).
+`CAST(date AS TIMESTAMP)` converts the start of the date in the session timezone to microseconds
+since the Unix epoch. For fixed offsets in whole minutes, including `Etc/UTC` and `GMT+05:30`,
+Comet computes this in Rust. For region zones such as `America/Los_Angeles` and offsets with
+seconds, it uses codegen dispatch so Spark applies the JVM's timezone rules across the full date
+range. The cast falls back to Spark when dispatch is unavailable.
 
 ## Date to TimestampNTZ
 
-Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast is
-timezone-independent: each date is converted to midnight as pure arithmetic
-(`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
-is the same regardless of the session timezone setting.
+`CAST(date AS TIMESTAMP_NTZ)` multiplies the epoch day by 86,400,000,000 to get microseconds at
+midnight, independently of the session timezone.
+
+For either timestamp type, `CAST` raises `ArithmeticException("long overflow")` if the result
+exceeds the range of a signed 64-bit integer, even with ANSI mode disabled. `TRY_CAST` returns
+`NULL` for the overflowing timestamp. When Spark declares that timestamp non-nullable, Comet
+falls back to Spark because the declared Arrow field cannot represent the null.
+
+As with [other casts evaluated in batches](../../index.md#ansi-errors-from-rows-skipped-by-limit),
+Comet can reach an overflowing row that Spark skips under a `LIMIT`. With the optional
+`spark.comet.parquet.rowFilterPushdown.enabled` setting, overflow while evaluating the
+pushed predicate can surface as a generic query error because the reader converts predicate
+errors to strings ([DataFusion #24638](https://github.com/apache/datafusion/pull/24638)).
 
 ## Date to Numeric Types
 

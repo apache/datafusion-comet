@@ -23,8 +23,8 @@ use crate::parquet::datetime_rebase::{
 use crate::parquet::field_resolver::{duplicate_name_error, FieldResolver, Selection};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
-    SparkParquetOptions,
+    duplicate_parquet_field_error, field_id, match_struct_fields, may_read_date_as_ntz,
+    spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -32,7 +32,7 @@ use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::{Column, IsNotNullExpr, IsNullExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -388,7 +388,7 @@ fn parquet_primitive_name(dt: &DataType) -> &'static str {
         DataType::Float64 => "DOUBLE",
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary => "BINARY",
         // Spark stores DATE as INT32 with a DATE logical-type annotation.
-        DataType::Date32 => "INT32",
+        DataType::Date32 | DataType::Date64 => "INT32",
         // Spark stores TIMESTAMP as INT64 with a timestamp annotation, or as
         // INT96 (legacy nanos). arrow-rs surfaces both as `Timestamp`; without
         // the original physical name we report INT64, which matches the
@@ -611,7 +611,7 @@ fn spark_has_updater(
     }
 
     // Type promotion (widening). When `allow_type_promotion` is false,
-    // reject the three widenings (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE)
+    // reject the widenings (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE, DATE→NTZ)
     // that Spark 3.x's vectorized reader rejects. The flag tracks Comet's
     // per-Spark-version constant in ShimCometConf.
     if !options.allow_type_promotion {
@@ -620,6 +620,10 @@ fn spark_has_updater(
             (DataType::Int32, DataType::Int64)
                 | (DataType::Float32, DataType::Float64)
                 | (DataType::Int32, DataType::Float64)
+                | (
+                    DataType::Date32 | DataType::Date64,
+                    DataType::Timestamp(_, None)
+                )
         );
         if is_disallowed_promotion {
             return false;
@@ -1404,9 +1408,33 @@ impl SparkPhysicalExprAdapter {
                     }
                 }
             }
-            Ok(Transformed::no(e))
+            self.adapt_date_null_check(e)
         })
         .data()
+    }
+
+    /// DataFusion prunes by null count only on a bare column. Spark prunes before it
+    /// selects a DATE -> NTZ updater. The projected column still checks decoded values.
+    fn adapt_date_null_check(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        if self.parquet_options.prune_date_nulls
+            && (expr.is::<IsNullExpr>() || expr.is::<IsNotNullExpr>())
+        {
+            let cast = expr.children()[0];
+            if cast.is::<CometCastColumnExpr>() || cast.is::<RejectOnNonEmpty>() {
+                let source = cast.children()[0];
+                if may_read_date_as_ntz(
+                    &source.data_type(&self.physical_file_schema)?,
+                    &cast.data_type(&self.physical_file_schema)?,
+                ) {
+                    let source = Arc::clone(source);
+                    return Ok(Transformed::yes(expr.with_new_children(vec![source])?));
+                }
+            }
+        }
+        Ok(Transformed::no(expr))
     }
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
@@ -1540,9 +1568,9 @@ impl SparkPhysicalExprAdapter {
             }
 
             // Complex casts (including changes in list representation), timestamp tz relabel
-            // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads), and
-            // Timestamp -> Int64
-            // (Spark's `nanosAsLong`) need spark_parquet_convert: it handles nested
+            // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads),
+            // Timestamp -> Int64 (Spark's `nanosAsLong`), and DATE -> NTZ need
+            // spark_parquet_convert: it handles checked reader conversions, nested
             // field selection, metadata-only tz changes, and raw-value reinterpretation
             // that Spark's Cast would otherwise convert incorrectly.
             if matches!(
@@ -1563,7 +1591,8 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Map(_, _), DataType::Map(_, _))
                     | (DataType::Timestamp(_, _), DataType::Timestamp(_, _))
                     | (DataType::Timestamp(_, _), DataType::Int64)
-            ) {
+            ) || may_read_date_as_ntz(physical_type, target_type)
+            {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
@@ -1599,7 +1628,7 @@ impl SparkPhysicalExprAdapter {
             )?));
         }
 
-        Ok(Transformed::no(expr))
+        self.adapt_date_null_check(expr)
     }
 
     /// Replace missing columns with defaults cast to the logical schema, propagating conversion
@@ -2701,6 +2730,48 @@ pub(crate) mod test {
             msg.contains("Found: INT64") && msg.contains("Expected: date"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_date64_hint_read_as_ntz_checks_physical_type() -> Result<(), DataFusionError> {
+        use arrow::array::Date64Array;
+        use parquet::file::properties::WriterProperties;
+
+        let days = i64::MAX / 86_400_000_000 + 1;
+        let values: ArrayRef = Arc::new(Date64Array::from(vec![days * 86_400_000]));
+        let batch = RecordBatch::try_from_iter([("d", values)])?;
+        let ntz = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let required = Arc::new(Schema::new(vec![Field::new("d", ntz, false)]));
+        // Coercion writes INT32 DATE, otherwise the writer stores INT64.
+        // The Arrow footer hint says Date64 in both files.
+        for coerce in [true, false] {
+            let props = WriterProperties::builder().set_coerce_types(coerce).build();
+            let filename = get_temp_filename().to_str().unwrap().to_string();
+            let mut writer =
+                ArrowWriter::try_new(File::create(&filename)?, batch.schema(), Some(props))?;
+            writer.write(&batch)?;
+            writer.close()?;
+
+            for promote in [true, false] {
+                let mut options = default_options();
+                options.allow_type_promotion = promote;
+                let mut stream = scan_parquet_file(
+                    filename.clone(),
+                    Arc::clone(&required),
+                    options,
+                    None,
+                    false,
+                )?;
+                let expected = match (coerce, promote) {
+                    (true, true) => "long overflow",
+                    (true, false) => "Found: INT32",
+                    (false, _) => "Found: INT64",
+                };
+                let error = stream.next().await.unwrap().unwrap_err().to_string();
+                assert!(error.contains(expected), "unexpected error: {error}");
+            }
+        }
         Ok(())
     }
 

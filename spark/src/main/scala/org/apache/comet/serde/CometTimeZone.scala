@@ -51,6 +51,9 @@ object CometTimeZone {
       }
   }
 
+  private[comet] def hasNativeFixedOffset(timeZoneId: Option[String]): Boolean =
+    nativeId(timeZoneId).exists(id => id == "UTC" || id.startsWith("+") || id.startsWith("-"))
+
   /** Whether `timeZoneId` has a zero offset at every instant. */
   def isUtc(timeZoneId: Option[String]): Boolean = nativeId(timeZoneId).contains("UTC")
 

@@ -91,6 +91,9 @@ trait ShimSparkErrorConverter {
             params("symbol").toString,
             params("value2").toString.toShort))
 
+      case "LongOverflow" =>
+        Some(new ArithmeticException("long overflow"))
+
       case "ArithmeticOverflow" =>
         val fromType = params("fromType").toString
         val functionName = params.get("functionName").map(_.toString).getOrElse("")

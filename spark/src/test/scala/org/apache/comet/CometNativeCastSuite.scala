@@ -2323,6 +2323,44 @@ class CometNativeCastSuite
     }
   }
 
+  private def checkLongOverflow(query: String): Unit = {
+    val df = sql(query)
+    val plan = stripAQEPlan(df.queryExecution.executedPlan)
+    checkCometOperators(plan)
+    assertExpressionImpl(plan, native = Seq("cast"), dispatched = Seq.empty)
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    for ((engine, error) <- Seq("Spark" -> sparkError, "Comet" -> cometError)) {
+      val failure = error.getOrElse(fail(s"$engine should throw for $query"))
+      assert(
+        causeChain(failure).exists { cause =>
+          cause.getClass == classOf[ArithmeticException] && cause.getMessage == "long overflow"
+        },
+        s"Expected $engine to throw ArithmeticException: long overflow, got $failure")
+    }
+  }
+
+  test("cast DateType to timestamps checks microsecond overflow") {
+    withParquetTable(Seq(Tuple1(300000)), "wide_year") {
+      for (ansi <- Seq("false", "true")) {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          checkLongOverflow("SELECT CAST(make_date(_1, 6, 15) AS TIMESTAMP_NTZ) FROM wide_year")
+          checkLongOverflow("SELECT CAST(make_date(-_1, 6, 15) AS TIMESTAMP) FROM wide_year")
+        }
+      }
+    }
+
+    // These days fit at UTC, but the offset pushes local midnight out of range.
+    for ((tz, day) <- Seq("+18:00" -> -106751991, "-18:00" -> 106751991)) {
+      withParquetTable(Seq(Tuple1(day)), "boundary_day") {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+          checkLongOverflow("SELECT CAST(date_from_unix_date(_1) AS TIMESTAMP) FROM boundary_day")
+        }
+      }
+    }
+  }
+
   // CAST from TimestampType
 
   ignore("cast TimestampType to BooleanType") {

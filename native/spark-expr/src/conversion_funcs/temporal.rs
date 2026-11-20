@@ -15,15 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::resolve_local_datetime;
-use crate::{EvalMode, SparkCastOptions, SparkResult};
-use arrow::array::timezone::Tz;
-use arrow::array::{ArrayRef, AsArray, TimestampMicrosecondBuilder};
-use arrow::compute::{cast_with_options, CastOptions};
-use arrow::datatypes::{DataType, Date32Type, TimeUnit};
-use chrono::NaiveDate;
-use datafusion::common::format::DEFAULT_CAST_OPTIONS;
-use std::str::FromStr;
+use crate::conversion_funcs::string::parse_sign_offset;
+use crate::conversion_funcs::utils::{timestamp_micros_with_tz, MICROS_PER_SECOND};
+use crate::{EvalMode, SparkCastOptions, SparkError, SparkResult};
+use arrow::array::{ArrayRef, AsArray};
+use arrow::datatypes::{DataType, Date32Type};
+use arrow::error::ArrowError;
 use std::sync::Arc;
 
 pub(crate) fn is_df_cast_from_date_spark_compatible(to_type: &DataType) -> bool {
@@ -42,121 +39,88 @@ pub(crate) fn cast_date_to_timestamp(
     cast_options: &SparkCastOptions,
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
-    if target_tz.is_none() {
-        // TIMESTAMP_NTZ ignores session TZ. Only TRY_CAST turns overflow into null.
-        return Ok(cast_with_options(
-            array_ref.as_ref(),
-            &DataType::Timestamp(TimeUnit::Microsecond, None),
-            &CastOptions {
-                safe: cast_options.eval_mode == EvalMode::Try,
-                ..DEFAULT_CAST_OPTIONS
-            },
-        )?);
-    }
-
-    let date_array = array_ref.as_primitive::<Date32Type>();
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(date_array.len());
-    // TIMESTAMP: midnight in session TZ → UTC epoch μs
-    let tz_str = if cast_options.timezone.is_empty() {
-        "UTC"
+    // CometTimeZone canonicalizes fixed offsets. Spark handles region zones, whose
+    // start-of-day rules extend beyond chrono-tz's transition tables.
+    let offset = if target_tz.is_none() || cast_options.timezone == "UTC" {
+        0
     } else {
-        cast_options.timezone.as_str()
+        parse_sign_offset(&cast_options.timezone).ok_or_else(|| {
+            ArrowError::ParseError(format!(
+                "Expected a fixed offset for DATE to TIMESTAMP, got {}",
+                cast_options.timezone
+            ))
+        })?
     };
-    // safe to unwrap since we are falling back to UTC above
-    let tz = Tz::from_str(tz_str)?;
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    for date in date_array.iter() {
-        match date {
-            Some(d) => {
-                // safe to unwrap since chrono's range ( 262,143 yrs) is higher than
-                // number of years possible with days as i32 (~ 6 mil yrs)
-                // convert date in session timezone to timestamp in UTC
-                let naive_date = epoch + chrono::Duration::days(d as i64);
-                let local_midnight = naive_date.and_hms_opt(0, 0, 0).unwrap();
-                // Use resolve_local_datetime to correctly handle DST transitions:
-                // - Single: normal case, uses the given offset
-                // - Ambiguous (fall back): uses the earlier/DST occurrence, matching Spark
-                // - None (spring forward gap at midnight, e.g. America/Sao_Paulo): uses the
-                //   pre-transition offset to compute the correct UTC time, matching Spark's
-                //   LocalDate.atStartOfDay(zoneId) behaviour.
-                let local_midnight_in_microsec =
-                    resolve_local_datetime(&tz, local_midnight).timestamp_micros();
-                builder.append_value(local_midnight_in_microsec);
-            }
-            None => {
-                builder.append_null();
-            }
-        }
-    }
-    Ok(Arc::new(
-        builder.finish().with_timezone_opt(target_tz.clone()),
-    ))
+    // Every Date32 fits in seconds. Spark applies the offset before multiplying
+    // by micros per second, so an offset can move midnight across the i64 boundary.
+    let to_micros = |day| {
+        let seconds = i64::from(day) * 86_400 - i64::from(offset);
+        seconds.checked_mul(MICROS_PER_SECOND)
+    };
+    let dates = array_ref.as_primitive::<Date32Type>();
+    let timestamps = if cast_options.eval_mode == EvalMode::Try {
+        dates.unary_opt(to_micros)
+    } else {
+        dates
+            .try_unary(|day| to_micros(day).ok_or(()))
+            .map_err(|()| SparkError::LongOverflow)?
+    };
+    Ok(timestamp_micros_with_tz(timestamps, target_tz))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use arrow::array::{Date32Array, TimestampMicrosecondArray};
+    use arrow::datatypes::TimeUnit;
+
     #[test]
     fn test_cast_date_to_timestamp() {
-        use crate::EvalMode;
-        use arrow::array::Date32Array;
-        use arrow::array::{Array, ArrayRef};
-        use arrow::datatypes::TimestampMicrosecondType;
+        // 95,026,237 is +262143-01-01, the day after chrono's maximum date.
+        let days = [Some(0), Some(95_026_237), Some(-95_026_237), None];
+        let dates: ArrayRef = Arc::new(Date32Array::from_iter(days));
+        for (zone, offset) in [("UTC", 0), ("-08:00", -28_800), ("+05:30", 19_800)] {
+            let actual = cast_date_to_timestamp(
+                &dates,
+                &SparkCastOptions::new(EvalMode::Legacy, zone),
+                &Some("UTC".into()),
+            )
+            .unwrap();
+            let expected = TimestampMicrosecondArray::from_iter(
+                days.map(|day| day.map(|d| i64::from(d) * 86_400_000_000 - offset * 1_000_000)),
+            )
+            .with_timezone("UTC");
+            assert_eq!(actual.as_ref(), &expected, "{zone}");
+        }
+    }
 
-        // verifying epoch , DST change dates (US) and a null value (comprehensive tests on spark side)
-        let dates: ArrayRef = Arc::new(Date32Array::from(vec![
-            Some(0),
-            Some(19723),
-            Some(19793),
-            None,
-        ]));
-
-        let non_dst_date = 1704067200000000i64;
-        let dst_date = 1710115200000000i64;
-        let seven_hours_ts = 25200000000i64;
-        let eight_hours_ts = 28800000000i64;
-
-        // validate UTC
-        let target_tz: Option<Arc<str>> = Some("UTC".into());
-        let result = cast_date_to_timestamp(
-            &dates,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
-            &target_tz,
-        )
-        .unwrap();
-        let ts = result.as_primitive::<TimestampMicrosecondType>();
-        assert_eq!(ts.value(0), 0);
-        assert_eq!(ts.value(1), non_dst_date);
-        assert_eq!(ts.value(2), dst_date);
-        assert!(ts.is_null(3));
-
-        // validate LA timezone (follows Daylight savings)
-        let result = cast_date_to_timestamp(
-            &dates,
-            &SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles"),
-            &target_tz,
-        )
-        .unwrap();
-        let ts = result.as_primitive::<TimestampMicrosecondType>();
-        assert_eq!(ts.value(0), eight_hours_ts);
-        assert_eq!(ts.value(1), non_dst_date + eight_hours_ts);
-        // should adjust for DST
-        assert_eq!(ts.value(2), dst_date + seven_hours_ts);
-        assert!(ts.is_null(3));
-
-        // Phoenix timezone (does not follow Daylight savings)
-        let result = cast_date_to_timestamp(
-            &dates,
-            &SparkCastOptions::new(EvalMode::Legacy, "America/Phoenix"),
-            &target_tz,
-        )
-        .unwrap();
-        let ts = result.as_primitive::<TimestampMicrosecondType>();
-        assert_eq!(ts.value(0), seven_hours_ts);
-        assert_eq!(ts.value(1), non_dst_date + seven_hours_ts);
-        assert_eq!(ts.value(2), dst_date + seven_hours_ts);
-        assert!(ts.is_null(3));
+    #[test]
+    fn test_cast_date_to_timestamp_offset_at_boundary() {
+        // The same day can fit or overflow depending on the offset.
+        for (days, zone, expected) in [
+            (106_751_991, "-18:00", None),
+            (-106_751_991, "+18:00", None),
+            (106_751_991, "+18:00", Some(9_223_371_957_600_000_000)),
+            (-106_751_991, "-18:00", Some(-9_223_371_957_600_000_000)),
+            (i32::MAX, "UTC", None),
+            (i32::MIN, "UTC", None),
+        ] {
+            let dates: ArrayRef = Arc::new(Date32Array::from(vec![days]));
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let result = cast_date_to_timestamp(
+                    &dates,
+                    &SparkCastOptions::new(mode, zone),
+                    &Some("UTC".into()),
+                );
+                if expected.is_none() && mode != EvalMode::Try {
+                    assert!(matches!(result, Err(SparkError::LongOverflow)));
+                } else {
+                    let expected =
+                        TimestampMicrosecondArray::from(vec![expected]).with_timezone("UTC");
+                    assert_eq!(result.unwrap().as_ref(), &expected);
+                }
+            }
+        }
     }
 
     #[test]
@@ -212,15 +176,12 @@ mod tests {
 
         for day in [106_751_992, -106_751_992, i32::MIN, i32::MAX] {
             let dates: ArrayRef = Arc::new(Date32Array::from(vec![None, Some(day)]));
-            assert!(
-                cast_date_to_timestamp(
-                    &dates,
-                    &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
-                    &ntz_target,
-                )
-                .is_err(),
-                "day={day}"
+            let result = cast_date_to_timestamp(
+                &dates,
+                &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
+                &ntz_target,
             );
+            assert!(matches!(result, Err(SparkError::LongOverflow)), "day={day}");
         }
     }
 

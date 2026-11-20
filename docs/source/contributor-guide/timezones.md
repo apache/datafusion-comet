@@ -185,12 +185,13 @@ value by a timezone:
 | `TIMESTAMP`, `isAdjustedToUTC=false` | `TimestampType`    | Relabelled without shifting, as Spark does                                                    |
 | `TIMESTAMP`, `isAdjustedToUTC=false` | `TimestampNTZType` | Read as is                                                                                    |
 | `TIMESTAMP`, `isAdjustedToUTC=true`  | `TimestampNTZType` | Rejected on Spark 3.x (SPARK-36182). Relabelled without shifting on Spark 4.0+ (SPARK-47447). |
+| `DATE`                               | `TimestampNTZType` | Rejected on Spark 3.5. Scaled from days to microseconds with an overflow check on Spark 4.0+. |
 | `INT96`                              | `TimestampType`    | Coerced to microseconds and labelled `"UTC"`                                                  |
 
 The `INT96` coercion is configured by `coerce_int96` and `coerce_int96_tz` in `parquet_exec.rs`. An
 `INT96` column read as `TimestampNTZType` follows the `isAdjustedToUTC=true` row.
 
-The timestamp-to-timestamp adaptations go through `CometCastColumnExpr` and
+The date-to-NTZ and timestamp-to-timestamp adaptations go through `CometCastColumnExpr` and
 `parquet_convert_array` in `native/core/src/parquet/`, not through Spark's `Cast`. A Spark cast
 between `TimestampType` and `TimestampNTZType` would apply the session timezone, and the Parquet
 reader does not.
@@ -221,6 +222,13 @@ path cannot handle through the JVM codegen dispatcher, as they do for a session 
 `CometTimeZone.nativeId` cannot express. The dispatcher runs Spark's generated code with the
 `timeZoneId` stamped on the expression, so the results match Spark, and its Arrow output is
 labelled `"UTC"` like everything else.
+
+`CAST(date AS TIMESTAMP)` uses codegen dispatch for region zones and offsets with seconds.
+Spark's `LocalDate.atStartOfDay` applies the JVM's transition rules even for years beyond
+chrono's calendar. This also covers implicit casts when comparing a date with a timestamp or
+passing a date to `hour` or `date_trunc`. For a fixed offset in whole minutes, the Rust kernel
+subtracts the offset from the start of the epoch day in seconds before converting to
+microseconds. This order preserves instants that fit only after applying the offset.
 
 ## Guidelines
 

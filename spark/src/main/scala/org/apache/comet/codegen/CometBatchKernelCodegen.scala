@@ -189,6 +189,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
         "codegen dispatch: the output can carry a null map key, which Arrow cannot hold " +
           "(https://github.com/apache/datafusion-comet/issues/6172)")
     }
+    if (boundExpr.exists(CometCast.mayNullRequiredTimestamp)) {
+      return Some(CometCast.requiredTimestampReason)
+    }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
     // operator falls back to Spark cleanly rather than tripping a Janino compile failure
