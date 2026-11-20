@@ -23,8 +23,8 @@ use crate::parquet::datetime_rebase::{
 use crate::parquet::field_resolver::{duplicate_name_error, FieldResolver, Selection};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
-    SparkParquetOptions,
+    duplicate_parquet_field_error, field_id, is_dictionary_millis_to_micros, match_struct_fields,
+    spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -1563,7 +1563,8 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Map(_, _), DataType::Map(_, _))
                     | (DataType::Timestamp(_, _), DataType::Timestamp(_, _))
                     | (DataType::Timestamp(_, _), DataType::Int64)
-            ) {
+            ) || is_dictionary_millis_to_micros(physical_type, target_type)
+            {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
@@ -4269,6 +4270,41 @@ pub(crate) mod test {
             values.values().to_vec(),
             vec![1_000_000i64, 2_000_000, 3_000_000]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn arrow_dictionary_timestamp_millis_checks_overflow() -> Result<(), DataFusionError> {
+        use datafusion_comet_common::{error_chain, SparkError};
+
+        let millis: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![Some(0), None, Some(0), Some(1)]),
+            Arc::new(TimestampMillisecondArray::from(vec![7, i64::MAX])),
+        )?);
+        let flat = RecordBatch::try_from_iter([("ts", Arc::clone(&millis))])?;
+        let nested = struct_batch(Field::new("ts", millis.data_type().clone(), true), millis)?;
+        let target = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true);
+        let expected = TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000)]);
+        for (batch, schema) in [
+            (flat, Arc::new(Schema::new(vec![target.clone()]))),
+            (nested, struct_schema(vec![target])),
+        ] {
+            let valid = roundtrip(&batch.slice(0, 3), Arc::clone(&schema)).await?;
+            let values = match valid.column(0).data_type() {
+                DataType::Struct(_) => valid.column(0).as_struct().column(0),
+                _ => valid.column(0),
+            };
+            assert_eq!(values.as_primitive::<TimestampMicrosecondType>(), &expected);
+
+            let err = roundtrip(&batch, schema).await.unwrap_err();
+            assert!(
+                matches!(
+                    error_chain(&err).find_map(|e| e.downcast_ref::<SparkError>()),
+                    Some(SparkError::ParquetTimestampOverflow { .. })
+                ),
+                "{err}"
+            );
+        }
         Ok(())
     }
 
