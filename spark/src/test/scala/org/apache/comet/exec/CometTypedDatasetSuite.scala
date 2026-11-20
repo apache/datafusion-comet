@@ -19,6 +19,7 @@
 
 package org.apache.comet.exec
 
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset}
@@ -26,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
-import org.apache.spark.sql.functions.{broadcast, col, size, sum}
+import org.apache.spark.sql.functions.{broadcast, col, max, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -38,11 +39,11 @@ case class TypedDsWide(i: Int, s: String, d: java.math.BigDecimal, opt: Option[L
 
 case class TypedDsNested(id: Int, inner: TypedDsRec, tags: Seq[String])
 
-case class TypedDsInts(id: Int, xs: Seq[Int])
+case class TypedDsDurations(id: Int, d: Duration)
 
 case class TypedDsDecimal(k: java.math.BigDecimal, v: Long)
 
-case class TypedDsDecimalInts(k: java.math.BigDecimal, xs: Seq[Int])
+case class TypedDsDecimalDurations(k: java.math.BigDecimal, d: Duration)
 
 /** Counts calls to a user function. Comet tests run in local mode, so tasks see this object. */
 object TypedDsCounter {
@@ -199,21 +200,21 @@ class CometTypedDatasetSuite extends CometTestBase {
   }
 
   convertTest("columns the conversion does not support keep the operators above on Spark") {
-    withParquetTable((0 until 20).map(i => (i, Seq(i, i + 1))), "ints") {
-      val ds = spark.sql("SELECT _1 AS id, _2 AS xs FROM ints").as[TypedDsInts]
-      val (_, plan) = checkSparkAnswerAndFallbackReason(
-        // The aggregate reads `xs`, or Spark would prune it from the serializer.
-        ds.map(r => TypedDsInts(r.id % 3, r.xs.reverse)).groupBy("id").agg(sum(size(col("xs")))),
-        "Comet cannot convert the output of a typed Dataset operation to Arrow because it " +
-          "does not support the type of these columns: xs: array<int>")
-      assert(conversions(plan).isEmpty, plan)
-    }
+    val ds = spark
+      .range(20)
+      .map(i => TypedDsDurations((i.longValue % 3).toInt, Duration.ofDays(i.longValue)))
+    val (_, plan) = checkSparkAnswerAndFallbackReason(
+      // The aggregate reads `d`, or Spark would prune it from the serializer.
+      ds.groupBy("id").agg(max(col("d"))),
+      "Comet cannot convert the output of a typed Dataset operation to Arrow because it " +
+        "does not support the type of these columns: d: interval day to second")
+    assert(conversions(plan).isEmpty, plan)
   }
 
   convertTest("a join on wide decimal keys with an input that is not converted") {
     // The left input converts its output to Arrow for native shuffle; the right input's
-    // array<int> keeps JVM shuffle.
-    // Both shuffles must place matching wide decimal keys in the same partitions.
+    // interval column keeps it on Spark's shuffle. Both shuffles must place matching wide
+    // decimal keys in the same partitions.
     withSQLConf(
       CometConf.COMET_SHUFFLE_MODE.key -> "auto",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -228,14 +229,18 @@ class CometTypedDatasetSuite extends CometTestBase {
             .alias("l")
           val right = spark
             .range(0, 100, 1, 2)
-            .map(i => TypedDsDecimalInts(new java.math.BigDecimal(i.longValue), Seq(i.intValue)))
+            .map(i =>
+              TypedDsDecimalDurations(
+                new java.math.BigDecimal(i.longValue),
+                Duration.ofDays(i.longValue)))
             .alias("r")
-          val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.xs"))
+          val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.d"))
           val (_, plan) = checkSparkAnswer(df)
           assert(conversions(plan).nonEmpty, plan)
+          // The left input's shuffle is the only one of Comet's, and it is native.
           val exchanges = collect(plan) { case e: CometShuffleExchangeExec => e }
           assert(exchanges.count(_.shuffleType == CometNativeShuffle) == 1, plan.treeString)
-          assert(exchanges.count(_.shuffleType == CometColumnarShuffle) == 1, plan.treeString)
+          assert(exchanges.count(_.shuffleType == CometColumnarShuffle) == 0, plan.treeString)
         }
       }
     }

@@ -795,7 +795,9 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
         CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
         CometConf.COMET_BATCH_SIZE.key -> "1024",
-        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+        // About 1 MB per task, which a scan task's 4,000 rows overflow even though the idle
+        // shuffle writer above the sort takes no share.
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.0005",
         CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
         "spark.comet.datafusion.execution.spill_compression" -> "zstd",
         "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",

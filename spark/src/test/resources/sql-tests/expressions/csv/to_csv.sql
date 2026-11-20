@@ -48,7 +48,7 @@ SELECT to_csv(named_struct('a', a, 'b', b, 'c', c), map('sep', ';')) FROM test_t
 
 -- timestampFormat over date and timestamp fields: these are the #3232 types that were
 -- Incompatible before this change and now route through the dispatcher.
--- BinaryType is the other #3232 type but is deliberately absent: on Spark 3.4 / 3.5 the CSV
+-- BinaryType is the other #3232 type but is deliberately absent: on Spark 3.5 the CSV
 -- converter has no binary branch and renders it with Java's default Object.toString(), e.g.
 -- "[B@10bc15e4", an identity hash that differs between any two evaluations, so the value is not
 -- assertable by any engine including Spark itself. (Spark 4.0 added a real binary formatter, but
@@ -75,7 +75,7 @@ SELECT to_csv(named_struct('d', d, 't', t), map('timestampFormat', 'yyyy/MM/dd H
 -- before the plan commits, so a runtime gap is an execute-time failure with no fallback left.
 --
 -- Only non-nullness is asserted here, because the rendered value is not comparable on every
--- supported Spark version. Spark 3.4 / 3.5's `UnivocityGenerator.makeConverter` has no branch for
+-- supported Spark version. Spark 3.5's `UnivocityGenerator.makeConverter` has no branch for
 -- complex types and lands on `getter.get(ordinal, dataType).toString`, an identity string such as
 -- "org.apache.spark.sql.vectorized.ColumnarArray@1ada50f0" whose hash differs between any two
 -- evaluations and whose class differs between Spark's converter input (`ColumnarArray` /
