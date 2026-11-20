@@ -43,6 +43,47 @@ These can also be run as a suite on a dedicated machine, see
 [Micro Benchmarking on AWS EC2](benchmarking_micro_ec2.md). Published results are in
 [benchmarks/results/micro](https://github.com/apache/datafusion-comet/tree/main/benchmarks/results/micro).
 
+## Iceberg Bloom-filter writes
+
+`CometIcebergWriteBenchmark` compares Spark and Comet Iceberg writers. Its `bloom` mode compares
+native writes with Bloom filters off/on (requiring Iceberg 1.5+), using the same prepared Parquet source in eight files. Both cases enable native writes and the Bloom folding opt-in; only the table's Bloom
+properties differ. Filters cover the bigint, string, and binary columns at the default 1 MiB cap,
+without explicit NDV/FPP. The benchmark checks the native plan, row count, and filter presence
+before measuring. Table creation and source preparation are outside the timed insert; the Iceberg
+commit is included.
+
+Use the existing benchmark target for timing, optionally followed by rows and minimum iterations:
+
+```shell
+make benchmark-org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark bloom
+```
+
+Each case warms up and measures at least five writes of 4,194,304 rows by default. Use
+`bloom-off` or `bloom-on` to select a single case, or append `32768 1` for a quick functional
+check. Performance comparisons require a release build.
+
+To collect peak RSS, build once and run each case in a separate JVM using the existing Maven
+invocation. Obtain the shared JVM options from the Makefile:
+
+```shell
+make release PROFILES=-Pspark-4.1
+export COMET_CONF_DIR="$PWD/conf"
+export MAVEN_OPTS="$(make --no-print-directory print-benchmark-args PROFILES=-Pspark-4.1 BENCH_HEAP=8g | sed -n 's/^MAVEN_OPTS=//p')"
+cd spark
+/usr/bin/time -v ../mvnw exec:java -Dexec.classpathScope=test \
+  -Dexec.cleanupDaemonThreads=false \
+  -Dexec.mainClass=org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark \
+  -Dexec.args="bloom-off" -Pspark-4.1
+```
+
+Repeat with `bloom-on`. On macOS, use `/usr/bin/time -l` instead of `-v`; its maximum RSS is in
+bytes, while GNU time reports KiB. The reported RSS includes Maven, source generation, validation,
+warmup, and writes; it is not the writer's allocation or its peak alone. Fresh processes avoid
+carrying an earlier case's RSS high-water mark and retained native buffers into the next case.
+The warehouse is local, so these results do not include object-store latency.
+
+Do not measure RSS around `make benchmark-*`: its release-build prerequisite includes compilation.
+
 ```{toctree}
 :hidden:
 
