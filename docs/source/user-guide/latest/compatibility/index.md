@@ -171,6 +171,34 @@ already-ordered `TakeOrderedAndProject` inputs are tracked in
 An error on a row absent from the final result is not always a mismatch: Spark can also need to
 evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 
+## ANSI division errors in filters and projections
+
+With `spark.sql.ansi.enabled=true`, Spark can raise `DIVIDE_BY_ZERO` even when a condition
+appears to guard the division. Spark's generated filter checks a column for NULL when a
+predicate first needs it. A generated projection can evaluate a repeated expression before
+either operand of an `AND` or `OR`.
+
+Comet follows these evaluation orders for simple divisions such as `abs(10 DIV x)`
+([#7480](https://github.com/apache/datafusion-comet/issues/7480)). With a computed dividend,
+Comet can still skip a division that Spark evaluates. For example, suppose a Parquet scan
+returns a row with `x = 0` and `y = NULL`.
+
+```sql
+SELECT x FROM t WHERE y IS NOT NULL AND (x + 10) DIV x > 0
+```
+
+Spark's whole-stage filter divides before checking `y` and raises. `CometFilter` can check
+`y` first and discard the row.
+
+```sql
+SELECT x <> 0 AND ((x + 10) DIV x) + ((x + 10) DIV x) > 1 FROM t
+```
+
+With subexpression elimination enabled, Spark's generated projection computes the repeated
+division before testing `x <> 0` and raises. `CometProject` can return `false` for the row.
+Set `spark.comet.exec.filter.enabled=false` or `spark.comet.exec.project.enabled=false` to
+run the affected operator in Spark.
+
 ## ANSI-mode error classes and messages
 
 Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct

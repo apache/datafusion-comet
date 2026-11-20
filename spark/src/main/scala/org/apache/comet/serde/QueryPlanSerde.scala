@@ -937,19 +937,26 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] =
+    rewrittenExprToProto(expr, expr, inputs, binding)
+
+  /** Serialize a rewritten expression while keeping its coverage and diagnostics on `expr`. */
+  def rewrittenExprToProto(
+      expr: Expression,
+      rewritten: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean = true): Option[Expr] =
     CometExplainInfo.withExpressionFallbackReasonScope {
       CometMakeDate.unsupportedParentReason(expr) match {
         case Some(reason) =>
           withFallbackReason(expr, reason)
           None
         case None =>
-          val newExpr = DecimalPrecision.promote(expr)
+          val newExpr = DecimalPrecision.promote(rewritten)
           val result = exprToProtoInternal(newExpr, inputs, binding)
           if (!(newExpr eq expr)) {
-            // `promote` rebuilt the tree, so the tags landed on copies that the operator does
+            // The tree was rebuilt, so the tags landed on copies that the operator does
             // not hold. Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk
-            // the operator's own expressions, still see them. Skipped in the common case where
-            // `promote` returned the same tree and there is nothing to lift.
+            // the operator's own expressions, still see them.
             liftCoverageTags(newExpr, expr)
             if (result.isEmpty) {
               liftFallbackReasons(newExpr, expr)
@@ -1337,23 +1344,30 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * an aggregation always, and in a projection, such as a project or a shuffle's partitioning
    * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
-   * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
-   * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
+   * every row where Spark does not. They are found on demand during operator serialization.
    * `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
     // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
-    lazy val common: Seq[Expression] =
+    lazy val original: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
         expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
+        equivalence.getCommonSubexpressions
       } else {
         Nil
       }
+
+    lazy val common: Seq[Expression] = original.map(DecimalPrecision.promote)
   }
+
+  /**
+   * The operator's shared expressions before decimal promotion, for rewriting the project list.
+   */
+  def sharedExpressionsBeforePromotion: Seq[Expression] =
+    sharedSubexpressions.value.map(_.original).getOrElse(Nil)
 
   /**
    * Runs `f`, which serializes an operator whose expressions are `expressions`. Code that
