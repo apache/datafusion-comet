@@ -47,6 +47,8 @@ const SPARK_DEFAULT_SEED: i64 = 42;
 /// - `Struct` (and anything containing one): `SparkXxhash64` does not push a parent null
 ///   mask into children, so hidden values of a NULL struct would affect the hash
 /// - a `Dictionary` nested in a list/map: `SparkXxhash64` restarts those hashes from 42
+/// - wide decimals: `SparkXxhash64` hashes fixed-width little-endian bytes instead
+///   of Spark's minimal signed big-endian representation
 /// - `Time64`, which `SparkXxhash64` does not dispatch
 /// - `Float32`/`Float64` (and anything containing one): `SparkXxhash64` hashes the raw bits of a
 ///   NaN, where Spark hashes every NaN as the canonical NaN
@@ -132,7 +134,7 @@ fn type_compatible_with_spark_xxhash64(dt: &DataType, in_list_or_map: bool) -> b
         Boolean | Int8 | Int16 | Int32 | Int64 => true,
         Utf8 | LargeUtf8 | Binary | LargeBinary | FixedSizeBinary(_) => true,
         Date32 | Date64 | Timestamp(_, _) => true,
-        Decimal128(_, _) => true,
+        Decimal128(precision, _) => *precision <= 18,
         Dictionary(_, value) if !in_list_or_map => {
             type_compatible_with_spark_xxhash64(value.as_ref(), true)
         }
@@ -394,6 +396,115 @@ mod tests {
                 0xd2f1c616ae7eb306,
                 0x88608019c494c1f4,
             ],
+        );
+    }
+
+    /// Spark hashes `YearMonthIntervalType` as an int and `DayTimeIntervalType` as a long, which
+    /// Comet maps to `Interval(YearMonth)` and `Duration(Microsecond)`.
+    #[test]
+    fn test_ansi_intervals_hash_like_int_and_long() {
+        use arrow::array::{DurationMicrosecondArray, IntervalYearMonthArray};
+
+        test_xxhash64_hash::<i32, IntervalYearMonthArray>(
+            vec![Some(1), Some(0), Some(-1), Some(i32::MAX), Some(i32::MIN)],
+            vec![
+                0xa309b38455455929,
+                0x3229fbc4681e48f3,
+                0x1bfdda8861c06e45,
+                0x14f0ac009c21721c,
+                0x1cc7cb8d034769cd,
+            ],
+        );
+        test_xxhash64_hash::<i64, DurationMicrosecondArray>(
+            vec![Some(1), Some(0), Some(-1), Some(i64::MAX), Some(i64::MIN)],
+            vec![
+                0x9ed50fd59358d232,
+                0xb71b47ebda15746c,
+                0x358ae035bfb46fd2,
+                0xd2f1c616ae7eb306,
+                0x88608019c494c1f4,
+            ],
+        );
+    }
+
+    /// A `NullType` value is always null, so it leaves the hash unchanged, as in Spark, both as a
+    /// column of its own and as a struct field, including a field of a null struct.
+    #[test]
+    fn test_null_type_leaves_hash_unchanged() {
+        use arrow::array::{NullArray, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field};
+
+        let ints: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(-1)]));
+        let nulls: ArrayRef = Arc::new(NullArray::new(3));
+
+        let mut expected = vec![42u64; 3];
+        create_xxhash64_hashes(&[Arc::clone(&ints)], &mut expected).unwrap();
+        let mut hashes = vec![42u64; 3];
+        create_xxhash64_hashes(&[Arc::clone(&ints), Arc::clone(&nulls)], &mut hashes).unwrap();
+        assert_eq!(hashes, expected);
+
+        let struct_nulls = Some(NullBuffer::from(vec![true, true, false]));
+        let x = Arc::new(Field::new("x", DataType::Int32, true));
+        let n = Arc::new(Field::new("n", DataType::Null, true));
+        let with_null_field: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::clone(&x), n].into(),
+            vec![Arc::clone(&ints), nulls],
+            struct_nulls.clone(),
+        ));
+        let without_null_field: ArrayRef =
+            Arc::new(StructArray::new(vec![x].into(), vec![ints], struct_nulls));
+
+        let mut expected = vec![42u64; 3];
+        create_xxhash64_hashes(&[without_null_field], &mut expected).unwrap();
+        let mut hashes = vec![42u64; 3];
+        create_xxhash64_hashes(&[with_null_field], &mut hashes).unwrap();
+        assert_eq!(hashes, expected);
+        assert_eq!(hashes[2], 42, "a null struct must leave the seed untouched");
+    }
+
+    /// Lists whose elements are `NullType` or an ANSI interval type go through the recursive
+    /// list path into the `Null`, `Interval(YearMonth)` and `Duration(Microsecond)` arms. A list
+    /// of nulls leaves the hash unchanged, and a list of intervals hashes like the same list of
+    /// ints or longs.
+    #[test]
+    fn test_lists_of_null_type_and_intervals() {
+        use arrow::array::{
+            DurationMicrosecondArray, IntervalYearMonthArray, ListArray, NullArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::Field;
+
+        // Rows [v0, v1], [], null and [v2].
+        let as_list = |values: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths([2, 0, 0, 1]),
+                values,
+                Some(NullBuffer::from(vec![true, true, false, true])),
+            ))
+        };
+        let hash = |list: ArrayRef| {
+            let mut hashes = vec![42u64; 4];
+            create_xxhash64_hashes(&[list], &mut hashes).unwrap();
+            hashes
+        };
+
+        assert_eq!(hash(as_list(Arc::new(NullArray::new(3)))), vec![42u64; 4]);
+
+        let months = vec![Some(1), None, Some(i32::MIN)];
+        assert_eq!(
+            hash(as_list(Arc::new(IntervalYearMonthArray::from(
+                months.clone()
+            )))),
+            hash(as_list(Arc::new(Int32Array::from(months))))
+        );
+        let micros = vec![Some(-1), Some(i64::MAX), None];
+        assert_eq!(
+            hash(as_list(Arc::new(DurationMicrosecondArray::from(
+                micros.clone()
+            )))),
+            hash(as_list(Arc::new(Int64Array::from(micros))))
         );
     }
 

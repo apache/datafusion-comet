@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, BoundReference, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -73,7 +73,7 @@ class CometCaseConversionBase[T <: Expression](function: String)
       super.convert(expr, inputs, binding)
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
-      // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
+      // Comet pipeline. This guarantees Spark-compatible behavior across supported versions.
       // Falls through to Spark when the dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
@@ -177,7 +177,7 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeO
       super.convert(expr, inputs, binding)
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
-      // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
+      // Comet pipeline. This guarantees Spark-compatible behavior across supported versions.
       // Falls through to Spark when the dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
@@ -186,13 +186,58 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeO
 
 object CometStringReplace
     extends CometScalarFunction[StringReplace]("replace")
-    with NativeOptInAvailable {
+    with NativeOptInAvailable
+    with CometTypeShim {
+
+  private val MaxNativeLiteralBytes = 64 * 1024
+  // With a replacement column, DataFusion broadcasts the scalar search into an Arrow array.
+  // Bound both the literal and its total expansion at the configured batch size.
+  private val MaxBroadcastSearchBytes = 256
+  private val MaxBroadcastSearchBytesPerBatch = 8 * 1024 * 1024
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Native by default for a direct string column with a non-empty, valid UTF-8 search " +
+      "literal and either a replacement literal (both at most 64 KiB) or a replacement " +
+      "column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under " +
+      "UTF8_BINARY collation. Other cases use " +
+      "the JVM codegen dispatcher by default.")
+
+  // DataFusion 55.1.0 keeps two non-null literal arguments as scalars when the source is an
+  // array. With a replacement column it broadcasts the search literal, hence the smaller bound.
+  // Direct column operands avoid Spark NULL short-circuit differences in nested expressions.
+  private def nativeSafeSubset(expr: StringReplace): Boolean = expr.children match {
+    case Seq(source, Literal(search: UTF8String, _), Literal(replacement: UTF8String, _)) =>
+      (source.isInstanceOf[Attribute] || source.isInstanceOf[BoundReference]) &&
+      search.numBytes() > 0 && search.numBytes() <= MaxNativeLiteralBytes &&
+      replacement.numBytes() <= MaxNativeLiteralBytes &&
+      isValidUtf8(search) && isValidUtf8(replacement) &&
+      !hasNonDefaultStringCollation(expr.dataType) &&
+      !expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))
+    case Seq(source, Literal(search: UTF8String, _), replacement) =>
+      (source.isInstanceOf[Attribute] || source.isInstanceOf[BoundReference]) &&
+      (replacement.isInstanceOf[Attribute] || replacement.isInstanceOf[BoundReference]) &&
+      search.numBytes() > 0 && search.numBytes() <= MaxBroadcastSearchBytes &&
+      search.numBytes().toLong * CometConf.COMET_BATCH_SIZE.get() <=
+        MaxBroadcastSearchBytesPerBatch &&
+        isValidUtf8(search) &&
+        !hasNonDefaultStringCollation(expr.dataType) &&
+        !expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))
+    case _ => false
+  }
+
+  private def useNative(expr: StringReplace): Boolean =
+    CometConf.isExprAllowIncompat(getExprConfigName(expr)) || nativeSafeSubset(expr)
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq("Produces different results from Spark when the search string is empty")
+    Seq(
+      "Unrestricted native arguments can change malformed UTF-8 results or Spark's NULL " +
+        "short-circuit behavior, ignore non-default collations, or overflow Arrow offsets when " +
+        "scalars are broadcast")
 
   override def getSupportLevel(expr: StringReplace): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+    if (!useNative(expr)) {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
@@ -203,10 +248,7 @@ object CometStringReplace
       expr: StringReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      // The native DataFusion `replace` avoids the JVM allocations of the codegen
-      // dispatcher but is not Spark-compatible for an empty search string, so it is
-      // only used when incompatibility is explicitly allowed.
+    if (useNative(expr)) {
       super.convert(expr, inputs, binding)
     } else {
       // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
@@ -519,7 +561,7 @@ object CometRLike
 }
 
 private object PadReasons {
-  val literalStrReason = "Scalar values are not supported for the `str` argument."
+  val literalStrReason = "Literal values are not supported for the `str` argument."
   val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
 }
 
@@ -794,7 +836,7 @@ object CometGetJsonObject
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(
-        getJsonObjectNativeFunctionName,
+        "get_json_object",
         expr.dataType,
         false,
         jsonExpr,
@@ -820,24 +862,6 @@ object CometOverlay extends CometCodegenDispatch[Overlay]
 object CometSoundEx extends CometScalarFunction[SoundEx]("soundex")
 
 object CometStringLocate extends CometCodegenDispatch[StringLocate]
-
-// On Spark 3.4 `Base64` is a plain expression node and always chunks the output (it uses
-// `java.util.Base64.getMimeEncoder()` with no arguments). On Spark 3.5+ it is RuntimeReplaceable
-// and lowers to a `StaticInvoke`, handled by CometBase64StaticInvoke instead.
-object CometBase64 extends CometExpressionSerde[Base64] {
-  override def convert(expr: Base64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val chunkExpr = exprToProtoInternal(Literal(true), inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType(
-        "base64",
-        StringType,
-        failOnError = false,
-        childExpr,
-        chunkExpr)
-    optExpr
-  }
-}
 
 // Base64.getMimeDecoder() semantics: skips non-alphabet bytes and matches Spark's codegen
 // path. The native path handles the default UnBase64 (failOnError = false, reachable from SQL

@@ -32,6 +32,7 @@
 pub mod cache;
 pub mod imported_c;
 pub mod loader;
+pub mod policy;
 
 #[cfg(test)]
 pub(crate) mod test_support;

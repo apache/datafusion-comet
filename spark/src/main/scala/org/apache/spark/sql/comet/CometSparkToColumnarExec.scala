@@ -33,14 +33,14 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types._
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 
-case class CometSparkToColumnarExec(child: SparkPlan)
+case class CometSparkToColumnarExec(child: SparkPlan, batchSize: Option[Int] = None)
     extends RowToColumnarTransition
     with CometPlan
     with CometNativeArrowSource {
@@ -86,7 +86,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
-    val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
+    val maxRecordsPerBatch = batchSize.getOrElse(CometConf.COMET_BATCH_SIZE.get(conf))
     val sparkSchema = child.schema
     val onConversionNs: Long => Unit = ns => {
       conversionTime += ns
@@ -94,7 +94,6 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     }
 
     if (child.supportsColumnar) {
-      val maxBatchInt = maxRecordsPerBatch.toInt
       child.executeColumnar().mapPartitionsInternal { sparkBatches =>
         val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
         consume(
@@ -106,7 +105,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
               .countingIterator(
                 sparkBatches,
                 (b: ColumnarBatch) => numInputRows.add(b.numRows().toLong)),
-            maxBatchInt,
+            maxRecordsPerBatch,
             onConversionNs))
       }
     } else {
@@ -138,13 +137,20 @@ object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSuppor
     CometScanWrapper(nativeOp, CometSparkToColumnarExec(op))
   }
 
+  /**
+   * Declines calendar intervals at any depth. Arrow holds the time part of an interval in
+   * nanoseconds, so `IntervalMonthDayNanoWriter` overflows on one of more than about 292 years,
+   * which Spark accepts (#5279).
+   */
   override def isTypeSupported(
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case ArrayType(StringType, _) => true
-    case MapType(StringType, StringType, _) => true
-    case _: ArrayType | _: MapType => false
+    case CalendarIntervalType =>
+      fallbackReasons += s"Unsupported $name of type $dt: Arrow holds the time part of an " +
+        "interval in nanoseconds, which overflows past about 292 years " +
+        "(https://github.com/apache/datafusion-comet/issues/5279)"
+      false
     case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 }

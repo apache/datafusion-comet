@@ -23,6 +23,7 @@ use parking_lot::Mutex;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Weak};
 
 /// The memory pools for active task attempts. Weak references let the pool's normal `Arc`
@@ -30,11 +31,48 @@ use std::sync::{Arc, Weak};
 static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, Weak<TaskSharedMemoryPool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// The tasks of this executor that are running native plans.
+static EXECUTOR_TASKS: Lazy<RunningTasks> = Lazy::new(RunningTasks::default);
+
+/// Counts the tasks running native plans: those that hold a pool from
+/// [`acquire_task_shared_pool`], whatever its type.
+#[derive(Clone, Debug, Default)]
+pub(super) struct RunningTasks(Arc<AtomicUsize>);
+
+impl RunningTasks {
+    /// The tasks running native plans in this process, which is one executor.
+    pub(super) fn of_executor() -> &'static RunningTasks {
+        &EXECUTOR_TASKS
+    }
+
+    pub(super) fn count(&self) -> usize {
+        self.0.load(Relaxed)
+    }
+
+    /// Counts one more running task until the returned guard drops.
+    pub(super) fn start(&self) -> RunningTask {
+        self.0.fetch_add(1, Relaxed);
+        RunningTask(Arc::clone(&self.0))
+    }
+}
+
+/// A task that [`RunningTasks`] counts for as long as this lives.
+#[derive(Debug)]
+pub(super) struct RunningTask(Arc<AtomicUsize>);
+
+impl Drop for RunningTask {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Relaxed);
+    }
+}
+
 /// A transparent `MemoryPool` wrapper whose lifetime also controls its registry entry.
 #[derive(Debug)]
 struct TaskSharedMemoryPool {
     task_attempt_id: i64,
     inner: Arc<dyn MemoryPool>,
+    /// Counts the task as running native plans for as long as any of them holds the pool.
+    _running: RunningTask,
 }
 
 impl fmt::Display for TaskSharedMemoryPool {
@@ -96,9 +134,10 @@ impl Drop for TaskSharedMemoryPool {
 
 /// Returns the memory pool shared by every native plan in `task_attempt_id`, creating it with
 /// `create` if no live pool exists for the task. The returned `Arc` is the RAII handle: the pool
-/// stays registered until the last reference to it drops.
-pub(crate) fn acquire_task_shared_pool(
+/// stays registered, and `running_tasks` counts the task, until the last reference to it drops.
+pub(super) fn acquire_task_shared_pool(
     task_attempt_id: i64,
+    running_tasks: &RunningTasks,
     create: impl FnOnce() -> Arc<dyn MemoryPool>,
 ) -> Arc<dyn MemoryPool> {
     let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock();
@@ -112,6 +151,7 @@ pub(crate) fn acquire_task_shared_pool(
     let memory_pool = Arc::new(TaskSharedMemoryPool {
         task_attempt_id,
         inner: create(),
+        _running: running_tasks.start(),
     });
     memory_pool_map.insert(task_attempt_id, Arc::downgrade(&memory_pool));
     memory_pool
@@ -130,7 +170,13 @@ mod tests {
 
     /// Tests share the process-wide pool map, so each uses its own task attempt id.
     fn acquire(task_attempt_id: i64) -> Arc<dyn MemoryPool> {
-        acquire_task_shared_pool(task_attempt_id, || Arc::new(UnboundedMemoryPool::default()))
+        acquire_counted(task_attempt_id, &RunningTasks::default())
+    }
+
+    fn acquire_counted(task_attempt_id: i64, running_tasks: &RunningTasks) -> Arc<dyn MemoryPool> {
+        acquire_task_shared_pool(task_attempt_id, running_tasks, || {
+            Arc::new(UnboundedMemoryPool::default())
+        })
     }
 
     fn is_registered(task_attempt_id: i64) -> bool {
@@ -151,6 +197,23 @@ mod tests {
         let first = acquire(-1002);
         let second = acquire(-1003);
         assert!(!Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn a_task_runs_until_its_last_plan_releases_the_pool() {
+        let tasks = RunningTasks::default();
+        let first_plan = acquire_counted(-1008, &tasks);
+        let second_plan = acquire_counted(-1008, &tasks);
+        let other_task = acquire_counted(-1009, &tasks);
+        // Two plans of one task count it once.
+        assert_eq!(tasks.count(), 2);
+
+        drop(first_plan);
+        assert_eq!(tasks.count(), 2);
+        drop(second_plan);
+        assert_eq!(tasks.count(), 1);
+        drop(other_task);
+        assert_eq!(tasks.count(), 0);
     }
 
     #[test]
@@ -199,11 +262,13 @@ mod tests {
     fn concurrent_acquire_and_drop_leaves_a_consistent_registry() {
         use std::thread;
 
+        let tasks = RunningTasks::default();
         let threads: Vec<_> = (0..8)
             .map(|_| {
-                thread::spawn(|| {
+                let tasks = tasks.clone();
+                thread::spawn(move || {
                     for _ in 0..1_000 {
-                        drop(acquire(-1007));
+                        drop(acquire_counted(-1007, &tasks));
                     }
                 })
             })
@@ -216,6 +281,9 @@ mod tests {
             !is_registered(-1007),
             "registry entry survived after every reference was dropped"
         );
+        // `fetch_sub` wraps, so a drop that ran without its matching start would leave a count of
+        // nearly `usize::MAX`, and a task share of nothing.
+        assert_eq!(tasks.count(), 0);
 
         // The registry must still work for the task after the churn.
         let _pool = acquire(-1007);

@@ -140,14 +140,15 @@ impl AggregateUDFImpl for Avg {
 /// An accumulator to compute the average
 #[derive(Debug, Default)]
 pub struct AvgAccumulator {
-    sum: Option<f64>,
+    /// Spark's partial buffer uses zero for empty input; count determines result nulls.
+    sum: f64,
     count: i64,
 }
 
 impl Accumulator for AvgAccumulator {
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
-            ScalarValue::Float64(self.sum),
+            ScalarValue::Float64(Some(self.sum)),
             ScalarValue::from(self.count),
         ])
     }
@@ -155,9 +156,8 @@ impl Accumulator for AvgAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let values = values[0].as_primitive::<Float64Type>();
         self.count += (values.len() - values.null_count()) as i64;
-        let v = self.sum.get_or_insert(0.);
         if let Some(x) = sum(values) {
-            *v += x;
+            self.sum += x;
         }
         Ok(())
     }
@@ -168,21 +168,16 @@ impl Accumulator for AvgAccumulator {
 
         // sums are summed - no overflow checking in all Eval Modes
         if let Some(x) = sum(states[0].as_primitive::<Float64Type>()) {
-            let v = self.sum.get_or_insert(0.);
-            *v += x;
+            self.sum += x;
         }
         Ok(())
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.count == 0 {
-            // If all input are nulls, count will be 0, and we will get null after the division.
-            // This is consistent with Spark Average implementation.
             Ok(ScalarValue::Float64(None))
         } else {
-            Ok(ScalarValue::Float64(
-                self.sum.map(|f| f / self.count as f64),
-            ))
+            Ok(ScalarValue::Float64(Some(self.sum / self.count as f64)))
         }
     }
 
@@ -350,5 +345,24 @@ where
     fn size(&self) -> usize {
         self.counts.capacity() * std::mem::size_of::<i64>()
             + self.sums.capacity() * std::mem::size_of::<T>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Float64Array;
+
+    #[test]
+    fn empty_partial_state_matches_spark() -> Result<()> {
+        let mut partial = AvgAccumulator::default();
+        let empty = vec![ScalarValue::Float64(Some(0.0)), ScalarValue::Int64(Some(0))];
+        assert_eq!(partial.state()?, empty);
+        assert_eq!(partial.evaluate()?, ScalarValue::Float64(None));
+
+        partial.update_batch(&[Arc::new(Float64Array::from(vec![None, None]))])?;
+        assert_eq!(partial.state()?, empty);
+        assert_eq!(partial.evaluate()?, ScalarValue::Float64(None));
+        Ok(())
     }
 }

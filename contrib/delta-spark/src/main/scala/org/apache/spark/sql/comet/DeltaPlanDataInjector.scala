@@ -70,12 +70,15 @@ object DeltaPlanDataInjector {
   /**
    * The key under which a Delta scan's planning data is stored and looked up. Written into
    * `DeltaSparkScanCommon.source_key` on the driver and read back by
-   * [[DeltaPlanDataInjector.getKey]] on the executor, so both sides agree by construction.
-   * Mirrors `NativeScanPlanDataInjector.sourceKey` (source string carries the plan node id, so
-   * two scans of the same table in one plan, self-join, MERGE, get distinct keys), plus the table
-   * root for extra safety across tables with identical projections.
+   * [[DeltaPlanDataInjector.getKey]] on the executor, so both sides agree by construction. Like
+   * the core and Iceberg keys, it ends with the scan op's plan id (see
+   * `PlanDataInjector.withPlanId`), so two scans of one table in one native plan get distinct
+   * keys even when they match on the table root, schema, projection and data filters.
    */
-  def sourceKey(tableRoot: String, common: OperatorOuterClass.NativeScanCommon): String = {
+  def sourceKey(
+      tableRoot: String,
+      common: OperatorOuterClass.NativeScanCommon,
+      planId: Int): String = {
     val dataFilters = common.getDataFiltersList.asScala
       .map(QueryContextInterner.stripQueryContexts(_).toString)
     val keyComponents = Seq(
@@ -84,6 +87,8 @@ object DeltaPlanDataInjector {
       dataFilters.mkString("[", ", ", "]"),
       common.getProjectionVectorList.toString,
       common.getFieldsList.toString)
-    s"delta_${common.getSource}_${keyComponents.mkString("|").hashCode}"
+    PlanDataInjector.withPlanId(
+      s"delta_${common.getSource}_${keyComponents.mkString("|").hashCode}",
+      planId)
   }
 }

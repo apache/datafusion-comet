@@ -32,21 +32,22 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.{FilePartition, HadoopFsRelation}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.execution.datasources.v2.text.TextScan
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withFallbackReason, withFallbackReasons}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
@@ -90,18 +91,21 @@ case class CometScanRule(session: SparkSession)
 
     val fullPlan = plan
 
-    def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
-      // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep a peer scan
-      // Spark-native for canonical symmetry in SMJ self-joins (SPARK-32509).
-      case scan if scan.getTagValue(CometScanRule.SKIP_COMET_SCAN_TAG).isDefined =>
-        withFallbackReason(scan, "AQE DPP region fallback (Spark < 3.5)")
+    // The session's `fs.comet.libhdfs.schemes`, resolved once per relation session for this
+    // application: `newHadoopConf()` copies the whole Hadoop conf, and every V1 scan needs it.
+    val sessionLibhdfsSchemes = mutable.Map.empty[SparkSession, Set[String]]
+    def libhdfsSchemesOf(relationSession: SparkSession): Set[String] =
+      sessionLibhdfsSchemes.getOrElseUpdate(
+        relationSession,
+        NativeConfig.resolveLibhdfsSchemes(relationSession.sessionState.newHadoopConf()))
 
+    def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
       // data source V1
       case scanExec: FileSourceScanExec =>
-        transformV1Scan(fullPlan, scanExec)
+        transformV1Scan(fullPlan, scanExec, libhdfsSchemesOf)
 
       // data source V2
       //
@@ -150,7 +154,10 @@ case class CometScanRule(session: SparkSession)
     metadataTableSuffix.exists(name.endsWith)
   }
 
-  private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
+  private def transformV1Scan(
+      plan: SparkPlan,
+      scanExec: FileSourceScanExec,
+      sessionLibhdfsSchemes: SparkSession => Set[String]): SparkPlan = {
     // Give any optional, out-of-tree scan contrib (e.g. Delta) first crack at this scan, ahead of
     // every built-in guard below. A contrib may support things Comet's built-in V1 scan does not
     // -- the Delta contrib synthesises `_metadata.*` in its own reader -- so applying those guards
@@ -187,19 +194,6 @@ case class CometScanRule(session: SparkSession)
         s"Metadata column(s) ${unsupportedMetadataColNames.mkString(", ")} is not supported")
     }
 
-    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
-    // CometPlanAdaptiveDynamicPruningFilters cannot run. Fall back this scan to Spark so that
-    // Spark's PlanAdaptiveDynamicPruningFilters handles the SAB natively. Comet's narrower
-    // CometSpark34AqeDppFallbackRule (queryStagePrepRule on 3.4) then tags any matching BHJ's
-    // build-side broadcast so Spark's rule can match it via sameResult. See
-    // CometSpark34AqeDppFallbackRule's class docstring.
-    //
-    // On 3.5+, CometPlanAdaptiveDynamicPruningFilters rewrites SABs directly and this fallback
-    // is not needed.
-    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      return withFallbackReason(scanExec, "AQE Dynamic Partition Pruning requires Spark 3.5+")
-    }
-
     scanExec.relation match {
       case r: HadoopFsRelation =>
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
@@ -225,7 +219,8 @@ case class CometScanRule(session: SparkSession)
           return scanExec
         }
 
-        nativeScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
+        nativeScan(plan, session, scanExec, r, hadoopConf, sessionLibhdfsSchemes)
+          .getOrElse(scanExec)
 
       case _ =>
         withFallbackReason(scanExec, s"Unsupported relation ${scanExec.relation}")
@@ -237,7 +232,8 @@ case class CometScanRule(session: SparkSession)
       session: SparkSession,
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
-      hadoopConf: Configuration): Option[SparkPlan] = {
+      hadoopConf: Configuration,
+      sessionLibhdfsSchemes: SparkSession => Set[String]): Option[SparkPlan] = {
     if (!COMET_EXEC_ENABLED.get()) {
       withFallbackReason(
         scanExec,
@@ -245,75 +241,15 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     // Comet's native readers go through object_store, which only understands a fixed set of URL
-    // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
-    // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here
-    // so Spark's reader -- which goes through the Hadoop FS API and can resolve custom schemes --
-    // handles the scan. Whether object_store recognizes a scheme is answered by the native layer
-    // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
-    // planner can't drift from object_store's actual support.
-    //
-    // EXCEPT schemes native routes through libhdfs (`hdfs` by default). A scheme the reader
-    // options add to that list is declined; see NativeConfig.resolveScanLibhdfsSchemes.
-    val libhdfs = NativeConfig.resolveScanLibhdfsSchemes(
-      r.sparkSession.sessionState.newHadoopConf(),
-      hadoopConf)
-    val libhdfsSchemes = libhdfs.libhdfs
-    // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
-    // from the Hadoop config, like the libhdfs list above, so `core-site.xml` is honored. The
-    // native object_store gate no longer claims aliases, so admit them here where the Hadoop
-    // config is available.
-    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-
-    // Classify each root path once; see RootPathInfo.
-    val roots = CometScanRule.classifyRootPaths(
-      r.location.rootPaths.map(_.toUri),
-      libhdfsSchemes,
-      s3CompliantSchemes)
-
-    val scanOnlyLibhdfsSchemes = roots.flatMap(_.scheme).filter(libhdfs.scanOnly.contains).toSet
-    if (scanOnlyLibhdfsSchemes.nonEmpty) {
-      withFallbackReason(
-        scanExec,
-        "Native Parquet scan does not support filesystem scheme(s) " +
-          s"${scanOnlyLibhdfsSchemes.toSeq.sorted.mkString(", ")} listed in " +
-          s"$COMET_LIBHDFS_SCHEMES_KEY only through reader options")
-      return None
-    }
-    val unsupportedFsSchemes = roots.iterator.flatMap { root =>
-      root.scheme.filter(_ =>
-        !root.isLibhdfs && !CometScanRule.isNativelyReadableScheme(root.uri, s3CompliantSchemes))
-    }.toSet
-    if (unsupportedFsSchemes.nonEmpty) {
-      withFallbackReason(
-        scanExec,
-        s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
-      return None
-    }
-    // An early check on the root paths, with both scheme lists from the Hadoop conf as native
-    // reads them (not libhdfsSchemes above). CometNativeScan.convert checks the listed files.
-    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+    // schemes; see rootPathFallbackReason for the scheme, multi-store, and path checks.
+    val rootPathReason = CometScanRule.rootPathFallbackReason(
       "Native Parquet scan",
-      roots.map(_.uri),
-      s3CompliantSchemes,
-      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
+      r.location.rootPaths.map(_.toUri),
+      sessionLibhdfsSchemes(r.sparkSession),
+      hadoopConf,
       scanExec.bucketedScan)
-    if (multiStoreReason.nonEmpty) {
-      withFallbackReason(scanExec, multiStoreReason.get)
-      return None
-    }
-    // A scheme object_store recognizes can still carry a path it rejects (e.g. a directory whose
-    // name contains a newline -> `%0A` in the URI), which native execution would hard-fail on.
-    // Only object_store-native schemes are probed: aliases (normalized to s3:// natively) and
-    // libhdfs schemes route elsewhere. Root paths only -- a rejected character deeper in the tree
-    // still fails at execution.
-    val rejectedPath = roots.find(root =>
-      root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
-        !CometScanRule.objectStoreAcceptsPath(root.uri))
-    if (rejectedPath.nonEmpty) {
-      withFallbackReason(
-        scanExec,
-        s"Native Parquet scan cannot open path '${rejectedPath.get.uri}': object_store " +
-          "rejects it (e.g. an unsupported character in the path)")
+    if (rootPathReason.nonEmpty) {
+      withFallbackReason(scanExec, rootPathReason.get)
       return None
     }
     // Disabling the vectorized reader opts into parquet-mr's permissive behavior
@@ -465,6 +401,165 @@ case class CometScanRule(session: SparkSession)
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
+      case scan: TextScan if COMET_TEXT_V2_NATIVE_ENABLED.get() =>
+        if (scanExec.output.exists(_.isMetadataCol)) {
+          return withFallbackReason(
+            scanExec,
+            "Metadata columns are not supported for Text V2 scans")
+        }
+        // A native scan is useless without native execution: with exec disabled, CometExecRule
+        // leaves this CometBatchScanExec unconverted and it fails at runtime. Require native exec.
+        if (!COMET_EXEC_ENABLED.get()) {
+          return withFallbackReason(
+            scanExec,
+            s"Native Text scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+        }
+        // input_file_name/_block_start/_block_length are already handled by the blanket V2 gate
+        // near the top of transformV2Scan, so no Text-specific check is needed here.
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+        // Spark's text source allows only a single data column (TextScan.verifyReadSchema). A
+        // user-forced multi-column read schema is invalid; fall back so Spark raises its structured
+        // AnalysisException rather than letting the native reader fail with an opaque error.
+        if (scan.readDataSchema.size > 1) {
+          fallbackReasons += "Text data source supports only a single column"
+        }
+        // Partition columns are not implemented for native Text scans (unlike the native CSV path,
+        // which forwards them). Fall back to Spark for partitioned reads rather than drop them.
+        if (scan.readPartitionSchema.nonEmpty) {
+          fallbackReasons += "Comet does not support partition columns in native Text scans"
+        }
+        // Build the Hadoop conf from the scan's read options with their case preserved, like
+        // Spark's TextScan.createReaderFactory (Hadoop keys are case sensitive, but the scan's
+        // option map lowercases them).
+        val hadoopConf = session.sessionState.newHadoopConfWithOptions(
+          scan.options.asCaseSensitiveMap.asScala.toMap)
+        val textOptions =
+          new org.apache.spark.sql.execution.datasources.text.TextOptions(
+            scan.options.asScala.toMap)
+        // The files this scan reads. `fileIndex.inputFiles` also lists files that partition
+        // pruning dropped, so the per-file checks below use the selected partitions instead.
+        val selectedFiles =
+          scanExec.inputPartitions.flatMap(_.asInstanceOf[FilePartition].files.toSeq)
+        // The native reader loads each file whole. Spark splits a large uncompressed text file
+        // into byte-range partitions (TextScan.isSplitable), and each split would then re-read and
+        // buffer the whole file with no memory-pool reservation. Restrict native execution to
+        // unsplit files (the small build-side lookups this targets); Spark handles large files.
+        if (selectedFiles.exists(_.start != 0)) {
+          fallbackReasons += "Comet native Text scan does not support files split into byte " +
+            "ranges (large files)"
+        }
+        // The native reader loads each file whole and does not reserve the buffer against the
+        // memory pool, so bound the per-file size; larger files fall back to Spark. This keeps the
+        // feature to the small lookup tables it targets, whatever maxPartitionBytes says. A
+        // wholetext file becomes one Arrow string value, and a lossy UTF-8 decode can expand
+        // ill-formed bytes up to 3x, so cap it at Int.MaxValue/3 to keep the decoded value under
+        // Arrow's 2GB 32-bit string-offset limit (the native reader also fails cleanly if a value
+        // still overflows).
+        val maxTextFileSize = COMET_SCAN_TEXT_MAX_FILE_SIZE.get()
+        val maxFileBytes =
+          if (textOptions.wholeText) math.min(maxTextFileSize, Int.MaxValue.toLong / 3)
+          else maxTextFileSize
+        if (selectedFiles.exists(_.length > maxFileBytes)) {
+          fallbackReasons += "Comet native Text scan does not read files larger than " +
+            s"${COMET_SCAN_TEXT_MAX_FILE_SIZE.key} ($maxFileBytes bytes)"
+        }
+        // Comet's native plan does not carry a compression codec, so the native reader would feed
+        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension,
+        // from the decoded path (`Path(URI)`), so a name like `a b.gz` keeps its suffix. The
+        // version-aware ShimFileFormat.compressedFileCheck also catches the non-standard
+        // .gzip/.zstd extensions on Spark 4.1+ that CompressionCodecFactory alone misses.
+        val isCompressed = ShimFileFormat.compressedFileCheck(hadoopConf)
+        val hasCompressedFile =
+          selectedFiles.exists(file => isCompressed(new org.apache.hadoop.fs.Path(file.pathUri)))
+        if (hasCompressedFile) {
+          fallbackReasons += "Comet does not support compressed text files"
+        }
+        // Hadoop's local filesystem verifies a `.<name>.crc` checksum file when one exists and
+        // raises a ChecksumException if the data no longer matches it. The native reader reads the
+        // file directly and would return the altered rows, so fall back for such files.
+        if (selectedFiles.exists(file =>
+            CometScanRule.hasLocalChecksumFile(hadoopConf, file.pathUri))) {
+          fallbackReasons += "Comet native Text scan does not support local files that have a " +
+            "Hadoop checksum (.crc) file"
+        }
+        // Spark skips unreadable/missing files when these are set; the native reader's DataFusion
+        // FileStream fails the whole scan instead (OnError::Fail). Fall back to match Spark.
+        if (SQLConf.get.ignoreCorruptFiles || scan.options.getBoolean(
+            "ignoreCorruptFiles",
+            false)) {
+          fallbackReasons += "Comet native Text scan does not support ignoreCorruptFiles"
+        }
+        if (SQLConf.get.ignoreMissingFiles || scan.options.getBoolean(
+            "ignoreMissingFiles",
+            false)) {
+          fallbackReasons += "Comet native Text scan does not support ignoreMissingFiles"
+        }
+        // Only Spark's line reader consults the settings below. The wholetext reader does not,
+        // so a value it never reads must not fail or fall back a wholetext query.
+        if (!textOptions.wholeText) {
+          // Spark's line reader skips any line at or over
+          // mapreduce.input.linerecordreader.line.maxlength (default unlimited); the key can come
+          // from spark.hadoop.*, core-site.xml, or a read option. The native reader does not
+          // truncate, so fall back when a finite limit is set. A value that is not an integer
+          // fails Spark's reader, so fall back and let Spark report it.
+          val maxLineLength = scala.util.Try(
+            hadoopConf.getInt("mapreduce.input.linerecordreader.line.maxlength", Int.MaxValue))
+          if (maxLineLength.map(_ != Int.MaxValue).getOrElse(true)) {
+            fallbackReasons += "Comet native Text scan does not support " +
+              "mapreduce.input.linerecordreader.line.maxlength"
+          }
+          // Spark passes `mapreduce.job.input.file.must.*` to the filesystem's open call as
+          // mandatory options, and the read fails if the filesystem cannot honor one. The native
+          // reader opens files itself and cannot enforce them, so fall back and let Spark decide.
+          if (hadoopConf
+              .iterator()
+              .asScala
+              .exists(_.getKey.startsWith("mapreduce.job.input.file.must."))) {
+            fallbackReasons += "Comet native Text scan does not support mandatory file-open " +
+              "options (mapreduce.job.input.file.must.*)"
+          }
+          // Spark reads a custom line separator with Hadoop's LineReader.readCustomLine, which on
+          // a mismatch backtracks only one byte instead of following the separator's own prefix
+          // overlap. For a separator that overlaps itself (e.g. "aab", whose "aa" prefix can
+          // restart a match) that reader can split differently from the native reader's exact
+          // substring scan, and the difference depends on where the separator falls across
+          // Hadoop's input buffer boundaries. Fall back so the two always agree.
+          textOptions.lineSeparatorInRead.foreach { sep =>
+            if (CometScanRule.separatorSelfOverlaps(sep)) {
+              fallbackReasons += "Comet native Text scan does not support a self-overlapping " +
+                "line separator (Spark's line reader can split it differently)"
+            }
+          }
+        }
+        // Comet's native reader opens files through object_store, which only understands a fixed
+        // set of URL schemes. A text file on a custom Hadoop scheme (viewfs://, oss://, ...) or a
+        // path object_store rejects would be claimed here then hard-fail at execution, whereas
+        // Spark reads it via the Hadoop FS API. Use the same shared gate as the native Parquet
+        // path, on the selected files rather than the root paths: a legal Hadoop filename inside
+        // a directory (for example one with a tab in its name) can pass for its parent and still
+        // be rejected by object_store. A scan that spans several object stores is split per store
+        // in the serde.
+        CometScanRule
+          .rootPathFallbackReason(
+            "Native Text scan",
+            selectedFiles.map(_.pathUri).distinct,
+            NativeConfig.resolveLibhdfsSchemes(session.sessionState.newHadoopConf()),
+            hadoopConf,
+            isBucketedScan = false)
+          .foreach(fallbackReasons += _)
+        if (fallbackReasons.isEmpty) {
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
       // Iceberg scan - detected by class name. SparkStagedScan covers reads issued by
       // RewriteDataFiles (and similar maintenance actions) where the planner has already
       // staged FileScanTasks via ScanTaskSetManager.
@@ -491,6 +586,22 @@ case class CometScanRule(session: SparkSession)
         if (unsupportedMetadataCols.nonEmpty) {
           fallbackReasons += "Unsupported Iceberg metadata columns: " +
             unsupportedMetadataCols.map(_.name).mkString(", ")
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
+        // This build of Comet has no native k-way merge for sorted Iceberg data. When Iceberg
+        // groups a partition's sorted files and reports an output ordering (e.g. with the
+        // preserve-data-ordering config on), EnsureRequirements may already have dropped the Sort
+        // above this scan because Spark trusts that report. Comet's native reader concatenates a
+        // partition's files in arbitrary order, so taking over the scan would silently return
+        // unsorted rows that Spark believes are sorted -> wrong results. scanExec.ordering is
+        // Spark's own view of the reported ordering and is exactly the condition under which the
+        // Sort gets dropped, so we key off it. Stay on Spark, whose Iceberg reader produces the
+        // sorted output it promised. This only needs scanExec, so we check it before the metadata
+        // reads below, which can go over the network for REST and S3 catalogs.
+        if (scanExec.ordering.exists(_.nonEmpty)) {
+          fallbackReasons += "Iceberg reports an output ordering that this build of Comet cannot " +
+            "preserve in the native scan; staying on Spark to keep the reported ordering"
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
@@ -612,6 +723,13 @@ case class CometScanRule(session: SparkSession)
                 hadoopS3Options,
                 icebergDataBucket)
 
+            // Declares the HDFS nameservices the data/delete files name, and forwards the client
+            // settings the session set. Merged before the catalog's properties, so a catalog's own
+            // declaration or setting wins.
+            val hdfsProperties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(
+              hadoopConf,
+              taskValidation.hdfsAuthorities)
+
             // Forward the full FileIO property bag (including credentials.uri, OAuth tokens,
             // tenant-id, etc.) so a CometS3CredentialProvider can see everything LoadTableResponse
             // returned. The storage-prefix narrowing happens native-side just before
@@ -627,10 +745,18 @@ case class CometScanRule(session: SparkSession)
             // iceberg-rust's FileIO, so the alias key never reaches FileIO -- but it is still
             // handed, unfiltered, to CometS3CredentialBridge, so a custom credential provider sees
             // it. That is intended: the provider gets the full property bag.
-            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties ++
-              hadoopS3Options
-                .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
-                .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
+            // A nameservice the catalog declares with Hadoop's own keys is not also given a
+            // default-port host declaration.
+            val derivedHdfsProperties = hdfsProperties.filterNot { case (key, _) =>
+              key.startsWith("hdfs.name-node.") &&
+              fileIOProperties.contains(
+                s"hadoop.dfs.ha.namenodes.${key.stripPrefix("hdfs.name-node.")}")
+            }
+            val catalogProperties =
+              hadoopDerivedProperties ++ derivedHdfsProperties ++ fileIOProperties ++
+                hadoopS3Options
+                  .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
+                  .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
 
             val result = CometIcebergNativeScanMetadata.extract(
               scanExec.scan,
@@ -675,6 +801,22 @@ case class CometScanRule(session: SparkSession)
             false
           }
 
+        // The native scan opens every data and delete file through one storage, built from the
+        // metadata location's scheme (`load_file_io` in iceberg_scan.rs), so a file on another
+        // backend fails at open time: an `hdfs://` file handed to the local storage, a local path
+        // to the S3 one. Declined here instead; the multi-bucket check above is the same idea one
+        // level down.
+        val metadataFamily = CometScanRule.storageFamily(metadataUri.getScheme)
+        val foreignFamilies =
+          taskValidation.fileSchemes.map(CometScanRule.storageFamily) - metadataFamily
+        val storageFamiliesConsistent = foreignFamilies.isEmpty || {
+          fallbackReasons += "Iceberg scan reads data/delete files on storage " +
+            s"${foreignFamilies.toSeq.sorted.map(f => s"'$f'").mkString(", ")} while the table " +
+            s"metadata is on '$metadataFamily'; Comet's native Iceberg reader opens every file " +
+            "of a scan through one storage backend, chosen from the metadata location"
+          false
+        }
+
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust.
         // Comet's native reader bypasses Iceberg Java's FileIO entirely and reads through
@@ -715,17 +857,41 @@ case class CometScanRule(session: SparkSession)
             false
         }
 
+        // Projected roots are matched by field ID so historical snapshots still identify renamed
+        // columns. Both schema checks below use them.
+        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+        val resolver = session.sessionState.conf.resolver
+        val projectedFieldIds = projectedDataColumns.map { attr =>
+          metadata.globalFieldIdMapping.collectFirst {
+            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+          }
+        }
+        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
+
         // Column default values are a V3 feature, so V1/V2 tables cannot have them and need no
         // check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default for
-        // a column absent from a data file, so a scan projecting such a column must fall back. A V3
-        // table implies an Iceberg version new enough to expose initialDefault(), so a reflection
-        // failure here is unexpected and also falls back rather than risk a crash.
+        // a column absent from a data file (it fails a nested one), so a scan reading such a
+        // column must fall back. That is the query's schema and, while nested schema pruning is
+        // off, the whole of each projected column in the task schema, which holds nested fields
+        // the query's does not. A V3 table implies an Iceberg version new enough to expose
+        // initialDefault(), so a reflection failure here is unexpected and also falls back rather
+        // than risk a crash.
         val defaultValuesSupported =
           if (!formatVersion.exists(_ >= 3)) {
             true
           } else {
             try {
-              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              val readDefaults = metadata.taskSchema.toSeq.flatMap { schema =>
+                if (hasUnresolvedProjectedFieldIds) {
+                  IcebergReflection.columnsWithInitialDefault(schema)
+                } else {
+                  IcebergReflection.columnsWithInitialDefault(schema, resolvedProjectedFieldIds)
+                }
+              }
+              val defaulted =
+                (IcebergReflection.columnsWithInitialDefault(
+                  metadata.scanSchema) ++ readDefaults).distinct
               if (defaulted.nonEmpty) {
                 fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
                   s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
@@ -741,17 +907,19 @@ case class CometScanRule(session: SparkSession)
             }
           }
 
-        // Projected roots are matched by field ID so historical snapshots still identify renamed
-        // columns. Both schema checks below use them.
-        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
-        val resolver = session.sessionState.conf.resolver
-        val projectedFieldIds = projectedDataColumns.map { attr =>
-          metadata.globalFieldIdMapping.collectFirst {
-            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
-          }
+        // iceberg-rust applies name mappings only at the root (#6790). Nested columns can
+        // disappear during projection, or reach the adapter with physical field names that
+        // cannot distinguish a mapped alias from a genuinely missing field. Schema history
+        // does not detect names that already differed when the files were imported.
+        val nestedNameMappingSupported = !(metadata.nameMapping.isDefined &&
+          projectedDataColumns.exists(_.dataType match {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }))
+        if (!nestedNameMappingSupported) {
+          fallbackReasons += "Nested columns with Iceberg name mapping are not yet supported " +
+            "by Comet's native reader (#6790)"
         }
-        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
-        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
         // The full task schema can be serialized to native, but iceberg-rust can represent
         // Variant in that schema as long as no projected field contains one. Check projected
@@ -789,16 +957,17 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
-        // Neither iceberg-rust nor the batch adaptation after it matches a data file's nested
-        // fields to the table's by field id (apache/iceberg-rust#2617). A file written before a
-        // nested field was added (to a struct, or to a struct inside a list or map) fails the
-        // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
-        // renamed since the file was written can read back as NULL. This check walks the schema
-        // the scan reads (see CometIcebergNativeScanMetadata.taskSchema), which for VERSION AS OF
-        // can be older than the table's, and also the table and scan schemas, so it can fall back
-        // when the changed field is pruned away. A FileScanTask does not record which schema wrote
-        // its file, so fall back when any schema in the table's history lacks a nested field of a
-        // projected column or names it differently.
+        // iceberg-rust matches a data file's nested fields to the table's by field id, filling in
+        // a field the file lacks with NULLs and applying renames, so schema evolution that adds,
+        // renames, drops or reorders nested fields reads correctly. One shape still differs from
+        // Spark: a struct (at any depth) whose fields in the schema the scan reads were all added
+        // after a file was written. The native read returns a struct of NULLs or NULL there,
+        // depending on what else the scan reads, where Spark returns NULL for a top-level struct
+        // and a struct of NULLs for a nested one. The schema the scan reads is the task schema (see
+        // CometIcebergNativeScanMetadata.taskSchema), which holds only the nested fields Spark
+        // keeps while nested schema pruning is on, and which for VERSION AS OF can be older than
+        // the table's. A FileScanTask does not record which schema wrote its file, so fall back
+        // when any schema in the table's history has such a struct in a projected column.
         val nestedFieldsSupported =
           try {
             val schemas = Seq(metadata.tableSchema, metadata.scanSchema) ++ metadata.taskSchema
@@ -808,18 +977,17 @@ case class CometScanRule(session: SparkSession)
               } else {
                 resolvedProjectedFieldIds
               }
-            val changed = schemas
-              .flatMap { schema =>
-                IcebergReflection.nestedFieldsAddedOrRenamed(metadata.table, schema, fieldIds)
-              }
+            val disjoint = metadata.taskSchema.toSeq
+              .flatMap(IcebergReflection.structsWithNoFieldsInCommon(metadata.table, _, fieldIds))
               .distinct
               .sorted
-            if (changed.nonEmpty) {
-              fallbackReasons += "Nested fields added or renamed by Iceberg schema evolution are " +
-                "not yet supported by Comet's native reader, which cannot match them to data " +
-                s"files written before the change: ${changed.mkString(", ")}"
+            if (disjoint.nonEmpty) {
+              fallbackReasons += "Structs whose fields were all added by Iceberg schema " +
+                "evolution are not yet supported by Comet's native reader, which reads data " +
+                "files written before the change differently from Spark: " +
+                disjoint.mkString(", ")
             }
-            changed.isEmpty
+            disjoint.isEmpty
           } catch {
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not compare nested fields " +
@@ -868,6 +1036,76 @@ case class CometScanRule(session: SparkSession)
               "location and cannot promote a bucket from the path"
             false
           case None => true
+        }
+
+        // iceberg-rust's HDFS client cannot use an executor's delegation tokens: opendal builds
+        // every client for a synthetic nameservice, and the client looks tokens up by that name.
+        // A portless authority must be a declared nameservice (see hadoopToIcebergHdfsProperties).
+        def hdfsScanSupported(): Boolean = {
+          val authentication = hadoopConf.getTrimmed("hadoop.security.authentication", "simple")
+          val secure = !authentication.equalsIgnoreCase("simple")
+          if (secure) {
+            fallbackReasons += "Iceberg scan reads HDFS with " +
+              s"hadoop.security.authentication=$authentication, but Comet's native Iceberg " +
+              "reader cannot authenticate to HDFS with delegation tokens"
+          }
+          val undeclared = CometIcebergNativeScan.undeclaredHdfsNameservice(
+            taskValidation.hdfsAuthorities,
+            metadata.catalogProperties)
+          undeclared.foreach { ns =>
+            fallbackReasons += s"Iceberg scan reads HDFS authority '$ns', which has no port and " +
+              "which the Hadoop configuration does not declare as a nameservice " +
+              s"(dfs.ha.namenodes.$ns, and a host:port dfs.namenode.rpc-address.$ns.<id> for " +
+              "each NameNode)"
+          }
+          // The client connects as HADOOP_USER_NAME, or as the executor's OS user, never as the
+          // Spark user the JVM reader runs as (opendal exposes no user setting). Claimed only
+          // when the executors are known to read as the Spark user: HADOOP_USER_NAME set to it
+          // in their environment, or, in local mode, the JVM's own user. The setting is read
+          // from the SparkContext's configuration, which launched the executors: a session can
+          // hold the key in its SQLConf (`SET`, or a builder option on an existing context)
+          // without the executors ever seeing it.
+          val sparkUser = session.sparkContext.sparkUser
+          val executorEnvKey = "spark.executorEnv.HADOOP_USER_NAME"
+          val executorUser = Option(session.sparkContext.getConf.get(executorEnvKey, null))
+            .orElse {
+              if (session.sparkContext.isLocal) {
+                Some(sys.env.getOrElse("HADOOP_USER_NAME", System.getProperty("user.name")))
+              } else {
+                None
+              }
+            }
+          val identityKnown = executorUser.contains(sparkUser)
+          if (!identityKnown) {
+            fallbackReasons += "Iceberg scan reads HDFS as the executors' user " +
+              s"${executorUser.map(u => s"'$u'").getOrElse("(unknown)")} rather than the Spark " +
+              s"user '$sparkUser'; set $executorEnvKey=$sparkUser so Comet's native Iceberg " +
+              "reader connects as the Spark user"
+          }
+          // The client is built without KMS support and rejects every file of an encryption
+          // zone. Probed only once the scan is otherwise eligible, so an undeclared nameservice
+          // is not also dialed.
+          val encryptionZoneFallback =
+            if (secure || undeclared.nonEmpty || !identityKnown) None
+            else {
+              CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+                hadoopConf,
+                taskValidation.hdfsDirectories,
+                tableUuid = tableOpt.flatMap(IcebergReflection.getTableUuid),
+                ttlSeconds = session.sessionState.conf
+                  .getConf(StaticSQLConf.METADATA_CACHE_TTL_SECONDS))
+            }
+          encryptionZoneFallback.foreach(fallbackReasons += _)
+          !secure && undeclared.isEmpty && identityKnown && encryptionZoneFallback.isEmpty
+        }
+        val hdfsSupported = taskValidation.hdfsAuthorities.isEmpty || {
+          if (COMET_ICEBERG_NATIVE_HDFS_ENABLED.get()) {
+            hdfsScanSupported()
+          } else {
+            fallbackReasons += "Iceberg scan reads HDFS files, and " +
+              s"${COMET_ICEBERG_NATIVE_HDFS_ENABLED.key} is false"
+            false
+          }
         }
 
         if (!taskValidation.allParquet) {
@@ -942,6 +1180,10 @@ case class CometScanRule(session: SparkSession)
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
+              // Check every schema, as a dropped equality key exists only in the history.
+              val topLevelIds = (metadata.tableSchema +: historicSchemas)
+                .flatMap(IcebergReflection.buildFieldIdMapping(_).values)
+                .toSet
               val contentFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
               val deleteFileClass =
@@ -987,6 +1229,13 @@ case class CometScanRule(session: SparkSession)
                           "schema; resolved from schema history (likely a dropped column)")
                     }
                     fieldInfo match {
+                      // Nested keys fall back: iceberg-rust only looks up top-level columns.
+                      case Some((fieldName, _)) if !topLevelIds(fid) =>
+                        hasUnsupportedDeletes = true
+                        fallbackReasons +=
+                          s"Equality delete on nested field '$fieldName' (id $fid) is not yet " +
+                            "supported by iceberg-rust, which resolves equality field ids " +
+                            "among top-level columns only."
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct") || fieldType.equalsIgnoreCase(
                             "variant")) {
@@ -1070,9 +1319,11 @@ case class CometScanRule(session: SparkSession)
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
-          metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
+          metadataSchemeSupported && storageFamiliesConsistent && partitionTypesSupported &&
+          unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported && taskSchemaNamesSupported) {
+          nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported &&
+          nestedNameMappingSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1088,21 +1339,6 @@ case class CometScanRule(session: SparkSession)
             "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
-
-  /**
-   * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
-   *
-   * Non-AQE DPP (PlanDynamicPruningFilters) runs before Comet rules and produces
-   * SubqueryBroadcastExec/SubqueryExec which Spark's execution framework resolves. AQE DPP
-   * (PlanAdaptiveDynamicPruningFilters) runs after Comet rules and searches for
-   * BroadcastHashJoinExec. It doesn't recognize Comet operators, so it can't create DPP filters
-   * correctly.
-   */
-  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
-    e.exists {
-      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
-      case _ => false
-    }
 
   private def metadataCols(plan: SparkPlan): Seq[String] = {
     plan.expressions.collect {
@@ -1223,6 +1459,35 @@ object CometScanRule extends Logging {
         case _ => false
       }))
 
+  /**
+   * True when a custom line separator overlaps itself -- some proper prefix of the separator is
+   * also a suffix of one of its prefixes, so a partial match can restart (e.g. "aab", or "aba").
+   * Spark splits custom separators with Hadoop's LineReader.readCustomLine, which backtracks only
+   * one byte on a mismatch instead of following that overlap, so for such a separator it can
+   * split differently from the native reader's exact substring scan. Uses the KMP prefix
+   * function: any nonzero entry means the separator overlaps itself.
+   */
+  private[rules] def separatorSelfOverlaps(sep: Array[Byte]): Boolean = {
+    val f = new Array[Int](sep.length)
+    var k = 0
+    var overlaps = false
+    var i = 1
+    while (i < sep.length) {
+      while (k > 0 && sep(i) != sep(k)) {
+        k = f(k - 1)
+      }
+      if (sep(i) == sep(k)) {
+        k += 1
+      }
+      f(i) = k
+      if (k > 0) {
+        overlaps = true
+      }
+      i += 1
+    }
+    overlaps
+  }
+
   // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by the probe URL rather than the
   // scheme: object_store's parser keys on (scheme, host-presence), so an authorityless URL would
   // otherwise poison the authority-bearing form of the same scheme.
@@ -1276,6 +1541,97 @@ object CometScanRule extends Logging {
     }
 
   /**
+   * True when a local file has a Hadoop checksum file (`.<name>.crc`) next to it. Hadoop's local
+   * filesystem verifies the data against that file on every read, which the native reader does
+   * not. Only local paths are checked; other filesystems are not asked, because creating one is
+   * costly. If the filesystem cannot be asked, assume a checksum file exists.
+   */
+  private[rules] def hasLocalChecksumFile(hadoopConf: Configuration, uri: URI): Boolean = {
+    val isLocal = Option(uri.getScheme).forall(_.equalsIgnoreCase("file"))
+    isLocal && scala.util
+      .Try {
+        val path = new org.apache.hadoop.fs.Path(uri)
+        path.getFileSystem(hadoopConf) match {
+          case fs: org.apache.hadoop.fs.ChecksumFileSystem =>
+            fs.getRawFileSystem.exists(fs.getChecksumFile(path))
+          case _ => false
+        }
+      }
+      .getOrElse(true)
+  }
+
+  /**
+   * Why a native scan of `rootUris` must fall back because of the filesystem scheme or path, or
+   * None. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
+   * surface at execution time as `Generic URL error: Unable to recognise URL "..."`, so those are
+   * declined and Spark's reader, which goes through the Hadoop FS API, handles the scan. Whether
+   * object_store recognizes a scheme is answered by the native layer itself
+   * (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the planner
+   * can't drift from object_store's actual support. Shared by the Parquet V1 and Text V2 gates;
+   * `scanName` starts each reason.
+   *
+   * EXCEPT schemes native routes through libhdfs (`hdfs` by default). A scheme the reader options
+   * add to that list is declined; see NativeConfig.resolveScanLibhdfsSchemes.
+   * `sessionLibhdfsSchemes` is the session's libhdfs list, and `hadoopConf` is the session's conf
+   * with the scan's reader options.
+   */
+  private[rules] def rootPathFallbackReason(
+      scanName: String,
+      rootUris: Seq[URI],
+      sessionLibhdfsSchemes: Set[String],
+      hadoopConf: Configuration,
+      isBucketedScan: Boolean): Option[String] = {
+    val libhdfs = NativeConfig.resolveScanLibhdfsSchemes(sessionLibhdfsSchemes, hadoopConf)
+    val libhdfsSchemes = libhdfs.libhdfs
+    // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
+    // from the Hadoop config, like the libhdfs list above, so `core-site.xml` is honored. The
+    // native object_store gate no longer claims aliases, so admit them here where the Hadoop
+    // config is available.
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+
+    // Classify each root path once; see RootPathInfo.
+    val roots = classifyRootPaths(rootUris, libhdfsSchemes, s3CompliantSchemes)
+
+    val scanOnlyLibhdfsSchemes = roots.flatMap(_.scheme).filter(libhdfs.scanOnly.contains).toSet
+    if (scanOnlyLibhdfsSchemes.nonEmpty) {
+      return Some(
+        s"$scanName does not support filesystem scheme(s) " +
+          s"${scanOnlyLibhdfsSchemes.toSeq.sorted.mkString(", ")} listed in " +
+          s"$COMET_LIBHDFS_SCHEMES_KEY only through reader options")
+    }
+    val unsupportedFsSchemes = roots.iterator.flatMap { root =>
+      root.scheme.filter(_ =>
+        !root.isLibhdfs && !isNativelyReadableScheme(root.uri, s3CompliantSchemes))
+    }.toSet
+    if (unsupportedFsSchemes.nonEmpty) {
+      return Some(s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
+    }
+    // An early check on the root paths, with both scheme lists from the Hadoop conf as native
+    // reads them (not libhdfsSchemes above). The serde checks the listed files.
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      scanName,
+      roots.map(_.uri),
+      s3CompliantSchemes,
+      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
+      isBucketedScan)
+    if (multiStoreReason.nonEmpty) {
+      return multiStoreReason
+    }
+    // A scheme object_store recognizes can still carry a path it rejects (e.g. a directory whose
+    // name contains a newline -> `%0A` in the URI), which native execution would hard-fail on.
+    // Only object_store-native schemes are probed: aliases (normalized to s3:// natively) and
+    // libhdfs schemes route elsewhere. Root paths only -- a rejected character deeper in the tree
+    // still fails at execution.
+    roots
+      .find(root =>
+        root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
+          !objectStoreAcceptsPath(root.uri))
+      .map(root =>
+        s"$scanName cannot open path '${root.uri}': object_store " +
+          "rejects it (e.g. an unsupported character in the path)")
+  }
+
+  /**
    * Ask the native object_store parser whether it can build `url`: both the scheme and, via
    * `Path::from_url_path`, the key. On any native error (e.g. the library isn't loaded), assume
    * yes -- these gates are only early-fallback optimizations, and such a build can't run the
@@ -1293,15 +1649,6 @@ object CometScanRule extends Logging {
   // private[comet] (not [rules]) so contrib scan extensions can apply the same gate.
   private[comet] def objectStoreAcceptsPath(uri: URI): Boolean =
     probeObjectStore(uri.toString)
-
-  /**
-   * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain
-   * Spark scan rather than converted to a Comet scan. Written by
-   * [[CometSpark34AqeDppFallbackRule]] on Spark < 3.5. See that rule's class docstring for the
-   * rationale.
-   */
-  val SKIP_COMET_SCAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
-    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
    * Schemes Comet's native Iceberg scan can open, loaded from the native storage factory over JNI
@@ -1410,6 +1757,13 @@ object CometScanRule extends Logging {
     // Buckets the native FileIO must read (data + delete files), for the single-config check in
     // CometScanRule; only S3-family locations contribute (see NativeConfig.bucketForUri).
     val dataFileBuckets = mutable.Set[String]()
+    // Schemes of the data/delete files the native FileIO opens, for the storage-family check in
+    // CometScanRule; a schemeless path is local, as iceberg-rust's `scheme_of` reads it.
+    val fileSchemes = mutable.Set[String]()
+    // HDFS authorities and directories of the data/delete files, for the HDFS checks in
+    // CometScanRule.
+    val hdfsAuthorities = mutable.Set[String]()
+    val hdfsDirectories = mutable.Set[String]()
     // First data/delete location with a readable scheme but no URL host (see
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
@@ -1423,14 +1777,24 @@ object CometScanRule extends Logging {
         catch { case _: java.net.URISyntaxException => return }
       // A schemeless local path routes to iceberg-rust's LocalFs and needs no host.
       val scheme = uri.getScheme
-      if (scheme == null) return
+      if (scheme == null) {
+        fileSchemes += "file"
+        return
+      }
       if (!isAdmittedIcebergScheme(scheme, s3CompliantSchemes)) {
         unsupportedSchemes += scheme
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
       } else {
-        // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed here.
-        NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+        fileSchemes += scheme
+        if (scheme == "hdfs") {
+          hdfsAuthorities += uri.getRawAuthority
+          val slash = rawPath.lastIndexOf('/')
+          if (slash > 0) hdfsDirectories += rawPath.substring(0, slash)
+        } else {
+          // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed.
+          NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+        }
       }
     }
 
@@ -1502,8 +1866,22 @@ object CometScanRule extends Logging {
       nonIdentityTransform,
       deleteFiles,
       dataFileBuckets.toSet,
+      fileSchemes.toSet,
+      hdfsAuthorities.toSet,
+      hdfsDirectories.toSet,
       hostlessLocation,
       requiredFieldIds)
+  }
+
+  /**
+   * The native storage backend a data/delete file scheme routes to (`storage_factory_for` in
+   * iceberg_common.rs): `s3` and `s3a` share one, a schemeless path is local, and every other
+   * scheme, an S3-compliant alias included, is its own.
+   */
+  private[rules] def storageFamily(scheme: String): String = scheme match {
+    case null | "file" => "file"
+    case "s3" | "s3a" => "s3"
+    case other => other
   }
 }
 
@@ -1516,5 +1894,8 @@ case class IcebergTaskValidationResult(
     nonIdentityTransform: Option[String],
     deleteFiles: java.util.List[_],
     dataFileBuckets: Set[String],
+    fileSchemes: Set[String],
+    hdfsAuthorities: Set[String],
+    hdfsDirectories: Set[String],
     hostlessLocation: Option[String],
     requiredFieldIds: Set[Int])

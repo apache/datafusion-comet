@@ -110,11 +110,13 @@ fn rejects_unsupported_sort_shapes_types_and_configuration() {
 #[tokio::test]
 async fn supplied_file_statistics_skip_reader_attachment() {
     use datafusion::common::Statistics;
-    use datafusion::datasource::physical_plan::ParquetSource;
 
     let session = session(3);
     let (_file, scan) = parquet_input((0..6).map(Some).collect(), &DataType::Int32, &session, 3);
-    let (config, _) = scan.downcast_to_file_source::<ParquetSource>().unwrap();
+    // Comet wraps the Parquet source to attach file paths to read errors.
+    let (config, _, _) =
+        crate::execution::operators::dynamic_filter::parquet_reader::concrete_parquet_source(&scan)
+            .unwrap();
     let mut config = config.clone();
     config.file_groups = config
         .file_groups

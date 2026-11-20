@@ -30,7 +30,7 @@ extern crate core;
 extern crate datafusion_comet_jni_bridge;
 
 use jni::{
-    objects::{JClass, JString},
+    objects::{JClass, JObjectArray, JString},
     sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
@@ -41,6 +41,7 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
+use std::collections::HashMap;
 
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
@@ -54,12 +55,13 @@ pub mod jvm_bridge {
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 use crate::cloud::s3::credential_bridge::AccessMode;
-use crate::execution::operators::iceberg_common::builtin_storage_schemes;
+use crate::execution::operators::iceberg_common::{builtin_storage_schemes, load_file_io};
 
 pub mod alloc_accounting;
 pub mod cloud;
 pub mod comet_native_udf_bridge;
 pub mod execution;
+mod local;
 pub mod parquet;
 // this module is for non release only. Intended for debugging/profiling purposes
 #[cfg(debug_assertions)]
@@ -133,7 +135,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     log_conf_path: JString,
     log_level: JString,
 ) {
-    // Initialize the error handling to capture panic backtraces
+    // Install the panic hook, which logs each native panic with its backtrace
     errors::init();
 
     try_unwrap_or_throw(&e, |env| {
@@ -180,6 +182,30 @@ fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
         load_config_file(log_conf_path, Deserializers::default())
             .map_err(|err| CometError::Config(err.to_string()))
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
+    _: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jboolean {
+    cfg!(feature = "python-udf")
+}
+
+/// JNI: the `major.minor` version of the embedded Python interpreter, or an empty string when
+/// libcomet was built without the `python-udf` feature. The interpreter is the `libpython` that
+/// libcomet was linked against, so its version is fixed when libcomet is built, while PySpark's
+/// workers may run another Python.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativePythonUdfVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    #[cfg(feature = "python-udf")]
+    let version = execution::python_udf::embedded_python_version();
+    #[cfg(not(feature = "python-udf"))]
+    let version = String::new();
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(version)?.into_raw()))
 }
 
 #[no_mangle]
@@ -292,6 +318,77 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
         };
         let joined = builtin_storage_schemes(access_mode).join(",");
         Ok(env.new_string(joined)?.into_raw())
+    })
+}
+
+/// JNI, for tests: builds the Iceberg `FileIO` a read of `reference_path` with these catalog
+/// properties uses, and keeps it in the `FileIO` cache as a read would. Building it registers the
+/// configured S3 credential provider and makes no storage request, so a JVM test can check which
+/// providers the cache holds without an S3 server.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_loadIcebergFileIOForTesting(
+    env: EnvUnowned,
+    _: JClass,
+    reference_path: JString,
+    catalog_name: JString,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
+) {
+    try_unwrap_or_throw(&env, |env| {
+        jvm_bridge::JVMClasses::init(env);
+        let reference_path: String = reference_path.try_to_string(env)?;
+        let catalog_name: String = catalog_name.try_to_string(env)?;
+        let mut properties = HashMap::new();
+        for i in 0..keys.len(env)? {
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
+            properties.insert(key, value);
+        }
+        load_file_io(
+            &properties,
+            &reference_path,
+            &catalog_name,
+            AccessMode::Read,
+        )
+        .map_err(|e| CometError::Internal(e.to_string()))?;
+        Ok(())
+    })
+}
+
+/// JNI, for tests: drops every cached Iceberg `FileIO`, as `release` does before it stops the
+/// runtime, so the providers they hold are released.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_clearIcebergFileIOCacheForTesting(
+    _env: EnvUnowned,
+    _: JClass,
+) {
+    execution::operators::clear_file_io_cache();
+}
+
+/// JNI: why the native scan cannot build its ABFS store for `url` from the object store options
+/// `keys`/`values`, or null when it can. The driver asks this when it plans a scan whose ABFS
+/// authentication resolved, so a store native would reject falls back to Spark instead of every
+/// task failing. See `azure::store_error`.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_abfsStoreError(
+    env: EnvUnowned,
+    _: JClass,
+    url: JString,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let url: String = url.try_to_string(env)?;
+        let mut configs = HashMap::new();
+        for i in 0..keys.len(env)? {
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
+            configs.insert(key, value);
+        }
+        match parquet::objectstore::azure::store_error(&url, &configs) {
+            Some(message) => Ok(env.new_string(message)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
     })
 }
 

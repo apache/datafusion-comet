@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use datafusion_comet_common::civil_from_days;
 use datafusion_comet_spark_expr::java_float_string;
 use iceberg::spec::{
     Literal, PartitionKey, PartitionSpec, PrimitiveLiteral, PrimitiveType, SchemaRef, StructType,
@@ -135,13 +136,7 @@ const NULL: &str = "null";
 /// `Transform#toHumanString(Type, T)` renders it.
 ///
 /// "as iceberg-java renders it" means iceberg-java 1.8 or later, which is what Comet targets on
-/// every profile. Iceberg 1.5.x -- still the pinned runtime for the Spark 3.4 profile -- rendered
-/// `timestamp` and `timestamptz` with `LocalDateTime.toString()` and `OffsetDateTime.toString()`
-/// instead of the `DateTimeUtil.microsToIsoTimestamp[tz]` formatters 1.8 switched to, so it spells
-/// the same instant `1969-12-31T23:59:58.500Z` rather than `1969-12-31T23:59:58.5+00:00`. (1.5.x
-/// also left the field *name* unescaped, which no Comet version has reproduced either.) Every other
-/// type renders identically from 1.5 through 1.11, and the partition values themselves are
-/// unaffected -- only the directory name, which nothing parses.
+/// every profile.
 ///
 /// Delegates to iceberg-rust's `Transform::to_human_string` and overrides only the arms where the
 /// two disagree:
@@ -152,7 +147,7 @@ const NULL: &str = "null";
 /// | `timestamp`        | `1969-12-31T23:59:58.5`       | `1969-12-31 23:59:58.500`        |
 /// | `timestamptz`      | `1969-12-31T23:59:58.5+00:00` | panics for a negative value with a sub-second part; otherwise `1969-12-31 23:59:58.500 UTC` |
 /// | `binary` / `fixed` | base64                        | uppercase hex                    |
-/// | `float` / `double` | `1.0`, `1.0E20`               | `1`, `100000000000000000000`     |
+/// | `float` / `double` | `1.0`, `1.0E20`               | `1.0`, `1.0E20` since #3358; `Double::MAX` still renders as 309 digits (see below) |
 ///
 /// The nanosecond timestamp types get the same treatment for the same reason. Spark cannot plan a
 /// write to them today, and `CometIcebergNativeWrite`'s column-type rule declines them as well; the
@@ -264,38 +259,6 @@ fn iso_year(year: i64) -> String {
     } else {
         format!("-{:04}", year.unsigned_abs())
     }
-}
-
-/// Splits a day count since 1970-01-01 into `(year, month, day)` in the proleptic Gregorian
-/// calendar (Howard Hinnant's `civil_from_days`).
-///
-/// Hand-rolled rather than delegated to `chrono` because this must be total: every `i64` micros
-/// value and every `i32` epoch day reaches a partition path, and `chrono`'s calendar stops at year
-/// 262142 while `i64` micros reach year 294247 and an epoch day year 5881580. iceberg-java's
-/// `ChronoUnit.MICROS.addTo(EPOCH, micros)` and `EPOCH.plusDays(days)` have no such ceiling, so a
-/// value past `chrono`'s range must still produce the same string, not an error we cannot return
-/// from `generate_location` anyway.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    // Shift the epoch to 0000-03-01 so leap days land at the end of the 400-year era.
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = (shifted - era * 146_097) as u64; // [0, 146096]
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365; // [0, 399]
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
-    let march_month = (5 * day_of_year + 2) / 153; // [0, 11], 0 = March
-    let day = (day_of_year - (153 * march_month + 2) / 5 + 1) as u32; // [1, 31]
-    let month = if march_month < 10 {
-        march_month + 3
-    } else {
-        march_month - 9
-    } as u32; // [1, 12]
-    let year = year_of_era as i64 + era * 400;
-    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[cfg(test)]
@@ -436,21 +399,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn civil_from_days_matches_the_gregorian_calendar() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(-1), (1969, 12, 31));
-        assert_eq!(civil_from_days(59), (1970, 3, 1));
-        // 1972 was a leap year; 1900 was not.
-        assert_eq!(civil_from_days(789), (1972, 2, 29));
-        assert_eq!(civil_from_days(-25_567), (1900, 1, 1));
-        assert_eq!(civil_from_days(-25_509), (1900, 2, 28));
-        assert_eq!(civil_from_days(-25_508), (1900, 3, 1));
-        assert_eq!(civil_from_days(-719_468), (0, 3, 1));
-        assert_eq!(civil_from_days(-719_528), (0, 1, 1));
-        assert_eq!(civil_from_days(-719_529), (-1, 12, 31));
     }
 
     fn double(value: f64) -> String {

@@ -43,12 +43,14 @@ object CometEqualityDeletes {
       out: OutputFile,
       partition: StructLike,
       deletes: java.util.List[Record],
-      deleteRowSchema: Schema): DeleteFile = {
-    val equalityFieldIds = deleteRowSchema.columns().asScala.map(_.fieldId()).toArray
+      deleteRowSchema: Schema,
+      // Omit to key the delete on every top-level column of `deleteRowSchema`.
+      equalityFieldIds: Option[Array[Int]] = None): DeleteFile = {
     val factory = GenericFileWriterFactory
       .builderFor(table)
       .equalityDeleteRowSchema(deleteRowSchema)
-      .equalityFieldIds(equalityFieldIds)
+      .equalityFieldIds(
+        equalityFieldIds.getOrElse(deleteRowSchema.columns().asScala.map(_.fieldId()).toArray))
       .build()
     val writer = factory.newEqualityDeleteWriter(
       EncryptedFiles.encryptedOutput(out, EncryptionKeyMetadata.EMPTY),

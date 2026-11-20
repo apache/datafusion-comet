@@ -19,9 +19,27 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use datafusion::common::Result;
-use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    GreedyMemoryPool, MemoryConsumer, MemoryPool, MemoryReservation,
+};
+
+/// A consumer that can spill, as DataFusion registers a sort's and a spilling aggregate's.
+pub(crate) fn spillable(name: &str, pool: &Arc<dyn MemoryPool>) -> MemoryReservation {
+    MemoryConsumer::new(name)
+        .with_can_spill(true)
+        .register(pool)
+}
+
+/// Reserves `bytes` for `reservation` in two requests, so that `CometFairMemoryPool` counts its
+/// consumer as active, as an operator is once its input flows. A first reservation alone does not
+/// make a consumer active, because DataFusion 56's aggregates make one when the plan starts.
+pub(crate) fn hold(reservation: &MemoryReservation, bytes: usize) {
+    reservation.try_grow(1).unwrap();
+    reservation.try_grow(bytes - 1).unwrap();
+}
 
 /// A [`GreedyMemoryPool`] that also records the most it ever had reserved, so a test can check
 /// what an operator reserved while it ran, not only that it gave everything back.
