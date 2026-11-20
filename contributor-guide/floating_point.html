@@ -815,11 +815,16 @@ different native paths.</p></li>
 <code class="docutils literal notranslate"><span class="pre">MaxSparkVersion</span></code>, and add the <code class="docutils literal notranslate"><span class="pre">run-all-spark-profiles</span></code> label to the pull request. CI pins one
 patch release per Spark line, so when a patch release changed the rule, also test the routing in
 Scala.</p></li>
-<li><p>Add the expression to <code class="docutils literal notranslate"><span class="pre">CometFloatSemanticsSuite</span></code>, which crosses the edge values with operator
-contexts and with every expression and aggregate that accepts floating-point input. New
-expressions go in its <code class="docutils literal notranslate"><span class="pre">expressions</span></code> or <code class="docutils literal notranslate"><span class="pre">aggregates</span></code> list. If one does not match Spark yet, add a
-<code class="docutils literal notranslate"><span class="pre">KnownGap</span></code> that links the issue. Known gaps are strict: a case that starts matching Spark fails,
-so the fix also removes the entry.</p></li>
+<li><p>Add the expression to the sweep in <code class="docutils literal notranslate"><span class="pre">float_semantics/</span></code>, which crosses the edge values with
+operator contexts and with every expression and aggregate that accepts floating-point input.
+A new expression goes in <code class="docutils literal notranslate"><span class="pre">expressions.sql</span></code>, or in <code class="docutils literal notranslate"><span class="pre">aggregates.sql</span></code> for an aggregate, with one
+query for <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> and one for <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code>. An expression that falls back in the default config,
+such as <code class="docutils literal notranslate"><span class="pre">mode</span></code> or the array set operations, goes in a file that turns on its
+<code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> config and sets <code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code> to the first release where it runs
+natively (<code class="docutils literal notranslate"><span class="pre">aggregates_mode.sql</span></code>, <code class="docutils literal notranslate"><span class="pre">array_set_operations_4_2.sql</span></code>), so that a plain <code class="docutils literal notranslate"><span class="pre">query</span></code> pins
+native execution. If one does not match Spark yet, add a strict test in
+<code class="docutils literal notranslate"><span class="pre">CometFloatSemanticsSuite</span></code> that links the issue and fails once the answers match, like its
+<code class="docutils literal notranslate"><span class="pre">collect_set</span></code> test before Spark 4.2. A SQL file test cannot expect a difference.</p></li>
 </ul>
 <p>Fixtures to start from include <code class="docutils literal notranslate"><span class="pre">expressions/conditional/float_comparisons.sql</span></code>,
 <code class="docutils literal notranslate"><span class="pre">expressions/math/nan_divisor.sql</span></code>, <code class="docutils literal notranslate"><span class="pre">expressions/math/greatest_least_floating_point.sql</span></code>,
