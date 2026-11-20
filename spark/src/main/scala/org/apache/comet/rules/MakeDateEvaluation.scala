@@ -90,22 +90,30 @@ private[rules] object MakeDateEvaluation {
     cast.dataType == IntegerType &&
       (cast.child.dataType == ByteType || cast.child.dataType == ShortType)
 
+  // An attribute can name a deferred producer; callers must also preserve its evaluation.
+  def canEvaluateMakeDateEagerly(
+      date: MakeDate,
+      canEvaluateArgument: Expression => Boolean = CometMakeDate.canEvaluateEagerly): Boolean = {
+    val boundedYear = date.year match {
+      case Literal(year: Int, IntegerType) =>
+        year >= firstCompleteYear && year <= lastCompleteYear
+      case cast: Cast if isSmallIntegerWidening(cast) => true
+      case _ => false
+    }
+    !date.failOnError && boundedYear && date.children.forall {
+      case cast: Cast if isSmallIntegerWidening(cast) =>
+        canEvaluateArgument(cast.child)
+      case child => canEvaluateArgument(child)
+    }
+  }
+
   // This only describes computations over their input values. An attribute may still name a
   // deferred producer, so argument lineage and sibling provenance must be tracked separately.
   private def canEvaluateProjectionEagerly(expression: Expression): Boolean = expression match {
     case Alias(child, _) => canEvaluateProjectionEagerly(child)
-    case date: MakeDate if !date.failOnError =>
-      val boundedYear = date.year match {
-        case Literal(year: Int, IntegerType) =>
-          year >= firstCompleteYear && year <= lastCompleteYear
-        case cast: Cast if isSmallIntegerWidening(cast) => true
-        case _ => false
-      }
-      boundedYear && date.children.forall {
-        case cast: Cast if isSmallIntegerWidening(cast) =>
-          CometMakeDate.canEvaluateEagerly(cast.child)
-        case child => CometMakeDate.canEvaluateEagerly(child)
-      }
+    case _: UnixDate | _: IsNull | _: IsNotNull =>
+      expression.children.forall(canEvaluateProjectionEagerly)
+    case date: MakeDate => canEvaluateMakeDateEagerly(date)
     case _ => CometMakeDate.canEvaluateEagerly(expression)
   }
 
@@ -240,7 +248,12 @@ private[rules] object MakeDateEvaluation {
         case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
         case _ => node
       }
-      val evaluatesDate = containsMakeDate(original.expressions)
+      val evaluatedExpressions = original match {
+        // Residual data filters run in the enclosing FilterExec, not in the reader.
+        case scan: FileSourceScanExec => scan.partitionFilters
+        case _ => original.expressions
+      }
+      val evaluatesDate = containsMakeDate(evaluatedExpressions)
       val exchange = original.isInstanceOf[Exchange]
       val join = original.isInstanceOf[BaseJoinExec]
       // Broadcast joins can inline streamed expressions into their consumer. Their build side

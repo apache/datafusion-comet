@@ -40,6 +40,7 @@ import com.google.common.base.Objects
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.ShimFileFormat
 
 /**
@@ -198,7 +199,7 @@ case class CometNativeScanExec(
       if (resolvedFilters.nonEmpty) {
         val commonBuilder = base.toBuilder
         commonBuilder.setHasDataFilters(true)
-        for (filter <- resolvedFilters) {
+        for (filter <- resolvedFilters.flatMap(CometNativeScan.filterForParquetPushdown)) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
             case _ =>
