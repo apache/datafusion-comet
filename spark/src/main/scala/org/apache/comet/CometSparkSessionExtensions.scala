@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometShuffledHashJoinStrategy, CometSpark34AqeDppFallbackRule}
+import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometShuffledHashJoinStrategy}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -59,7 +59,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
- * AQE (AdaptiveSparkPlanExec, Spark 3.5+):
+ * AQE (AdaptiveSparkPlanExec):
  * {{{
  *   Initial plan:
  *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
@@ -86,11 +86,6 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *                                    EliminateRedundantTransitions, CometCacheBuildRule,
  *                                    CometCacheColumnarRule
  * }}}
- *
- * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
- * and CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery and
- * CometCoalesceShufflePartitions are not registered. AQE DPP scans fall back to Spark so that
- * Spark's PlanAdaptiveDynamicPruningFilters handles them natively (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -105,10 +100,6 @@ class CometSparkSessionExtensions
       return
     }
     extensions.injectColumnar { session => CometColumnar(session) }
-    // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
-    // Registered before CometRule so tags are in place when conversion runs.
-    // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
-    injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session =>
       CometRule(session, queryStagePrep = true)
     }
@@ -277,10 +268,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def isCometScan(op: SparkPlan): Boolean = {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
-  }
-
-  def isSpark35Plus: Boolean = {
-    org.apache.spark.SPARK_VERSION >= "3.5"
   }
 
   def isSpark40Plus: Boolean = {

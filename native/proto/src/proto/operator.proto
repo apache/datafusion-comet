@@ -959,6 +959,8 @@ message HashAggregate {
   // keys (ascending, nulls first). The native planner sorts the aggregate output on the
   // grouping columns unless the aggregate already emits its groups in that order.
   bool ordered_by_grouping_keys = 9;
+  // Attach this partial MIN/MAX execution's live bound to an eligible native reader.
+  bool dynamic_filter_enabled = 10;
 }
 
 message Limit {
