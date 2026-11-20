@@ -821,7 +821,7 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
       taskAttempt: Int): Boolean =
     outputCommitCoordinator.synchronized {
       // Spark records task failures here even when no file-output commit was requested. Read that
-      // record without acquiring its commit slot: Spark 3.4 aborts the whole stage if an authorized
+      // record without acquiring its commit slot: Spark aborts the whole stage if an authorized
       // file committer fails, including executor loss before native map output has been written.
       val stageStatesField = classOf[OutputCommitCoordinator].getDeclaredField("stageStates")
       stageStatesField.setAccessible(true)

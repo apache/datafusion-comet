@@ -1869,11 +1869,87 @@ def check_scheduled_workflows_stay_upstream():
     return not failures
 
 
+def check_docs_permission_boundary():
+    """Keep dependency builds away from the site publishing token."""
+    path = WORKFLOWS / "docs.yaml"
+    jobs = job_blocks(path)
+    build = jobs.get("build-docs", "")
+    deploy = jobs.get("deploy-docs", "")
+    caller = job_blocks(CI_WORKFLOW).get("docs", "")
+    failures = []
+    for label, block, permission in (
+        ("caller", caller, "write"),
+        ("build-docs", build, "read"),
+        ("deploy-docs", deploy, "write"),
+    ):
+        if not re.search(rf"^    permissions:\n      contents: {permission}\n(?=    \S|\Z)", block, re.M):
+            failures.append(f"{label} must grant only contents: {permission}")
+    checkout_steps = re.findall(
+        r"      - name: [^\n]+\n        uses: actions/checkout@[^\n]+(?:\n          [^\n]+|\n        with:)*",
+        build,
+    )
+    checkout_count = len(re.findall(r"uses: actions/checkout@", build))
+    if (not checkout_count or len(checkout_steps) != checkout_count
+            or any("persist-credentials: false" not in step for step in checkout_steps)):
+        failures.append("every build checkout must disable persisted credentials")
+    build_steps = re.split(r"^      - ", build, flags=re.M)[1:]
+    uploads = [step for step in build_steps
+               if re.search(r"^        uses: \./\.github/actions/upload-artifact-retry$", step, re.M)]
+    if (len(uploads) != 1 or
+            re.findall(r"^          include-hidden-files: (.+)$", uploads[0], re.M) != ["true"]):
+        failures.append("the site upload must include hidden files such as .buildinfo")
+    if not re.search(r"^    needs: build-docs$", deploy, re.M):
+        failures.append("deploy-docs must depend on the build")
+    steps = re.split(r"^      - ", deploy, flags=re.M)[1:]
+    uses = [re.findall(r"^(?:uses:|        uses:) (\S+)", step, re.M) for step in steps]
+    runs = [re.findall(r"^(?:run:|        run:)", step, re.M) for step in steps]
+    if (len(steps) != 4 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
+            or len(uses[1]) != 1 or not uses[1][0].startswith("actions/checkout@")
+            or uses[2] != ["./trusted/.github/actions/download-artifact-retry"]
+            or uses[3] or runs[0] or runs[1] or runs[2] or len(runs[3]) != 1
+            or not re.search(r"^          ref: asf-site$", steps[0], re.M)
+            or not re.search(r"^          path: asf-site$", steps[0], re.M)
+            or not re.search(r"^          ref: \$\{\{ github.sha \}\}$", steps[1], re.M)
+            or not re.search(r"^          path: trusted$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout: \|\n            /\.asf.yaml\n            /\.github/actions/download-artifact-retry/$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout-cone-mode: false$", steps[1], re.M)
+            or re.findall(r"^          name: (.+)$", steps[2], re.M) != ["comet-docs-site"]
+            or re.findall(r"^          path: (.+)$", steps[2], re.M) != ["site-output"]
+            or not re.search(r"^          persist-credentials: false$", steps[1], re.M)):
+        failures.append("the writer must check out the site and trusted metadata before downloading the artifact")
+    if len(steps) == 4:
+        artifact_refs = [line.strip() for line in steps[3].splitlines() if "site-output" in line]
+        if artifact_refs != ["../site-output/ \\"]:
+            failures.append("the writer may use site-output only as the rsync source")
+        for required in ("--exclude '/.git'", "--exclude '/.asf.yaml'", "--exclude '/.nojekyll'",
+                         "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll"):
+            if required not in steps[3]:
+                failures.append(f"the writer must protect metadata: {required}")
+        commands = [line.strip() for line in steps[3].splitlines()]
+        try:
+            after_copy = commands[commands.index("./") + 1:]
+        except ValueError:
+            after_copy = []
+        if after_copy != [
+            "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll",
+            "git status --porcelain", 'if [ "$(git status --porcelain)" != "" ]; then',
+            'git config user.name "github-actions[bot]"',
+            'git config user.email "github-actions[bot]@users.noreply.github.com"',
+            "git add --all", "git commit -m 'Publish built docs triggered by ${{ github.sha }}'",
+            "git push || git push --force", "fi",
+        ]:
+            failures.append("the writer must run only the expected commands after copying the site")
+    for failure in failures:
+        print(f"docs permissions: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_event_env() and ok
     ok = check_docs_deploy_guard() and ok
+    ok = check_docs_permission_boundary() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok

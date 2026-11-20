@@ -48,6 +48,7 @@ pub(crate) use delta_spark_scan::redacted_url_display;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::init_text_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::SortedInputExec;
 use crate::execution::operators::TopKReaderFilterExec;
@@ -72,8 +73,11 @@ use datafusion::{
     execution::FunctionRegistry,
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        expressions::{BinaryExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral},
-        PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
+        expressions::{
+            BinaryExpr, CastExpr, Column, IsNullExpr, LambdaExpr, LambdaVariable,
+            Literal as DataFusionLiteral,
+        },
+        HigherOrderFunctionExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         empty::EmptyExec, limit::LocalLimitExec, sorts::sort::SortExec, ExecutionPlan,
@@ -253,6 +257,16 @@ impl PhysicalPlanner {
         }
     }
 
+    /// This planner's settings for `partition`, with its own query context registry, as
+    /// `ExecutionContext::planner` would create it. The SQL text pool is shared.
+    pub(crate) fn for_partition(&self, partition: i32) -> Self {
+        Self {
+            partition,
+            query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            ..self.clone()
+        }
+    }
+
     /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
     /// called with the *root* operator: the JVM only populates the pool there, and
     /// `QueryContext.sql_text_idx` values are indices into it.
@@ -385,6 +399,32 @@ impl PhysicalPlanner {
             options,
         )?;
         Ok((url, backend))
+    }
+
+    /// The object store and file group one CSV or Text scan task reads: this task's own partition,
+    /// with the store taken from its first file, because partitions can differ in store.
+    fn scan_task_files(
+        &self,
+        scan_name: &str,
+        file_partitions: &[SparkFilePartition],
+        object_store_options: &HashMap<String, String>,
+    ) -> Result<(ObjectStoreUrl, Vec<Vec<PartitionedFile>>), ExecutionError> {
+        let partition = usize::try_from(self.partition)
+            .ok()
+            .and_then(|p| file_partitions.get(p))
+            .ok_or_else(|| {
+                GeneralError(format!(
+                    "{scan_name} has no file partition {} ({} partitions)",
+                    self.partition,
+                    file_partitions.len()
+                ))
+            })?;
+        let object_store_url = match partition.partitioned_file.first() {
+            Some(file) => self.scan_store(&file.file_path, object_store_options)?.0,
+            None => ObjectStoreUrl::local_filesystem(),
+        };
+        let files = self.get_partitioned_files(partition, object_store_options)?;
+        Ok((object_store_url, vec![files]))
     }
 
     /// Plans `spark_plan` as the next native input when it is an input leaf and the planner has
@@ -812,6 +852,7 @@ impl PhysicalPlanner {
                     expr.is_spark4_plus,
                 );
                 cast_options.decimal_zero_any_exponent = expr.decimal_zero_any_exponent;
+                cast_options.decimal_tiny_to_zero = expr.decimal_tiny_to_zero;
                 cast_options.decimal_skip_integral_digit_limit =
                     expr.decimal_skip_integral_digit_limit;
                 Ok(Arc::new(Cast::new(
@@ -851,7 +892,7 @@ impl PhysicalPlanner {
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
                 // Only fuse when the Cast target type matches the CheckOverflow output type.
-                // Spark 3.4+ does not currently emit this shape, but keep its errors typed and
+                // Spark 3.5+ does not currently emit this shape, but keep its errors typed and
                 // contextualized in case a future serializer makes the fusion reachable.
                 if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (
@@ -1265,6 +1306,54 @@ impl PhysicalPlanner {
                     Arc::new(ConfigOptions::default()),
                 ));
                 Ok(expr)
+            }
+            ExprStruct::HigherOrderFunc(hof) => {
+                let array =
+                    self.create_expr(hof.array.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                // The lambda parameter takes the element field of the array as planned, since
+                // DataFusion checks it against the field of the list it evaluates.
+                let array_field = array.return_field(input_schema.as_ref())?;
+                let element_field = match array_field.data_type() {
+                    DataType::List(f) | DataType::LargeList(f) => f,
+                    other => {
+                        return Err(GeneralError(format!(
+                            "{} expects an array argument, got {other}",
+                            hof.func
+                        )))
+                    }
+                };
+                // The lambda body sees the enclosing schema with the parameter appended, so
+                // `BoundReference`s keep their indexes and a `LambdaVariable` is found by name.
+                let mut fields: Vec<FieldRef> = input_schema.fields().to_vec();
+                fields.push(Arc::new(
+                    element_field.as_ref().clone().with_name(&hof.param_name),
+                ));
+                let lambda_schema = Arc::new(Schema::new_with_metadata(
+                    fields,
+                    input_schema.metadata().clone(),
+                ));
+                let body = self.create_expr(hof.body.as_ref().unwrap(), lambda_schema)?;
+                let lambda: Arc<dyn PhysicalExpr> =
+                    Arc::new(LambdaExpr::try_new(vec![hof.param_name.clone()], body)?);
+                let func = self.session_ctx.higher_order_function(&hof.func)?;
+                Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
+                    func,
+                    vec![array, lambda],
+                    input_schema.as_ref(),
+                    Arc::new(ConfigOptions::default()),
+                )?))
+            }
+            ExprStruct::LambdaVariable(var) => {
+                let idx = input_schema.index_of(&var.name).map_err(|_| {
+                    GeneralError(format!(
+                        "Lambda variable '{}' is not in scope. Schema: {input_schema}",
+                        var.name
+                    ))
+                })?;
+                Ok(Arc::new(LambdaVariable::new(
+                    idx,
+                    Arc::clone(&input_schema.fields()[idx]),
+                )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
@@ -1894,24 +1983,11 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let partition = usize::try_from(self.partition)
-                    .ok()
-                    .and_then(|p| scan.file_partitions.get(p))
-                    .ok_or_else(|| {
-                        GeneralError(format!(
-                            "CsvScan has no file partition {} ({} partitions)",
-                            self.partition,
-                            scan.file_partitions.len()
-                        ))
-                    })?;
-                // Build the store from this partition's files; other partitions may read
-                // from a different one.
-                let object_store_url = match partition.partitioned_file.first() {
-                    Some(file) => self.scan_store(&file.file_path, &object_store_options)?.0,
-                    None => ObjectStoreUrl::local_filesystem(),
-                };
-                let files = self.get_partitioned_files(partition, &object_store_options)?;
-                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let (object_store_url, file_groups) = self.scan_task_files(
+                    "CsvScan",
+                    &scan.file_partitions,
+                    &object_store_options,
+                )?;
                 let scan = init_csv_datasource_exec(
                     object_store_url,
                     file_groups,
@@ -1919,6 +1995,32 @@ impl PhysicalPlanner {
                     partition_schema,
                     projection_vector,
                     &scan.csv_options.clone().unwrap(),
+                )?;
+                Ok((
+                    vec![],
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                ))
+            }
+            OpStruct::TextScan(scan) => {
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let projection_vector: Vec<usize> =
+                    scan.projection_vector.iter().map(|i| *i as usize).collect();
+                let object_store_options: HashMap<String, String> =
+                    scan.object_store_options.clone();
+                let (object_store_url, file_groups) = self.scan_task_files(
+                    "TextScan",
+                    &scan.file_partitions,
+                    &object_store_options,
+                )?;
+                let scan = init_text_datasource_exec(
+                    object_store_url,
+                    file_groups,
+                    data_schema,
+                    projection_vector,
+                    scan.text_options
+                        .as_ref()
+                        .ok_or_else(|| GeneralError("TextScan missing text_options".to_string()))?,
                 )?;
                 Ok((
                     vec![],
@@ -3132,6 +3234,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 #[cfg(test)]
 mod tests {
     mod empty_native_scan;
+    mod min_max_reader_filter;
     mod multi_store_scan;
     mod semi_join_reduction;
 
@@ -4608,6 +4711,7 @@ mod tests {
                 expr_modes: vec![],
                 initial_input_buffer_offset: 0,
                 ordered_by_grouping_keys: false,
+                dynamic_filter_enabled: false,
             })),
         };
         let projection = Operator {
@@ -5340,11 +5444,23 @@ mod tests {
 
     #[tokio::test]
     async fn explode_evaluates_array_once_per_batch() {
+        check_explode_evaluates_collection_once_per_batch(false).await;
+    }
+
+    #[tokio::test]
+    async fn explode_evaluates_map_once_per_batch() {
+        check_explode_evaluates_collection_once_per_batch(true).await;
+    }
+
+    async fn check_explode_evaluates_collection_once_per_batch(map: bool) {
+        use arrow::array::{AsArray, MapArray, StructArray};
         use arrow::datatypes::Int32Type;
         use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::logical_expr::{create_udf, Volatility};
         use datafusion::physical_plan::projection::ProjectionExec;
-        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+        use spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, ListInfo, MapInfo,
+        };
 
         let array_type = spark_expression::DataType {
             type_id: 14,
@@ -5362,6 +5478,55 @@ mod tests {
             None,
             Some(vec![Some(20)]),
         ])) as ArrayRef;
+
+        let (array_type, arrays) = if map {
+            // Slice away a leading entry to exercise non-zero map offsets.
+            let values = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                Some(vec![Some(99)]),
+                Some(vec![Some(10), None]),
+                Some(vec![]),
+                None,
+                Some(vec![Some(20)]),
+            ])
+            .slice(1, 4);
+            let fields: Fields = vec![
+                Field::new("key", DataType::Int32, false)
+                    .with_metadata([("PARQUET:field_id".to_string(), "10".to_string())].into()),
+                Field::new("value", DataType::Int32, true)
+                    .with_metadata([("PARQUET:field_id".to_string(), "11".to_string())].into()),
+            ]
+            .into();
+            let entries = StructArray::new(
+                fields.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![99, 1, 2, 3])),
+                    Arc::clone(values.values()),
+                ],
+                None,
+            );
+            let maps = MapArray::new(
+                Arc::new(Field::new("entries", DataType::Struct(fields), false)),
+                values.offsets().clone(),
+                entries,
+                values.nulls().cloned(),
+                false,
+            );
+            let map_type = spark_expression::DataType {
+                type_id: 15,
+                type_info: Some(Box::new(DataTypeInfo {
+                    datatype_struct: Some(DatatypeStruct::Map(Box::new(MapInfo {
+                        key_type: Some(Box::new(create_proto_datatype())),
+                        value_type: Some(Box::new(create_proto_datatype())),
+                        value_contains_null: true,
+                        key_field_id: Some(10),
+                        value_field_id: Some(11),
+                    }))),
+                })),
+            };
+            (map_type, Arc::new(maps) as ArrayRef)
+        } else {
+            (array_type, arrays)
+        };
 
         for outer in [false, true] {
             for position in [false, true] {
@@ -5441,20 +5606,21 @@ mod tests {
                     let results = collect(native_plan.execute(0, task_ctx).unwrap())
                         .await
                         .unwrap();
-                    let context =
-                        format!("outer={outer}, position={position}, computed={computed}");
+                    let context = format!(
+                        "outer={outer}, position={position}, computed={computed}, map={map}"
+                    );
                     assert_eq!(
                         calls.load(Ordering::Relaxed),
                         if computed { 2 } else { 0 },
                         "{context}"
                     );
                     // The array is pre-projected only to share one evaluation between the
-                    // `pos` and `value` references, so only a computed child needs it. `outer`
+                    // `pos` and `value` references, so a computed child or map wrapper needs it. `outer`
                     // does not, since it is now a `UnnestOptions` mode rather than a wrapper
                     // expression around the child.
                     assert_eq!(
                         projections,
-                        1 + usize::from(position && computed),
+                        1 + usize::from(position && (computed || map)),
                         "{context}"
                     );
                     let expected_values = if outer {
@@ -5474,6 +5640,38 @@ mod tests {
                         })
                         .collect();
                     assert_eq!(values, expected_values.repeat(2), "{context}");
+                    if map {
+                        let schema = native_plan.schema();
+                        for (index, id) in [
+                            (schema.fields().len() - 2, "10"),
+                            (schema.fields().len() - 1, "11"),
+                        ] {
+                            assert_eq!(
+                                schema
+                                    .field(index)
+                                    .metadata()
+                                    .get("PARQUET:field_id")
+                                    .map(String::as_str),
+                                Some(id)
+                            );
+                        }
+                        assert_eq!(schema.field(schema.fields().len() - 2).is_nullable(), outer);
+                        let expected_keys = if outer {
+                            vec![Some(1), Some(2), None, None, Some(3)]
+                        } else {
+                            vec![Some(1), Some(2), Some(3)]
+                        };
+                        let keys: Vec<_> = results
+                            .iter()
+                            .flat_map(|batch| {
+                                batch
+                                    .column(batch.num_columns() - 2)
+                                    .as_primitive::<Int32Type>()
+                                    .iter()
+                            })
+                            .collect();
+                        assert_eq!(keys, expected_keys.repeat(2), "{context}");
+                    }
                     if position {
                         let expected_positions = if outer {
                             vec![Some(0), Some(1), None, None, Some(0)]
@@ -5496,6 +5694,186 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
+        spark_expression::Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        }
+    }
+
+    fn bound(index: i32) -> spark_expression::Expr {
+        expr(Bound(spark_expression::BoundReference {
+            index,
+            datatype: None,
+        }))
+    }
+
+    /// A higher-order function as the right operand of OR or AND: DataFusion evaluates the right
+    /// operand over only the rows the left operand leaves open.
+    #[test]
+    fn test_higher_order_as_right_operand() -> Result<(), DataFusionError> {
+        use arrow::array::{BooleanArray, ListBuilder, StringBuilder};
+        use datafusion_comet_proto::spark_expression::{
+            BinaryExpr, HigherOrderFunc, LambdaVariable,
+        };
+
+        fn binary(left: spark_expression::Expr, right: spark_expression::Expr) -> Box<BinaryExpr> {
+            Box::new(BinaryExpr {
+                left: Some(Box::new(left)),
+                right: Some(Box::new(right)),
+            })
+        }
+        // array_any_match(a, x#1 -> x#1 = c)
+        let any_match = expr(ExprStruct::HigherOrderFunc(Box::new(HigherOrderFunc {
+            func: "array_any_match".to_string(),
+            array: Some(Box::new(bound(0))),
+            param_name: "x#1".to_string(),
+            body: Some(Box::new(expr(ExprStruct::Eq(binary(
+                expr(ExprStruct::LambdaVariable(LambdaVariable {
+                    name: "x#1".to_string(),
+                })),
+                bound(1),
+            ))))),
+        })));
+
+        let mut builder = ListBuilder::new(StringBuilder::new());
+        for row in [vec!["a"], vec!["b"], vec!["a"], vec!["z"]] {
+            row.into_iter()
+                .for_each(|v| builder.values().append_value(v));
+            builder.append(true);
+        }
+        let list = builder.finish();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+            Field::new("b", DataType::Boolean, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "x", "z"])),
+                Arc::new(BooleanArray::from(vec![true, false, false, false])),
+            ],
+        )?;
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // b OR any_match(...): rows 0 and 3 are true, the others have no match.
+        let or = expr(ExprStruct::Or(binary(bound(2), any_match.clone())));
+        let physical = planner.create_expr(&or, Arc::clone(&schema)).unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![true, false, false, true]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // NOT b AND any_match(...): rows 1 and 2 are false, row 3 matches.
+        let and = expr(ExprStruct::And(binary(
+            expr(ExprStruct::Not(Box::new(
+                datafusion_comet_proto::spark_expression::UnaryExpr {
+                    child: Some(Box::new(bound(2))),
+                },
+            ))),
+            any_match,
+        )));
+        let physical = planner.create_expr(&and, Arc::clone(&schema)).unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![false, false, false, true]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+        Ok(())
+    }
+
+    #[test]
+    fn test_higher_order_filter() -> Result<(), DataFusionError> {
+        use arrow::array::ListBuilder;
+        use arrow::array::StringBuilder;
+        use datafusion_comet_proto::spark_expression::{
+            BinaryExpr, HigherOrderFunc, LambdaVariable,
+        };
+
+        fn variable(name: &str) -> spark_expression::Expr {
+            expr(ExprStruct::LambdaVariable(LambdaVariable {
+                name: name.to_string(),
+            }))
+        }
+        fn string_lists(rows: Vec<Option<Vec<Option<&str>>>>) -> ListArray {
+            let mut builder = ListBuilder::new(StringBuilder::new());
+            for row in rows {
+                match row {
+                    Some(values) => {
+                        values
+                            .into_iter()
+                            .for_each(|v| builder.values().append_option(v));
+                        builder.append(true);
+                    }
+                    None => builder.append(false),
+                }
+            }
+            builder.finish()
+        }
+
+        // array_filter(a, x#1 -> x#1 = c) over a: array<string> and c: string
+        fn filter(func: &str, array: spark_expression::Expr) -> spark_expression::Expr {
+            expr(ExprStruct::HigherOrderFunc(Box::new(HigherOrderFunc {
+                func: func.to_string(),
+                array: Some(Box::new(array)),
+                param_name: "x#1".to_string(),
+                body: Some(Box::new(expr(ExprStruct::Eq(Box::new(BinaryExpr {
+                    left: Some(Box::new(variable("x#1"))),
+                    right: Some(Box::new(bound(1))),
+                }))))),
+            })))
+        }
+
+        let list = string_lists(vec![
+            Some(vec![Some("a"), None, Some("b"), Some("a")]),
+            Some(vec![]),
+            None,
+            Some(vec![Some("b")]),
+        ]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "a", "x"])),
+            ],
+        )?;
+
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // The lambda keeps the elements equal to the captured column, and drops NULL elements.
+        let physical = planner
+            .create_expr(&filter("array_filter", bound(0)), Arc::clone(&schema))
+            .unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = string_lists(vec![
+            Some(vec![Some("a"), Some("a")]),
+            Some(vec![]),
+            None,
+            Some(vec![]),
+        ]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // The argument must be an array, and the function must be registered with the session.
+        let not_array = planner.create_expr(&filter("array_filter", bound(1)), Arc::clone(&schema));
+        assert!(not_array
+            .unwrap_err()
+            .to_string()
+            .contains("expects an array argument"));
+        let unknown =
+            planner.create_expr(&filter("no_such_function", bound(0)), Arc::clone(&schema));
+        assert!(unknown
+            .unwrap_err()
+            .to_string()
+            .contains("Higher Order Function no_such_function not found"));
+        Ok(())
     }
 
     #[test]
