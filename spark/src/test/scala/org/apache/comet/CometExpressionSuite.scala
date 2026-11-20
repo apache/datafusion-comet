@@ -3786,6 +3786,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("ANSI division in filters with partial readers and shared predicates") {
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (1L, true, true), (0L, NULL, false) AS t(x, p, q)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "divisors") {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          val filtered = sql("SELECT x FROM divisors WHERE p IS NOT NULL AND abs(10 DIV x) > 0")
+          assert(!filtered.isEmpty)
+          assert(filtered.rdd.take(1).toSeq == Seq(Row(1L)))
+
+          // Spark 4.2 evaluates the shared division before testing p and q.
+          val shared =
+            sql("SELECT x FROM divisors WHERE (p OR (q AND 10 DIV x > 0)) AND 10 DIV x < 100")
+          if (isSpark42Plus) checkSparkError(shared, "DIVIDE_BY_ZERO")
+          else checkSparkAnswerAndOperator(shared)
+        }
+      }
+    }
+  }
+
   test("ANSI support for divide (division by zero)") {
     val data = Seq((Integer.MIN_VALUE, 0))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {

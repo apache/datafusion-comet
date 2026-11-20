@@ -31,9 +31,8 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
-import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1460,7 +1459,21 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
       op: ProjectExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val exprs = op.projectList.map(exprToProto(_, op.child.output))
+    val output = op.child.output
+    val shared = SparkExpressionEvaluation.sharedGuardedDivisions(op)
+    val inputs = if (shared.isEmpty || childOp.isEmpty) {
+      output
+    } else {
+      // The rest of the right operand can fail on rows already decided by the left operand.
+      // Materialize only the shared part. Both projections belong to this Spark operator.
+      val aliases = shared.zipWithIndex.map { case (e, index) => Alias(e, s"shared_$index")() }
+      val projected =
+        CometExecUtils.getProjectionNativePlan(output ++ aliases, output, childOp.head)
+      if (projected.isEmpty) return None
+      builder.clearChildren().addChildren(projected.get.toBuilder.setPlanId(builder.getPlanId))
+      new QueryPlanSerde.ProjectInputs(output, aliases)
+    }
+    val exprs = op.projectList.map(exprToProto(_, inputs))
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
       val projectBuilder = OperatorOuterClass.Projection
@@ -1519,7 +1532,10 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
       op: FilterExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val cond = exprToProto(op.condition, op.child.output)
+    val cond = QueryPlanSerde.rewrittenExprToProto(
+      op.condition,
+      SparkExpressionEvaluation.filterCondition(op),
+      op.child.output)
 
     if (cond.isDefined && childOp.nonEmpty) {
       val filterBuilder = OperatorOuterClass.Filter
@@ -2590,15 +2606,9 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
     // CodegenFallback expression, or when the output or an input exceeds its field limit. The
     // NO_CODEGEN factory mode also turns whole-stage codegen off (SPARK-44236).
-    val codegenOff = !op.conf.wholeStageEnabled ||
-      op.conf
-        .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
-        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString) ||
+    val codegenOff =
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
-      WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
-      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||
-      op.expressions.exists(_.exists(e =>
-        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
+        !SparkExpressionEvaluation.wholeStageCodegenEnabled(op)
     if (op.groupingExpressions.isEmpty && codegenOff && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(
