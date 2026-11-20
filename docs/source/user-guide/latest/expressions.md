@@ -337,8 +337,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 ## generator_funcs
 
 `explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
-`CometExplodeExec` (operator-level, not expression-level) for array input; map input falls back
-to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
+`CometExplodeExec` for array and map inputs (operator-level, not expression-level). Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
@@ -387,8 +386,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | --- | --- | --- | --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
 | `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
-| `exists` | ✅ | Codegen dispatch |  |
-| `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
+| `exists` | ✅ | Native | A one-parameter lambda whose body is natively supported and cannot raise runs natively; other lambdas, and `exists` with `spark.sql.legacy.followThreeValuedLogicInArrayExists=false`, use the JVM codegen dispatcher. See [Expression Tuning](tuning/expressions.md#lambdas-and-higher-order-functions) |
+| `filter` | ✅ | Native | A one-parameter lambda whose body is natively supported runs natively, as does the `array_compact` form; other lambdas use the JVM codegen dispatcher. See [Expression Tuning](tuning/expressions.md#lambdas-and-higher-order-functions) |
 | `forall` | ✅ | Codegen dispatch |  |
 | `map_filter` | ✅ | Codegen dispatch |  |
 | `map_zip_with` | ✅ | Codegen dispatch |  |
