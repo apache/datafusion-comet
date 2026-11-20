@@ -1838,6 +1838,7 @@ class CometJoinSuite extends CometTestBase {
     val right = Seq.fill(8192)(keys).flatten
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
       CometConf.COMET_BATCH_SIZE.key -> "4096",
       CometConf.COMET_SHUFFLE_MODE.key -> "native",

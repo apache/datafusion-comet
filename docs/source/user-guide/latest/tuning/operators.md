@@ -53,8 +53,13 @@ debug level. This best-effort check does not cover consumers that allocate memor
 The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
 batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
 partition. Batches with too few repeated keys also pass through; after an unprofitable
-batch, reduction is only tried again on a larger batch in the same partition. The join
-reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+batch, reduction is only tried again on a larger batch in the same partition.
+
+The right sort's compute time includes evaluating `coalesce`. The join reports rows entering,
+leaving, and bypassing reduction. Its reduction time includes all deduplication attempts.
+When the JVM shuffle reader supplies multiple columns, the reducer also copies the projected key
+for each bypassed batch so the sort can release the other columns. The reduction time includes
+these copies.
 
 Left-anti joins and joins with residual conditions keep their ordinary native sort.
 Extending reduction to those joins or across small batches is separate follow-up work.

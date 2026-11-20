@@ -18,19 +18,26 @@
 use std::sync::Arc;
 
 use super::{
-    create_bound_reference, create_proto_datatype, create_scan, create_sort_order, PhysicalPlanner,
+    create_bound_reference, create_proto_datatype, create_scan, create_sort_order, InputBatch,
+    PhysicalPlanner, ScanExec,
 };
+use crate::execution::spark_plan::SparkPlan;
+use arrow::array::{ArrayRef, Int32Array};
+use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow::record_batch::{RecordBatch, RecordBatchIterator};
 use datafusion::{
     physical_expr::expressions::Column,
     physical_plan::{
         joins::SortMergeJoinExec, projection::ProjectionExec, sorts::sort::SortExec, ExecutionPlan,
     },
+    prelude::SessionContext,
 };
 use datafusion_comet_operators::MembershipKeyReductionExec;
 use datafusion_comet_proto::spark_expression::{self as expr, expr::ExprStruct, Expr};
 use datafusion_comet_proto::spark_operator::{self as op, operator::OpStruct, JoinType, Operator};
+use futures::TryStreamExt;
 
-fn plan_join(input: Operator, sort: op::Sort, key: Expr) -> Arc<dyn ExecutionPlan> {
+fn plan_join(input: Operator, sort: op::Sort, key: Expr) -> Arc<SparkPlan> {
     let sorted = Operator {
         children: vec![input],
         op_struct: Some(OpStruct::Sort(sort)),
@@ -56,14 +63,14 @@ fn plan_join(input: Operator, sort: op::Sort, key: Expr) -> Arc<dyn ExecutionPla
     let (_, _, plan) = PhysicalPlanner::default()
         .create_plan(&join, &mut vec![], 1)
         .unwrap();
-    Arc::clone(&plan.native_plan)
+    plan
 }
 
 #[test]
 fn reduces_only_a_matching_unlimited_sort_directly_over_the_shuffle() {
     let reduced = |input, sort| {
-        plan_join(input, sort, create_bound_reference(0)).children()[1].children()[0]
-            .is::<MembershipKeyReductionExec>()
+        let plan = plan_join(input, sort, create_bound_reference(0));
+        plan.native_plan.children()[1].children()[0].is::<MembershipKeyReductionExec>()
     };
     let field = create_proto_datatype();
     let scan = create_scan();
@@ -107,8 +114,8 @@ fn reduces_only_a_matching_unlimited_sort_directly_over_the_shuffle() {
     assert!(!reduced(project, sort));
 }
 
-#[test]
-fn projects_an_integer_coalesce_before_reducing_its_key() {
+#[tokio::test]
+async fn projects_an_integer_coalesce_before_reducing_its_key() {
     let wrap = |kind| Expr {
         expr_struct: Some(kind),
         ..Default::default()
@@ -121,33 +128,41 @@ fn projects_an_integer_coalesce_before_reducing_its_key() {
             })))],
             ..Default::default()
         };
-        plan_join(create_scan(), sort, key)
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(op::Scan {
+                fields: vec![create_proto_datatype(); 2],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        plan_join(scan, sort, key)
     };
     let column = create_bound_reference(0);
     let has_value = wrap(ExprStruct::IsNotNull(Box::new(expr::UnaryExpr {
         child: Some(Box::new(column.clone())),
     })));
-    // Spark lowers coalesce(k, 0) to CASE WHEN k IS NOT NULL THEN k ELSE 0 END.
+    // Spark lowers coalesce(a, b) to CASE WHEN a IS NOT NULL THEN a ELSE b END.
     let key = wrap(ExprStruct::CaseWhen(Box::new(expr::CaseWhen {
         when: vec![has_value.clone()],
         then: vec![column],
-        else_expr: Some(Box::new(wrap(ExprStruct::Literal(expr::Literal {
-            datatype: Some(create_proto_datatype()),
-            value: Some(expr::literal::Value::IntVal(0)),
-            ..Default::default()
-        })))),
+        else_expr: Some(Box::new(create_bound_reference(1))),
         ..Default::default()
     })));
     let plan = plan_key(key);
-    let join = plan.downcast_ref::<SortMergeJoinExec>().unwrap();
+    let join = plan
+        .native_plan
+        .downcast_ref::<SortMergeJoinExec>()
+        .unwrap();
     let sort = join.right().downcast_ref::<SortExec>().unwrap();
     let reducer = sort
         .input()
         .downcast_ref::<MembershipKeyReductionExec>()
         .unwrap();
-    let projection = reducer.children()[0]
-        .downcast_ref::<ProjectionExec>()
-        .unwrap();
+    let projection = reducer.children()[0];
+    let sort_metrics = &plan.children[1].additional_native_plans;
+    assert_eq!(sort_metrics.len(), 1);
+    assert!(Arc::ptr_eq(&sort_metrics[0], projection));
+    let projection = projection.downcast_ref::<ProjectionExec>().unwrap();
     let key = &join.on()[0].1;
     assert_eq!(
         key.downcast_ref::<Column>().unwrap(),
@@ -155,10 +170,40 @@ fn projects_an_integer_coalesce_before_reducing_its_key() {
     );
     assert!(sort.expr().first().expr.eq(key));
     assert_eq!(projection.expr()[0].alias, "membership_key");
+    let scan = projection.input().downcast_ref::<ScanExec>().unwrap();
+    assert_bypass_releases_ffi_batch(reducer, scan.clone()).await;
 
     // A computed Boolean key still uses the original sort input.
     let boolean_plan = plan_key(has_value);
-    let join = boolean_plan.downcast_ref::<SortMergeJoinExec>().unwrap();
+    let join = boolean_plan
+        .native_plan
+        .downcast_ref::<SortMergeJoinExec>()
+        .unwrap();
     let sort = join.right().downcast_ref::<SortExec>().unwrap();
-    assert!(sort.input().is::<super::ScanExec>());
+    assert!(sort.input().is::<ScanExec>());
+}
+
+async fn assert_bypass_releases_ffi_batch(
+    reducer: &MembershipKeyReductionExec,
+    mut scan: ScanExec,
+) {
+    // Every row selects b, so the projection can return b with its imported buffers.
+    let a = Int32Array::new_null(2);
+    let discarded = a.values().inner().clone();
+    let b: ArrayRef = Arc::new(Int32Array::from(vec![Some(7), None]));
+    let batch = RecordBatch::try_new(scan.schema(), vec![Arc::new(a), Arc::clone(&b)]).unwrap();
+    let reader = RecordBatchIterator::new([Ok(batch)], scan.schema());
+    let stream = FFI_ArrowArrayStream::new(Box::new(reader));
+    let mut reader = ArrowArrayStreamReader::try_new(stream).unwrap();
+    let (_, columns, rows) = reader.next().unwrap().unwrap().into_parts();
+    scan.set_input_batch(InputBatch::Batch(columns, rows));
+    assert!(discarded.strong_count() > 1);
+
+    let mut stream = reducer
+        .execute(0, SessionContext::new().task_ctx())
+        .unwrap();
+    let output = stream.try_next().await.unwrap().unwrap();
+    // Holding the key for sorting must release the other columns of its FFI owner.
+    assert_eq!(discarded.strong_count(), 1);
+    assert_eq!(output.column(0).as_ref(), b.as_ref());
 }

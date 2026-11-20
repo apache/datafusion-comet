@@ -22,7 +22,7 @@ package org.apache.spark.sql.benchmark
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{Row, SparkSession}
-import org.apache.spark.sql.comet.{CometProjectExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometExec, CometProjectExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -281,6 +281,9 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
       }
       val shuffle = input.asInstanceOf[CometShuffleExchangeExec]
       require(shuffle.shuffleType == CometNativeShuffle && shuffle.output.size == 2)
+      // With AQE disabled, the native shuffle writer feeds a JVM-backed scan.
+      val rightLeaves = CometExec.nativeLeaves(join.nativeOp.getChildren(1))
+      require(rightLeaves.size == 1 && rightLeaves.head.hasScan)
       require(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled == enabled)
       val sortRows = sort.longMetric("output_rows").value
       require(if (enabled && keys < rows) sortRows < rows else sortRows == rows)

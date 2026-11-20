@@ -22,10 +22,11 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use arrow::array::{downcast_integer_array, Array, PrimitiveArray, UInt32Array};
+use arrow::array::{downcast_integer_array, make_array, Array, PrimitiveArray, UInt32Array};
 use arrow::compute::{take_record_batch, BatchCoalescer};
 use arrow::datatypes::ArrowPrimitiveType;
 use arrow::record_batch::RecordBatch;
+use datafusion::common::scalar::copy_array_data;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, HashSet, Result};
 use datafusion::execution::{async_try_stream, TaskContext};
@@ -47,6 +48,7 @@ const MIN_OUTPUT_ROWS: usize = 128;
 #[derive(Debug)]
 pub struct MembershipKeyReductionExec {
     input: Arc<dyn ExecutionPlan>,
+    copy_bypassed_keys: bool,
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -55,8 +57,15 @@ impl MembershipKeyReductionExec {
     pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             input,
+            copy_bypassed_keys: false,
             metrics: ExecutionPlanMetricsSet::new(),
         }
+    }
+
+    /// Copy bypassed keys when their buffers can retain other columns of a shuffle batch.
+    pub fn with_bypass_copy(mut self, enabled: bool) -> Self {
+        self.copy_bypassed_keys = enabled;
+        self
     }
 }
 
@@ -101,7 +110,9 @@ impl ExecutionPlan for MembershipKeyReductionExec {
         let [input]: [_; 1] = children.try_into().map_err(|_| {
             DataFusionError::Internal("Membership key reduction requires one child".into())
         })?;
-        Ok(Arc::new(Self::new(input)))
+        Ok(Arc::new(
+            Self::new(input).with_bypass_copy(self.copy_bypassed_keys),
+        ))
     }
 
     fn execute(
@@ -120,8 +131,9 @@ impl ExecutionPlan for MembershipKeyReductionExec {
             MetricBuilder::new(&self.metrics).subset_time("right_key_reduction_time", partition);
         let mut seen = 0usize;
         let mut min_rows = MIN_BATCH_ROWS;
+        let copy_bypassed_keys = self.copy_bypassed_keys;
         let mut batches = input.map(move |batch| -> Result<_> {
-            let batch = batch?;
+            let mut batch = batch?;
             let rows = batch.num_rows();
             input_rows.add(rows);
             // Avoid speculative hashing on short partitions, including a single large batch.
@@ -137,6 +149,11 @@ impl ExecutionPlan for MembershipKeyReductionExec {
                 min_rows = (rows + 1).next_power_of_two();
             }
             bypass_rows.add(rows);
+            if copy_bypassed_keys {
+                let _timer = time.timer();
+                let key = make_array(copy_array_data(&batch.column(0).to_data()));
+                batch = RecordBatch::try_new(batch.schema(), vec![key])?;
+            }
             Ok((false, batch))
         });
         // The sort accounts for Arrow buffers, but each small RecordBatch also has
