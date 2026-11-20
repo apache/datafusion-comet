@@ -478,15 +478,18 @@ release can land while an acquire waits. `CometFairMemoryPool` copies this:
 
 `try_grow` runs both checks under `state`, drops it for the JNI call, and records the bytes once
 Spark has granted them. The checks still hold at that point: while `acquire` is held nothing else
-adds to the totals, a `shrink` only lowers them, and a consumer that registers or a task that
-starts meanwhile lowers the shares just as it would a moment later. A refusal, a JNI error or a
+adds to the totals, a `shrink` only lowers them, and only a sort that registers or a task that
+starts meanwhile lowers the shares, just as it would a moment later. Other consumers count once
+they are active, and none can become active without `acquire`. A refusal, a JNI error or a
 panic records nothing. Because a pool's acquires run one at a time, two of its `try_grow` calls
 never both ask Spark for the same overcommit.
 
 `shrink` hands its bytes to Spark before it takes them off the totals. A `try_grow` checked in
 between still counts those bytes, so it can be refused where it would fit a moment later, but it is
 never admitted on bytes Spark still holds. One that passes the checks can still come back with a
-short grant if the task is at its Spark share until the release lands.
+short grant if the task is at its Spark share until the release lands. An in-flight `shrink` also
+keeps its consumer counted as active, so a `try_grow` from another consumer is held to the smaller
+share until the release lands.
 
 Nothing reachable from a Spark `spill` callback may reserve memory through this pool. Spark runs
 that callback on the acquiring thread, which already holds `acquire`.

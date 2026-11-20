@@ -332,7 +332,7 @@ impl MemoryPool for CometFairMemoryPool {
                 )
             }
             // Released with no lock held, so it never waits behind an acquire. The totals still
-            // count these bytes until Spark has them back.
+            // count these bytes, and the consumer as active, until Spark has them back.
             self.spark
                 .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
@@ -393,9 +393,10 @@ impl MemoryPool for CometFairMemoryPool {
                 );
             }
             // While `acquire` is held nothing else adds to the totals, and a shrink only lowers
-            // them, so the checks above still hold when the bytes are recorded below. A consumer
-            // that registers or a task that starts meanwhile lowers the shares as it would a moment
-            // later.
+            // them, so the checks above still hold when the bytes are recorded below. Only a sort
+            // that registers or a task that starts meanwhile lowers the shares, as it would a
+            // moment later: other consumers count once active, and none can become active without
+            // `acquire`.
             drop(state);
 
             // A partial grant is handed back and refused, which triggers spilling in the caller.
@@ -546,7 +547,7 @@ mod tests {
         /// `CometTaskMemoryManager.used`, which the JVM checks for leaks at task end.
         used: AtomicI64,
         /// When non-zero, every n-th acquire asks Spark for only half of the requested bytes.
-        short_every: usize,
+        short_every: AtomicUsize,
         fail_acquire: AtomicBool,
         panic_acquire: AtomicBool,
         /// Pauses an acquire under the task's monitor, like `TaskMemoryManager` spilling.
@@ -569,7 +570,7 @@ mod tests {
                 lock: Condvar::new(),
                 acquires: AtomicUsize::new(0),
                 used: AtomicI64::new(0),
-                short_every: 0,
+                short_every: AtomicUsize::new(0),
                 fail_acquire: AtomicBool::new(false),
                 panic_acquire: AtomicBool::new(false),
                 acquire_gate: Gate::new(),
@@ -578,8 +579,8 @@ mod tests {
             }
         }
 
-        fn short_every(mut self, n: usize) -> Self {
-            self.short_every = n;
+        fn short_every(self, n: usize) -> Self {
+            self.short_every.store(n, SeqCst);
             self
         }
 
@@ -652,7 +653,8 @@ mod tests {
                 panic!("injected acquire panic");
             }
             self.acquire_gate.pass();
-            let num_bytes = if self.short_every != 0 && n.is_multiple_of(self.short_every) {
+            let short_every = self.short_every.load(SeqCst);
+            let num_bytes = if short_every != 0 && n.is_multiple_of(short_every) {
                 additional.div_ceil(2)
             } else {
                 additional
@@ -1073,12 +1075,19 @@ mod tests {
     fn concurrent_try_grow_and_shrink_keep_accounting_consistent() {
         const THREADS: usize = 8;
         const ITERS: usize = 500;
-        const POOL_SIZE: usize = 80_000;
+        const POOL_SIZE: usize = 4_000;
 
         let stub = Arc::new(StubTaskMemory::new(GIB).short_every(7));
-        let pool = pool_with(&stub, POOL_SIZE);
+        let tasks = RunningTasks::default();
+        let _this_task = tasks.start();
+        let fair = Arc::new(CometFairMemoryPool::with_spark(
+            SparkMemory::with_manager(Box::new(Arc::clone(&stub)), THIS_TASK),
+            POOL_SIZE,
+            POOL_SIZE,
+            tasks.clone(),
+        ));
+        let pool: Arc<dyn MemoryPool> = Arc::clone(&fair) as _;
 
-        // Register every consumer up front so the fair limit stays fixed while threads run.
         let reservations: Vec<_> = (0..THREADS)
             .map(|t| spillable(&format!("consumer-{t}"), &pool))
             .collect();
@@ -1089,12 +1098,13 @@ mod tests {
             .map(|(t, res)| {
                 let pool = Arc::clone(&pool);
                 thread::spawn(move || {
-                    // Catch a failed invariant so this consumer stays registered, and the fair
-                    // limit of the others fixed, until every thread has been joined.
+                    // Catch a failed invariant so every thread is joined before the first
+                    // failure is reported.
                     let outcome = catch_unwind(AssertUnwindSafe(|| {
                         for i in 0..ITERS {
                             let size = 1 + (i * 37 + t * 101) % 509;
-                            // Refusals are expected; only the invariants below must hold.
+                            // The fair limit, the task's share and short grants refuse some of
+                            // these; only the invariants below must hold.
                             let _ = res.try_grow(size);
                             if i % 3 == 0 && res.size() > 0 {
                                 res.shrink(res.size() / 2 + 1);
@@ -1103,11 +1113,6 @@ mod tests {
                             if (i + t) % 41 == 0 {
                                 res.free();
                             }
-                            // One reservation per consumer, so its size is the consumer's share.
-                            assert!(
-                                res.size() <= POOL_SIZE / THREADS,
-                                "consumer exceeded its fair limit"
-                            );
                             assert!(pool.reserved() <= POOL_SIZE, "pool exceeded its size");
                         }
                     }));
@@ -1115,6 +1120,15 @@ mod tests {
                 })
             })
             .collect();
+
+        // Another task starting and finishing halves and restores the task's share under
+        // consumers that hold what the larger share let them reserve.
+        while !handles.iter().all(|handle| handle.is_finished()) {
+            let other_task = tasks.start();
+            thread::yield_now();
+            drop(other_task);
+            thread::yield_now();
+        }
 
         // Join every thread before dropping any reservation, then report the first failure.
         let (reservations, outcomes): (Vec<_>, Vec<_>) = handles
@@ -1124,9 +1138,23 @@ mod tests {
         if let Some(panic) = outcomes.into_iter().find_map(Result::err) {
             std::panic::resume_unwind(panic);
         }
-        for res in reservations {
+        {
+            let state = fair.state.lock();
+            let active = state.consumers.values().filter(|c| c.active()).count();
+            assert_eq!(
+                state.num_spill, active,
+                "num_spill drifted from the active consumers"
+            );
+        }
+        for res in &reservations {
             res.free();
         }
+        assert_eq!(
+            fair.state.lock().num_spill,
+            0,
+            "num_spill counts consumers that hold nothing"
+        );
+        drop(reservations);
 
         assert_eq!(pool.reserved(), 0, "pool still tracks bytes after quiesce");
         assert_eq!(
@@ -1260,7 +1288,8 @@ mod tests {
     #[test]
     fn try_grow_racing_a_shrink_is_not_admitted_on_bytes_the_jvm_still_holds() {
         let stub = Arc::new(StubTaskMemory::new(100));
-        // Two consumers: a 100 byte fair limit against a task whose Spark share is 100 bytes.
+        // The unstarted sort halves the 200 byte pool to a 100 byte fair limit, against a task
+        // whose Spark share is 100 bytes.
         let pool = pool_with(&stub, 200);
         let holder = spillable("holder", &pool);
         let grower = holder.new_empty();
@@ -1315,11 +1344,10 @@ mod tests {
     #[test]
     fn a_try_grow_waits_for_a_short_grant_to_be_handed_back() {
         let stub = Arc::new(StubTaskMemory::new(GIB).short_every(2));
-        // Two consumers: a 100 byte fair limit.
+        // One consumer, so its fair limit is the whole 200 byte pool.
         let pool = pool_with(&stub, 200);
         let first = spillable("first", &pool);
         let second = first.new_empty();
-        let other = spillable("other", &pool);
         // Uses up the first acquire, so the 100 byte request is the halved second and the 60
         // byte grow after it is granted in full.
         first.try_grow(1).unwrap();
@@ -1354,7 +1382,6 @@ mod tests {
         assert_eq!(pool.reserved(), 60);
         assert_eq!(stub.outstanding(), 60);
         drop(second);
-        drop(other);
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
     }
@@ -1452,7 +1479,8 @@ mod tests {
     #[test]
     fn try_grow_racing_a_shrink_gets_a_short_grant_at_the_spark_share() {
         let stub = Arc::new(StubTaskMemory::new(100));
-        // Two consumers: a 100 byte fair limit against a task whose Spark share is 100 bytes.
+        // Neither consumer is active, so the fair limit is the whole 200 byte pool, against a task
+        // whose Spark share is 100 bytes.
         let pool = pool_with(&stub, 200);
         let holder = spillable("holder", &pool);
         let grower = spillable("grower", &pool);
@@ -1491,6 +1519,165 @@ mod tests {
         drop(grower);
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
+    }
+
+    #[test]
+    fn a_consumer_shrinking_to_its_low_water_mark_counts_as_active_until_the_release_lands() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let pool = pool_with(&stub, 200);
+        let shrinker = spillable("shrinker", &pool);
+        let grower = spillable("grower", &pool);
+        hold(&shrinker, 100);
+
+        stub.release_gate.arm();
+        let shrinker_thread = thread::spawn(move || {
+            shrinker.shrink(99);
+            shrinker
+        });
+        stub.release_gate.wait_entered("shrinker release");
+
+        let during = grower.try_grow(101);
+
+        stub.release_gate.disarm();
+        stub.release_gate.open();
+        let shrinker = shrinker_thread.join().unwrap();
+
+        let err = during.expect_err("the shrinker is active until Spark has its bytes back");
+        assert!(
+            err.to_string().contains("the fair limit is 100 bytes"),
+            "{err}"
+        );
+        grower
+            .try_grow(199)
+            .expect("the grower has the whole share once the shrinker is idle");
+        assert_eq!(pool.reserved(), 200);
+        drop(shrinker);
+        drop(grower);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    enum FirstAcquire {
+        ShortGrant,
+        Error,
+        Panic,
+    }
+
+    /// A sort whose first acquire did not succeed has reserved nothing, so it keeps a share from
+    /// the other consumers that can spill until a request of its own is granted.
+    fn a_sort_whose_first_acquire_did_not_succeed_still_counts_as_unstarted(
+        first_acquire: FirstAcquire,
+    ) {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        match first_acquire {
+            FirstAcquire::ShortGrant => stub.short_every.store(1, SeqCst),
+            FirstAcquire::Error => stub.fail_acquire.store(true, SeqCst),
+            FirstAcquire::Panic => stub.panic_acquire.store(true, SeqCst),
+        }
+        let pool = pool_with(&stub, 300);
+        let sort = spillable("ExternalSorter[0]", &pool);
+        let _other_sort = spillable("ExternalSorter[1]", &pool);
+        let other = spillable("other", &pool);
+
+        let outcome = catch_unwind(AssertUnwindSafe(|| sort.try_grow(10)));
+        assert!(
+            !matches!(outcome, Ok(Ok(()))),
+            "Spark granted the sort's first request"
+        );
+        stub.short_every.store(0, SeqCst);
+        stub.fail_acquire.store(false, SeqCst);
+        stub.panic_acquire.store(false, SeqCst);
+
+        // Two unstarted sorts leave `other` a third of the pool. The refusal comes before Spark,
+        // so a short grant cannot be what refuses it.
+        let error = other
+            .try_grow(101)
+            .expect_err("both unstarted sorts keep a share")
+            .to_string();
+        assert!(error.contains("the fair limit is 100 bytes"), "{error}");
+
+        // The sort's first grant leaves one unstarted sort, so `other` gets half.
+        sort.try_grow(10).unwrap();
+        let error = other
+            .try_grow(151)
+            .expect_err("the other sort keeps a share")
+            .to_string();
+        assert!(error.contains("the fair limit is 150 bytes"), "{error}");
+        other.try_grow(150).unwrap();
+    }
+
+    #[test]
+    fn a_sort_whose_first_acquire_gets_a_short_grant_still_counts_as_unstarted() {
+        a_sort_whose_first_acquire_did_not_succeed_still_counts_as_unstarted(
+            FirstAcquire::ShortGrant,
+        );
+    }
+
+    #[test]
+    fn a_sort_whose_first_acquire_fails_still_counts_as_unstarted() {
+        a_sort_whose_first_acquire_did_not_succeed_still_counts_as_unstarted(FirstAcquire::Error);
+    }
+
+    #[test]
+    fn a_sort_whose_first_acquire_panics_still_counts_as_unstarted() {
+        a_sort_whose_first_acquire_did_not_succeed_still_counts_as_unstarted(FirstAcquire::Panic);
+    }
+
+    /// Parks `first.try_grow(size)` inside Spark, runs `meanwhile`, then lets the grant land.
+    fn try_grow_parked_in_spark(
+        stub: &Arc<StubTaskMemory>,
+        first: MemoryReservation,
+        size: usize,
+        meanwhile: impl FnOnce(),
+    ) -> (MemoryReservation, DFResult<()>) {
+        stub.acquire_gate.arm();
+        let first_thread = thread::spawn(move || {
+            let result = first.try_grow(size);
+            (first, result)
+        });
+        stub.acquire_gate.wait_entered("first acquire");
+        stub.acquire_gate.disarm();
+        meanwhile();
+        stub.acquire_gate.open();
+        first_thread.join().unwrap()
+    }
+
+    #[test]
+    fn a_sort_that_registers_while_a_try_grow_is_in_spark_limits_the_next_request() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let pool = pool_with(&stub, 400);
+        let first = spillable("first", &pool);
+        let second = spillable("second", &pool);
+
+        // Checked against the whole pool, before the sort halves the share.
+        let mut sort = None;
+        let (_first, result) = try_grow_parked_in_spark(&stub, first, 300, || {
+            sort = Some(spillable("ExternalSorter[0]", &pool));
+        });
+        result.expect("a grant checked before the sort registered stands");
+
+        let error = second
+            .try_grow(201)
+            .expect_err("the unstarted sort keeps a share")
+            .to_string();
+        assert!(error.contains("the fair limit is 200 bytes"), "{error}");
+        second.try_grow(100).unwrap();
+    }
+
+    #[test]
+    fn a_sort_that_unregisters_while_a_try_grow_is_in_spark_frees_its_share() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let pool = pool_with(&stub, 400);
+        let first = spillable("first", &pool);
+        let second = spillable("second", &pool);
+        let sort = spillable("ExternalSorter[0]", &pool);
+
+        let (_first, result) = try_grow_parked_in_spark(&stub, first, 100, || drop(sort));
+        result.unwrap();
+
+        second
+            .try_grow(201)
+            .expect("no unstarted sort is left to keep a share");
     }
 
     #[test]
