@@ -56,7 +56,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, M
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -1037,9 +1037,10 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
     }
     // The gate recurses, so a duplicate struct nested in an array or map is declined too.
-    for (nested <- Seq(ArrayType(duplicate), MapType(LongType, duplicate))) {
+    for (sink <- Seq(CometLocalTableScanExec, CometSparkToColumnarExec);
+      nested <- Seq(ArrayType(duplicate), MapType(LongType, duplicate))) {
       val reasons = ListBuffer.empty[String]
-      assert(!CometLocalTableScanExec.isSchemaSupported(schemaWith(nested), reasons), s"$nested")
+      assert(!sink.isSchemaSupported(schemaWith(nested), reasons), s"$sink accepted $nested")
       assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
     }
     // Names that differ only by case are distinct to Java Arrow and stay supported.
@@ -1989,7 +1990,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("AQE DPP query with a broadcast side reads its shuffle stage through ShuffleScan") {
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     withTempDir { dir =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark

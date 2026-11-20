@@ -55,3 +55,41 @@ SELECT parse_url('', 'HOST')
 -- unbalanced IPv6 bracket throws in ANSI mode
 query expect_error(http://[::1/path)
 SELECT parse_url('http://[::1/path', 'AUTHORITY')
+
+-- relative references do not throw in ANSI mode
+query
+SELECT parse_url('/shop?ref=abc&id=42', 'QUERY', 'id')
+
+query
+SELECT parse_url('//example.com/p', 'HOST')
+
+-- a leading ':' or an empty authority with nothing after it throws in ANSI mode
+query expect_error(:foo)
+SELECT parse_url(':foo', 'PATH')
+
+query expect_error(http://)
+SELECT parse_url('http://', 'PROTOCOL')
+
+-- characters java.net.URI rejects throw in ANSI mode
+query expect_error(/p|q)
+SELECT parse_url('/p|q', 'PATH')
+
+query expect_error(/p%zz)
+SELECT parse_url('/p%zz', 'PATH')
+
+query expect_error(http://example.com/p[1])
+SELECT parse_url('http://example.com/p[1]', 'HOST')
+
+query expect_error(#a#b)
+SELECT parse_url('#a#b', 'REF')
+
+-- an invalid scheme name or an empty scheme-specific part throws in ANSI mode
+query expect_error(user_id:5)
+SELECT parse_url('user_id:5', 'PROTOCOL')
+
+query expect_error(http:)
+SELECT parse_url('http:', 'PROTOCOL')
+
+-- an opaque URI does not throw in ANSI mode
+query
+SELECT parse_url('mailto:x#f', 'REF')
