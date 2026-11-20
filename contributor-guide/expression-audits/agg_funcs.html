@@ -597,6 +597,7 @@ under the License.
 <li><p>Spark 3.4.3 (2026-05-26)</p></li>
 <li><p>Spark 3.5.8 (2026-05-26): aggregate logic identical to 3.4.3</p></li>
 <li><p>Spark 4.0.1 (2026-05-26): aggregate logic identical to 3.5.8; only <code class="docutils literal notranslate"><span class="pre">QueryContext</span></code> import path differs. <code class="docutils literal notranslate"><span class="pre">YearMonthIntervalType</span></code> and <code class="docutils literal notranslate"><span class="pre">DayTimeIntervalType</span></code> inputs (supported by Spark) fall back to Spark in Comet.</p></li>
+<li><p>Performance (tuned 2026-11-17, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7674">#7674</a>): the grouped decimal accumulator loads the sum’s precision bounds once and compares against them on every update and merge, instead of calling <code class="docutils literal notranslate"><span class="pre">Decimal128Type::is_valid_decimal_precision</span></code>, which release builds keep out of line. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/decimal_groups.rs</span></code>.</p></li>
 </ul>
 </section>
 <section id="bit-and">
@@ -690,6 +691,12 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">CometPivotFirst</span></code> (in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/serde/aggregates.scala</span></code>) forwards the aggregate to the native <code class="docutils literal notranslate"><span class="pre">SparkPivotFirst</span></code> UDAF (<code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/agg_funcs/pivot_first.rs</span></code>) when the value type is in the supported set and the pivot column is a Boolean, Byte, Short, Int, Long, Float, Double, Decimal, UTF8_BINARY String, Date, Timestamp or TimestampNTZ. Those are the types Spark keys by value equality on every version, which the native lookup reproduces, including the float rules. Other pivot columns fall back, as does a list where <code class="docutils literal notranslate"><span class="pre">indexSize</span></code> is smaller than the list (duplicates, including <code class="docutils literal notranslate"><span class="pre">0.0</span></code> next to <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>). State layout matches Spark’s <code class="docutils literal notranslate"><span class="pre">aggBufferAttributes</span></code> (one scalar column per pivot slot) so the shuffle schema between Partial and Final stays consistent. The result reassembles the slots into a <code class="docutils literal notranslate"><span class="pre">ListArray</span></code> matching <code class="docutils literal notranslate"><span class="pre">PivotFirst.dataType</span> <span class="pre">=</span> <span class="pre">ArrayType(valueDataType)</span></code>.</p></li>
 </ul>
 </section>
+<section id="sum">
+<h2>sum<a class="headerlink" href="#sum" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-11-17, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7674">#7674</a>): the grouped decimal accumulator loads the result’s precision bounds once and compares against them on every update, merge, and evaluate, instead of calling <code class="docutils literal notranslate"><span class="pre">Decimal128Type::is_valid_decimal_precision</span></code>, which release builds keep out of line. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/decimal_groups.rs</span></code>.</p></li>
+</ul>
+</section>
 </section>
 
 
@@ -752,6 +759,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-by">min_by</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">percentile</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pivot-first">pivot_first</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sum">sum</a></li>
 </ul>
   </nav></div>
 
