@@ -576,6 +576,15 @@ object CometShuffleExchangeExec
       !hashesDifferentlyFromSpark(s)
 
   /**
+    * Whether the JVM columnar shuffle can take `s` with `rowChild`, a row-based plan, as its
+    * child. Pure: does not tag the node
+  */
+  def columnarShuffleSupports(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean = 
+    !isCometCelebornShuffleManagerEnabled(s.conf) &&
+      columnarShuffleFailureReasons(
+        ShuffleExchangeExec(s.outputPartitioning, rowChild, s.shuffleOrigin)).isEmpty
+
+  /**
    * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
    * converted rows, may put in a different partition from Spark's partitioner. Native shuffle
    * must not take over such a shuffle from the JVM columnar shuffle: a join with an input that is
