@@ -20,11 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import scala.concurrent.duration._
-import scala.jdk.CollectionConverters._
 
-import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetFileReader
-import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
@@ -53,18 +49,6 @@ object CometMinMaxBenchmark extends CometBenchmarkBase {
   private val modes = Map("off" -> false, "on" -> true)
   private val filterConfig = CometConf.COMET_EXEC_AGGREGATE_DYNAMIC_FILTER_ENABLED.key
 
-  private val nativeConfigs = Seq(
-    CometConf.COMET_ENABLED.key -> "true",
-    CometConf.COMET_EXEC_ENABLED.key -> "true",
-    CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-    CometConf.COMET_BATCH_SIZE.key -> "4096",
-    CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "false",
-    CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
-    "spark.comet.datafusion.execution.parquet.enable_page_index" -> "false",
-    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-    SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
-    SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "4194304")
-
   private def writeInput(
       directory: String,
       rows: Int,
@@ -89,20 +73,7 @@ object CometMinMaxBenchmark extends CometBenchmarkBase {
         .option("parquet.block.size", (rows.toLong / partitions * 4 / 8).toString)
         .parquet(directory)
     }
-    val path = new Path(directory)
-    val files = path
-      .getFileSystem(spark.sessionState.newHadoopConf())
-      .listStatus(path)
-      .filter(_.getPath.getName.endsWith(".parquet"))
-    require(files.length == partitions, s"Expected $partitions files, found ${files.length}")
-    val rowGroups = files.toSeq.map { file =>
-      val reader = ParquetFileReader.open(
-        HadoopInputFile.fromPath(file.getPath, spark.sessionState.newHadoopConf()))
-      try reader.getFooter.getBlocks.asScala.size
-      finally reader.close()
-    }
-    require(rowGroups.forall(_ > 1), s"Expected multiple row groups per file: $rowGroups")
-    (files.map(_.getLen).max, rowGroups)
+    inspectParquetFixture(directory, partitions)
   }
 
   private def verifyAndReport(
@@ -133,16 +104,7 @@ object CometMinMaxBenchmark extends CometBenchmarkBase {
     require(metrics("row_groups_pruned_statistics").value == 0L)
     require(metrics("page_index_rows_pruned").value == 0L)
     require(metrics("pushdown_rows_pruned").value == 0L)
-    val readerWork = Seq(
-      "output_rows",
-      "bytes_scanned",
-      "scan_io_data_bytes",
-      "scan_io_metadata_bytes",
-      "row_groups_pruned_dynamic_filter",
-      "row_groups_pruned_statistics",
-      "page_index_rows_pruned",
-      "pushdown_rows_pruned")
-      .map(name => s"$name=${metrics(name).value}")
+    val readerWork = formatParquetReaderMetrics(metrics)
     val attachment = Seq("attached", "skipped").map { suffix =>
       val name = s"dynamic_filter_minmax_filters_$suffix"
       val value = if (enabled) partial.metrics(name).value else 0L
@@ -180,7 +142,7 @@ object CometMinMaxBenchmark extends CometBenchmarkBase {
           val directory = s"${root.getCanonicalPath}/$layout-p$p"
           val (maxFileBytes, rowGroups) = writeInput(directory, rows, p, layout)
           // Keep one file per scan task so its bound can improve across row groups.
-          val scanConfigs = nativeConfigs :+
+          val scanConfigs = rowGroupPruningScanConfigs :+
             (SQLConf.FILES_MAX_PARTITION_BYTES.key -> (maxFileBytes + 4194304L).toString)
           spark.read.parquet(directory).createOrReplaceTempView("minmax_input")
           for (function <- Seq("MIN", "MAX")) {
