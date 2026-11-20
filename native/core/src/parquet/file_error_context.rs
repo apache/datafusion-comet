@@ -42,10 +42,79 @@ use datafusion_datasource::{
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use std::{fmt, sync::Arc};
+use url::Url;
 
-/// The original URL-encoded Spark path, before object-store aliases and paths are normalized.
+/// The URL-encoded Spark path for diagnostics, with the original scheme and without credentials.
 #[derive(Debug, Clone)]
-pub(crate) struct SparkFilePath(pub Arc<str>);
+pub(crate) struct SparkFilePath(Arc<str>);
+
+impl SparkFilePath {
+    pub(crate) fn new(original: &str, url: &Url) -> Self {
+        let path = original.split(['?', '#']).next().unwrap_or_default();
+        if !path.contains('@') {
+            return Self(path.into());
+        }
+        if url.cannot_be_a_base() || path.contains(['\t', '\r', '\n']) {
+            return Self("<redacted>".into());
+        }
+        let (_, rest) = path.split_once(':').unwrap_or_default();
+        let body = rest.trim_start_matches('/');
+        let prefix = &path[..path.len() - body.len()];
+        if url.scheme() == "s3"
+            && url.has_host()
+            && rest.starts_with('/')
+            && !prefix.ends_with("://")
+        {
+            return Self::hostless_alias(prefix, body);
+        }
+        let keep_container = matches!(url.scheme(), "abfs" | "abfss" | "az");
+        if url.password().is_none() && (url.username().is_empty() || keep_container) {
+            return Self(path.into());
+        }
+        let authority = body.split('/').next().unwrap_or_default();
+        let Some(at) = authority.rfind('@') else {
+            return Self("<redacted>".into());
+        };
+        let host_and_path = &body[at + 1..];
+        if keep_container && !url.username().is_empty() {
+            Self(format!("{prefix}{}@{host_and_path}", url.username()).into())
+        } else {
+            Self(format!("{prefix}{host_and_path}").into())
+        }
+    }
+
+    // Each segment at depth zero can become the bucket of a hostless S3 alias.
+    // Strip its userinfo even when a later ".." discards it. Keep '@' in object keys.
+    fn hostless_alias(prefix: &str, body: &str) -> Self {
+        let mut shown = String::with_capacity(prefix.len() + body.len());
+        shown.push_str(prefix);
+        let mut depth = 0usize;
+        let mut parts = body.split_inclusive('/');
+        while let Some(part) = parts.next() {
+            let segment = part.trim_end_matches('/');
+            if depth == 0 {
+                shown.push_str(part.rsplit_once('@').map_or(part, |(_, host)| host));
+            } else {
+                shown.push_str(part);
+            }
+            // url's parent-segment handling keeps a drive letter even on non-file URLs.
+            // Once one is reached, the remaining components cannot become the bucket.
+            if matches!(segment.as_bytes(), [letter, b':' | b'|'] | [letter, b':' | b'|', b'\\', ..] if letter.is_ascii_alphabetic())
+            {
+                shown.extend(parts);
+                break;
+            }
+            match segment {
+                "" if depth == 0 => {}
+                "." | "%2e" | "%2E" => {}
+                ".." | ".%2e" | ".%2E" | "%2e." | "%2E." | "%2e%2e" | "%2e%2E" | "%2E%2e"
+                | "%2E%2E" => depth = depth.saturating_sub(1),
+                _ => depth += 1,
+            }
+        }
+        Self(shown.into())
+    }
+}
 
 /// Delegate scan planning and pushdown to ParquetSource, wrapping only its per-file work.
 pub(crate) struct ParquetErrorContext(Arc<dyn FileSource>);
@@ -256,6 +325,56 @@ mod tests {
     impl Morsel for FailedMorsel {
         fn into_stream(self: Box<Self>) -> BoxStream<'static, Result<RecordBatch>> {
             futures::stream::once(async move { Err(self.0.into()) }).boxed()
+        }
+    }
+
+    #[test]
+    fn diagnostic_path_preserves_file_identity_without_credentials() {
+        use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
+
+        for (original, expected) in [
+            (
+                "s3a://user:password@bucket/part%3F1.parquet?sig=example",
+                "s3a://bucket/part%3F1.parquet",
+            ),
+            (
+                "s3a:///bucket/part.parquet?sig=example",
+                "s3a:///bucket/part.parquet",
+            ),
+            (
+                "s3a:///reader:password@bucket/%2e/café@1.parquet",
+                "s3a:///bucket/%2e/café@1.parquet",
+            ),
+            (
+                "s3a:///dir/../reader@bucket/café",
+                "s3a:///dir/../bucket/café",
+            ),
+            (
+                "s3a:///reader:password@old/%2e%2E/bucket/café@1",
+                "s3a:///old/%2e%2E/bucket/café@1",
+            ),
+            ("s3a:bucket/part@1", "s3a:bucket/part@1"),
+            (
+                "s3a:///bucket/C:/../../part@1",
+                "s3a:///bucket/C:/../../part@1",
+            ),
+            (
+                "HDFS://user@host:8020/%2E/café.parquet",
+                "HDFS://host:8020/%2E/café.parquet",
+            ),
+            (
+                "abfss://data:password@host/f?sig=example",
+                "abfss://data@host/f",
+            ),
+            ("abfs://data@host/f", "abfs://data@host/f"),
+            ("file:/part@1%23.parquet", "file:/part@1%23.parquet"),
+            ("file:/part.parquet#fragment", "file:/part.parquet"),
+        ] {
+            let url = normalize_object_store_url(original, &Default::default())
+                .unwrap()
+                .url;
+            let path = SparkFilePath::new(original, &url);
+            assert_eq!(path.0.as_ref(), expected);
         }
     }
 
