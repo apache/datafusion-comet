@@ -496,7 +496,7 @@ under the License.
 -->
 <section id="datafusion-comet-1-2-0-changelog">
 <h1>DataFusion Comet 1.2.0 Changelog<a class="headerlink" href="#datafusion-comet-1-2-0-changelog" title="Link to this heading">#</a></h1>
-<p>This release consists of 396 commits from 40 contributors. See credits at the end of this changelog for more information.</p>
+<p>This release consists of 399 commits from 40 contributors. See credits at the end of this changelog for more information.</p>
 <p><strong>Fixed bugs:</strong></p>
 <ul class="simple">
 <li><p>fix: reject a file without field ids at any depth whether or not id matching is on <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6116">#6116</a> (dwsmith1983)</p></li>
@@ -664,6 +664,9 @@ under the License.
 <li><p>fix: [branch-1.2] match SPARK-58821 and SPARK-60118 in sequence and string to decimal cast (#7171) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7263">#7263</a> (snmvaughan)</p></li>
 <li><p>fix: [branch-1.2] fall back to Spark when the driver cannot use the ABFS authentication (#7221) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7285">#7285</a> (andygrove)</p></li>
 <li><p>fix: [branch-1.2] spill a native PartialMerge whose input is sorted on some of its keys (#7222) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7286">#7286</a> (andygrove)</p></li>
+<li><p>fix: [branch-1.2] match Spark nullness for missing nested Parquet fields (#7085) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7313">#7313</a> (andygrove, rich7420)</p></li>
+<li><p>fix: [branch-1.2] decode invalid UTF-8 in nested Parquet BINARY values read as strings (#7106) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7339">#7339</a> (manuzhang)</p></li>
+<li><p>fix: [branch-1.2] apply the session’s Comet configs in map stages of jobs outside a SQL execution (#7302) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7337">#7337</a> (andygrove, comphead)</p></li>
 </ul>
 <p><strong>Performance related:</strong></p>
 <ul class="simple">
@@ -911,10 +914,10 @@ under the License.
 <section id="credits">
 <h2>Credits<a class="headerlink" href="#credits" title="Link to this heading">#</a></h2>
 <p>Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) per contributor. A PR with commits from more than one person counts for each of them.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>   212	Andy Grove
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>   214	Andy Grove
     25	dustin
-    21	KUAN-HAO HUANG
-    18	Oleks V
+    22	KUAN-HAO HUANG
+    19	Oleks V
     17	Liang-Chi Hsieh
     13	Peter Lee
     11	Chao Sun
@@ -922,7 +925,7 @@ under the License.
      8	ChenChen Lai
      6	Feng Zhang
      6	Unik Dahal
-     5	Manu Zhang
+     6	Manu Zhang
      5	Ping Zhang
      5	Yu Hsun Hung
      5	sam-1112
