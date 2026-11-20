@@ -50,7 +50,7 @@ use std::sync::Arc;
 /// Spark 4.2.0 changed this. SPARK-57329 ("mode() returns incorrect result when input contains
 /// both -0.0 and 0.0") treats the split `-0.0`/`0.0` counts as a bug and normalizes the key at
 /// update time, so from 4.2.0 on the two fold into a single key. `normalize_neg_zero` therefore
-/// tracks the Spark version Comet is running against: it is `false` for Spark 3.4 through 4.1 and
+/// tracks the Spark version Comet is running against: it is `false` for Spark 3.5 through 4.1 and
 /// `true` for 4.2.0+. `NaN` canonicalization is unconditional because every supported version
 /// collapses `NaN` via `doubleToLongBits`.
 ///
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn signed_zeros_are_distinct_keys_before_spark_42() {
-        // Spark 3.4-4.1 key on `java.lang.Double.equals`, so counts are -0.0:2, 0.0:2, 5.0:3 and
+        // Spark 3.5-4.1 key on `java.lang.Double.equals`, so counts are -0.0:2, 0.0:2, 5.0:3 and
         // 5.0 wins outright.
         let mut acc = ModeAccumulator::new(DataType::Float64, false);
         acc.update_batch(&[signed_zero_input()]).unwrap();

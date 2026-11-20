@@ -101,7 +101,7 @@ pub struct SparkParquetOptions {
     /// map exist in the Parquet file, true returns the entire value as null (pre-4.1
     /// legacy behavior); false preserves the parent's nullness from the file, so
     /// non-null parents keep their structure with all-null leaves. Comet sets it to true
-    /// on Spark 3.4 through 4.0, which always use the legacy behavior.
+    /// on Spark 3.5 through 4.0, which always use the legacy behavior.
     pub return_null_struct_if_all_fields_missing: bool,
     /// When true, resolve fields by parquet.field.id metadata instead of name
     /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect

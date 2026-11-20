@@ -130,15 +130,15 @@ STS endpoint selection (`configure_sts_endpoint`) overrides the SDK's own endpoi
 
 `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` differ in what they consume:
 
-| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                       |
-| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
-| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`    |
-| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                        |
-| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry    |
-| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry        |
-| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes |
+| Concern                 | Parquet (`object_store`)                                  | Iceberg (`opendal` via `reqsign-core`)                                                           |
+| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Trait method            | `get_credential() -> AwsCredential`                       | `provide_credential(...) -> Option<IcebergAwsCredential>`                                        |
+| Returns expiry?         | No (only key/secret/token)                                | Yes (`expires_in: Option<Timestamp>`)                                                            |
+| Comet-side TTL wrapper? | The bridge's own reuse, until 5 minutes before the expiry | The bridge's own reuse, until 5 minutes before the expiry                                        |
+| When SPI is called      | When the bridge's credential is due, or has no expiry     | When the bridge's credential is due, or has no expiry                                            |
+| Vendor returns 0 expiry | Not reused; the SPI is called per request                 | Not reused; the bridge tells reqsign it expires in 5 minutes for a read and 1 minute for a write |
 
-The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader or writer. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
+The 5-minute fallback on the Iceberg path bounds how long reqsign reuses a credential with no reported expiry within one long-lived reader. It can outlast a short-lived token, which is why a vendor that knows the expiry should report it. A write uses 1 minute instead. reqsign reloads a credential with less than 2 minutes left, so a write asks the SPI for every request, as the Parquet path does. A data file stays open while its rows arrive, and an AWS SDK v1 session provider keeps handing out its current credential until a minute before it expires, so the 5-minute window could sign a file's later parts with an expired token. It is intentionally not a configuration knob. On both paths a value of `Long.MAX_VALUE` means no expiry, and a value before 2000, almost always seconds sent as milliseconds, is treated as unknown with a warning.
 
 ## Property-bag handling on the Iceberg path
 
@@ -169,9 +169,17 @@ Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN,
 
 The SPI returns a `CometS3Credentials` or throws. There is no sentinel "I do not know" return. Vendors that are only authoritative for some paths resolve the default AWS chain themselves for the rest and return the result. This matches the contract on every other AWS credential SPI in the JVM ecosystem (AWS SDK v1/v2, Hadoop S3A, Iceberg `VendedCredentialsProvider`).
 
-## Lifecycle: `AutoCloseable` plus a JVM shutdown hook
+## Lifecycle: `AutoCloseable`, reference counts and a JVM shutdown hook
 
-`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`. The dispatcher installs a JVM shutdown hook that iterates every cached instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
+`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`.
+
+Each `ensureInitialized` call takes a reference to the instance it returns. A native `CometS3CredentialBridge` holds that reference, shares it with the bridges it derives (`for_path`, `for_location`), and the last of them to be dropped gives it back with `release`. When an instance's last reference is released, the dispatcher closes it and forgets its key, so a later `ensureInitialized` creates a new instance. A reference count rather than "close when superseded" keeps an instance open while any reader still uses it.
+
+The last bridge can be dropped on any thread: a Tokio worker running an iceberg-rust task, or a task thread inside `execute` that just missed the `FileIO` cache. So `release` hands the close to a single dispatcher-owned daemon thread, and a `close()` that blocks (Iceberg's `RefreshingAuthManager.close()` waits up to a minute for a refresh in flight) delays neither. The shutdown hook and a concurrent last release both claim an instance by setting its count to retired, so only one of them closes it.
+
+On the Iceberg path, bridges live in the executor's `FileIO` cache. A REST catalog that vends new credentials for a table changes the table's FileIO properties, and so the `(FQCN, dispatchKey, catalogProperties)` key. Inserting the table's new `FileIO` evicts the ones it supersedes: same access mode, catalog and table, different properties with an earlier expiry. A read identifies the table by its metadata file's directory, since Iceberg writes every metadata file of a table into one directory (`write.metadata.path`, or `<location>/metadata`). A write identifies it by its data location. Only properties whose `s3.session-token-expires-at-ms` is later than the cached entry's supersede it, so both must carry one. Properties can also differ for reasons that don't say which is newer, such as two sessions or tenants that share a catalog name with different tokens, OAuth credentials or tenant ids. Those entries stay side by side, so the sessions don't evict each other on every task, and a provider re-vended without an expiry is released only when the LRU bound retires its entry. A commit that keeps the properties supersedes nothing. Evicted providers are closed once the tasks reading through them finish, so a long-lived executor holds one provider per table in use, not one per credential it was ever vended. The cache's 64-entry LRU bound limits the rest. On the Parquet path the object store cache never evicts, so its providers live until shutdown.
+
+The dispatcher also installs a JVM shutdown hook that iterates every remaining instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
 
 ## Iceberg path: error message fidelity caveat
 
