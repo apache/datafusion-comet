@@ -108,6 +108,15 @@ SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared
 query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / (x + 1.0D) + 1.0D / (x + 1.0D)) FROM test_map_lookup_shared
 
+-- Spark keeps the repeated division inside the true branch, where the NULL map skips it.
+-- Compiling the lookup alone would evaluate the division before checking the map.
+query expect_fallback(that the kernel repeats)
+SELECT if(k = 1, element_at(m1, 1.0D / x + 1.0D / x), 0) FROM test_map_lookup_shared
+
+-- An imperative aggregate evaluates the lookup through eval, which skips the key on a NULL map.
+query expect_fallback(that the kernel repeats)
+SELECT collect_list(element_at(m1, 1.0D / x + 1.0D / x)) FROM test_map_lookup_shared
+
 -- An `if` shares only what it always evaluates, so its else-branch `1.0D / x` is not shared
 query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x), if(x = 0.0D, 0.0D, 1.0D / x) FROM test_map_lookup_shared
@@ -272,6 +281,9 @@ query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared
 
 query expect_dispatch(element_at)
+SELECT if(k = 1, element_at(m1, 1.0D / x + 1.0D / x), 0) FROM test_map_lookup_shared
+
+query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x) FROM test_map_lookup_shared
 
 -- The decline does not depend on ANSI mode
@@ -283,3 +295,16 @@ SET spark.sql.ansi.enabled=false
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x) FROM test_map_lookup_shared
+
+-- Interpreted projection evaluates a shared key on demand, after the map's NULL check.
+statement
+SET spark.sql.ansi.enabled=true
+
+statement
+SET spark.sql.codegen.wholeStage=false
+
+statement
+SET spark.sql.codegen.factoryMode=NO_CODEGEN
+
+query expect_fallback(that the kernel repeats)
+SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared

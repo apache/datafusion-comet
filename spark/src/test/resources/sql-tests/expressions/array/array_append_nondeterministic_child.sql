@@ -49,3 +49,14 @@ FROM test_array_append_nondet
 query expect_native(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 2) AS a
 FROM test_array_append_nondet
+
+statement
+SET spark.sql.codegen.wholeStage=false
+
+statement
+SET spark.sql.codegen.factoryMode=NO_CODEGEN
+
+-- The interpreted evaluator advances the counter only for non-NULL arrays.
+query expect_fallback(evaluates later arguments differently on NULL inputs)
+SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), monotonically_increasing_id()) AS a
+FROM test_array_append_nondet

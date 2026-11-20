@@ -70,3 +70,24 @@ SELECT m[named_struct('a', k, 'b', 'x')],
        m[named_struct('a', k, 'b', CAST(NULL AS STRING))],
        m[CAST(NULL AS STRUCT<a:int, b:string>)]
 FROM test_map_struct_key
+
+-- With ANSI on the bounds check throws, so this non-nullable lookup needs no null flag.
+statement
+SET spark.sql.ansi.enabled=true
+
+query expect_dispatch(getmapvalue)
+SELECT m[element_at(array(named_struct('a', k, 'b', 'x')), 1)] FROM test_map_struct_key
+
+-- Spark disables its compile-failure retry during tests. Use its interpreted projection
+-- as the reference for the non-ANSI bounds check, which assigns an undeclared null flag.
+statement
+SET spark.sql.ansi.enabled=false
+
+statement
+SET spark.sql.codegen.wholeStage=false
+
+statement
+SET spark.sql.codegen.factoryMode=NO_CODEGEN
+
+query expect_fallback(non-nullable array element_at)
+SELECT m[element_at(array(named_struct('a', k, 'b', 'x')), 1)] FROM test_map_struct_key

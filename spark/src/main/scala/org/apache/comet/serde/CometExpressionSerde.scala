@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.types.CalendarIntervalType
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArraysZip, Attribute, ElementAt, Expression, ScalaUDF}
+import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType}
 
 import org.apache.comet.serde.QueryPlanSerde.skipsSharedSubexpression
 
@@ -132,14 +132,38 @@ trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressi
   def dispatchDeclineReason(expr: Expression): Option[String] = None
 }
 
-/** Sends the two cases below, which the dispatcher would get wrong, to Spark. */
+/** Keeps expressions in Spark when compiling them as separate kernels would change behavior. */
 trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
   self: CometExpressionSerde[_] =>
 
   override def dispatchDeclineReason(expr: Expression): Option[String] =
     CalendarIntervalOutput
       .declineReason(expr)
+      .orElse(expr.collectFirst {
+        case u: ScalaUDF if !u.udfDeterministic =>
+          "a nondeterministic user function can share state across calls that Spark evaluates " +
+            "together for each row"
+        case e: ElementAt if writesUndeclaredNullFlag(e) =>
+          "Spark's generated code for this non-nullable array element_at assigns an " +
+            "undeclared null flag"
+        case a @ (_: ArraysZip | _: ArrayAppend)
+            if QueryPlanSerde.sparkMayInterpret && hasObservableLaterArgument(a.children) =>
+          s"${a.prettyName} evaluates later arguments differently on NULL inputs " +
+            "when Spark uses interpreted evaluation"
+      })
       .orElse(SharedSubexpressionArgument.declineReason(expr))
+
+  // ArraysZip.eval evaluates every child, while doGenCode stops after the first NULL.
+  // ArrayAppend.eval skips the item for a NULL array, while doGenCode always evaluates it.
+  private def hasObservableLaterArgument(children: Seq[Expression]): Boolean =
+    children.dropWhile(!_.nullable).drop(1).exists(e => !EvaluationOrder.isUnobservable(e))
+
+  // BinaryExpression declares the flag only for nullable results. ElementAt still assigns it
+  // in its out-of-bounds and null-element branches even when the literal index rules them out.
+  private def writesUndeclaredNullFlag(e: ElementAt): Boolean = e.left.dataType match {
+    case ArrayType(_, containsNull) => !e.nullable && (!e.failOnError || containsNull)
+    case _ => false
+  }
 }
 
 /** See https://github.com/apache/datafusion-comet/issues/5279. */
@@ -158,7 +182,8 @@ private[serde] object SharedSubexpressionArgument {
 
   private val reason: String =
     "an argument this expression can skip holds a subexpression that the operator's other " +
-      "expressions share, which Spark evaluates for every row before this expression's NULL check"
+      "expressions share or that the kernel repeats. Spark and the dispatcher can evaluate " +
+      "it on different rows"
 
   def declineReason(expr: Expression): Option[String] =
     if (skipsSharedSubexpression(expr)) Some(reason) else None

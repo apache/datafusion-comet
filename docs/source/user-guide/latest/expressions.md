@@ -205,10 +205,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array_size` | ✅ | — |  |
-| `cardinality` | ✅ | Hybrid | A nondeterministic child routes through the JVM codegen dispatcher |
+| `cardinality` | ✅ | Hybrid | Alias for `size` |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
 | `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | Hybrid | A nondeterministic child routes through the JVM codegen dispatcher |
+| `size` | ✅ | Hybrid | When Spark returns `NULL` for `size(NULL)`, a nullable nondeterministic operand routes through the JVM codegen dispatcher. |
 
 ---
 

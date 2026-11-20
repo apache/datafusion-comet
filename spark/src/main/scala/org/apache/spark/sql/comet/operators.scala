@@ -1964,7 +1964,9 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val childExpr = op.generator.children.head
-    val childExprProto = exprToProto(childExpr, op.child.output)
+    val childExprProto = QueryPlanSerde.withChildEvaluation(op.generator) {
+      exprToProto(childExpr, op.child.output)
+    }
 
     if (childExprProto.isEmpty) {
       return None

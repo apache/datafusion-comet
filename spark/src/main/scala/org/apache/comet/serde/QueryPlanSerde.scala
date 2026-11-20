@@ -29,6 +29,7 @@ import scala.util.DynamicVariable
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
@@ -835,6 +836,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
           return None
         }
+        def convertNative(): Option[AggExpr] =
+          withChildEvaluation(fn)(aggHandler.convert(aggExpr, fn, inputs, binding, conf))
         aggHandler.getSupportLevel(fn) match {
           case Unsupported(notes) =>
             withFallbackReason(fn, notes.getOrElse(""))
@@ -848,7 +851,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                     s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                     s"but has notes: ${notes.get}")
               }
-              aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+              convertNative()
             } else {
               val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
               withFallbackReason(
@@ -862,7 +865,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             if (notes.isDefined) {
               logWarning(s"Comet supports $fn but has notes: ${notes.get}")
             }
-            aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+            convertNative()
         }
       case _ =>
         withFallbackReason(aggExpr, s"unsupported Spark aggregate function: ${fn.prettyName}")
@@ -1050,6 +1053,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
         return None
       }
+      def convertNative(): Option[Expr] =
+        withChildEvaluation(expr)(handler.convert(expr, inputs, binding))
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
           // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
@@ -1077,7 +1082,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                   s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                   s"but has notes: ${notes.get}")
             }
-            handler.convert(expr, inputs, binding)
+            convertNative()
           } else {
             // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
             // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
@@ -1107,7 +1112,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           nativeOptIn.foreach { optIn =>
             withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
-          handler.convert(expr, inputs, binding)
+          convertNative()
       }
     }
 
@@ -1330,6 +1335,20 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
   }
 
+  private val interpretedInput = new DynamicVariable(false)
+
+  // CodegenFallback includes imperative aggregates, whose update calls child.eval directly.
+  // GenerateExec can also interpret its generator if it ends up outside a whole-stage stage.
+  def withChildEvaluation[T](parent: Expression)(f: => T): T = parent match {
+    case _: CodegenFallback | _: Generator => interpretedInput.withValue(true)(f)
+    case _ => f
+  }
+
+  private[serde] def sparkMayInterpret: Boolean =
+    interpretedInput.value || SQLConf.get
+      .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+      .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
+
   /**
    * The subexpressions that occur more than once in the expressions of the operator being
    * serialized, as Spark's subexpression elimination finds them. Where Spark eliminates them, it
@@ -1396,20 +1415,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Subexpression elimination never shares a leaf, such as a column or a literal
     skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      !holdsSharedSubexpression(skippable, s)
+      !sharingMayDiffer(skippable, s.common, Nil)
     }
   }
 
   /**
-   * Whether a node of `expr` can skip a child holding a subexpression the operator's expressions
-   * share. Spark evaluates that subexpression for every row, but the dispatcher, compiling `expr`
-   * alone, can skip it and so miss an ANSI error. While subexpression elimination is on, a
-   * subexpression `expr` itself repeats does not count, as the dispatcher eliminates it too.
-   * False outside `withSharedSubexpressions`.
+   * Whether Spark or the dispatcher can skip a subexpression that the other evaluates before a
+   * NULL check. Compiling `expr` alone loses sharing with sibling expressions, but can also
+   * introduce sharing within `expr` when it occurs in just one branch of a conditional.
    */
   def skipsSharedSubexpression(expr: Expression): Boolean =
     sharedSubexpressions.value.exists { s =>
-      lazy val repeated =
+      lazy val kernelShared =
         if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
         else Nil
       expr.exists { node =>
@@ -1426,19 +1443,20 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           case _ => node.children.drop(1)
         }
         !skippable.forall(_.isInstanceOf[LeafExpression]) &&
-        holdsSharedSubexpression(skippable, s, e => !repeated.exists(_.semanticEquals(e)))
+        sharingMayDiffer(skippable, s.common, kernelShared)
       }
     }
 
-  private def holdsSharedSubexpression(
+  private def sharingMayDiffer(
       exprs: Seq[Expression],
-      shared: SharedSubexpressions,
-      counts: Expression => Boolean = _ => true): Boolean =
-    // Avoid decimal promotion when Spark shares nothing.
-    shared.common.nonEmpty && exprs.exists { expr =>
-      DecimalPrecision
-        .promote(expr)
-        .exists(e => shared.common.exists(_.semanticEquals(e)) && counts(e))
+      sparkShared: Seq[Expression],
+      kernelShared: Seq[Expression]): Boolean =
+    (sparkShared.nonEmpty || kernelShared.nonEmpty) && exprs.exists { expr =>
+      DecimalPrecision.promote(expr).exists { e =>
+        // Interpreted evaluation reads a shared expression on demand, after the NULL check.
+        val hoisted = kernelShared.exists(_.semanticEquals(e))
+        hoisted != sparkShared.exists(_.semanticEquals(e)) || (hoisted && sparkMayInterpret)
+      }
     }
 
   /**

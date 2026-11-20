@@ -18,21 +18,20 @@
 -- The native NULL guard serializes the child twice, so a nondeterministic child would drift
 -- between the copies and is dispatched instead.
 
--- ConfigMatrix: spark.sql.legacy.sizeOfNull=true,false
+-- Config: spark.sql.legacy.sizeOfNull=false
 
 statement
 CREATE TABLE test_size_nondet(_1 int, arr array<int>) USING parquet
 
 statement
 INSERT INTO test_size_nondet
-SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)) FROM range(0, 16)
+SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)) FROM range(0, 16, 1, 1)
 
 query expect_dispatch(size)
 SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>))) AS s
 FROM test_size_nondet
 
--- Declined even when non-nullable, rather than relying on the guard matching every row
-query expect_dispatch(size)
+query expect_native(size)
 SELECT _1, size(array(monotonically_increasing_id())) AS s
 FROM test_size_nondet
 
@@ -41,6 +40,20 @@ SELECT _1, size(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>))) AS s
 FROM test_size_nondet
 
 -- A column array makes the dispatched kernel copy a ListVector
+query expect_dispatch(size)
+SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
+FROM test_size_nondet
+
+statement
+SET spark.sql.legacy.sizeOfNull=true
+
+query expect_native(size)
+SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
+FROM test_size_nondet
+
+statement
+SET spark.sql.ansi.enabled=true
+
 query expect_dispatch(size)
 SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
 FROM test_size_nondet

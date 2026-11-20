@@ -68,13 +68,16 @@ object CometArrayRemove
  */
 private[serde] object NullGuardSupport {
 
+  // Invoke.deterministic checks its arguments but skips its receiver.
+  def isNondeterministic(expr: Expression): Boolean = expr.exists(!_.deterministic)
+
   val nondeterministicReason: String =
     "Comet has no native path for a nondeterministic operand such as `rand()` or " +
       "`monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice."
 
   def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
     children
-      .find(child => !child.deterministic)
+      .find(isNondeterministic)
       .map(_ => Unsupported(Some(nondeterministicReason)))
 }
 
@@ -115,7 +118,7 @@ object CometArrayAppend
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
 
   override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
-    if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
+    if (expr.left.nullable && expr.children.exists(NullGuardSupport.isNondeterministic)) {
       Unsupported(Some(nondeterministicReason))
     } else {
       Compatible()
@@ -925,7 +928,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with GatedCodegenD
   override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
 
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    if (needsNullGuard(expr) && !expr.left.deterministic) {
+    if (needsNullGuard(expr) && NullGuardSupport.isNondeterministic(expr.left)) {
       Unsupported(Some(eagerIndexReason))
     } else {
       expr.left.dataType match {
@@ -1294,11 +1297,19 @@ object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable
 
 object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFallback {
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(NullGuardSupport.nondeterministicReason)
+  private val nondeterministicReason: String =
+    "When Spark returns NULL for `size(NULL)`, the native NULL guard would evaluate a " +
+      "nullable nondeterministic operand twice."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
+
+  private def needsNullGuard(expr: Size): Boolean =
+    !expr.legacySizeOfNull && expr.child.nullable
 
   override def getSupportLevel(expr: Size): SupportLevel = {
-    NullGuardSupport.nondeterministicChild(Seq(expr.child)).getOrElse {
+    if (needsNullGuard(expr) && NullGuardSupport.isNondeterministic(expr.child)) {
+      Unsupported(Some(nondeterministicReason))
+    } else {
       expr.child.dataType match {
         case _: ArrayType => Compatible()
         case _: MapType => Compatible()
@@ -1317,7 +1328,7 @@ object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFal
     // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
     // a NULL child must give NULL. The guard serializes the child twice, which would run an
     // expensive child such as a Scala UDF twice per row.
-    if (expr.legacySizeOfNull || !expr.child.nullable) {
+    if (!needsNullGuard(expr)) {
       return scalarFunctionExprToProto("size", arrayExprProto)
     }
 
