@@ -31,10 +31,11 @@ use crate::math_funcs::SparkGreatestLeast;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
-    spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySlice,
-    SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
-    SparkDayOfWeek, SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform,
+    spark_round, spark_rpad, spark_sequence, spark_sequence_recomputed, spark_to_time, spark_unhex,
+    spark_unscaled_value, EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove,
+    SparkArraySetOp, SparkArraySlice, SparkArraySort, SparkArraysOverlap, SparkContains,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkFlatten,
+    SparkFloatArrayContains, SparkIcebergBucket, SparkIcebergTemporalTransform,
     SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract,
     SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc, SparkSortArray, SparkWeekDay,
 };
@@ -131,6 +132,13 @@ pub fn create_comet_physical_fun_with_eval_mode(
         }
         "spark_sequence" => {
             make_comet_scalar_udf!("spark_sequence", spark_sequence, data_type)
+        }
+        "spark_sequence_recomputed" => {
+            make_comet_scalar_udf!(
+                "spark_sequence_recomputed",
+                spark_sequence_recomputed,
+                data_type
+            )
         }
         "floor" => {
             make_comet_scalar_udf!("floor", spark_floor, data_type)
@@ -270,10 +278,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
         }
-        "get_json_object_spark34" => {
-            let func = Arc::new(crate::string_funcs::spark_get_json_object_spark34);
-            make_comet_scalar_udf!("get_json_object_spark34", func, without data_type)
-        }
         "map" => Ok(Arc::new(ScalarUDF::new_from_impl(
             SparkMapFromArrays::default(),
         ))),
@@ -316,8 +320,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
         // SparkMakeTime already throws on invalid input, so accept the flag here rather
         // than falling through to the registry fail-closed path.
         "make_time" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::new()))),
-        // Floats, and arrays and structs holding them, need Spark's float ordering. Other types
-        // keep DataFusion's `greatest` and `least` from the registry.
+        // Floats need Spark's float ordering, and arrays and structs also Spark's ordering of the
+        // nulls inside them. Other types keep DataFusion's `greatest` and `least` from the
+        // registry.
         "greatest" | "least" if SparkGreatestLeast::handles(&data_type) => Ok(Arc::new(
             ScalarUDF::new_from_impl(SparkGreatestLeast::new(fun_name == "greatest")),
         )),
@@ -342,9 +347,14 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkArrayExtrema::new(false))),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayRemove::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySetOp::distinct())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySetOp::union())),
+        Arc::new(ScalarUDF::new_from_impl(SparkFloatArrayContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::normalized())),
         Arc::new(ScalarUDF::new_from_impl(SparkSortArray::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySort::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),

@@ -249,7 +249,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     val allocator = new RootAllocator(Long.MaxValue)
     val numRows = 32
     class CountingFixedWidthWriter(override val valueVector: BaseFixedWidthVector)
-        extends FixedWidthArrowFieldWriter {
+        extends FixedWidthArrowFieldWriter(valueVector) {
       var scalarWrites: Int = 0
       override def setValue(input: SpecializedGetters, ordinal: Int): Unit = scalarWrites += 1
       override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit =

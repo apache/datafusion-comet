@@ -45,8 +45,10 @@ Development Guide <development>
 :hidden:
 
 Comet Plugin Overview <plugin_overview>
+Local Execution <local-execution>
 Arrow FFI <ffi>
 Timezone Handling <timezones>
+Floating-Point Semantics <floating_point>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Memory Management <memory_management>
@@ -73,6 +75,7 @@ Adding a New Spark Version <adding_a_new_spark_version>
 Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
+Iceberg Scheduler Failure Tests <iceberg-scheduler-failures.md>
 Continuous Integration <ci>
 ```
 
@@ -94,8 +97,10 @@ Tracing <tracing>
 :hidden:
 
 Expression Audits <expression-audits/index>
+Data Source Audits <data-source-audits/index>
 Supported Spark Configurations <spark_configs_support>
 Configuration Conventions <config_conventions>
+Documentation Style Guide <style_guide>
 ```
 
 ```{toctree}
@@ -105,6 +110,7 @@ Configuration Conventions <config_conventions>
 
 Bug Triage <bug_triage>
 Backporting <backporting>
+Upgrading DataFusion <upgrading_datafusion>
 Release Process <release_process>
 Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>

@@ -68,6 +68,14 @@ query
 SELECT grp, mode(v), count(*), sum(v) FROM mode_int GROUP BY grp ORDER BY grp
 
 -- ============================================================
+-- Combined with a distinct aggregate: the mode buffer also passes through the PartialMerge
+-- stages of Spark's distinct rewrite, which must advertise the same native state type
+-- ============================================================
+
+query
+SELECT grp, count(DISTINCT v), mode(v) FROM mode_int GROUP BY grp ORDER BY grp
+
+-- ============================================================
 -- HAVING clause
 -- ============================================================
 
@@ -107,7 +115,7 @@ SELECT grp, mode(b), mode(s), mode(l) FROM mode_nums GROUP BY grp ORDER BY grp
 -- ============================================================
 -- Float / Double
 --
--- Whether `-0.0` and `0.0` share a frequency-map key is version-dependent: Spark 3.4-4.1 key on
+-- Whether `-0.0` and `0.0` share a frequency-map key is version-dependent: Spark 3.5-4.1 key on
 -- `java.lang.Double.equals` and keep them apart, while Spark 4.2.0+ folds `-0.0` into `0.0`
 -- (SPARK-57329). Each group below still has a unique winner under both behaviours.
 --

@@ -34,6 +34,8 @@ driver_class_path = ["$COMET_JAR", "$ICEBERG_JAR"]
 "spark.plugins" = "org.apache.spark.CometPlugin"
 "spark.shuffle.manager" = "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
 "spark.comet.exec.replaceSortMergeJoin" = "true"
+# Measure the hash join alone: no build-side size limit on the rewrite.
+"spark.comet.exec.forceShuffledHashJoin.maxBuildSize" = "-1"
 "spark.comet.expression.Cast.allowIncompatible" = "true"
 "spark.comet.enabled" = "true"
 "spark.comet.exec.enabled" = "true"

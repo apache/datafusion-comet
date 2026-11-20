@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{create_comet_physical_fun, IfExpr};
+use crate::{create_comet_physical_fun, spark_comparison, FloatOperands, IfExpr};
 use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
 use arrow::array::{ArrayRef, ArrowNativeTypeOp, AsArray, PrimitiveArray};
 use arrow::compute::kernels::arity::try_binary;
@@ -27,7 +27,7 @@ use datafusion::common::{
 };
 use datafusion::config::ConfigOptions;
 use datafusion::execution::FunctionRegistry;
-use datafusion::physical_expr::expressions::{lit, BinaryExpr};
+use datafusion::physical_expr::expressions::lit;
 use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr_common::datum::{apply, apply_cmp_for_nested};
 use datafusion::{
@@ -134,6 +134,20 @@ fn checked_modulo_kernel<T: ArrowPrimitiveType>(
     })
 }
 
+/// The width a `Decimal128` add, subtract or modulo of these operands needs: the wider scale plus
+/// the widest integral part. Callers compare it against `DECIMAL128_MAX_PRECISION` to decide
+/// whether to take the `Decimal256` path, with their own boundary.
+///
+/// The arithmetic is done in `i16` rather than `u8`. A negative scale, which
+/// `spark.sql.legacy.allowNegativeScaleOfDecimal=true` allows, makes `s as u8` wrap to a huge
+/// value and `p - s as u8` underflow, which panics in a debug build. A release build has
+/// `overflow-checks = false` and the wrapping arithmetic lands back on the true value, so only
+/// debug builds were affected. Precision and scale are both bounded well inside `i16`.
+/// See issue #5013.
+pub fn decimal128_add_sub_width(p1: u8, s1: i8, p2: u8, s2: i8) -> i16 {
+    max(s1 as i16, s2 as i16) + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
+}
+
 pub fn create_modulo_expr(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
@@ -158,19 +172,19 @@ pub fn create_modulo_expr(
         right_non_ansi_safe.data_type(&input_schema),
     ) {
         (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
-            if max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8) > DECIMAL128_MAX_PRECISION =>
+            if decimal128_add_sub_width(p1, s1, p2, s2) > DECIMAL128_MAX_PRECISION as i16 =>
         {
             let left_256 = Arc::new(Cast::new(
                 left,
                 DataType::Decimal256(p1, s1),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             ));
             let right_256 = Arc::new(Cast::new(
                 right_non_ansi_safe,
                 DataType::Decimal256(p2, s2),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             ));
@@ -192,7 +206,7 @@ pub fn create_modulo_expr(
             Ok(Arc::new(Cast::new(
                 modulo_scalar_func,
                 data_type,
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             )))
@@ -232,12 +246,15 @@ fn null_if_zero_primitive(
 
         // Create an expression like - `if (eval(expr) == Literal(0)) then NULL else eval(expr)`.
         // This expression evaluates to null for rows with zero values to prevent divide by zero
-        // error.
-        let eq_expr = Arc::new(BinaryExpr::new(
+        // error. A float divisor is compared in Spark's ordering, where `-0.0` equals `0.0` as it
+        // does in Spark's own check, while Arrow's `eq` tells the two zeros apart.
+        let eq_expr = spark_comparison(
             Arc::<dyn PhysicalExpr>::clone(&expression),
             Operator::Eq,
             lit(zero),
-        ));
+            input_schema,
+            FloatOperands::Normalize,
+        )?;
         let null_literal = lit(ScalarValue::try_new_null(&expr_data_type)?);
         let if_expr = Arc::new(IfExpr::new(eq_expr, null_literal, expression));
         Ok(if_expr)
@@ -286,12 +303,13 @@ fn create_modulo_scalar_function(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkComparison;
     use arrow::array::{
         Array, ArrayRef, Decimal128Array, Decimal128Builder, Float32Array, Float64Array,
         Int32Array, PrimitiveArray, RecordBatch,
     };
     use datafusion::logical_expr::ColumnarValue;
-    use datafusion::physical_expr::expressions::{Column, Literal};
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::prelude::SessionContext;
 
     fn with_fail_on_error<F: Fn(bool)>(test_fn: F) {
@@ -389,6 +407,50 @@ mod tests {
             let expected_result = Arc::new(Int32Array::from(vec![0, 2, 0]));
             verify_result(modulo_expr, batch, should_fail, Some(expected_result));
         })
+    }
+
+    #[test]
+    fn test_decimal128_add_sub_width_handles_negative_scale() {
+        // A negative scale is what `spark.sql.legacy.allowNegativeScaleOfDecimal=true` allows.
+        // Computed in `u8` this underflowed and panicked in a debug build; this test only
+        // catches that when the native library is built with overflow checks on.
+        assert_eq!(decimal128_add_sub_width(10, -1, 10, -1), 10);
+        assert_eq!(decimal128_add_sub_width(20, -5, 10, 0), 25);
+        assert_eq!(decimal128_add_sub_width(38, -5, 38, -5), 38);
+        // Matches the non-negative cases it always handled.
+        assert_eq!(decimal128_add_sub_width(18, 4, 18, 4), 18);
+        assert_eq!(decimal128_add_sub_width(38, 38, 38, 0), 76);
+    }
+
+    #[test]
+    fn test_modulo_decimal_negative_scale() {
+        // `Decimal(10,-1)` values 300 and 200, i.e. unscaled 30 and 20. 300 % 200 is 100.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Decimal128(10, -1), false),
+            Field::new("b", DataType::Decimal128(10, -1), false),
+        ]));
+        let mut a_builder =
+            Decimal128Builder::with_capacity(1).with_data_type(DataType::Decimal128(10, -1));
+        a_builder.append_value(30);
+        let a_array: ArrayRef = Arc::new(a_builder.finish());
+        let mut b_builder =
+            Decimal128Builder::with_capacity(1).with_data_type(DataType::Decimal128(10, -1));
+        b_builder.append_value(20);
+        let b_array: ArrayRef = Arc::new(b_builder.finish());
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
+
+        let expr = create_modulo_expr(
+            Arc::new(Column::new("a", 0)),
+            Arc::new(Column::new("b", 1)),
+            DataType::Decimal128(10, -1),
+            Arc::clone(&schema),
+            false,
+            &SessionContext::new().state(),
+        )
+        .unwrap();
+        let result = expr.evaluate(&batch).unwrap().into_array(1).unwrap();
+        let result = result.as_primitive::<Decimal128Type>();
+        assert_eq!(result.value(0), 10);
     }
 
     #[test]
@@ -590,6 +652,62 @@ mod tests {
             false,
             false,
             Some(Arc::new(Float64Array::from(vec![None]))),
+        );
+    }
+
+    #[test]
+    fn test_modulo_divide_by_negative_zero_float_non_ansi() {
+        // Spark treats `-0.0` as a zero divisor too, so without ANSI the result is null.
+        run_float_modulo::<Float64Type>(
+            DataType::Float64,
+            Arc::new(Float64Array::from(vec![Some(1.0), Some(1.0), Some(1.0)])),
+            Arc::new(Float64Array::from(vec![Some(-0.0), Some(0.0), Some(2.0)])),
+            false,
+            false,
+            Some(Arc::new(Float64Array::from(vec![None, None, Some(1.0)]))),
+        );
+        run_float_modulo::<Float32Type>(
+            DataType::Float32,
+            Arc::new(Float32Array::from(vec![Some(1.0_f32), Some(1.0_f32)])),
+            Arc::new(Float32Array::from(vec![Some(-0.0_f32), Some(2.0_f32)])),
+            false,
+            false,
+            Some(Arc::new(Float32Array::from(vec![None, Some(1.0_f32)]))),
+        );
+        run_float_modulo_with_literal_divisor(
+            Arc::new(Float64Array::from(vec![Some(1.0)])),
+            ScalarValue::Float64(Some(-0.0)),
+            false,
+            false,
+            Some(Arc::new(Float64Array::from(vec![None]))),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, true)]));
+        let lhs: ArrayRef = Arc::new(Float32Array::from(vec![Some(1.0_f32)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![lhs]).unwrap();
+        let modulo_expr = create_modulo_expr(
+            Arc::new(Column::new("a", 0)),
+            Arc::new(Literal::new(ScalarValue::Float32(Some(-0.0)))),
+            DataType::Float32,
+            schema,
+            false,
+            &SessionContext::new().state(),
+        )
+        .unwrap();
+        let expected = Arc::new(Float32Array::from(vec![None]));
+        verify_result(modulo_expr, batch, false, Some(expected));
+    }
+
+    #[test]
+    fn test_non_ansi_float_divisor_guard_compares_in_spark_ordering() {
+        // DataFusion 55 folds `-0.0` into `0.0` before Arrow's `eq`, so the test above would pass
+        // with a plain `BinaryExpr` guard too. The guard must not depend on that.
+        let schema = Schema::new(vec![Field::new("b", DataType::Float64, true)]);
+        let guard = null_if_zero_primitive(Arc::new(Column::new("b", 0)), &schema).unwrap();
+        let condition = guard.children()[0];
+        assert!(
+            condition.downcast_ref::<SparkComparison>().is_some(),
+            "unexpected guard condition: {condition}"
         );
     }
 

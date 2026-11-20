@@ -30,7 +30,7 @@ package org.apache.spark.sql.benchmark
  */
 object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
 
-  private def prepareTestTable(values: Int)(f: => Unit): Unit = {
+  private def prepareTestTable(f: => Unit): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Create table with multiple columns for richer test scenarios:
@@ -54,7 +54,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def caseWhenLiteralBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       val query =
         "SELECT CASE WHEN c1 < 0 THEN '<0' WHEN c1 = 0 THEN '=0' ELSE '>0' END FROM parquetV1Table"
       runExpressionBenchmark("Case When Literal (3 branches)", values.toLong, query)
@@ -62,7 +62,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def caseWhenManyBranchesLiteralBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       // 10 branches using c2 (values 0-99)
       val query = """
         SELECT CASE
@@ -83,7 +83,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def caseWhenColumnResultBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       // Result expressions are column references, not literals
       val query =
         "SELECT CASE WHEN c1 < 0 THEN c3 WHEN c1 = 0 THEN c1 ELSE c3 + c1 END FROM parquetV1Table"
@@ -92,7 +92,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def caseWhenManyBranchesColumnResultBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       // 10 branches with column expressions as results
       val query = """
         SELECT CASE
@@ -113,14 +113,14 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def ifLiteralBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       val query = "SELECT IF(c1 < 0, '<0', '>=0') FROM parquetV1Table"
       runExpressionBenchmark("If Literal", values.toLong, query)
     }
   }
 
   def ifColumnResultBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       // Result expressions are column references
       val query = "SELECT IF(c1 < 0, c3, c1 + c3) FROM parquetV1Table"
       runExpressionBenchmark("If Column Result", values.toLong, query)
@@ -128,7 +128,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def nestedIfBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       // Nested IF expressions (equivalent to CASE WHEN with multiple branches)
       val query = """
         SELECT IF(c2 < 25, 'a',
@@ -141,7 +141,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def nestedIfColumnResultBenchmark(values: Int): Unit = {
-    prepareTestTable(values) {
+    prepareTestTable {
       val query = """
         SELECT IF(c2 < 25, c1,
                  IF(c2 < 50, c3,

@@ -45,9 +45,10 @@ type Expr = Arc<dyn PhysicalExpr>;
 type Shape<'a> = (&'a str, fn() -> Expr, &'a RecordBatch);
 
 /// Columns shaped like the ones in `CometConditionalExpressionBenchmark`:
-/// `c1` a random long, `c2` an int in `0..100`, `c3` another random long, and `c4` / `c5` short
-/// and `c6` / `c7` long strings. `null_density` applies to every column. With `sorted`, `c1` and
-/// `c2` ascend through the batch, so every predicate over them selects one contiguous run of rows.
+/// `c1` a random long, `c2` an int in `0..100`, `c3` another random long, `c4` / `c5` short
+/// and `c6` / `c7` long strings, and `c8` / `c9` integers written as strings. `null_density`
+/// applies to every column. With `sorted`, `c1` and `c2` ascend through the batch, so every
+/// predicate over them selects one contiguous run of rows.
 fn make_batch(null_density: f32, sorted: bool) -> RecordBatch {
     let mut rng = StdRng::seed_from_u64(42);
     let mut c1: Vec<i64> = (0..NUM_ROWS).map(|_| rng.random::<i64>()).collect();
@@ -57,7 +58,7 @@ fn make_batch(null_density: f32, sorted: bool) -> RecordBatch {
         c2.sort_unstable();
     }
     let c3: Vec<i64> = (0..NUM_ROWS).map(|_| rng.random::<i64>()).collect();
-    let valid: Vec<Vec<bool>> = (0..7)
+    let valid: Vec<Vec<bool>> = (0..9)
         .map(|_| {
             (0..NUM_ROWS)
                 .map(|_| rng.random::<f32>() >= null_density)
@@ -84,6 +85,11 @@ fn make_batch(null_density: f32, sorted: bool) -> RecordBatch {
             .map(|i| valid[col][i].then(|| format!("{tag}{i}-").repeat(12)))
             .collect()
     };
+    let numeric = |col: usize, seed: usize| -> StringArray {
+        (0..NUM_ROWS)
+            .map(|i| valid[col][i].then(|| format!("{}", (i * 7919 + seed) % 2_000_000)))
+            .collect()
+    };
     let columns: Vec<ArrayRef> = vec![
         Arc::new(c1),
         Arc::new(c2),
@@ -92,6 +98,8 @@ fn make_batch(null_density: f32, sorted: bool) -> RecordBatch {
         Arc::new(short(4, "t")),
         Arc::new(long(5, "long value ")),
         Arc::new(long(6, "other value ")),
+        Arc::new(numeric(7, 17)),
+        Arc::new(numeric(8, 4242)),
     ];
     RecordBatch::try_new(Arc::new(schema()), columns).unwrap()
 }
@@ -105,6 +113,8 @@ fn schema() -> Schema {
         Field::new("c5", DataType::Utf8, true),
         Field::new("c6", DataType::Utf8, true),
         Field::new("c7", DataType::Utf8, true),
+        Field::new("c8", DataType::Utf8, true),
+        Field::new("c9", DataType::Utf8, true),
     ])
 }
 
@@ -122,7 +132,7 @@ fn spark_cast(child: Expr, data_type: DataType) -> Expr {
     Arc::new(Cast::new(
         child,
         data_type,
-        SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles", false),
+        SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles"),
         None,
         None,
     ))
@@ -309,13 +319,45 @@ fn case_fallible_branch() -> Expr {
     )
 }
 
+/// A string-to-integer cast with ANSI off, which returns NULL for a string it cannot parse.
+fn parse_int(column: &str) -> Expr {
+    spark_cast(col(column), DataType::Int32)
+}
+
+/// A selective predicate whose branch parses a string: 5% of the rows choose it.
+fn if_selective_parse() -> Expr {
+    if_expr(c2_below(5), parse_int("c8"), lit(ScalarValue::Int32(None)))
+}
+
+/// A predicate that most rows match, with a branch that parses a string.
+fn if_mostly_parse() -> Expr {
+    if_expr(c2_below(95), parse_int("c8"), lit(ScalarValue::Int32(None)))
+}
+
+/// Both branches parse a string, and half of the rows choose each.
+fn if_parse_either() -> Expr {
+    if_expr(c2_below(50), parse_int("c8"), parse_int("c9"))
+}
+
+/// Three selective branches, each parsing a string for 2% of the rows.
+fn case_selective_parse_3_branches() -> Expr {
+    case_when(
+        vec![
+            (c2_below(2), parse_int("c8")),
+            (c2_below(4), parse_int("c9")),
+            (c2_below(6), parse_int("c8")),
+        ],
+        None,
+    )
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let no_nulls = make_batch(0.0, false);
     let sparse_nulls = make_batch(0.1, false);
     let dense_nulls = make_batch(0.9, false);
     let sorted = make_batch(0.0, true);
 
-    let shapes: [Shape; 26] = [
+    let shapes: [Shape; 30] = [
         (
             "case literal 3 branches",
             case_literal_3_branches,
@@ -373,6 +415,14 @@ fn criterion_benchmark(c: &mut Criterion) {
             "case column 10 branches, sorted",
             case_column_10_branches,
             &sorted,
+        ),
+        ("if selective parse", if_selective_parse, &no_nulls),
+        ("if mostly parse", if_mostly_parse, &no_nulls),
+        ("if parse either", if_parse_either, &no_nulls),
+        (
+            "case selective parse 3 branches",
+            case_selective_parse_3_branches,
+            &no_nulls,
         ),
     ];
     let mut group = c.benchmark_group("conditional");

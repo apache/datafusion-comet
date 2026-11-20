@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.io.File
 import java.nio.charset.StandardCharsets
-import java.time.ZoneOffset
 
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -30,9 +29,9 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
-import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -40,8 +39,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
-import org.apache.comet.udf.codegen.CometScalaUDFCodegen
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, SparkFixes, Unsupported}
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -53,12 +51,12 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * decisions themselves (`Compatible` / `Incompatible` / `Unsupported`, and the reason strings)
  * are asserted directly against `CometCast.isSupported`.
  *
- * `CometCast` mixes in `CodegenDispatchFallback`, so a cast that `isSupported` rejects still runs
- * inside the Comet operator by way of the Arrow-direct codegen dispatcher, evaluating Spark's own
- * `Cast` against Arrow vectors. That path is primarily covered by `CometCodegenSuite` and
- * friends. Targeted routing regressions here also pin that an `Unsupported` cast uses the
- * dispatcher, retaining Spark parity and keeping the enclosing operator native rather than
- * falling back to Spark.
+ * Out of scope: the JVM codegen dispatch path. `CometCast` mixes in `CodegenDispatchFallback`, so
+ * a cast that `isSupported` rejects still runs inside the Comet operator by way of the
+ * Arrow-direct codegen dispatcher, evaluating Spark's own `Cast` against Arrow vectors. That path
+ * is covered by `CometCodegenSuite` and friends. Where this suite touches it at all, it does so
+ * only to pin that an `Unsupported` cast keeps the enclosing operator native rather than falling
+ * back to Spark; it does not attempt to cover dispatch semantics.
  *
  * Because of that split, a cast marked `Unsupported` here is not untested overall — it is tested
  * through the dispatcher instead. Adding a native cast implementation therefore means moving a
@@ -70,6 +68,112 @@ class CometNativeCastSuite
     with CometCodegenAssertions {
 
   import testImplicits._
+
+  test("LIMIT skips a failing conditional literal cast and retains Comet projection") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(5)
+          .selectExpr("id", "CAST(id AS STRING) AS value")
+          .coalesce(1)
+          .write
+          .parquet(path.getCanonicalPath)
+      }
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "8192") {
+        withParquetTable(path.getCanonicalPath, "cast_branch_rows") {
+          // Both rows share a batch. The native projection must receive only row 0: masking
+          // the cast by its IF condition alone would still evaluate the failing row 1.
+          val cast = "CAST(IF(id = 1, 'bad', value) AS INT)"
+          val masked = s"SELECT $cast AS parsed FROM cast_branch_rows LIMIT 1"
+          // ConstantFolding must leave the throwing literal cast inside the conditional.
+          val badCasts = sql(masked).queryExecution.optimizedPlan
+            .flatMap(_.expressions)
+            .flatMap(_.collect {
+              case c: Cast
+                  if c.child.isInstanceOf[Literal] &&
+                    Option(c.child.asInstanceOf[Literal].value).exists(_.toString == "bad") =>
+                c
+            })
+          assert(badCasts.nonEmpty)
+          val (_, plan) = checkSparkAnswerAndOperator(
+            sql(masked),
+            includeClasses = Seq(classOf[CometProjectExec]))
+          assert(new ExtendedExplainInfo().getCodegenDispatchExpressions(plan).contains("cast"))
+          checkSparkError(
+            sql(s"SELECT $cast FROM cast_branch_rows LIMIT 2"),
+            "CAST_INVALID_INPUT")
+
+          // CollectLimit evaluates the prefix before dropping OFFSET rows. Moving an offset
+          // below the projection would incorrectly hide this error in the skipped first row.
+          checkSparkError(
+            sql(
+              "SELECT CAST(IF(id = 0, 'bad', value) AS INT) " +
+                "FROM cast_branch_rows LIMIT 1 OFFSET 1"),
+            "CAST_INVALID_INPUT")
+
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+            // The cap is cumulative across batches: emit [0, 1], then slice [2, 3] to [2].
+            val acrossBatches = "SELECT CAST(IF(id = 3, 'bad', value) AS INT) " +
+              "FROM cast_branch_rows"
+            checkSparkAnswerAndOperator(
+              sql(s"$acrossBatches LIMIT 3"),
+              includeClasses = Seq(classOf[CometProjectExec]))
+            checkSparkError(sql(s"$acrossBatches LIMIT 4"), "CAST_INVALID_INPUT")
+          }
+        }
+      }
+    }
+  }
+
+  test("LIMIT caps each partition before a failing conditional literal cast") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      withTempView("cast_partition_rows") {
+        spark.range(0, 4, 1, 2).createOrReplaceTempView("cast_partition_rows")
+        val (_, plan) = checkSparkAnswerAndOperator(
+          sql(
+            "SELECT CAST(IF(id % 2 = 1, 'bad', '0') AS INT) " +
+              "FROM cast_partition_rows LIMIT 1"),
+          includeClasses = Seq(classOf[CometProjectExec]))
+        val limit = collect(plan) { case p: CometCollectLimitExec => p }.head
+        assert(limit.child.executeColumnar().getNumPartitions == 2)
+        // executeCollect may stop after the first partition. The columnar path reads both
+        // partitions before the final limit, so each must cap its input before its bad row.
+        val rowsPerPartition = limit
+          .executeColumnar()
+          .mapPartitions(batches => Iterator.single(batches.map(_.numRows()).sum))
+          .collect()
+        assert(rowsPerPartition.toSeq == Seq(1))
+      }
+    }
+  }
+
+  test("successful and non-ANSI literal casts fold and retain Comet projection") {
+    withParquetTable(Seq(Tuple1(0), Tuple1(1)), "cast_branch_controls") {
+      for (ansi <- Seq("true", "false")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          // Serialize directly so Spark's ConstantFolding cannot hide Comet's folding path.
+          val folded = QueryPlanSerde.exprToProto(Cast(Literal("1"), IntegerType), Seq.empty)
+          assert(folded.exists(expr => expr.hasLiteral && expr.getLiteral.getIntVal == 1))
+          val query = "SELECT CAST(IF(_1 = 1, '1', CAST(_1 AS STRING)) AS INT) " +
+            "FROM cast_branch_controls"
+          checkSparkAnswerAndOperator(sql(query))
+        }
+      }
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        val folded = QueryPlanSerde.exprToProto(Cast(Literal("bad"), IntegerType), Seq.empty)
+        assert(folded.exists(expr => expr.hasLiteral && expr.getLiteral.getIsNull))
+        val query = "SELECT CAST(IF(_1 = 1, 'bad', CAST(_1 AS STRING)) AS INT) " +
+          "FROM cast_branch_controls"
+        checkSparkAnswerAndOperator(sql(query))
+      }
+    }
+  }
 
   // Casts in this suite predominantly test non-ANSI semantics (silent overflow/null on
   // invalid input); tests that target ANSI behavior opt in explicitly via withSQLConf.
@@ -1020,6 +1124,203 @@ class CometNativeCastSuite
     }
   }
 
+  test("negative-scale decimal casts route through the codegen dispatcher") {
+    // The support levels for `Decimal(neg) -> integral` are covered by the test below. This one
+    // covers the two directions that test does not, and asserts the routing: `CometCast` mixes in
+    // `CodegenDispatchFallback`, so `Unsupported` does not fall the projection back to Spark, it
+    // runs Spark's own `doGenCode` inside the Comet pipeline. That is safe for a negative scale
+    // because the generated code works on `Decimal` / `BigDecimal` and Arrow carries the unscaled
+    // value with the scale as metadata, so no `10^|scale|` arithmetic is reachable.
+    // `DecimalType(_, s<0)` must be constructed under allowNegativeScaleOfDecimal=true because
+    // the case class initializer reads the flag, so wrap everything in one block.
+    // ConvertToLocalRelation is excluded so the cast runs on the plan rather than being folded
+    // away at plan time (#4789).
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // A narrow and a wide negative-scale type: `unit` is the smallest magnitude each can hold
+      // exactly, so the samples survive the round trip instead of collapsing to zero.
+      Seq((DecimalType(10, -1), 10L), (DecimalType(20, -5), 100000L)).foreach {
+        case (negScaleType, unit) =>
+          val intTypes =
+            Seq(
+              DataTypes.ByteType,
+              DataTypes.ShortType,
+              DataTypes.IntegerType,
+              DataTypes.LongType)
+          intTypes.foreach { intType =>
+            assert(
+              CometCast.isSupported(intType, negScaleType, None, CometEvalMode.LEGACY) ==
+                Unsupported(Some(CometCast.negativeScaleDecimalFromIntegralReason)),
+              s"expected $intType -> $negScaleType to be Unsupported")
+          }
+          assert(
+            CometCast
+              .isSupported(negScaleType, DataTypes.TimestampType, None, CometEvalMode.LEGACY) ==
+              Unsupported(Some(CometCast.negativeScaleDecimalToTimestampReason)))
+
+          val values = Seq(10L * unit, 20L * unit, 30L * unit)
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              values.toDF("i").select(col("i").cast(negScaleType).as("v")))
+          }
+          // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+          // source construction does not depend on any of the guards under test.
+          val negDec =
+            values.map(_.toString).toDF("s").select(col("s").cast(negScaleType).as("v"))
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              negDec.select(col("v").cast(DataTypes.IntegerType).as("i")))
+          }
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              negDec.select(col("v").cast(DataTypes.TimestampType).as("t")))
+          }
+      }
+    }
+  }
+
+  test("cast DecimalType with negative scale to integral types is not supported natively") {
+    // The native decimal to integral kernels divide by 10^scale, which overflows for a negative
+    // scale: a debug build panics on a batch with a value, and a release build wraps the divisor
+    // to zero and fails even on an all-null batch. CometCast reports these casts as Unsupported,
+    // so Spark's own cast runs and the results match Spark's. Parquet cannot hold negative-scale
+    // decimals, so the data stays in memory and localTableScan lets Comet plan the cast. Spark
+    // would evaluate a projection over the in-memory rows on the driver, so ConvertToLocalRelation
+    // is excluded to make the cast reach Comet.
+    val integralTypes = Seq(ByteType, ShortType, IntegerType, LongType)
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      "spark.comet.exec.localTableScan.enabled" -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+      SQLConf.ANSI_ENABLED.key -> "false") {
+      val negScaleType = DecimalType(7, -2)
+      Seq(CometEvalMode.LEGACY, CometEvalMode.ANSI, CometEvalMode.TRY).foreach { evalMode =>
+        integralTypes.foreach { toType =>
+          assert(
+            CometCast.isSupported(negScaleType, toType, None, evalMode) ==
+              Unsupported(Some(CometCast.negativeScaleDecimalToIntegralReason)))
+        }
+      }
+
+      // One table with values and one that is all null, which the native kernels used to answer
+      // with nulls.
+      val withValues = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("100")),
+        Some(BigDecimal("12300")),
+        Some(BigDecimal("-99900")),
+        None)
+      val allNull = Seq.fill(3)(Option.empty[BigDecimal])
+      Seq(withValues, allNull).foreach { values =>
+        integralTypes.foreach { toType =>
+          val df = values
+            .toDF("b")
+            .withColumn("a", col("b").cast(negScaleType))
+            .drop("b")
+            .select(col("a").cast(toType).as("result"))
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("Spark fallback reads a negative-scale decimal column from a Comet batch") {
+    // `CometVector.getDecimal` has the same unscaled-long fast path as the dispatcher's reader,
+    // and Spark reads every Comet batch through it after `CometColumnarToRow`. Using `v` twice
+    // keeps two projections, so the division falls back to Spark while the cast that builds `v`
+    // runs natively, and Spark then reads a `Decimal(10,-1)` column out of a Comet batch. Before
+    // the scale check that threw `ArrayIndexOutOfBoundsException: Index -1`.
+    // `Decimal(20,-5)` takes the `BigDecimal` branch and was never affected, so it is here to pin
+    // that the wide path still works.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScaleType =>
+        val df = Seq("100", "-100", "0")
+          .toDF("s")
+          .select(col("s").cast(negScaleType).as("v"))
+          .selectExpr("v / cast(3 as decimal(10, 0)) as q", "cast(v as int) as i")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("dispatched cast reads a materialized negative-scale decimal column correctly") {
+    // The test above builds the negative-scale column inside the same projection as the cast
+    // under test, so `CollapseProject` folds them together and the dispatched expression never
+    // reads a `Decimal(neg)` input vector. Excluding `CollapseProject` keeps the decimal as a
+    // real input, which is the case that broke: the dispatcher's unscaled-long reader produces a
+    // long-backed `Decimal`, and Spark's integer conversion then indexes `Decimal.POW_10(scale)`,
+    // which throws for a negative scale. TRY mode swallowed that into NULL and LEGACY mode failed
+    // the query, both against Spark returning the original values.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        ("org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation," +
+          "org.apache.spark.sql.catalyst.optimizer.CollapseProject")) {
+      Seq((DecimalType(10, -1), 10L), (DecimalType(20, -5), 100000L)).foreach {
+        case (negScaleType, unit) =>
+          val base = Seq(10L * unit, -10L * unit, 0L)
+            .map(_.toString)
+            .toDF("s")
+            .select(col("s").cast(negScaleType).as("v"))
+          // int and bigint are guarded, so they go through the dispatcher.
+          Seq("try_cast(v as int)", "cast(v as int)", "cast(v as bigint)").foreach { e =>
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(base.selectExpr(e))
+            }
+          }
+          // double is not guarded, so it stays on the native path. It reads the same input vector,
+          // so it pins that the reader change did not break the native side.
+          checkSparkAnswerAndOperator(base.selectExpr("cast(v as double)"))
+      }
+    }
+  }
+
+  test("safe casts around negative-scale decimal run natively (regression pin)") {
+    // The guard in canCastFromDecimal / canCastFromByte-Short-Int-Long only rejects the
+    // paths that scale-align an integer (int <-> Decimal(neg), Decimal(neg) -> Timestamp).
+    // All other cast directions to/from Decimal(neg) run natively today because they
+    // don't perform that alignment. Pin those paths here so a future change that adds
+    // scale-alignment to one of them can't silently reintroduce the #5013 panic.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val negDec = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // Casts INTO Decimal(neg) that don't scale-align an integer.
+        checkSparkAnswerAndOperator(strs.toDF("s").select(col("s").cast(negScaleType)))
+        checkSparkAnswerAndOperator(
+          strs.toDF("s").select(col("s").cast(DecimalType(20, 0)).cast(negScaleType)))
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+          val floats = Seq(1.0f * unit, 2.5f * unit)
+          val doubles = Seq(1.0d * unit, 2.5d * unit)
+          checkSparkAnswerAndOperator(floats.toDF("n").select(col("n").cast(negScaleType)))
+          checkSparkAnswerAndOperator(doubles.toDF("n").select(col("n").cast(negScaleType)))
+        }
+        // Casts OUT of Decimal(neg) that don't scale-align an integer. Float and double are
+        // included: `decimal128_to_f64` / `decimal128_to_f32` round the exact decimal value
+        // once and handle a negative scale deliberately (#5684).
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(FloatType)))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(DoubleType)))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(StringType)))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(DecimalType(38, 10))))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(BooleanType)))
+      }
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
@@ -1236,9 +1537,78 @@ class CometNativeCastSuite
   }
 
   test("cast StringType to DecimalType(38,10) high precision - check 0 mantissa") {
-    val values = Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677").toDF("a")
+    // Without SPARK-60118, Spark limits zero to 38 integral digits like any other value, so
+    // 0e37 casts to 0 and 0e38 does not.
+    val values =
+      Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677", "0e37", "0e38").toDF("a")
     Seq(true, false).foreach(ansiEnabled =>
       castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+  }
+
+  // The tests above compare the cast with the Spark they run on, and SparkFixesSuite covers the
+  // setting for each Spark version.
+  test("cast StringType to DecimalType sets the decimal options for the running Spark version") {
+    val a = AttributeReference("a", StringType)()
+    val cast =
+      CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false).map(_.getCast)
+    val version = org.apache.spark.SPARK_VERSION
+    assert(
+      cast.map(_.getDecimalZeroAnyExponent) ==
+        Some(SparkFixes.castsZeroWithAnyExponentToDecimal(version)))
+    assert(
+      cast.map(_.getDecimalTinyToZero) == Some(SparkFixes.castsTinyStringToDecimalZero(version)))
+  }
+
+  test(
+    "cast StringType to DecimalType sets the integral-digit limit option from the legacy config") {
+    val a = AttributeReference("a", StringType)()
+    Seq(true, false).foreach { allowNegativeScale =>
+      withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> allowNegativeScale.toString) {
+        val proto = CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false)
+        assert(proto.map(_.getCast.getDecimalSkipIntegralDigitLimit) == Some(allowNegativeScale))
+      }
+    }
+  }
+
+  // Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed
+  // it, before it checks the value against the target type. So ANSI mode raises
+  // NUMERIC_OUT_OF_SUPPORTED_RANGE whatever the target type, where a value with up to 38 integral
+  // digits that does not fit raises NUMERIC_VALUE_OUT_OF_RANGE, and the other modes return NULL.
+  // See https://github.com/apache/datafusion-comet/issues/7188.
+  test("cast StringType to DecimalType - more than 38 integral digits") {
+    val tooManyDigits = Seq(
+      "6E+38",
+      "1" + "0" * 38, // 39 digits, which fit an i128 in Comet's parser
+      "1" + "0" * 39, // 40 digits, which do not
+      "-1.5e50",
+      "9" * 40 + ".5",
+      "0.1e40",
+      // leading zeros do not count
+      "0" * 50 + "1e38")
+    val withinTheLimit = Seq("1.5", "-12", "12345678901", "9" * 38, "1" + "0" * 37, "1e-50")
+    Seq(DataTypes.createDecimalType(10, 2), DataTypes.createDecimalType(38, 10)).foreach {
+      toType =>
+        // ANSI mode stops at the first row that fails, so each error is compared on its own.
+        tooManyDigits.foreach { value =>
+          castTest(Seq(value).toDF("a"), toType, expectAnsiFailure = true)
+        }
+        // The other modes return NULL for these and the usual result for the rest.
+        castTest((tooManyDigits ++ withinTheLimit).toDF("a"), toType, testAnsi = false)
+    }
+  }
+
+  // With the setting Spark skips the limit above, so a string with too many integral digits is an
+  // ordinary value that is too large for the target type. A zero with a large exponent is zero,
+  // whether or not Spark has SPARK-60118.
+  test("cast StringType to DecimalType - more than 38 integral digits with negative scale") {
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      Seq(DataTypes.createDecimalType(10, 2), DataTypes.createDecimalType(38, 10)).foreach {
+        toType =>
+          // 39 digits, which fit an i128 in Comet's parser
+          castTest(Seq("1" + "0" * 38).toDF("a"), toType, expectAnsiFailure = true)
+          castTest(Seq("0e38", "0E+73", "+0e83", "0e5887677", "1.5", "-12").toDF("a"), toType)
+      }
+    }
   }
 
   test("cast StringType to DecimalType(38,10) high precision") {
@@ -1422,6 +1792,85 @@ class CometNativeCastSuite
     }
   }
 
+  test("(ansi) failing cast of a literal raises Spark's own exception when reached") {
+    // SPARK-60119 makes this cast return 0.00, so Spark folds the literal and nothing fails.
+    assume(
+      !SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
+      "Spark with SPARK-60119 casts this literal to 0.00 instead of failing")
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("cast_literal_branch") {
+        Seq(0L, 1L, 2L).toDF("id").write.format("parquet").saveAsTable("cast_literal_branch")
+        // cast_literal_ansi.sql covers failing casts that raise an error class. This string's
+        // scale fits in an int, so it parses, but rounding it to the target scale fails in Spark
+        // with a raw `ArithmeticException`, which has no error class to compare.
+        val df = sql(
+          "SELECT CASE WHEN id = 1 THEN CAST('1e-2147483647' AS DECIMAL(10,2)) " +
+            "ELSE CAST(0 AS DECIMAL(10,2)) END FROM cast_literal_branch")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        def rootCause(e: Throwable): Throwable =
+          Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toSeq.last
+        val expected = rootCause(sparkError.getOrElse(fail("Spark did not fail")))
+        val actual = rootCause(cometError.getOrElse(fail("Comet did not fail")))
+        assert(actual.getClass == expected.getClass, s"Spark: $expected, Comet: $actual")
+        assert(actual.getMessage == expected.getMessage)
+      }
+    }
+  }
+
+  test("(ansi) cast string to negative-scale decimal fails when rescaling overflows an int") {
+    assume(
+      !SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
+      "Spark with SPARK-60119 casts this string to 0, see the test below")
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      withTable("cast_decimal_rescale") {
+        Seq("1e-2147483647").toDF("s").write.format("parquet").saveAsTable("cast_decimal_rescale")
+        // The parsed scale fits in an int, but the difference to the target scale does not, so
+        // Spark's `BigDecimal.setScale` fails. The native cast must not round it to zero. Spark
+        // raises a raw `ArithmeticException`, so only failure is compared here; see
+        // https://github.com/apache/datafusion-comet/issues/6966.
+        val df = spark.table("cast_decimal_rescale").select(col("s").cast(DecimalType(10, -2)))
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkError.isDefined, "Spark did not fail")
+        assert(cometError.isDefined, "Comet did not fail")
+      }
+    }
+  }
+
+  // Spark with SPARK-60119 skips `BigDecimal.setScale` for a value far below the target scale's
+  // ulp, so these strings cast to 0 in every eval mode where Spark used to fail, as the test above
+  // expects. See https://github.com/apache/datafusion-comet/issues/7187.
+  test("cast string far below a negative target scale to decimal returns 0 (SPARK-60119)") {
+    assume(
+      SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
+      "Spark fails this cast before SPARK-60119, see the test above")
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+        withTable("cast_decimal_rescale") {
+          // The first four are far below the target scale's ulp, "123" rounds to one ulp (1E+2)
+          // and NULL stays NULL.
+          Seq("1e-2147483647", "-1e-2147483647", "12e-2147483647", "1e-100000000", "123", null)
+            .toDF("s")
+            .write
+            .format("parquet")
+            .saveAsTable("cast_decimal_rescale")
+          val df = spark.table("cast_decimal_rescale").select(col("s").cast(DecimalType(10, -2)))
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          checkSparkAnswer(df)
+          val unscaled = df.collect().map(row => Option(row.getDecimal(0)).map(_.unscaledValue))
+          assert(unscaled.count(_.exists(_.signum == 0)) == 4, s"ansi=$ansiEnabled")
+          assert(unscaled.count(_.exists(_.intValue == 1)) == 1, s"ansi=$ansiEnabled")
+          assert(unscaled.count(_.isEmpty) == 1, s"ansi=$ansiEnabled")
+        }
+      }
+    }
+  }
+
   test("cast StringType to TimestampType - UTC") {
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       val values = Seq(
@@ -1511,6 +1960,12 @@ class CometNativeCastSuite
         "2020-01-01T12:34:56-08:00",
         // Single-digit hour offset (extract_offset_suffix supports ±H:MM)
         "2020-01-01T12:34:56+5:30",
+        // Second-precision offsets, the forms Java's ZoneOffset.of accepts
+        "2020-01-01T12:34:56+08:00:30",
+        "2020-01-01T12:34:56-01:30:15",
+        "2020-01-01T12:34:56+080030",
+        // Spark rejects a short minute or second segment once seconds are present
+        "2020-01-01T12:34:56+8:0:3",
         // T-prefixed time-only with colon
         "T12:34",
         "T12:34:56",
@@ -1604,6 +2059,9 @@ class CometNativeCastSuite
           "2020-06-15T12:30:00+05:30",
           "2020-06-15T12:30:00-08:00",
           "2020-06-15T12:30:00 UTC",
+          "2020-06-15T12:30:00+08:00:30",
+          "2020-06-15T12:30:00-01:30:15",
+          "2020-06-15T12:30:00+8:0:3",
           "2024-03-10 02:30:00",
           "2024-11-03 01:30:00",
           "not a timestamp",
@@ -1865,243 +2323,39 @@ class CometNativeCastSuite
     }
   }
 
-  test("cast DateType to TimestampType canonicalizes fixed timezone aliases") {
-    val date = AttributeReference("d", DateType, nullable = true)()
-    val aliases = Seq(
-      "GMT" -> "UTC",
-      "Etc/UTC" -> "UTC",
-      "Z" -> "UTC",
-      "UTC+00:00" -> "UTC",
-      "+00:00" -> "UTC",
-      "-00:00" -> "UTC",
-      "Etc/GMT+8" -> "-08:00",
-      "GMT+05:30" -> "+05:30")
-    val minuteOffsets = (-18 * 60 to 18 * 60).map { minutes =>
-      val offset = ZoneOffset.ofTotalSeconds(minutes * 60).getId
-      offset -> (if (minutes == 0) "UTC" else offset)
-    }
-    (aliases ++ minuteOffsets).foreach { case (timezone, expected) =>
-      val cast = Cast(date, TimestampType, Some(timezone))
-      assert(CometCast.getSupportLevel(cast) == Compatible(), timezone)
-      val serialized = CometCast.convert(cast, Seq(date), binding = true).get.getCast
-      assert(serialized.getTimezone == expected, timezone)
-    }
-    Seq("America/Los_Angeles", "Asia/Kolkata", "+05:30:15", "UTC-00:00:01").foreach { timezone =>
-      assert(CometCast.nativeDateTimestampTimezone(timezone).isEmpty, timezone)
+  private def checkLongOverflow(query: String): Unit = {
+    val df = sql(query)
+    val plan = stripAQEPlan(df.queryExecution.executedPlan)
+    checkCometOperators(plan)
+    assertExpressionImpl(plan, native = Seq("cast"), dispatched = Seq.empty)
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    for ((engine, error) <- Seq("Spark" -> sparkError, "Comet" -> cometError)) {
+      val failure = error.getOrElse(fail(s"$engine should throw for $query"))
       assert(
-        CometCast
-          .getSupportLevel(Cast(date, TimestampType, Some(timezone)))
-          .isInstanceOf[Unsupported],
-        timezone)
-    }
-  }
-
-  test("cast DateType to timestamps preserves wide make_date results") {
-    // Store the components, not dates: this both avoids Parquet rebasing and prevents Spark
-    // from constant-folding make_date before it reaches the native cast.
-    val input: Seq[(Option[Int], Int, Int)] = Seq(
-      (Some(262143), 1, 1),
-      (Some(-262144), 1, 1),
-      (Some(1970), 1, 1),
-      (Some(2024), 11, 3),
-      // Inside chrono's calendar, but chrono-tz 0.10.4 uses the wrong Los Angeles DST offset.
-      (Some(2101), 7, 4),
-      (None, 1, 1))
-    withParquetTable(input, "wide_dates") {
-      for {
-        (target, tz) <- Seq(
-          ("TIMESTAMP_NTZ", "America/Los_Angeles"),
-          ("TIMESTAMP", "UTC"),
-          ("TIMESTAMP", "GMT"),
-          ("TIMESTAMP", "Etc/UTC"),
-          ("TIMESTAMP", "Z"),
-          ("TIMESTAMP", "UTC+00:00"),
-          ("TIMESTAMP", "GMT+05:30"),
-          ("TIMESTAMP", "Etc/GMT+8"),
-          ("TIMESTAMP", "+05:30"),
-          ("TIMESTAMP", "-08:00"))
-        ansi <- Seq("false", "true")
-      } {
-        withSQLConf(
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-          SQLConf.ANSI_ENABLED.key -> ansi,
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-          assertNoCodegenRan {
-            // Direct Array<Date> to Array<Timestamp> has a separate support restriction;
-            // Array<Struct> exercises recursive serialization on an admitted native path.
-            checkSparkAnswerAndOperator(
-              s"SELECT CAST(make_date(_1, _2, _3) AS $target), " +
-                "CAST(array(named_struct('d', make_date(_1, _2, _3))) " +
-                s"AS ARRAY<STRUCT<d: $target>>) FROM wide_dates")
-          }
-        }
-      }
-
-      // Named regions and offsets with seconds must use Spark's timezone rules instead of
-      // constructing chrono dates. Neither the wide positive nor negative year fits chrono.
-      Seq("America/Los_Angeles", "+05:30:15", "UTC-00:00:01").foreach { tz =>
-        withSQLConf(
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(make_date(_1, _2, _3) AS TIMESTAMP) FROM wide_dates")
-          }
-        }
-      }
-      withSQLConf(
-        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
-        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
-        CometConf.COMET_STRICT_TESTING.key -> "true") {
-        checkSparkAnswer("SELECT CAST(make_date(_1, _2, _3) AS TIMESTAMP) FROM wide_dates")
-      }
+        causeChain(failure).exists { cause =>
+          cause.getClass == classOf[ArithmeticException] && cause.getMessage == "long overflow"
+        },
+        s"Expected $engine to throw ArithmeticException: long overflow, got $failure")
     }
   }
 
   test("cast DateType to timestamps checks microsecond overflow") {
-    // +/-106751991 are the last whole days representable in microseconds at UTC. The next
-    // days overflow; a fixed offset can also push an otherwise valid boundary day out of range.
-    val input = withNulls(Seq(-106751992, -106751991, 0, 106751991, 106751992))
-      .map(Tuple1(_))
-    val wideDate =
-      "make_date(CASE WHEN _1 = 0 THEN 300000 WHEN _1 > 0 THEN 2024 END, 6, 15)"
-    withParquetTable(input, "date_boundaries") {
-      for {
-        (target, tz, overflowDays) <- Seq(
-          ("TIMESTAMP_NTZ", "America/Los_Angeles", Seq(-106751992, 106751992)),
-          ("TIMESTAMP", "UTC", Seq(-106751992, 106751992)),
-          ("TIMESTAMP", "Etc/UTC", Seq(-106751992, 106751992)),
-          ("TIMESTAMP", "+18:00", Seq(-106751991)),
-          ("TIMESTAMP", "GMT+18:00", Seq(-106751991)),
-          ("TIMESTAMP", "UTC-18:00", Seq(106751991)),
-          ("TIMESTAMP", "-18:00", Seq(106751991)))
-        ansi <- Seq("false", "true")
-      } {
+    withParquetTable(Seq(Tuple1(300000)), "wide_year") {
+      for (ansi <- Seq("false", "true")) {
         withSQLConf(
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
           SQLConf.ANSI_ENABLED.key -> ansi,
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-          val overflowQueries = overflowDays.map { day =>
-            s"SELECT CAST(date_from_unix_date(_1) AS $target) " +
-              s"FROM date_boundaries WHERE _1 = $day"
-          } ++ (if (target == "TIMESTAMP_NTZ") {
-                  Seq(s"SELECT CAST($wideDate AS $target) FROM date_boundaries")
-                } else Seq.empty)
-          overflowQueries.foreach { query =>
-            assertNoCodegenRan {
-              val df = sql(query)
-              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
-              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
-              assert(sparkError.isDefined, s"Spark should overflow for $query in $tz")
-              assert(cometError.isDefined, s"Comet should overflow for $query in $tz")
-              Seq(sparkError.get, cometError.get).foreach { error =>
-                assert(
-                  causeChain(error).exists { cause =>
-                    cause.getClass == classOf[ArithmeticException] &&
-                    cause.getMessage == "long overflow"
-                  },
-                  s"Expected ArithmeticException: long overflow, got $error")
-              }
-            }
-          }
-          // A mixed batch must retain valid values and return NULL only for overflowing rows
-          // and input NULLs. TRY_CAST does this regardless of the session ANSI setting.
-          // Compare LTZ as epoch seconds (these date casts are second-aligned): Spark's
-          // java.sql.Timestamp row conversion overflows when rebasing the extreme boundaries.
-          val casts = Seq(
-            s"TRY_CAST(date_from_unix_date(_1) AS $target)",
-            s"TRY_CAST($wideDate AS $target)").map { expr =>
-            if (target == "TIMESTAMP") s"CAST($expr AS BIGINT)" else expr
-          }
-          assertNoCodegenRan {
-            checkSparkAnswerAndOperator(
-              s"SELECT _1, ${casts.mkString(", ")} " +
-                "FROM date_boundaries ORDER BY _1")
-          }
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          checkLongOverflow("SELECT CAST(make_date(_1, 6, 15) AS TIMESTAMP_NTZ) FROM wide_year")
+          checkLongOverflow("SELECT CAST(make_date(-_1, 6, 15) AS TIMESTAMP) FROM wide_year")
         }
       }
     }
-  }
 
-  test("cast DateType to timestamps ignores values in null containers") {
-    withTempPath { path =>
-      // Materialize the containers to prevent constant folding. The native IF can null a parent
-      // while retaining its children; keep hidden overflow and visible valid dates in one batch.
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "false",
-        "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
-        val date = "make_date(year, 6, 15)"
-        Seq((false, 300000), (true, 2024), (false, -300000), (true, 1970))
-          .toDF("flag", "year")
-          .selectExpr(
-            "flag",
-            s"named_struct('d', $date) AS s",
-            s"map(1, $date) AS m",
-            s"map($date, 1) AS k",
-            s"array(named_struct('d', $date)) AS a")
-          .coalesce(1)
-          .write
-          .parquet(path.toString)
-      }
-      withParquetTable(path.toString, "masked_dates") {
-        for {
-          target <- Seq("TIMESTAMP", "TIMESTAMP_NTZ")
-          ansi <- Seq("false", "true")
-        } {
-          withSQLConf(
-            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-            SQLConf.ANSI_ENABLED.key -> ansi,
-            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-            val casts = Seq(
-              ("s", s"STRUCT<d: $target>"),
-              ("m", s"MAP<INT, $target>"),
-              ("a", s"ARRAY<STRUCT<d: $target>>")) ++
-              // Spark rejects DATE -> TIMESTAMP_NTZ map keys in legacy mode.
-              (if (target == "TIMESTAMP") Seq(("k", s"MAP<$target, INT>")) else Seq.empty)
-            casts.foreach { case (column, targetType) =>
-              // Referencing the alias twice keeps Spark from pushing CAST inside IF. CASE uses
-              // a different native path that already masks the children before casting them.
-              val query = s"SELECT masked, CAST(masked AS $targetType) FROM " +
-                s"(SELECT IF(flag, $column, NULL) AS masked FROM masked_dates)"
-              assertNoCodegenRan {
-                checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("cast DateType to timestamps falls back for unsafe TRY_CAST nullability") {
-    withParquetTable(Seq(Tuple1(300000), Tuple1(2024)), "try_wide_dates") {
-      val date = "make_date(_1, 6, 15)"
-      for {
-        target <- Seq("TIMESTAMP", "TIMESTAMP_NTZ")
-        codegen <- Seq("true", "false")
-      } {
-        withSQLConf(
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-          SQLConf.ANSI_ENABLED.key -> "true",
-          "spark.sql.legacy.castComplexTypesToString.enabled" -> "true",
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen,
-          CometConf.COMET_STRICT_TESTING.key -> "true") {
-          val expressions = Seq(
-            s"TRY_CAST(make_date(coalesce(_1, 300000), 6, 15) AS $target)",
-            s"TRY_CAST(map(1, $date) AS MAP<INT, $target>)",
-            s"TRY_CAST(named_struct('d', $date) AS STRUCT<d: $target>)",
-            // The outer cast would otherwise dispatch. Its entire tree must be checked.
-            s"CAST(array(TRY_CAST(make_date(coalesce(_1, 300000), 6, 15) AS $target)) AS STRING)") ++
-            (if (target == "TIMESTAMP") Seq(s"TRY_CAST(map($date, 1) AS MAP<$target, INT>)")
-             else Seq.empty)
-          expressions.foreach { expr =>
-            assertNoCodegenRan {
-              val query = s"SELECT $expr FROM try_wide_dates"
-              val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
-              assert(!plan.exists(_.isInstanceOf[CometProjectExec]))
-              checkSparkAnswer(query)
-            }
-          }
+    // These days fit at UTC, but the offset pushes local midnight out of range.
+    for ((tz, day) <- Seq("+18:00" -> -106751991, "-18:00" -> 106751991)) {
+      withParquetTable(Seq(Tuple1(day)), "boundary_day") {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+          checkLongOverflow("SELECT CAST(date_from_unix_date(_1) AS TIMESTAMP) FROM boundary_day")
         }
       }
     }
@@ -2278,6 +2532,32 @@ class CometNativeCastSuite
       checkSparkAnswerAndOperator(
         "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
     }
+  }
+
+  test("cast to a struct with duplicate field names is unsupported") {
+    val sourceType = StructType(Seq(StructField("p", IntegerType), StructField("q", IntegerType)))
+    val duplicateTarget =
+      StructType(Seq(StructField("x", IntegerType), StructField("x", IntegerType)))
+    val uniqueTarget =
+      StructType(Seq(StructField("x", IntegerType), StructField("y", IntegerType)))
+    val reason = CometCast.duplicateStructFieldNamesReason
+
+    Seq(
+      sourceType -> duplicateTarget,
+      DataTypes.NullType -> duplicateTarget,
+      ArrayType(DataTypes.NullType) -> ArrayType(duplicateTarget),
+      ArrayType(sourceType) -> ArrayType(duplicateTarget),
+      MapType(StringType, sourceType) -> MapType(StringType, duplicateTarget)).foreach {
+      case (fromType, toType) =>
+        assert(
+          CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) ==
+            Unsupported(Some(reason)))
+    }
+    assert(
+      CometCast
+        .isSupported(sourceType, uniqueTarget, None, CometEvalMode.LEGACY)
+        .isInstanceOf[Compatible])
+
   }
 
   test("cast between decimals with different precision and scale") {
@@ -2487,6 +2767,75 @@ class CometNativeCastSuite
         Unsupported(Some(expectedMessage)))
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6200
+  // Nested isSupported used to return the first non-Compatible child, so an earlier
+  // Incompatible (negative-scale decimal → string) could mask a later Unsupported.
+  // Boolean → Decimal is Unsupported; that pair is used as the Unsupported child.
+  test("struct to struct prefers Unsupported over Incompatible regardless of field order") {
+    val (negScaleType, unsupportedTo) = nestedCastSupportFixtures()
+    val unsupportedReason =
+      Some(s"Cast from $BooleanType to $unsupportedTo is not supported")
+    def struct(a: DataType, b: DataType): StructType =
+      StructType(Seq(StructField("a", a), StructField("b", b)))
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          struct(negScaleType, BooleanType),
+          struct(StringType, unsupportedTo),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+      assert(
+        CometCast.isSupported(
+          struct(BooleanType, negScaleType),
+          struct(unsupportedTo, StringType),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+    }
+  }
+
+  test("struct to string prefers Unsupported over Incompatible regardless of field order") {
+    val (negScaleType, _) = nestedCastSupportFixtures()
+    val unsupportedFrom = MapType(IntegerType, IntegerType)
+    val unsupportedReason =
+      Some(s"Cast from $unsupportedFrom to ${DataTypes.StringType} is not supported")
+    def struct(a: DataType, b: DataType): StructType =
+      StructType(Seq(StructField("a", a), StructField("b", b)))
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          struct(negScaleType, unsupportedFrom),
+          StringType,
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+      assert(
+        CometCast.isSupported(
+          struct(unsupportedFrom, negScaleType),
+          StringType,
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+    }
+  }
+
+  test("map prefers Unsupported over Incompatible regardless of key/value order") {
+    val (negScaleType, unsupportedTo) = nestedCastSupportFixtures()
+    val unsupportedReason =
+      Some(s"Cast from $BooleanType to $unsupportedTo is not supported")
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          MapType(negScaleType, BooleanType),
+          MapType(StringType, unsupportedTo),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+      assert(
+        CometCast.isSupported(
+          MapType(BooleanType, negScaleType),
+          MapType(unsupportedTo, StringType),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+    }
+  }
+
   test("cast ArrayType(DateType) to unsupported ArrayType routes through codegen dispatch") {
     // Boundary case rather than dispatch coverage: these pairs have no native cast, so all this
     // asserts is that `Unsupported` keeps the operator native via `CodegenDispatchFallback`
@@ -2642,6 +2991,16 @@ class CometNativeCastSuite
         }
       }
     }
+  }
+
+  // DecimalType(10, -2) must be built while negative scale is allowed; the constructor
+  // itself checks the config. Boolean → Decimal is the nested Unsupported child.
+  private def nestedCastSupportFixtures(): (DecimalType, DecimalType) = {
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(10, -2)
+    }
+    (negScaleType, DecimalType(10, 2))
   }
 
   private def isCompatible(
@@ -3021,15 +3380,6 @@ class CometNativeCastSuite
     values.map(v => Some(v)) ++ Seq(None)
   }
 
-  private def assertNoCodegenRan(f: => Unit): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    f
-    val stats = CometScalaUDFCodegen.stats()
-    assert(
-      stats.compileCount + stats.cacheHitCount == 0,
-      s"Expected a native cast, but the JVM codegen dispatcher ran: $stats")
-  }
-
   private def castTimestampTest(input: DataFrame, toType: DataType, assertNative: Boolean) = {
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
@@ -3177,7 +3527,7 @@ class CometNativeCastSuite
                   sparkMessage.startsWith(
                     cometMessage.substring(0, math.min(40, cometMessage.length))))
               } else {
-                // for Spark 3.4 we expect to reproduce the error message exactly
+                // For Spark 3.x we expect to reproduce the error message exactly.
                 assert(cometMessage == sparkMessage)
               }
           }

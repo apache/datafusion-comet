@@ -98,6 +98,7 @@ macro_rules! binary_expr_builder {
                     $operator,
                     right,
                     input_schema.as_ref(),
+                    planner.float_operands(),
                 )
                 .map_err(Into::into)
             }

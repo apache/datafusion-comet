@@ -45,6 +45,7 @@ python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 | `--iterations`            | Number of iterations (default: 1)                                               |
 | `--output`                | Output directory (default: `.`)                                                 |
 | `--query`                 | Run a single query number                                                       |
+| `--plan-dir`              | Optional directory to write formatted physical plans per query                  |
 | `--no-restart`            | Skip Spark master/worker restart                                                |
 | `--dry-run`               | Print the spark-submit command without executing                                |
 | `--jfr`                   | Enable Java Flight Recorder profiling                                           |
@@ -54,7 +55,7 @@ python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 | `--async-profiler-event`  | Event type: `cpu`, `wall`, `alloc`, `lock`, etc. (default: `cpu`)               |
 | `--async-profiler-format` | Output format: `flamegraph`, `jfr`, `collapsed`, `text` (default: `flamegraph`) |
 
-Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
+Available engines: `spark`, `spark-iceberg`, `comet`, `comet-iceberg`, `gluten`
 
 ## Example usage
 
@@ -168,7 +169,7 @@ $SPARK_HOME/bin/spark-submit \
     --warehouse $ICEBERG_WAREHOUSE
 ```
 
-### Run Iceberg benchmark
+### Run Iceberg benchmarks
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
@@ -176,12 +177,26 @@ export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
 export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
 export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
 sudo ./drop-caches.sh
+
+python3 run.py --engine spark-iceberg --benchmark tpch
 python3 run.py --engine comet-iceberg --benchmark tpch
 ```
+
+Use `spark-iceberg` as the Spark JVM Iceberg scan baseline and `comet-iceberg`
+as the Comet native Iceberg scan comparison. Both engines use `ICEBERG_JAR`,
+`ICEBERG_WAREHOUSE`, optional `ICEBERG_CATALOG`, and optional `ICEBERG_DATABASE`.
 
 The benchmark uses Comet's native iceberg-rust integration, which is enabled by default.
 Verify native scanning is active by checking for `CometIcebergNativeScanExec` in the
 physical plan output.
+
+### Plan capture
+
+Pass `--plan-dir <dir>` to write each query's formatted physical plan to
+`<dir>/<engine-name>-q<query-label>.plan.txt`. Plan capture is opt-in and
+repeated iterations overwrite the same plan files. TPC-H writes up to 22 files per engine.
+TPC-DS writes up to 103 files per engine because q14, q23, q24, and q39 each contain two
+SELECT statements.
 
 ### create-iceberg-tables.py options
 

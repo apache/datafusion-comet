@@ -27,7 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -65,6 +65,14 @@ case class CometIcebergNativeScanExec(
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
 
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    // Native execution rebuilds originalPlan from the live runtimeFilters during partition
+    // serialization. Reversion skips that path, so carry the executable DPP filters across here.
+    val restoredScan = originalPlan.copy(runtimeFilters = runtimeFilters)
+    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
+    restoredScan
+  }
+
   override val supportsColumnar: Boolean = true
 
   override val nodeName: String = "CometIcebergNativeScan"
@@ -84,7 +92,7 @@ case class CometIcebergNativeScanExec(
    * by every construction site), so values resolved through `waitForSubqueries` are visible on
    * both sides.
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[PartitionPlanData]) = {
     // Canonicalized instances set originalPlan = null and are not meant to be executed.
     // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
     // deep inside originalPlan.inputRDD.
@@ -114,13 +122,19 @@ case class CometIcebergNativeScanExec(
 
   def commonData: Array[Byte] = serializedPartitionData._1
 
-  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+  def perPartitionData: Array[PartitionPlanData] = serializedPartitionData._2
 
   // numPartitions for execution - derived from actual DPP-filtered partitions
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
+  // Without a key-grouped partitioning, the scan does not know its partition count while
+  // planning because dynamic partition pruning decides which tasks survive and its subqueries
+  // resolve at execution. AQE reads outputPartitioning while it optimizes a stage, before
+  // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
+  // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
+  // RDD from perPartitionData instead.
+  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
@@ -285,7 +299,8 @@ case class CometIcebergNativeScanExec(
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty) {
+      subqueries = Seq.empty,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
         // after the iterator's close has published the final scan metrics.

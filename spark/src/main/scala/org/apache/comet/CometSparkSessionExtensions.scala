@@ -24,6 +24,7 @@ import java.nio.ByteOrder
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
@@ -33,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
+import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -53,11 +54,12 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
  *      c. postColumnarTransitions:  RevertNativeForTransitionHeavyStages,
- *                                   EliminateRedundantTransitions
+ *                                   EliminateRedundantTransitions, CometCacheBuildRule,
+ *                                   CometCacheColumnarRule
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
- * AQE (AdaptiveSparkPlanExec, Spark 3.5+):
+ * AQE (AdaptiveSparkPlanExec):
  * {{{
  *   Initial plan:
  *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
@@ -70,20 +72,20 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *     1. queryStageOptimizerRules:
  *        a. PlanAdaptiveDynamicPruningFilters (Spark) -- skips wrapped SABs
  *        b. ReuseAdaptiveSubquery (Spark)
- *        c. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
+ *        c. OptimizeSkewInRebalancePartitions, CoalesceShufflePartitions,
+ *           OptimizeShuffleWithLocalRead (Spark)
+ *        d. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
  *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
- *        d. CometReuseSubquery                       -- deduplicates converted subqueries
+ *        e. CometReuseSubquery                       -- deduplicates converted subqueries
+ *        f. CometCoalesceShufflePartitions           -- coalesces the shuffles that Comet
+ *           unions and broadcast joins keep Spark's CoalesceShufflePartitions from reaching
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
  *        a. preColumnarTransitions: CometRule (no-op, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
- *                                    EliminateRedundantTransitions
+ *                                    EliminateRedundantTransitions, CometCacheBuildRule,
+ *                                    CometCacheColumnarRule
  * }}}
- *
- * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
- * and CometPlanAdaptiveDynamicPruningFilters/CometReuseSubquery are not registered. AQE DPP scans
- * fall back to Spark so that Spark's PlanAdaptiveDynamicPruningFilters handles them natively
- * (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -98,15 +100,12 @@ class CometSparkSessionExtensions
       return
     }
     extensions.injectColumnar { session => CometColumnar(session) }
-    // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
-    // Registered before CometRule so tags are in place when conversion runs.
-    // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
-    injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session =>
       CometRule(session, queryStagePrep = true)
     }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+    injectQueryStageOptimizerRuleShim(extensions, CometCoalesceShufflePartitions)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
   }
 
@@ -137,10 +136,6 @@ object CometSparkSessionExtensions extends Logging {
    * Checks whether Comet extension should be loaded for Spark.
    */
   private[comet] def isCometLoaded(conf: SQLConf): Boolean = {
-    if (isBigEndian) {
-      logInfo("Comet extension is disabled because platform is big-endian")
-      return false
-    }
     if (!COMET_ENABLED.get(conf)) {
       logInfo(s"Comet extension is disabled, please turn on ${COMET_ENABLED.key} to enable it")
       return false
@@ -168,21 +163,43 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
+    unsupportedEnvironmentReason(
+      conf.getConf(SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION),
+      COMET_NATIVE_LOAD_REQUIRED.get(conf)).isEmpty
+  }
+
+  /**
+   * Why Comet disables itself on this platform or with these settings, whatever shuffle manager
+   * the application uses, or None if nothing rules it out. [[isCometLoaded]] applies it, and so
+   * does CometDriverPlugin before it chooses a shuffle manager, so that an application where
+   * Comet cannot run keeps Spark's.
+   *
+   * This loads the native library on demand. If that fails and `nativeLoadRequired` is set, it
+   * throws instead of returning a reason.
+   */
+  private[apache] def unsupportedEnvironmentReason(
+      int96TimestampConversion: Boolean,
+      nativeLoadRequired: Boolean): Option[String] = {
+    if (isBigEndian) {
+      logInfo("Comet extension is disabled because platform is big-endian")
+      return Some("the platform is big-endian")
+    }
+
     // We don't support INT96 timestamps written by Apache Impala in a different timezone yet
-    if (conf.getConf(SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION)) {
+    if (int96TimestampConversion) {
       logWarning(
         "Comet extension is disabled, because it currently doesn't support" +
           s" ${SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION} setting to true.")
-      return false
+      return Some(s"${SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key} is true")
     }
 
     try {
       // This will load the Comet native lib on demand, and if success, should set
       // `NativeBase.loaded` to true
-      NativeBase.isLoaded
+      if (NativeBase.isLoaded) None else Some("the native library is not loaded")
     } catch {
       case e: Throwable =>
-        if (COMET_NATIVE_LOAD_REQUIRED.get(conf)) {
+        if (nativeLoadRequired) {
           throw new CometRuntimeException(
             "Error when loading native library. Please fix the error and try again, or fallback " +
               s"to Spark by setting ${COMET_ENABLED.key} to false",
@@ -193,7 +210,7 @@ object CometSparkSessionExtensions extends Logging {
               "Falling back to Spark",
             e)
         }
-        false
+        Some("the native library failed to load")
     }
   }
 
@@ -252,10 +269,6 @@ object CometSparkSessionExtensions extends Logging {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
-  def isSpark35Plus: Boolean = {
-    org.apache.spark.SPARK_VERSION >= "3.5"
-  }
-
   def isSpark40Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
@@ -312,9 +325,12 @@ object CometSparkSessionExtensions extends Logging {
    * Record one or more fallback reasons on a `TreeNode`. This is the set-valued form of
    * [[withFallbackReason]]; see that overload for the full contract.
    *
-   * Reasons are accumulated (never overwritten) on the node's `FALLBACK_REASONS` tag and are
-   * surfaced in extended explain output. When `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled,
-   * each new reason is also emitted as a warning.
+   * Reasons are accumulated on the node's `FALLBACK_REASONS` tag and are surfaced in extended
+   * explain output. During conversion, expression reasons accumulate only within that scope:
+   * pre-existing expression tags may have been copied from an unrelated conversion. Operator
+   * reasons remain sticky because earlier planning rules can intentionally veto conversion. When
+   * `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled, each new reason is also emitted as a
+   * warning.
    *
    * @param node
    *   The Spark operator or expression that is falling back to Spark.
@@ -331,9 +347,15 @@ object CometSparkSessionExtensions extends Logging {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
-    val existingNodeInfos =
-      node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
-    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, existingNodeInfos ++ info)
+    val reasons = node match {
+      case expr: Expression =>
+        CometExplainInfo.recordFallbackReasons(expr, info).getOrElse {
+          expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
+        }
+      case _ =>
+        node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
+    }
+    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons)
     node
   }
 

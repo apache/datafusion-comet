@@ -31,6 +31,9 @@ import org.apache.xbean.asm9.tree.{ClassNode, FieldInsnNode, MethodInsnNode}
 
 import com.google.common.reflect.ClassPath
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+import org.apache.comet.util.ClassLoaders
+
 class CometPlanEqualitySuite extends AnyFunSuite {
 
   // Native serialization state and the source plan are deliberately not the identity of a
@@ -152,6 +155,15 @@ class CometPlanEqualitySuite extends AnyFunSuite {
       missing.isEmpty,
       "Constructor parameters missing from equals: " + missing.mkString(", ") +
         ". Compare them in equals or document why they do not affect plan identity in exclusions.")
+  }
+
+  test("Spark 4.2 transactional commit survives transformDown equality checks") {
+    assume(isSpark42Plus, "transactional physical writes start with Spark 4.2")
+
+    val shimClass =
+      ClassLoaders.loadClass("org.apache.comet.iceberg.IcebergTransactionalCommitTestShim$")
+    val shim = shimClass.getField("MODULE$").get(null)
+    val _ = shimClass.getMethod("verifyTransactionAttachment").invoke(shim)
   }
 
   test("the guard detects an omitted constructor parameter") {

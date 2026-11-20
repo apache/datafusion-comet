@@ -19,7 +19,13 @@
 
 package org.apache.comet
 
+import java.time.DateTimeException
+
 import org.scalatest.funsuite.AnyFunSuite
+
+import org.apache.spark.{SparkException, SparkThrowable}
+
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class SparkErrorConverterSuite extends AnyFunSuite {
 
@@ -29,6 +35,69 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       new org.apache.comet.exceptions.CometQueryExecutionException(json))
     assert(ex.getClass == classOf[ArithmeticException])
     assert(ex.getMessage == "long overflow")
+  }
+
+  test("ArithmeticOverflow preserves the suggested function") {
+    for (function <- Seq("try_add", "try_subtract", "try_multiply")) {
+      val error = SparkErrorConverter
+        .convertErrorType(
+          "ArithmeticOverflow",
+          "ARITHMETIC_OVERFLOW",
+          Map("fromType" -> "long", "functionName" -> function),
+          Array.empty,
+          null)
+        .getOrElse(fail("Expected arithmetic overflow"))
+      assert(error.isInstanceOf[ArithmeticException])
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(
+        error.getMessage.contains(
+          s"Use '$function' to tolerate overflow and return NULL instead."))
+    }
+  }
+
+  private def castToDatetimeError(fromType: String, value: String): Throwable =
+    SparkErrorConverter
+      .convertErrorType(
+        "InvalidInputInCastToDatetime",
+        "CAST_INVALID_INPUT",
+        Map("fromType" -> fromType, "toType" -> "TIMESTAMP", "value" -> value),
+        Array.empty,
+        "")
+      .getOrElse(fail("Expected InvalidInputInCastToDatetime to be converted"))
+
+  test("InvalidInputInCastToDatetime prints a double value as Spark does") {
+    for (value <- Seq("NaN", "Infinity", "-Infinity")) {
+      val error = castToDatetimeError("DOUBLE", value)
+      // SparkDateTimeException is private[spark], so check its public parent.
+      assert(error.isInstanceOf[DateTimeException])
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "CAST_INVALID_INPUT")
+      assert(
+        error.getMessage.contains(
+          s"""The value $value of the type "DOUBLE" cannot be cast to "TIMESTAMP""""),
+        error.getMessage)
+    }
+  }
+
+  test("InvalidInputInCastToDatetime still quotes a string value") {
+    val error = castToDatetimeError("STRING", "abc")
+    assert(error.isInstanceOf[DateTimeException])
+    assert(
+      error.getMessage.contains("""The value 'abc' of the type "STRING" cannot be cast"""),
+      error.getMessage)
+  }
+
+  test("ArithmeticOverflow without a suggested function remains compatible") {
+    // Accept both older payloads without the key and unary errors with an empty function.
+    for (params <- Seq(
+        Map("fromType" -> "integer"),
+        Map("fromType" -> "integer", "functionName" -> ""))) {
+      val error = SparkErrorConverter
+        .convertErrorType("ArithmeticOverflow", "ARITHMETIC_OVERFLOW", params, Array.empty, null)
+        .getOrElse(fail("Expected arithmetic overflow"))
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(error.asInstanceOf[SparkThrowable].getMessageParameters.get("alternative") == "")
+      assert(!error.getMessage.contains("try_"))
+    }
   }
 
   test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
@@ -44,7 +113,7 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       .getOrElse(fail("Expected CannotReadFile to be converted to a Spark exception"))
     // `cannotReadFilesError` IS the FAILED_READ_FILE path. Assert on the version-stable message
     // ("Encountered error while reading file ...") rather than the `FAILED_READ_FILE` literal,
-    // which only Spark 4.x prepends to getMessage as the error-class tag (3.4/3.5 do not).
+    // which only Spark 4.x prepends to getMessage as the error-class tag (3.5 does not).
     assert(ex.getMessage.contains("Encountered error while reading file"))
     assert(ex.getMessage.contains("part-0.parquet"))
   }
@@ -73,6 +142,79 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       taskFilePaths = Seq("file:/tmp/data/fallback.parquet"))
     assert(ex.getMessage.contains("native.parquet"))
     assert(!ex.getMessage.contains("fallback.parquet"))
+  }
+
+  test("ParquetTimestampOverflow wraps the arithmetic cause in a file-read SparkException") {
+    val path = "file:///tmp/data/bad%20timestamp%25.parquet"
+    val json =
+      s"""{"errorType":"ParquetTimestampOverflow","errorClass":"","params":{"filePath":"$path"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json),
+      taskFilePaths = Seq("file:///tmp/data/healthy.parquet", path))
+    assert(ex.getClass == classOf[SparkException])
+    val error = ex.asInstanceOf[SparkException]
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+    assert(error.getErrorClass == errorClass)
+    assert(error.getMessageParameters.get("path") == path)
+    assert(error.getCause.getClass == classOf[ArithmeticException])
+    assert(error.getCause.getMessage == "long overflow")
+  }
+
+  private val ReadAncientDatetimeClass =
+    "INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME"
+
+  private def assertReadAncientDatetime(
+      ex: Throwable,
+      format: String,
+      config: String,
+      option: String): Unit = ex match {
+    // SparkUpgradeException is private[spark], so match on the public SparkThrowable.
+    case e: SparkThrowable if ex.getClass.getName == "org.apache.spark.SparkUpgradeException" =>
+      assert(e.getErrorClass == ReadAncientDatetimeClass)
+      val params = e.getMessageParameters
+      assert(params.get("format") == format)
+      assert(params.get("config") == s""""$config"""")
+      assert(params.get("option") == s""""$option"""")
+    case other => fail(s"Expected SparkUpgradeException, got $other")
+  }
+
+  Seq(
+    ("Parquet", "spark.sql.parquet.datetimeRebaseModeInRead", "datetimeRebaseMode"),
+    ("Parquet INT96", "spark.sql.parquet.int96RebaseModeInRead", "int96RebaseMode")).foreach {
+    case (format, config, option) =>
+      test(s"ReadAncientDatetime converts to SparkUpgradeException for $format") {
+        val ex = SparkErrorConverter
+          .convertErrorType(
+            "ReadAncientDatetime",
+            ReadAncientDatetimeClass,
+            Map("format" -> format, "column" -> "d"),
+            Array.empty,
+            null)
+          .getOrElse(fail("Expected ReadAncientDatetime to be converted to a Spark exception"))
+        assertReadAncientDatetime(ex, format, config, option)
+      }
+
+      test(s"ReadAncientDatetime native JSON converts to SparkUpgradeException for $format") {
+        val json =
+          s"""{"errorType":"ReadAncientDatetime","errorClass":"$ReadAncientDatetimeClass",""" +
+            s""""params":{"format":"$format","column":"d"}}"""
+        val ex = SparkErrorConverter.convertToSparkException(
+          new org.apache.comet.exceptions.CometQueryExecutionException(json))
+        assertReadAncientDatetime(ex, format, config, option)
+      }
+  }
+
+  test("ReadAncientDatetime with an unknown format fails rather than converting") {
+    val e = intercept[Exception] {
+      SparkErrorConverter.convertErrorType(
+        "ReadAncientDatetime",
+        ReadAncientDatetimeClass,
+        Map("format" -> "ORC", "column" -> "d"),
+        Array.empty,
+        null)
+    }
+    assert(e.getMessage.contains("Unrecognized format ORC"))
   }
 
   private def castOverflowError(fromType: String, value: String): Throwable = {

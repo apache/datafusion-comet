@@ -23,6 +23,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.AttributeSet
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.catalyst.plans.physical.{Distribution, UnspecifiedDistribution}
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriter, PhysicalWriteInfoImpl, WriterCommitMessage}
@@ -31,7 +32,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
 import org.apache.spark.util.Utils
 
-import org.apache.comet.iceberg.ReplaceDataDispatchInfo
+import org.apache.comet.iceberg.{IcebergDeltaWriterShim, IcebergSemanticMetricsShim, IcebergWriteDispatch, PlainIcebergWrite, PositionDeltaWrite, ReplaceDataDispatchInfo, ReplaceDataWrite}
 
 /**
  * Executor-side file writer for Comet's split-operator Iceberg V2 write.
@@ -41,17 +42,27 @@ case class IcebergWriteExec(
     @transient batchWrite: BatchWrite,
     override val output: Seq[Attribute],
     child: SparkPlan,
-    replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
+    dispatch: IcebergWriteDispatch = PlainIcebergWrite)
     extends UnaryExecNode {
 
   // Spark already adds a distribution for the V2 write; adding another here is redundant.
   override def requiredChildDistribution: Seq[Distribution] = Seq(UnspecifiedDistribution)
 
+  // `output` is the commit-message attribute this node creates, not one its child supplies.
+  // Without declaring it as produced, Spark counts it as missing input and EXPLAIN prints the
+  // node with a `!` prefix.
+  override def producedAttributes: AttributeSet = outputSet
+
   // The write's custom metrics are registered on IcebergCommitExec only: Iceberg reports them
   // through the driver-side commit report, and its DataWriters expose no task-level values.
   // Registering them here too would double-count them in the SQL UI.
   override lazy val metrics: Map[String, SQLMetric] =
-    Map("numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
+    Map("numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows")) ++
+      (dispatch match {
+        case PositionDeltaWrite(info) =>
+          IcebergSemanticMetricsShim.deltaMetrics(sparkContext, info.command)
+        case _ => Map.empty[String, SQLMetric]
+      })
 
   override protected def doExecute(): RDD[InternalRow] = {
     val rdd = {
@@ -72,7 +83,8 @@ case class IcebergWriteExec(
 
     val rowsMetric = longMetric("numOutputRows")
     val schemaTypes = output.map(_.dataType).toArray
-    val capturedReplaceDataDispatch = replaceDataDispatch
+    val capturedDispatch = dispatch
+    val semanticMetrics = metrics -- Set("numOutputRows")
     rdd.mapPartitionsInternal { iter =>
       val partId = TaskContext.getPartitionId()
       val taskId = TaskContext.get().taskAttemptId()
@@ -83,7 +95,8 @@ case class IcebergWriteExec(
         iter,
         rowsMetric,
         projection,
-        capturedReplaceDataDispatch)
+        capturedDispatch,
+        semanticMetrics)
     }
   }
 
@@ -106,17 +119,40 @@ object IcebergWriteExec {
       iter: Iterator[InternalRow],
       rowsMetric: SQLMetric,
       projection: UnsafeProjection,
-      replaceDataDispatch: Option[ReplaceDataDispatchInfo]): Iterator[InternalRow] = {
+      dispatch: IcebergWriteDispatch,
+      semanticMetrics: Map[String, SQLMetric] = Map.empty): Iterator[InternalRow] = {
     val iterWithMetrics = new IteratorWithMetrics(iter, rowsMetric)
     // Serialization happens inside the guarded block: if the commit message cannot be
     // serialised the task must abort so the already-finalised data files get deleted.
     val messageBytes = Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
-      if (replaceDataDispatch.isDefined) {
-        runReplaceDataWriter(writer, iterWithMetrics, replaceDataDispatch.get)
-      } else {
-        while (iterWithMetrics.hasNext) {
-          writer.write(iterWithMetrics.next())
-        }
+      dispatch match {
+        case PlainIcebergWrite =>
+          while (iterWithMetrics.hasNext) writer.write(iterWithMetrics.next())
+        case ReplaceDataWrite(info) =>
+          runReplaceDataWriter(writer, iterWithMetrics, info)
+        case PositionDeltaWrite(info) =>
+          val deltaWriter = writer match {
+            case delta: org.apache.spark.sql.connector.write.DeltaWriter[_] =>
+              delta.asInstanceOf[org.apache.spark.sql.connector.write.DeltaWriter[InternalRow]]
+            case other =>
+              throw new IllegalStateException(
+                s"Expected DeltaWriter for position delta write, got ${other.getClass.getName}")
+          }
+          var numUpdatedRows = 0L
+          var numDeletedRows = 0L
+          while (iterWithMetrics.hasNext) {
+            val row = iterWithMetrics.next()
+            val operation = row.getInt(info.operationOrdinal)
+            if (operation == info.operationCodes.delete) {
+              numDeletedRows += 1L
+            } else if (operation == info.operationCodes.update ||
+              info.operationCodes.reinsert.contains(operation)) {
+              numUpdatedRows += 1L
+            }
+            IcebergDeltaWriterShim.writeOperation(deltaWriter, operation, row, info)
+          }
+          semanticMetrics.get("numUpdatedRows").foreach(_.add(numUpdatedRows))
+          semanticMetrics.get("numDeletedRows").foreach(_.add(numDeletedRows))
       }
       serializeMessage(writer.commit())
     })(

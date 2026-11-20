@@ -24,7 +24,6 @@ import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.iceberg.IcebergReflection
 
 /**
  * Benchmark of Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -97,7 +96,7 @@ object CometIcebergSystemFunctionBenchmark extends CometBenchmarkBase {
    */
   private def verifyOutputsMatch(name: String, query: String): Unit = {
     // The rows are assigned to a local rather than returned from the `withSQLConf` block, because
-    // Spark 3.4 and 3.5 declare `SQLHelper.withSQLConf` as returning `Unit`; only Spark 4 has the
+    // Spark 3.5 declares `SQLHelper.withSQLConf` as returning `Unit`; only Spark 4 has the
     // generic result-returning form.
     def collect(cometEnabled: Boolean): Array[Row] = {
       var rows: Array[Row] = Array.empty
@@ -179,12 +178,4 @@ object CometIcebergSystemFunctionBenchmark extends CometBenchmarkBase {
     }
     s"SELECT ${projections.mkString(", ")} FROM $tbl"
   }
-
-  private def icebergOnClasspath: Boolean =
-    try {
-      IcebergReflection.loadClass("org.apache.iceberg.spark.functions.BucketFunction")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
 }

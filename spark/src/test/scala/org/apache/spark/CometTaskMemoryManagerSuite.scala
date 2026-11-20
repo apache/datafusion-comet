@@ -19,14 +19,14 @@
 
 package org.apache.spark
 
-import java.util.Properties
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
-import org.apache.logging.log4j.{Level, LogManager}
-import org.apache.logging.log4j.core.{LogEvent, LoggerContext}
-import org.apache.spark.executor.TaskMetrics
+import org.apache.logging.log4j.Level
+import org.apache.logging.log4j.core.LogEvent
 import org.apache.spark.memory.{MemoryConsumer, TaskMemoryManager, TestMemoryManager}
 
-class CometTaskMemoryManagerSuite extends SparkFunSuite {
+class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
 
   test("native memory usage is visible to Spark's memory consumer") {
     withTaskMemoryManager { taskMemoryManager =>
@@ -134,52 +134,120 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
     }
   }
 
-  /** The events that Comet's and Spark's task memory managers log at `level` or above. */
-  private def logEvents(level: Level)(f: => Unit): Seq[LogEvent] = {
-    val appender = new LogAppender("task memory manager")
-    appender.setThreshold(level)
-    val loggers = Seq(classOf[CometTaskMemoryManager].getName, classOf[TaskMemoryManager].getName)
-    val context = LogManager.getContext(false).asInstanceOf[LoggerContext]
-    val unconfigured = loggers.filterNot(context.getConfiguration.getLoggers.containsKey)
-    try withLogAppender(appender, loggers, Some(level))(f)
-    finally {
-      // For a logger with no config of its own, withLogAppender adds one and never removes it.
-      // It copies the root config's additivity, which is off, so left in place it would keep the
-      // logger's events out of the test log for the rest of the run.
-      unconfigured.foreach(context.getConfiguration.removeLogger)
-      context.updateLoggers()
+  test("an acquire waiting in Spark survives a release that empties the task's balance") {
+    checkRequestWhileBalanceEmpties(loggers) { taskMemoryManager =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      // Another native thread releases the task's last 10 bytes while the acquire waits.
+      WaitingRequest(
+        manager.acquireMemory(_),
+        manager.releaseMemory(_),
+        () => manager.acquireMemory(20L),
+        granted => {
+          assert(granted == 20L)
+          assert(manager.getUsed == 20L)
+          assert(taskMemoryManager.getMemoryConsumptionForThisTask == 20L)
+          manager.releaseMemory(20L)
+          assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+        })
     }
-    appender.loggingEvents.toSeq
   }
+
+  for ((state, end) <- Seq[(String, TaskContextImpl => Unit)](
+      ("completed", _.markTaskCompleted(None)),
+      ("was killed", _.markInterrupted("killed")))) {
+    test(s"an acquire that loses its task entry after the task $state is not made again") {
+      val memoryManager = offHeapMemoryManager()
+      val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
+
+      withTaskContext(new TaskMemoryManager(memoryManager, 0L)) { taskMemoryManager =>
+        val manager = new CometTaskMemoryManager(1L, 0L)
+        assert(otherTask.acquireMemory(90L) == 90L)
+        assert(manager.acquireMemory(10L) == 10L)
+
+        val granted = new AtomicReference[java.lang.Long]()
+        val failure = new AtomicReference[Throwable]()
+        val acquire = new Thread(() =>
+          try granted.set(manager.acquireMemory(20L))
+          catch { case t: Throwable => failure.set(t) })
+        acquire.setDaemon(true)
+        // Spark's executor frees what the task still holds once the task has ended, under the
+        // task memory manager's monitor, which a parked acquire holds.
+        val cleanUp = new Thread(() => taskMemoryManager.cleanUpAllAllocatedMemory())
+        cleanUp.setDaemon(true)
+
+        try {
+          acquire.start()
+          awaitWaitingInSpark(acquire)
+          // The task ends and releasing its plan gives back the task's last bytes while a native
+          // thread still waits in Spark, as releasePlan does when it drops a plan's stream.
+          end(TaskContext.get().asInstanceOf[TaskContextImpl])
+          manager.releaseMemory(10L)
+          acquire.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          // Parked again, the acquire would wait for the other task while holding the monitor.
+          assert(!acquire.isAlive, s"the acquire is ${acquire.getState} after the task $state")
+          cleanUp.start()
+          cleanUp.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          assert(!cleanUp.isAlive, s"the clean up is ${cleanUp.getState}")
+        } finally {
+          // Free the other task's memory so that neither thread outlives a failed test.
+          otherTask.freeMemory(otherTask.getUsed)
+          acquire.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          cleanUp.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+        }
+
+        assert(failure.get == null, s"the acquire failed: ${failure.get}")
+        assert(granted.get == 0L)
+        assert(manager.getUsed == 0L)
+        assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+      }
+    }
+  }
+
+  test("a NoSuchElementException other than Spark's missing task entry is rethrown") {
+    val wrongTask = noSuchElement("key not found: 7", fromExecutionMemoryPool = true)
+    val notFromPool = noSuchElement("key not found: 0", fromExecutionMemoryPool = false)
+    for (error <- Seq(wrongTask, notFromPool)) {
+      val taskMemoryManager = new FailingTaskMemoryManager(() => error, failures = Int.MaxValue)
+      withTaskContext(taskMemoryManager) { _ =>
+        val manager = new CometTaskMemoryManager(1L, 0L)
+        val thrown = intercept[NoSuchElementException](manager.acquireMemory(10L))
+        assert(thrown eq error)
+        assert(taskMemoryManager.calls.get == 1)
+        assert(manager.getUsed == 0L)
+      }
+    }
+  }
+
+  test("an acquire that keeps losing its task entry gives up with a zero grant") {
+    // A new exception on every call, so the test can tell which one is logged.
+    val taskMemoryManager = new FailingTaskMemoryManager(
+      () => noSuchElement("key not found: 0", fromExecutionMemoryPool = true),
+      failures = Int.MaxValue)
+    withTaskContext(taskMemoryManager) { _ =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      val events = logEvents(Level.INFO) {
+        // A refusal rather than an exception, so native spills as for any refused reservation.
+        assert(manager.acquireMemory(10L) == 0L)
+      }
+      assert(events.map(_.getLevel) == Seq(Level.INFO, Level.INFO, Level.WARN), messages(events))
+      assert(events.last.getThrown eq taskMemoryManager.errors.last)
+      assert(taskMemoryManager.calls.get == MaxAcquireAttempts)
+      assert(manager.getUsed == 0L)
+      assert(nativeMemoryConsumer(manager).getUsed == 0L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+    }
+  }
+
+  private val loggers =
+    Seq(classOf[CometTaskMemoryManager].getName, classOf[TaskMemoryManager].getName)
+
+  /** The events that Comet's and Spark's task memory managers log at `level` or above. */
+  private def logEvents(level: Level)(f: => Unit): Seq[LogEvent] = logEvents(level, loggers)(f)
 
   private def withTaskMemoryManager(f: TaskMemoryManager => Unit): Unit = {
     val memoryManager = new TestMemoryManager(new SparkConf())
     memoryManager.limit(1024)
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
-    val taskContext = new TaskContextImpl(
-      stageId = 0,
-      stageAttemptNumber = 0,
-      partitionId = 0,
-      numPartitions = 1,
-      taskAttemptId = 0L,
-      attemptNumber = 0,
-      taskMemoryManager = taskMemoryManager,
-      localProperties = new Properties,
-      metricsSystem = null,
-      taskMetrics = TaskMetrics.empty,
-      cpus = 1,
-      resources = Map.empty)
-
-    TaskContext.setTaskContext(taskContext)
-    try {
-      f(taskMemoryManager)
-    } finally {
-      try {
-        taskMemoryManager.cleanUpAllAllocatedMemory()
-      } finally {
-        TaskContext.unset()
-      }
-    }
+    withTaskContext(new TaskMemoryManager(memoryManager, 0L))(f)
   }
 
   private def nativeMemoryConsumer(manager: CometTaskMemoryManager): MemoryConsumer = {

@@ -18,8 +18,11 @@
 statement
 CREATE TABLE test_arrays_overlap(a array<int>, b array<int>) USING parquet
 
+-- COALESCE(1) writes the table as one file, so the rows share a batch: a constant array reaches
+-- native as a scalar, and beside a column it has to be compared with every row, not only the
+-- first.
 statement
-INSERT INTO test_arrays_overlap VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
+INSERT INTO test_arrays_overlap SELECT /*+ COALESCE(1) */ * FROM VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2)) AS t(a, b)
 
 query
 SELECT arrays_overlap(a, b) FROM test_arrays_overlap
@@ -31,6 +34,9 @@ SELECT arrays_overlap(a, array(3, 4, 5)) FROM test_arrays_overlap
 -- literal + column
 query
 SELECT arrays_overlap(array(1, 2, 3), b) FROM test_arrays_overlap
+
+query
+SELECT arrays_overlap(array(3, 4, 5), a) FROM test_arrays_overlap
 
 -- literal + literal
 query
@@ -269,11 +275,15 @@ SELECT a, b, arrays_overlap(a, b) FROM test_overlap_struct_dbl
 statement
 CREATE TABLE test_overlap_struct(a array<struct<x:int, y:int>>, b array<struct<x:int, y:int>>) USING parquet
 
+-- One file, so the rows share a batch for the struct constants below.
 statement
-INSERT INTO test_overlap_struct VALUES (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 1, 'y', 2))), (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 3, 'y', 4))), (array(named_struct('x', 1, 'y', cast(NULL as int))), array(named_struct('x', 1, 'y', cast(NULL as int)))), (array(cast(NULL as struct<x:int, y:int>)), array(cast(NULL as struct<x:int, y:int>)))
+INSERT INTO test_overlap_struct SELECT /*+ COALESCE(1) */ * FROM VALUES (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 1, 'y', 2))), (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 3, 'y', 4))), (array(named_struct('x', 1, 'y', cast(NULL as int))), array(named_struct('x', 1, 'y', cast(NULL as int)))), (array(cast(NULL as struct<x:int, y:int>)), array(cast(NULL as struct<x:int, y:int>))) AS t(a, b)
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_struct
+
+query
+SELECT b, arrays_overlap(b, array(named_struct('x', 3, 'y', 4))), arrays_overlap(array(named_struct('x', 3, 'y', 4)), b) FROM test_overlap_struct
 
 -- mixed column and literal with NULL elements
 query

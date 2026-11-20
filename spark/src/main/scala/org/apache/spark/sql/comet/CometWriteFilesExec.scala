@@ -23,25 +23,32 @@ import java.util.Date
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.FileAlreadyExistsException
 import org.apache.hadoop.mapreduce.{TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.hadoop.codec.CodecConfig
-import org.apache.spark.TaskContext
+import org.apache.spark.{TaskContext, TaskOutputFileAlreadyExistException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.shuffle.FetchFailedException
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.WriterCommitMessage
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStatsTracker, ExecutedWriteSummary, WriteFilesSpec, WriteJobDescription, WriteTaskResult, WriteTaskStatsTracker}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
+import org.apache.comet.CometConf
+import org.apache.comet.parquet.HadoopFileOutput
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{schema2Proto, NativeWriteUtils}
@@ -66,7 +73,8 @@ import org.apache.comet.shims.ShimCometWriteFilesExec
  * stats trackers, and commit or abort the task. Notably the path handed back by
  * `FileCommitProtocol.newTaskTempFile` is used verbatim, so staging directories, task-attempt
  * isolation under speculation, and committers that track individual files all behave as they do
- * for Spark's own writer.
+ * for Spark's own writer. A file that is neither local nor on HDFS is created through Hadoop's
+ * FileSystem API, see [[org.apache.comet.parquet.HadoopFileOutput]].
  *
  * @param nativeOp
  *   Template for the native write plan. `output_path` is a placeholder here and is replaced per
@@ -129,10 +137,10 @@ case class CometWriteFilesExec(
 
     // SPARK-23271: a zero-partition input would spawn no task and therefore write no file at all,
     // so the output directory would carry no schema for readers. Spark's own WriteFilesExec swaps
-    // in a dummy single-partition RDD for exactly this case. AQE reaches it by collapsing a
-    // completed empty shuffle into a CometEmptyRelationExec, which is why
-    // CometDataWritingCommand declines empty-relation inputs on the Spark 3.x path (#5303): its
-    // writer has nowhere to put this swap. See CometEmptyRelationParquetWriterSuite.
+    // in a dummy single-partition RDD for exactly this case, and CometNativeWriteExec does the
+    // same on the Spark 3.x path (#5303). AQE reaches it by collapsing a completed empty shuffle
+    // into a CometEmptyRelationExec, so a write over a native empty relation stays native and
+    // still leaves a schema-only file. See CometEmptyRelationParquetWriterSuite.
     val writeRDD = if (childRDD.getNumPartitions == 0) {
       sparkContext.parallelize(Seq.empty[ColumnarBatch], 1)
     } else {
@@ -250,21 +258,32 @@ object CometWriteFilesExec extends Logging {
             s"Comet's native Parquet writer cannot write $codec"))
 
         statsTrackers.foreach(_.newFile(filePath))
-        val rowsWritten =
-          writeNatively(taskWrite, filePath, protoCodec, batches, sparkPartitionId)
-        recordRows(statsTrackers, filePath, rowsWritten)
-        statsTrackers.foreach(_.closeFile(filePath))
-        filePath
+        writeNatively(
+          taskWrite,
+          filePath,
+          protoCodec,
+          batches,
+          statsTrackers,
+          sparkPartitionId,
+          taskAttemptContext.getConfiguration)
+        Some(filePath)
       } else {
         // `hasNext` already ran the child to completion, so there is nothing to drain or release
         // here. Spark's EmptyDirectoryDataWriter writes nothing in this case either.
-        "no file"
+        None
       }
 
-      val (taskCommitMessage, taskCommitTime) = Utils.timeTakenMs {
-        committer.commitTask(taskAttemptContext)
+      // `FileFormatDataWriter.commit` closes the file for the trackers and commits the task, and
+      // reports a failure in either for the write's path.
+      val (taskCommitMessage, taskCommitTime) = enrichWriteError(description.path) {
+        writtenFile.foreach(file => statsTrackers.foreach(_.closeFile(file)))
+        Utils.timeTakenMs {
+          committer.commitTask(taskAttemptContext)
+        }
       }
-      logDebug(s"Task ${taskAttemptContext.getTaskAttemptID} committed $writtenFile")
+      logDebug(
+        s"Task ${taskAttemptContext.getTaskAttemptID} committed " +
+          writtenFile.getOrElse("no file"))
 
       Iterator(
         WriteTaskResult(
@@ -281,86 +300,214 @@ object CometWriteFilesExec extends Logging {
   }
 
   /**
-   * Run the native write plan for one task, returning the number of rows written.
+   * Runs `f`, failing the task the way Spark's writer does when `f` fails, as
+   * `FileFormatDataWriter.enrichWriteError` does on Spark 4.0+ and `FileFormatWriter.executeTask`
+   * on 3.x: a `FetchFailedException` as it was, so that Spark reruns the stage that produced the
+   * lost shuffle output, a `FileAlreadyExistsException` as a
+   * `TaskOutputFileAlreadyExistException` when `spark.sql.execution.fastFailOnFileFormatOutput`
+   * is set, which fails the job without retrying the task, and anything else as
+   * `TASK_WRITE_FAILED` for `path`.
    *
-   * The row count is taken on the JVM side as batches are pulled into native code. That is exact
-   * because the native writer consumes its whole input before completing.
+   * Spark's writer creates a task's file before this applies. So does Comet for a file it creates
+   * through Hadoop, but the native writer creates local and HDFS files during the write, so a
+   * failure to create one of those is enriched here and not in Spark.
+   */
+  private[comet] def enrichWriteError[T](path: => String)(f: => T): T =
+    try {
+      f
+    } catch {
+      case e: FetchFailedException => throw e
+      case e: FileAlreadyExistsException if SQLConf.get.fastFailFileFormatOutput =>
+        throw new TaskOutputFileAlreadyExistException(e)
+      case t: Throwable => throw QueryExecutionErrors.taskFailedWhileWritingRowsError(path, t)
+    }
+
+  /**
+   * Run the native write plan for one task, reporting rows as batches are pulled into native
+   * code.
+   *
+   * Trackers must see each batch before it is handed off to Arrow: the child may reuse or release
+   * its vectors when the next batch is pulled. A successful write consumes the whole input;
+   * failures in either the writer or a tracker abort the task without publishing its statistics.
    */
   private def writeNatively(
       taskWrite: NativeWriteTask,
       filePath: String,
       codec: OperatorOuterClass.CompressionCodec,
       batches: Iterator[ColumnarBatch],
-      partitionId: Int): Long = {
+      statsTrackers: Seq[WriteTaskStatsTracker],
+      partitionId: Int,
+      hadoopConf: Configuration): Unit = {
     val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
-      .setOutputPath(filePath)
       .setCompression(codec)
       .clearColumnNames()
       .addAllColumnNames(taskWrite.dataColumnNames.asJava)
       .clearOutputSchema()
       .addAllOutputSchema(taskWrite.outputSchema.asJava)
-      .build()
-    val taskOp = taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build()
 
-    var rowsWritten = 0L
-    val countingBatches =
-      CometArrowStream.countingIterator[ColumnarBatch](batches, b => rowsWritten += b.numRows())
+    val reportRows = recordRows(statsTrackers, filePath, taskWrite.childSchema)
+    val trackedBatches = CometArrowStream.countingIterator[ColumnarBatch](
+      batches,
+      batch => {
+        try {
+          reportRows(batch)
+        } catch {
+          case t: Throwable =>
+            // The Arrow reader has not received this batch yet, so its cleanup cannot close it.
+            Utils.tryWithSafeFinally { throw t } { batch.close() }
+        }
+      })
 
-    val execIterator = CometExec.getCometIterator(
-      CometArrowStream.inputObjects(countingBatches, taskWrite.childSchema, taskWrite.nodeName),
+    writeFile(
+      filePath,
+      // Spark reports a failure while writing rows for the file's own path.
+      filePath,
+      hadoopConf,
+      taskWrite.nativeOp,
+      parquetWriter,
+      CometArrowStream.inputObjects(trackedBatches, taskWrite.childSchema, taskWrite.nodeName),
       taskWrite.dataColumnNames.length,
-      taskOp,
       taskWrite.nativeMetrics,
       taskWrite.numPartitions,
-      partitionId,
-      broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
-
-    // `close()` propagates teardown failures, including from the final native metrics update, so
-    // a plain `finally` would let a cleanup error replace the write error that caused it.
-    Utils.tryWithSafeFinally {
-      // The native writer emits no batches; draining performs the write.
-      while (execIterator.hasNext) {
-        execIterator.next().close()
-      }
-    } {
-      execIterator.close()
-    }
-
-    rowsWritten
+      partitionId)
   }
 
   /**
-   * Report `count` rows to each stats tracker.
+   * Writes the task file at `filePath` by running the native write plan `nativeOp` with `writer`
+   * as its Parquet writer, over `inputs`. `writer` is set up for the task except for the file,
+   * which this sets. Both native writers write their files with this: CometWriteFilesExec on
+   * Spark 4.0+ and CometNativeWriteExec on 3.x.
+   *
+   * When the native writer cannot create the file itself (see
+   * [[NativeWriteUtils.nativeWriterCreatesFile]]), it is created here first, through Hadoop's
+   * FileSystem API with the task's configuration, as [[HadoopFileOutput]] explains, and the
+   * plan's writer writes the file's bytes to it. The file is closed once the plan has written all
+   * of it, and aborted if the plan fails.
+   *
+   * A failure to write or close the file fails the task as Spark's writer fails it, reported for
+   * `errorPath` (see [[enrichWriteError]]). As in Spark, a failure to create the file through
+   * Hadoop is not enriched.
+   */
+  private[comet] def writeFile(
+      filePath: String,
+      errorPath: String,
+      hadoopConf: Configuration,
+      nativeOp: Operator,
+      writer: OperatorOuterClass.ParquetWriter.Builder,
+      inputs: Array[Object],
+      numOutputCols: Int,
+      nativeMetrics: CometMetricNode,
+      numPartitions: Int,
+      partitionId: Int): Unit = {
+    def run(output: Option[HadoopFileOutput]): Unit = {
+      writer.setOutputPath(filePath).setJvmOutputStream(output.isDefined)
+      val execIterator = CometExec.getCometIterator(
+        inputs,
+        numOutputCols,
+        nativeOp.toBuilder.setParquetWriter(writer).build(),
+        nativeMetrics,
+        numPartitions,
+        partitionId,
+        broadcastedHadoopConfForEncryption = None,
+        encryptedFilePaths = Seq.empty,
+        outputStream = output)
+
+      // `close()` propagates teardown failures, including from the final native metrics update,
+      // so a plain `finally` would let a cleanup error replace the write error that caused it.
+      Utils.tryWithSafeFinally {
+        // The native writer emits no batches; draining performs the write.
+        while (execIterator.hasNext) {
+          execIterator.next().close()
+        }
+      } {
+        execIterator.close()
+      }
+    }
+
+    if (NativeWriteUtils.nativeWriterCreatesFile(filePath)) {
+      enrichWriteError(errorPath)(run(None))
+    } else {
+      val file = HadoopFileOutput.create(filePath, hadoopConf)
+      enrichWriteError(errorPath) {
+        try {
+          run(Some(file))
+        } catch {
+          case failure: Throwable =>
+            file.abort(failure)
+            throw failure
+        }
+        // Only once the native writer has written every byte of the file and released it.
+        file.close()
+      }
+    }
+  }
+
+  /**
+   * Create a task's callback for reporting rows while each batch's vectors are still valid.
    *
    * `WriteTaskStatsTracker.newRow` is a per-row callback, but the only implementation Spark
-   * ships, [[BasicWriteTaskStatsTracker]], ignores the row and just counts. Comet has columnar
-   * batches rather than `InternalRow`s here, so it passes an empty row instead of materializing
-   * every row just to hand it straight back. A tracker that actually inspects row contents would
-   * therefore see empty rows, so warn rather than silently report wrong statistics.
+   * ships, [[BasicWriteTaskStatsTracker]], ignores the row and just counts. Preserve that fast
+   * path without accessing row contents. Subclasses may override `newRow` to inspect values, so
+   * only the exact basic class qualifies. All other trackers receive materialized rows:
+   * `ColumnarBatchRow` does not implement every `InternalRow` read method, such as `anyNull`.
    *
-   * The loop is per-tracker on the outside so the hot inner loop has a single receiver and no
-   * per-row closure; the trackers are independent per-file counters, so their relative
-   * interleaving carries no meaning.
+   * The projection is created once per task and reuses its row, just as Spark's write path may
+   * reuse rows. Trackers that retain a row beyond `newRow` must copy it. This callback does not
+   * take ownership of the batch.
    *
    * Visible for testing: nothing Spark ships lets a caller install a third-party tracker on a V1
-   * write, so this is the only way to exercise the warning.
+   * write.
    */
   def recordRows(
       statsTrackers: Seq[WriteTaskStatsTracker],
       filePath: String,
-      count: Long): Unit = {
-    statsTrackers.foreach { tracker =>
-      if (!tracker.isInstanceOf[BasicWriteTaskStatsTracker]) {
-        logWarning(
-          s"${tracker.getClass.getName} receives row counts but not row contents from Comet's " +
-            "native Parquet writer. Set spark.comet.write.parquet.enabled=false if this tracker " +
-            "needs to inspect written rows.")
+      schema: StructType): ColumnarBatch => Unit = {
+    val (countTrackers, rowTrackers) =
+      statsTrackers.partition(_.getClass == classOf[BasicWriteTaskStatsTracker])
+    val rowProjection = if (rowTrackers.nonEmpty) {
+      // Arrow erases logical parameters such as interval endpoints. Compare against the
+      // reconstructed schema too, while preserving the declared schema for row materialization.
+      val arrowSchema = CometUtils.fromArrowSchema(
+        CometUtils.toArrowSchema(schema, CometArrowStream.NATIVE_TIMEZONE))
+      Some((UnsafeProjection.create(schema), arrowSchema))
+    } else {
+      None
+    }
+    batch => {
+      countTrackers.foreach { tracker =>
+        var i = 0
+        while (i < batch.numRows()) {
+          tracker.newRow(filePath, InternalRow.empty)
+          i += 1
+        }
       }
-      var i = 0L
-      while (i < count) {
-        tracker.newRow(filePath, InternalRow.empty)
-        i += 1
+      rowProjection.foreach { case (project, arrowSchema) =>
+        // ScanExec can cast differing physical types after import, but a JVM row projection
+        // would read those buffers with the wrong getters before that cast. Fail explicitly
+        // rather than report incorrect statistics. Names, nullability, and logical parameters
+        // erased by the Arrow bridge do not affect the getters used by the row projection.
+        val matchingTypes = batch.numCols() == schema.length && schema.fields.indices.forall {
+          i =>
+            DataType.equalsStructurally(
+              batch.column(i).dataType(),
+              schema(i).dataType,
+              ignoreNullability = true) || DataType.equalsStructurally(
+              batch.column(i).dataType(),
+              arrowSchema(i).dataType,
+              ignoreNullability = true)
+        }
+        if (!matchingTypes) {
+          throw new UnsupportedOperationException(
+            "Comet's native Parquet writer cannot report row statistics for a batch whose " +
+              "types differ from the write schema. Set " +
+              s"${CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key}=false " +
+              "to use Spark's writer.")
+        }
+        val rows = batch.rowIterator()
+        while (rows.hasNext) {
+          val row = project(rows.next())
+          rowTrackers.foreach(_.newRow(filePath, row))
+        }
       }
     }
   }

@@ -393,7 +393,7 @@ mod tests {
         let schema = Schema::new(vec![Arc::clone(&input_field)]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(struct_arr)]).unwrap();
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("s", 0));
@@ -466,7 +466,7 @@ mod tests {
                 let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
                 let cast_expr = CometCastColumnExpr::try_new(expr, input_field, target_field, None)
                     .unwrap()
-                    .with_parquet_options(SparkParquetOptions::new(eval_mode, "UTC", false));
+                    .with_parquet_options(SparkParquetOptions::new(eval_mode, "UTC"));
 
                 let input = TimestampMillisecondArray::from(vec![Some(1_234), Some(-1_234), None])
                     .with_timezone_opt(source_tz.clone());

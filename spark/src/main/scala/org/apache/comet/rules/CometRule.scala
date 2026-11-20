@@ -29,18 +29,39 @@ import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, B
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, InsertAdaptiveSparkPlan, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
+import org.apache.comet.local.CometLocalRule
 import org.apache.comet.shims.ShimCometStreaming
 
 object CometRule {
 
-  /** Comet's post-columnar rules, shared by `CometColumnar` and the plan-only preview. */
-  def postColumnarRules(session: SparkSession, wholePlan: Boolean = false): Seq[Rule[SparkPlan]] =
+  /**
+   * Comet's post-columnar rules, shared by `CometColumnar` and the plan-only preview.
+   *
+   * @param preview
+   *   true for the plan-only preview, which holds the whole plan and shows the plan Comet would
+   *   execute.
+   */
+  def postColumnarRules(session: SparkSession, preview: Boolean = false): Seq[Rule[SparkPlan]] =
     Seq(
-      RevertNativeForTransitionHeavyStages(session, wholePlan),
-      EliminateRedundantTransitions(session))
+      RevertNativeForTransitionHeavyStages(session, wholePlan = preview),
+      EliminateRedundantTransitions(session),
+      CometCacheBuildRule(),
+      CometCacheColumnarRule(preview))
+
+  /**
+   * Whether plan-only mode applies to `plan`, so that Comet only reports the plan it would
+   * execute and Spark executes `plan` unchanged. Mirrors the conversion rules' own guards;
+   * plan-only is scoped to exec being enabled.
+   */
+  private[comet] def planOnlyApplies(conf: SQLConf, plan: SparkPlan): Boolean =
+    CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf) &&
+      isCometLoaded(conf) &&
+      !ShimCometStreaming.isStreamingPlan(plan) &&
+      CometConf.COMET_EXEC_ENABLED.get(conf)
 
   /**
    * Canonical hashes of the subquery plans reported for the query this thread is preparing. Spark
@@ -130,32 +151,31 @@ object CometRule {
  * `spark.sql.planChangeLog.rules` has to match.
  *
  * @param queryStagePrep
- *   true for the `injectQueryStagePrepRule` instance, which sees the whole initial plan under
- *   AQE. Only plan-only reporting reads it.
+ *   true for the `injectQueryStagePrepRule` instance, which sees the whole initial plan and each
+ *   re-plan under AQE. Plan-only reporting and [[CometExecRule]] read it.
  */
 case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     extends Rule[SparkPlan] {
 
   private val scanRule = CometScanRule(session)
-  private val execRule = CometExecRule(session)
+  private val execRule = CometExecRule(session, queryStagePrep)
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (planOnlyApplies(plan)) {
+    if (CometRule.planOnlyApplies(conf, plan)) {
       reportPlanOnlyCoverage(plan)
       plan
-    } else {
+    } else if (CometLocalRule.isLocal(plan)) {
+      plan
+    } else if (queryStagePrep) {
       convert(plan)
+    } else {
+      // Local execution admits only exchange-free plans, which AQE does not wrap, so this
+      // instance sees them whether or not AQE is enabled.
+      CometLocalRule(session, plan, convert)
     }
   }
 
   private def convert(plan: SparkPlan): SparkPlan = execRule.apply(scanRule.apply(plan))
-
-  /** Mirrors the conversion rules' own guards; plan-only is scoped to exec being enabled. */
-  private def planOnlyApplies(plan: SparkPlan): Boolean =
-    CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf) &&
-      isCometLoaded(conf) &&
-      !ShimCometStreaming.isStreamingPlan(plan) &&
-      CometConf.COMET_EXEC_ENABLED.get(conf)
 
   /** Logs the Comet plan for `plan` unless already reported. Never fails the query. */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
@@ -183,7 +203,7 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     val withTransitions =
       ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false).apply(converted)
     val preview = CometRule
-      .postColumnarRules(session, wholePlan = true)
+      .postColumnarRules(session, preview = true)
       .foldLeft(withTransitions) { case (p, rule) => rule(p) }
     if (topLevel) ReuseExchangeAndSubquery.apply(preview) else preview
   }

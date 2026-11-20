@@ -33,17 +33,8 @@ Cast operations in Comet fall into three levels of support:
 Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
 example, casts involving `VariantType`) or when `spark.comet.exec.scalaUDF.codegen.enabled=false`.
 
-## Date-to-timestamp casts
-
-`DATE` to `TIMESTAMP_NTZ` uses checked day arithmetic. `DATE` to `TIMESTAMP` runs natively for
-fixed whole-minute timezone offsets, including aliases such as `Etc/UTC` and `GMT+05:30`.
-Region zones and offsets containing seconds use Spark's codegen dispatcher, or Spark operators
-when dispatch is disabled, to preserve Spark's calendar and timezone rules across the full date range.
-
-Overflow raises `ArithmeticException("long overflow")` in both ANSI and legacy modes. A nullable
-scalar `TRY_CAST` returns null instead. Hidden children beneath null containers and values outside
-sliced list/map ranges are not evaluated. These casts retain Comet's existing batch evaluation;
-this does not add row-by-row short-circuit guarantees beneath limits or joins.
+The tables at the end of this page cover casts between primitive types. See [Complex Types](#complex-types) for
+casts involving arrays, structs, and maps.
 
 ## ANSI Mode Support
 
@@ -76,10 +67,44 @@ including:
   `java.lang.String.trim` that Spark applies before handing the value to `BigDecimal`.
 - Null bytes (`\u0000`) at the start or end of a string are therefore trimmed. Null bytes
   embedded in the middle of a string produce `NULL`.
-- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
-  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Non-ASCII decimal digits that Java's `BigDecimal` accepts, i.e. every Unicode `Nd` digit in
+  the Basic Multilingual Plane (fullwidth `１２３.４５`, Arabic-Indic `١٢٣`, Devanagari `१२३`,
+  ...), are treated as their ASCII equivalents in both the mantissa and the exponent, so
+  `CAST('١٢٣.٤٥' AS DECIMAL(10,2))` returns `123.45`. Digits outside the Basic Multilingual
+  Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by Spark.
 - Scientific notation (e.g. `1.23E+5`) is supported.
 - Special values (`inf`, `infinity`, `nan`) produce `NULL`.
+
+A zero with a large exponent, such as `'0e39'`, casts to `0` on Spark 4.0.5, 4.1.4, 4.2.1 and later
+(SPARK-60118). Earlier releases return `NULL` for it, or raise `NUMERIC_OUT_OF_SUPPORTED_RANGE`
+under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
+reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
+returns `0`.
+
+Likewise, a string far below the target scale's unit in the last place casts to `0` on those
+releases when the difference to the target scale does not fit in an int (SPARK-60119), for example
+`'1e-2147483647'` cast to `DECIMAL(10,-2)`, which needs
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`. Earlier releases raise a raw
+`ArithmeticException` in every eval mode, which Comet cannot reproduce: it returns `NULL`, or
+raises `CAST_INVALID_INPUT` under ANSI mode. Comet again chooses the behavior by the Spark version
+number, so on a vendor build that reports an older version but includes SPARK-60119, Comet returns
+`NULL` (or raises) where Spark returns `0`.
+
+A string whose integral part has more than 38 digits, such as `'6E+38'`, is rejected before Spark
+checks the value against the target type. Comet does the same: the result is `NULL`, or
+`NUMERIC_OUT_OF_SUPPORTED_RANGE` under ANSI mode, whatever the target type. With
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, Spark does not apply this limit, and neither
+does Comet.
+
+Under ANSI mode, a value that parses but is too large for the target type can raise
+`CAST_INVALID_INPUT` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`, when scaling it to the target
+type needs more than 38 digits. Examples are `'1e37'` cast to `DECIMAL(10,2)`, and `'6E+38'` cast to
+`DECIMAL(10,2)` with the setting above
+([#7576](https://github.com/apache/datafusion-comet/issues/7576)). A string whose digits do not
+fit in an `i128`, which is about 38 of them with the fractional digits included, and that the limit
+above does not reject, is not parsed at all. Comet returns `NULL`, or raises `CAST_INVALID_INPUT`
+under ANSI mode, where Spark returns the value or raises `NUMERIC_VALUE_OUT_OF_RANGE`
+([#7581](https://github.com/apache/datafusion-comet/issues/7581)).
 
 ## String to Date
 
@@ -98,25 +123,27 @@ Supported input formats match Spark exactly:
 
 ## Date to Timestamp
 
-Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast interprets each
-date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
-are handled correctly, including spring-forward gaps (where midnight may not exist) and
-fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
-`LocalDate.atStartOfDay(zoneId)` behavior).
+`CAST(date AS TIMESTAMP)` converts the start of the date in the session timezone to microseconds
+since the Unix epoch. For fixed offsets in whole minutes, including `Etc/UTC` and `GMT+05:30`,
+Comet computes this in Rust. For region zones such as `America/Los_Angeles` and offsets with
+seconds, it uses codegen dispatch so Spark applies the JVM's timezone rules across the full date
+range. The cast falls back to Spark when dispatch is unavailable.
 
 ## Date to TimestampNTZ
 
-Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast is
-timezone-independent: each date is converted to midnight as pure arithmetic
-(`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
-is the same regardless of the session timezone setting.
+`CAST(date AS TIMESTAMP_NTZ)` multiplies the epoch day by 86,400,000,000 to get microseconds at
+midnight, independently of the session timezone.
 
-Parquet scans with data filters and requested `TIMESTAMP_NTZ` fields use Spark's reader,
-including nested fields. A physical `DATE` column can overflow while adapting to the
-requested type, and Spark may skip its conversion through pruning or an early limit.
-The physical column type is unavailable during planning, so this fallback also applies
-to filtered scans of genuine NTZ columns. Unfiltered scans and projections that do not
-read NTZ fields remain eligible for native execution.
+For either timestamp type, `CAST` raises `ArithmeticException("long overflow")` if the result
+exceeds the range of a signed 64-bit integer, even with ANSI mode disabled. `TRY_CAST` returns
+`NULL` for the overflowing timestamp. When Spark declares that timestamp non-nullable, Comet
+falls back to Spark because the declared Arrow field cannot represent the null.
+
+As with [other casts evaluated in batches](../../index.md#ansi-errors-from-rows-skipped-by-limit),
+Comet can reach an overflowing row that Spark skips under a `LIMIT`. With the optional
+`spark.comet.parquet.rowFilterPushdown.enabled` setting, overflow while evaluating the
+pushed predicate can surface as a generic query error because the reader converts predicate
+errors to strings ([DataFusion #24638](https://github.com/apache/datafusion/pull/24638)).
 
 ## Date to Numeric Types
 
@@ -124,15 +151,30 @@ In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all othe
 types (Boolean, Byte, Short, Float, Double, Decimal) always return `NULL`. Comet handles
 this by short-circuiting to a null literal during query planning, so no native execution
 is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
-execution reaches Comet).
+execution reaches Comet). The short-circuit applies only to a top-level cast. See
+[Complex Types](#complex-types) for `DATE` values inside structs and maps.
 
 ## String to Timestamp
 
-Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports the timestamp formats accepted
 by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
-(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
-suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
-(-290308 to 294247).
+(`HH:MM:SS`), and the full Spark timestamp year range (-290308 to 294247).
+
+A zone suffix after the seconds is resolved the way Spark's `ZoneId.of(id, ZoneId.SHORT_IDS)`
+does. The following forms are supported:
+
+- `Z`, and `UTC`, `GMT` or `UT` on their own or followed by an offset (e.g. `UTC`, `GMT-01:00`,
+  `UTC+8`).
+- Offsets in the forms `+H`, `+HH`, `+HHMM`, `+HHMMSS`, `+H:M`, `+HH:MM` and `+H:MM:SS`
+  (e.g. `+07:30`, `-0800`, `+080000`, `+08:00:00`, `+08:00:30`, `+080030`).
+- The Java `ZoneId.SHORT_IDS` aliases `ACT`, `AET`, `AGT`, `ART`, `AST`, `BET`, `BST`, `CAT`,
+  `CNT`, `CST`, `CTT`, `EAT`, `ECT`, `IET`, `IST`, `JST`, `MIT`, `NET`, `NST`, `PLT`, `PNT`,
+  `PRT`, `PST`, `SST` and `VST`, which map to a region and follow its daylight saving time, and
+  `EST`, `MST` and `HST`, which are the fixed offsets `-05:00`, `-07:00` and `-10:00`.
+- Time zone database region ids, with or without a `/` and with or without a space before them
+  (e.g. `Europe/Moscow`, `America/Los_Angeles`, `CET`, `Zulu`, `Etc/GMT+8`).
+
+Zone ids are case sensitive, as in Spark.
 
 ## String to TimestampNTZ
 
@@ -176,6 +218,65 @@ When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible
 Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
 notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
 as `"1.23E+4"`).
+
+## Decimal with Negative Scale to Integer and Timestamp
+
+Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
+`LongType` or `TimestampType` has no native implementation, and neither does casting any of the
+integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
+routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
+pipeline, so the results match Spark exactly.
+
+The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
+overflows when the scale is negative. See
+[#5013](https://github.com/apache/datafusion-comet/issues/5013).
+
+All other cast directions to and from negative-scale decimals run natively: `FloatType` and
+`DoubleType`, `StringType` in both directions (subject to the config gate described above),
+casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
+not specific to a negative one.
+
+## Complex Types
+
+Comet casts arrays, structs, and maps by casting each element, field, key, and value with the
+rules for primitive types, using the table for the same eval mode. A complex-type cast is
+therefore compatible only when every cast it contains is compatible. For example, casting
+`ARRAY<INT>` to `ARRAY<BIGINT>` has the same support level as casting `INT` to `BIGINT`, and a
+struct cast with one unsupported field cast is unsupported. The rules apply at every level of
+nesting, so casting `ARRAY<STRUCT<a: INT>>` to `ARRAY<STRUCT<a: BIGINT>>` also has the same
+support level as casting `INT` to `BIGINT`.
+
+| From        | To            | Support level                                                                |
+| ----------- | ------------- | ---------------------------------------------------------------------------- |
+| `ARRAY<T>`  | `ARRAY<U>`    | Same as `T` to `U`                                                           |
+| `ARRAY<T>`  | `STRING`      | Same as `T` to `STRING`                                                      |
+| `STRUCT`    | `STRUCT`      | Compatible if every field cast is compatible. Fields are matched by position |
+| `STRUCT`    | `STRING`      | Compatible if the cast from every field to `STRING` is compatible            |
+| `MAP<K, V>` | `MAP<K2, V2>` | Compatible if `K` to `K2` and `V` to `V2` are both compatible                |
+| `MAP<K, V>` | `STRING`      | Unsupported                                                                  |
+
+The following casts are exceptions to these rules:
+
+- `ARRAY<DATE>` can only be cast natively to `ARRAY<INT>` or `ARRAY<STRING>`. Casts to other array
+  types are unsupported.
+- A cast from a `DATE` struct field or map value to a numeric or boolean type is unsupported. In
+  Legacy mode these casts always return `NULL` (see [Date to Numeric Types](#date-to-numeric-types)).
+- When `spark.sql.legacy.castComplexTypesToString.enabled=true`, casts from arrays, structs, and
+  maps to `STRING` are unsupported, because Comet's native cast only produces Spark's default
+  string format.
+
+In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
+a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This only affects key
+casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
+`STRING` key cast at analysis.
+
+## Decimal with Negative Scale to Integral Types
+
+Casting a `DecimalType` with a negative scale, which Spark only creates when
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, to `ByteType`, `ShortType`, `IntegerType`
+or `LongType` is not supported natively in any eval mode. The native kernels divide by
+`10^scale`, which overflows for a negative scale, so Comet leaves the cast to Spark.
 
 ## Legacy Mode
 

@@ -164,7 +164,8 @@ class CometInMemoryCachePruningSuite extends CometTestBase {
         CometConf.COMET_BATCH_SIZE.key -> "4",
         CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "4",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> (writer == "native Arrow").toString) {
         spark.catalog.clearCache()
         val source = fixture()

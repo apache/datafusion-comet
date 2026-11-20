@@ -93,6 +93,17 @@ object DataTypeSupport {
   def hasDuplicateFieldNames(fields: Array[StructField]): Boolean =
     fields.map(_.name).distinct.length != fields.length
 
+  /** True when any struct nested in `dt` has byte-identical sibling field names. */
+  def containsDuplicateFieldNames(dt: DataType): Boolean = dt match {
+    case StructType(fields) =>
+      hasDuplicateFieldNames(fields) || fields.exists(f =>
+        containsDuplicateFieldNames(f.dataType))
+    case ArrayType(elementType, _) => containsDuplicateFieldNames(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsDuplicateFieldNames(keyType) || containsDuplicateFieldNames(valueType)
+    case _ => false
+  }
+
   /**
    * True when two sibling struct fields anywhere in `dt` fold to one name under
    * `toLowerCase(Locale.ROOT)`, the fold Spark's Parquet reader matches requested fields with

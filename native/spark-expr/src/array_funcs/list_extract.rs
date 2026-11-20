@@ -33,6 +33,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::nested_compaction::compact_nested_take_result;
 use crate::SparkError;
 
 #[derive(Debug, Clone)]
@@ -389,7 +390,8 @@ fn list_extract_without_default<O: OffsetSizeTrait>(
     let indices = indices.finish();
     // Every gathered index was validated by `resolve_row` against its row's list bounds,
     // and `take` masks null index slots, so the default unchecked `TakeOptions` is safe.
-    Ok(ColumnarValue::Array(take(values.as_ref(), &indices, None)?))
+    let result = take(values.as_ref(), &indices, None)?;
+    Ok(ColumnarValue::Array(compact_nested_take_result(result)))
 }
 
 impl Display for ListExtract {
@@ -405,11 +407,209 @@ impl Display for ListExtract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Array, Int32Array, ListArray};
+    use arrow::array::{Array, AsArray, Int32Array, ListArray};
     use arrow::datatypes::{Field, Int32Type};
     use datafusion::common::{Result, ScalarValue};
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ColumnarValue;
+
+    use crate::nested_compaction::test_util::{
+        assert_compact, reference_gather, skewed_nested_values, ROWS,
+    };
+
+    #[test]
+    fn test_list_extract_nested_retained_capacity() -> Result<()> {
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+        for selected_len in [0, 1] {
+            for values in skewed_nested_values(selected_len) {
+                for nullable in [false, true] {
+                    let outer = ListArray::new(
+                        Arc::new(Field::new("item", values.data_type().clone(), true)),
+                        OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                        Arc::clone(&values),
+                        nullable.then(|| (0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
+                    );
+                    let source_rows = (0..ROWS)
+                        .map(|row| outer.is_valid(row).then_some(2 * row))
+                        .collect::<Vec<_>>();
+                    let expected = reference_gather(values.as_ref(), &source_rows)?;
+                    let null_default = ScalarValue::try_from(values.data_type())?;
+                    for default in [None, Some(&null_default)] {
+                        let ColumnarValue::Array(result) = list_extract(
+                            &outer,
+                            &Int32Array::from(vec![0; ROWS]),
+                            default,
+                            false,
+                            false,
+                            |idx, len| zero_based_index(idx, len, &error_wrapper),
+                            &error_wrapper,
+                        )?
+                        else {
+                            unreachable!()
+                        };
+                        assert_compact(
+                            result.as_ref(),
+                            expected.as_ref(),
+                            &format!(
+                                "{:?}, selected_len={selected_len}, nullable={nullable}, default={}",
+                                values.data_type(),
+                                default.is_some(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_deep_nested_retained_capacity() -> Result<()> {
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        const ROWS: usize = 256;
+        const WIDTH: usize = 32;
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+        for selected_len in [0, 1] {
+            let offsets = OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| {
+                std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(16, WIDTH))
+            }));
+            let count = *offsets.last().unwrap();
+            let inner: arrow::array::ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", DataType::Int32, true)),
+                offsets,
+                Arc::new(Int32Array::from_iter_values(0..count)),
+                None,
+            ));
+            let values: arrow::array::ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", inner.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(std::iter::repeat_n(WIDTH, 2 * ROWS)),
+                inner,
+                None,
+            ));
+            for null_percent in [0, 25, 75] {
+                let outer = ListArray::new(
+                    Arc::new(Field::new("item", values.data_type().clone(), true)),
+                    OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                    Arc::clone(&values),
+                    (null_percent > 0).then(|| {
+                        (0..ROWS)
+                            .map(|row| row % 4 >= null_percent / 25)
+                            .collect::<NullBuffer>()
+                    }),
+                );
+                let source_rows = (0..ROWS)
+                    .map(|row| outer.is_valid(row).then_some(2 * row))
+                    .collect::<Vec<_>>();
+                let expected = reference_gather(values.as_ref(), &source_rows)?;
+                let ColumnarValue::Array(result) = list_extract(
+                    &outer,
+                    &Int32Array::from(vec![0; ROWS]),
+                    None,
+                    false,
+                    false,
+                    |idx, len| zero_based_index(idx, len, &error_wrapper),
+                    &error_wrapper,
+                )?
+                else {
+                    unreachable!()
+                };
+                assert_eq!(result.to_data(), expected.to_data());
+                if selected_len == 1 && null_percent == 75 {
+                    let indices = arrow::array::UInt64Array::from_iter(
+                        (0..ROWS).map(|row| outer.is_valid(row).then_some((2 * row) as u64)),
+                    );
+                    let gathered = take(values.as_ref(), &indices, None)?;
+                    // Preserve normal 4x headroom, including alignment padding. Compacting
+                    // this result used to copy offsets even though the leaf is not oversized.
+                    assert_eq!(
+                        result.get_buffer_memory_size(),
+                        gathered.get_buffer_memory_size()
+                    );
+                }
+                let ints = result.as_list::<i32>().values().as_list::<i32>().values();
+                // An accurate immediate child reservation must not leave an oversized
+                // primitive buffer when propagated into empty or short inner lists.
+                assert!(
+                    ints.get_buffer_memory_size() <= ints.len() * 16 + 64,
+                    "selected_len={selected_len}, null_percent={null_percent}: {} integers retain {} bytes",
+                    ints.len(),
+                    ints.get_buffer_memory_size(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_nested_sliced_nulls_and_indices() -> Result<()> {
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+        for values in skewed_nested_values(1) {
+            let outer = ListArray::new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                Arc::clone(&values),
+                Some((0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
+            )
+            .slice(1, 8);
+            // The sliced rows are: first child, last child, null index, null list,
+            // out-of-bounds, first child, last child, null list.
+            let expected = reference_gather(
+                values.as_ref(),
+                &[Some(2), Some(5), None, None, None, Some(12), Some(15), None],
+            )?;
+            for (one_based, indices) in [
+                (
+                    false,
+                    vec![
+                        Some(0),
+                        Some(1),
+                        None,
+                        Some(0),
+                        Some(2),
+                        Some(0),
+                        Some(1),
+                        Some(-1),
+                    ],
+                ),
+                (
+                    true,
+                    vec![
+                        Some(1),
+                        Some(-1),
+                        None,
+                        Some(1),
+                        Some(3),
+                        Some(1),
+                        Some(-1),
+                        Some(0),
+                    ],
+                ),
+            ] {
+                let ColumnarValue::Array(result) = list_extract(
+                    &outer,
+                    &Int32Array::from(indices),
+                    None,
+                    false,
+                    one_based,
+                    |idx, len| {
+                        if one_based {
+                            one_based_index(idx, len, &error_wrapper)
+                        } else {
+                            zero_based_index(idx, len, &error_wrapper)
+                        }
+                    },
+                    &error_wrapper,
+                )?
+                else {
+                    unreachable!()
+                };
+                assert_eq!(result.to_data(), expected.to_data());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_nullable_when_array_is_nullable() -> Result<()> {

@@ -232,11 +232,11 @@ struct SchemaAlignStream {
 
 impl SchemaAlignStream {
     fn align(&self, batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
-        let num_rows = batch.num_rows();
+        let (_, columns, num_rows) = batch.into_parts();
         cast_and_stamp_schema(
             "CometSchemaAlignExec",
             &self.target_schema,
-            batch.columns().to_vec(),
+            columns,
             num_rows,
         )
     }

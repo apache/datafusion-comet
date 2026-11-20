@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.arrow
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Paths}
 
+import scala.reflect.ClassTag
 import scala.util.Using
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -32,9 +33,10 @@ import org.apache.arrow.memory.{ArrowBuf, OutOfMemoryException, RootAllocator}
 import org.apache.arrow.vector.{VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.util.OversizedAllocationException
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
+import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeArrayData, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.types.{StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, StringType, StructField, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
 class CometStringWriterSuite extends AnyFunSuite with Matchers {
@@ -298,5 +300,86 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
       }.get
       allocator.getAllocatedMemory shouldBe 0L
     }
+  }
+
+  private def unsafeRow(value: UTF8String): UnsafeRow =
+    UnsafeProjection.create(schema)(row(value)).copy()
+
+  /** An unsafe array of `values`, in a row of its own. */
+  private def unsafeArray(values: UTF8String*): UnsafeArrayData = {
+    val arraySchema = StructType(Seq(StructField("texts", ArrayType(StringType))))
+    UnsafeProjection
+      .create(arraySchema)(
+        new GenericInternalRow(Array[Any](new GenericArrayData(values.toArray[Any]))))
+      .copy()
+      .getArray(0)
+  }
+
+  /** `offsetAndSize`, as an unsafe row or array packs it, with the size made negative. */
+  private def negativeSize(offsetAndSize: Long): Long =
+    (offsetAndSize & ~0xffffffffL) | 0xffffffffL
+
+  /**
+   * Runs `write` from row `index(vector)` of a vector holding one value at row 0, whose offsets
+   * then end at `end`, and checks that it throws `E` having changed and allocated nothing.
+   */
+  private def assertRejected[E <: Exception: ClassTag](end: Int, index: VarCharVector => Int)(
+      write: StringWriter => Unit): E = {
+    Using.resource(new RootAllocator(1024 * 1024)) { allocator =>
+      val rejected = Using.Manager { use =>
+        val vector = use(new VarCharVector("text", allocator))
+        vector.allocateNew(8, 4)
+        vector.setSafe(0, Array[Byte](42))
+        vector.getOffsetBuffer.setInt(4L, end)
+        val writer = new StringWriter(vector)
+        val at = index(vector)
+        writer.count = at
+        val allocated = allocator.getAllocatedMemory
+        val e = intercept[E](write(writer))
+        allocator.getAllocatedMemory shouldBe allocated
+        writer.count shouldBe at
+        vector.getLastSet shouldBe 0
+        vector.getOffsetBuffer.getInt(4L) shouldBe end
+        vector.getOffsetBuffer.getInt(8L) shouldBe 0
+        vector.getDataBuffer.getByte(0L) shouldBe 42.toByte
+        if (at < vector.getValueCapacity) vector.isNull(at) shouldBe true
+        e
+      }.get
+      allocator.getAllocatedMemory shouldBe 0L
+      rejected
+    }
+  }
+
+  test("unsafe row string offset overflow throws before anything changes or is allocated") {
+    // Unlike Arrow's setters, the unsafe paths check before growing the offsets.
+    val nearlyFull = Int.MaxValue - 5
+    val value = unsafeRow(UTF8String.fromBytes(Array[Byte](1, 2, 3, 4, 5, 6)))
+    Seq[VarCharVector => Int](_ => 1, _.getValueCapacity).foreach { index =>
+      assertRejected[OversizedAllocationException](nearlyFull, index) {
+        _.writeUnsafeRowField(value, 0)
+      }
+    }
+    // An array's elements are all checked before any of them is written.
+    val fitsThenOverflows = unsafeArray(
+      UTF8String.fromBytes(Array[Byte](1, 2)),
+      null,
+      UTF8String.fromBytes(Array[Byte](3, 4, 5, 6)))
+    Seq[VarCharVector => Int](_ => 1, _.getValueCapacity - 1).foreach { index =>
+      assertRejected[OversizedAllocationException](nearlyFull, index) {
+        _.writeArrayElements(fitsThenOverflows)
+      }
+    }
+  }
+
+  test("unsafe row negative string length is rejected before reserving or copying") {
+    val value = unsafeRow(UTF8String.fromString("abc"))
+    value.setLong(0, negativeSize(value.getLong(0)))
+    val array = unsafeArray(UTF8String.fromString("ab"), UTF8String.fromString("cd"))
+    array.setLong(1, negativeSize(array.getLong(1)))
+    Seq[StringWriter => Unit](_.writeUnsafeRowField(value, 0), _.writeArrayElements(array))
+      .foreach { write =>
+        assertRejected[IllegalArgumentException](1, _ => 1)(write).getMessage should
+          include("String length must be non-negative")
+      }
   }
 }

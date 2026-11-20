@@ -95,7 +95,7 @@ class CometNativeShuffleWriter[K, V](
 
   override def write(inputs: Iterator[Product2[K, V]]): Unit = {
     try {
-      writeInternal(inputs)
+      spec.sqlConf.withConf(writeInternal(inputs))
     } catch {
       case failure: Throwable =>
         remoteDestination.foreach { destination =>
@@ -156,7 +156,7 @@ class CometNativeShuffleWriter[K, V](
         shuffleId,
         unifiedPlan,
         ctx.commonByKey,
-        shuffleInputIter.planDataByKey)
+        shuffleInputIter.planDataByKey.map { case (key, data) => key -> data.bytes })
     } else {
       unifiedPlan
     }
@@ -184,9 +184,14 @@ class CometNativeShuffleWriter[K, V](
 
     // The leaf scans execute inside this writer's single plan rather than a separate native
     // stage RDD, so the usual CometExecRDD.compute() bridge (operators.scala) never runs for
-    // them. Report their bytes/rows to the task's input metrics here instead.
+    // them. Report their bytes/rows to the task's input metrics here instead. A plan without a
+    // JVM input reads all of the task's input, so it also reports while it runs.
     if (ctx.hasScanInput) {
-      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+      if (inputObjects.isEmpty) {
+        Option(context).foreach(nativeMetrics.reportScanInputMetricsWhileRunning)
+      } else {
+        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+      }
     }
 
     val cometIter = new CometExecIterator(
@@ -328,6 +333,8 @@ class CometNativeShuffleWriter[K, V](
       shuffleWriterBuilder.setCodec(CompressionCodec.None)
     }
     shuffleWriterBuilder.setCompressionLevel(CometConf.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get())
+    shuffleWriterBuilder.setOffsetsAsLengths(
+      CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.get())
     shuffleWriterBuilder.setWriteBufferSize(
       CometConf.COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
     shuffleWriterBuilder.setMaxBufferBytes(CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.get())
@@ -343,8 +350,13 @@ class CometNativeShuffleWriter[K, V](
         val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
         partitioning.setNumPartitions(effectivePartitionCount)
 
-        val partitionExprs = hashPartitioning.expressions
-          .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+        // Spark evaluates the keys in one projection, whose subexpression elimination sees what
+        // they share (see QueryPlanSerde.canShortCircuitNulls)
+        val partitionExprs =
+          QueryPlanSerde.withSharedSubexpressions(hashPartitioning.expressions) {
+            hashPartitioning.expressions
+              .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+          }
 
         if (partitionExprs.length != hashPartitioning.expressions.length) {
           throw new UnsupportedOperationException(
@@ -377,8 +389,12 @@ class CometNativeShuffleWriter[K, V](
         }
 
         {
-          val orderingExprs = rangePartitioning.ordering
-            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+          // As for hash partitioning, Spark evaluates the keys in one projection
+          val orderingExprs =
+            QueryPlanSerde.withSharedSubexpressions(rangePartitioning.ordering.map(_.child)) {
+              rangePartitioning.ordering
+                .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+            }
           if (orderingExprs.length != rangePartitioning.ordering.length) {
             throw new UnsupportedOperationException(
               s"Partitioning $rangePartitioning is not supported.")

@@ -77,14 +77,17 @@ case class ExpectNative(names: Seq[String]) extends QueryAssertionMode
  * Asserts that both Spark and Comet raise an error whose message contains `pattern`.
  *
  * Fixtures that combine `ExpectError` with `spark.comet.exec.scalaUDF.codegen.enabled=true` must
- * also include at least one [[CheckCoverageAndAnswer]] sentinel query over valid input. If the
- * dispatcher silently rejects the expression at plan time, the operator falls back to Spark and
- * Spark itself raises the same error, so the `ExpectError` queries would pass vacuously. The
- * sentinel query uses `checkSparkAnswerAndOperator`, which fails when the expression does not run
- * inside Comet. `CometSqlFileTestSuite.requireSentinelForCodegenExpectError` enforces this shape
- * at test-run time.
+ * also include a query that checks Comet operators, such as [[CheckCoverageAndAnswer]] over valid
+ * input or [[ExpectErrorClass]]. If the dispatcher silently rejects the expression at plan time,
+ * the operator falls back to Spark and Spark itself raises the same error, so the `ExpectError`
+ * queries would pass vacuously. The sentinel query checks Comet operators and fails when the
+ * query falls back to Spark. `CometSqlFileTestSuite.requireSentinelForCodegenExpectError`
+ * enforces this shape at test-run time.
  */
 case class ExpectError(pattern: String) extends QueryAssertionMode
+
+/** Checks Comet operators and Spark exception type, exact error class and SQLSTATE parity. */
+case class ExpectErrorClass(errorClass: String) extends QueryAssertionMode
 
 /**
  * Parsed representation of a .sql test file.
@@ -104,6 +107,10 @@ case class ExpectError(pattern: String) extends QueryAssertionMode
  *   Optional maximum Spark version this test applies to (e.g. "3.4"). The test is skipped on
  *   newer versions. Useful for paired fixtures where each version range has its own expected
  *   error class or output format.
+ * @param excludedRules
+ *   Additional optimizer rule names to exclude, alongside the default ConstantFolding exclusion.
+ * @param constantFoldingEnabled
+ *   Whether to let Spark fold constants before Comet sees the query.
  */
 case class SqlTestFile(
     configs: Seq[(String, String)],
@@ -111,12 +118,18 @@ case class SqlTestFile(
     records: Seq[SqlTestRecord],
     tables: Seq[String],
     minSparkVersion: Option[String] = None,
-    maxSparkVersion: Option[String] = None)
+    maxSparkVersion: Option[String] = None,
+    excludedRules: Seq[String] = Seq.empty,
+    constantFoldingEnabled: Boolean = false)
 
 object SqlFileTestParser {
 
-  private val ConfigPattern = """--\s*Config:\s*(.+)=(.+)""".r
-  private val ConfigMatrixPattern = """--\s*ConfigMatrix:\s*(.+)=(.+)""".r
+  private val ConfigPattern = """--\s*Config:\s*([^=]+)=(.*)""".r
+  private val ConfigMatrixPattern = """--\s*ConfigMatrix:\s*([^=]+)=(.*)""".r
+  private val ExcludeRulesPattern = """--\s*ExcludeRules:\s*(.*)""".r
+  private val ConstantFoldingPattern = """--\s*ConstantFolding:\s*(.*)""".r
+  private val ConfigDirectivePattern =
+    """--\s*(Config|ConfigMatrix|ExcludeRules|ConstantFolding):.*""".r
   private val MinSparkVersionPattern = """--\s*MinSparkVersion:\s*(.+)""".r
   private val MaxSparkVersionPattern = """--\s*MaxSparkVersion:\s*(.+)""".r
   private val CreateTablePattern = """(?i)CREATE\s+TABLE\s+(\w+)""".r.unanchored
@@ -125,6 +138,9 @@ object SqlFileTestParser {
     val source = Source.fromFile(file, "UTF-8")
     try {
       parse(source.getLines().toSeq)
+    } catch {
+      case e: IllegalArgumentException =>
+        throw new IllegalArgumentException(s"${file.getPath}: ${e.getMessage}", e)
     } finally {
       source.close()
     }
@@ -135,6 +151,8 @@ object SqlFileTestParser {
     var configMatrix = Seq.empty[(String, Seq[String])]
     var minSparkVersion: Option[String] = None
     var maxSparkVersion: Option[String] = None
+    var excludedRules = Seq.empty[String]
+    var constantFoldingEnabled: Option[Boolean] = None
     val records = Seq.newBuilder[SqlTestRecord]
     val tables = Seq.newBuilder[String]
 
@@ -144,12 +162,37 @@ object SqlFileTestParser {
 
       line match {
         case ConfigPattern(key, value) =>
+          require(key.trim.nonEmpty, s"Empty Config key at line ${lineIdx + 1}")
           configs :+= (key.trim -> value.trim)
           lineIdx += 1
 
         case ConfigMatrixPattern(key, values) =>
-          configMatrix :+= (key.trim -> values.split(",").map(_.trim).toSeq)
+          require(key.trim.nonEmpty, s"Empty ConfigMatrix key at line ${lineIdx + 1}")
+          val choices = values.split(",", -1).map(_.trim).toSeq
+          require(choices.forall(_.nonEmpty), s"Empty ConfigMatrix value at line ${lineIdx + 1}")
+          configMatrix :+= (key.trim -> choices)
           lineIdx += 1
+
+        case ExcludeRulesPattern(rules) =>
+          val names = splitNames(rules)
+          require(names.nonEmpty, s"Empty ExcludeRules at line ${lineIdx + 1}")
+          excludedRules ++= names
+          lineIdx += 1
+
+        case ConstantFoldingPattern(mode) =>
+          require(
+            mode == "enabled" || mode == "disabled",
+            s"Invalid ConstantFolding mode '$mode' at line ${lineIdx + 1}: " +
+              "expected enabled or disabled")
+          val enabled = mode == "enabled"
+          require(
+            constantFoldingEnabled.forall(_ == enabled),
+            s"Conflicting ConstantFolding directives at line ${lineIdx + 1}")
+          constantFoldingEnabled = Some(enabled)
+          lineIdx += 1
+
+        case ConfigDirectivePattern(name) =>
+          throw new IllegalArgumentException(s"Malformed $name directive at line ${lineIdx + 1}")
 
         case MinSparkVersionPattern(version) =>
           minSparkVersion = Some(version.trim)
@@ -169,7 +212,7 @@ object SqlFileTestParser {
           lineIdx = nextIdx
 
         case s if s.startsWith("query") =>
-          val mode = parseQueryAssertionMode(s)
+          val mode = parseQueryAssertionMode(s, lineIdx + 1)
           lineIdx += 1
           val startLine = lineIdx + 1
           val (sql, nextIdx) = collectSql(lines, lineIdx)
@@ -188,16 +231,21 @@ object SqlFileTestParser {
       records.result(),
       tables.result(),
       minSparkVersion,
-      maxSparkVersion)
+      maxSparkVersion,
+      excludedRules.distinct,
+      constantFoldingEnabled.getOrElse(false))
   }
 
   private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r
   private val IgnorePattern = """query\s+ignore\((.+)\)""".r
   private val ErrorPattern = """query\s+expect_error\((.+)\)""".r
+  private val ErrorClassPattern =
+    """query\s+expect_error_class\(\s*([A-Z0-9_]+(?:\.[A-Z0-9_]+)*)\s*\)""".r
+  private val InvalidErrorClassPattern = """query\s+expect_error_class\b.*""".r
   private val DispatchPattern = """query\s+expect_dispatch\((.+)\)""".r
   private val NativePattern = """query\s+expect_native\((.+)\)""".r
 
-  private def parseQueryAssertionMode(directive: String): QueryAssertionMode = {
+  private def parseQueryAssertionMode(directive: String, line: Int): QueryAssertionMode = {
     directive match {
       case FallbackPattern(reason) =>
         ExpectFallback(reason.trim)
@@ -205,6 +253,12 @@ object SqlFileTestParser {
         Ignore(reason.trim)
       case ErrorPattern(pattern) =>
         ExpectError(pattern.trim)
+      case ErrorClassPattern(errorClass) =>
+        ExpectErrorClass(errorClass)
+      case InvalidErrorClassPattern() =>
+        throw new IllegalArgumentException(
+          s"line $line: invalid directive '$directive'; " +
+            "expected query expect_error_class(ERROR_CLASS)")
       case DispatchPattern(names) =>
         ExpectDispatch(splitNames(names))
       case NativePattern(names) =>

@@ -1,0 +1,936 @@
+{
+  "cases": {
+    "at-account-custom": {
+      "authType": "Custom",
+      "outcome": "declined",
+      "values": {}
+    },
+    "at-account-empty": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "at-account-lower-case": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "at-account-oauth": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "at-account-oauth-global-sharedkey": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "at-account-padded": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "at-account-sas-custom": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "at-account-sharedkey": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "at-account-userbound": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "at-global-custom": {
+      "authType": "Custom",
+      "outcome": "declined",
+      "values": {}
+    },
+    "at-global-empty": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "at-global-lower-case": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "at-global-oauth": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "at-global-padded": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "at-global-sas-custom": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "at-global-sharedkey": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "at-global-userbound": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "at-unset-no-keys": {
+      "outcome": "unconfigured",
+      "values": {}
+    },
+    "at-unset-other-account-only": {
+      "outcome": "unconfigured",
+      "values": {}
+    },
+    "cal-base64-bad-length": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-base64-non-ascii": {
+      "errorClass": "java.lang.ArrayIndexOutOfBoundsException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-container-account-key-only": {
+      "outcome": "unconfigured",
+      "values": {}
+    },
+    "cal-container-oauth-endpoint": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-empty-account-key": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-empty-mandatory-secret": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "cal-endpoint-with-path-prefix": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.example.net/prefix/tenant-abc/oauth2/v2.0/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "cal-global-enum-parsed-first": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-msi-no-tenant": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://169.254.169.254/metadata/identity/oauth2/token"
+      }
+    },
+    "cal-msi-no-tenant-no-client-id": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://169.254.169.254/metadata/identity/oauth2/token"
+      }
+    },
+    "cal-null-fsname-key": {
+      "outcome": "unconfigured",
+      "values": {}
+    },
+    "cal-null-fsname-key-beats-account": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "cal-oauth-keys-without-auth-type": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-port-key-matches": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:e1e799c979ec65dcc29a55d9fe8d6dba055a00b83ababed9600d2ea0462f4fe3"
+      }
+    },
+    "cal-port-key-missing": {
+      "outcome": "unconfigured",
+      "values": {}
+    },
+    "cal-sas-container-fixed-token": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.SASTokenProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-sas-guard-with-fixed-token": {
+      "authType": "SAS",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.sas.fixed.token": "sha256:332a89b8fbd21ed8631f462437d07dcc560375e25159ff1db89cdb7945c0bd1b"
+      }
+    },
+    "cal-sas-guard-without-fixed-token": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.SASTokenProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-sas-untrimmed-token": {
+      "authType": "SAS",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.sas.fixed.token": "sha256:332a89b8fbd21ed8631f462437d07dcc560375e25159ff1db89cdb7945c0bd1b"
+      }
+    },
+    "cal-userbound-sas": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "cal-wi-client-assertion-provider": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc",
+        "fs.azure.account.oauth2.token.file": "/var/run/secrets/azure/tokens/azure-identity-token"
+      }
+    },
+    "cal-wi-on-334": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc",
+        "fs.azure.account.oauth2.token.file": "/var/run/secrets/azure/tokens/azure-identity-token"
+      }
+    },
+    "cp-jceks-account-key": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "cp-jceks-beats-clear-text": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "cp-jceks-client-secret": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "cp-jceks-no-fallback": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "cp-no-fallback-clear-text-only": {
+      "outcome": "unconfigured",
+      "values": {}
+    },
+    "cp-no-fallback-with-auth-type": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "guard-oauth-account-type-account-provider": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "guard-oauth-account-type-global-provider": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "guard-oauth-global-type-account-provider": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "guard-oauth-global-type-global-provider": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "guard-sas-account-type-account-provider": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "guard-sas-account-type-global-provider": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.SASTokenProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "guard-sas-global-type-account-provider": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "guard-sas-global-type-global-provider": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "oauth-clientcreds": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-clientcreds-container-secret": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-clientcreds-global": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-clientcreds-mixed-scopes": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-clientcreds-no-client-id": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-clientcreds-no-endpoint": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-clientcreds-no-secret": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-clientcreds-other-account-secret": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-clientcreds-padded-endpoint": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": " https://login.microsoftonline.com/tenant-abc/oauth2/token ",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-custom-no-provider-type": {
+      "authType": "Custom",
+      "outcome": "declined",
+      "values": {}
+    },
+    "oauth-custom-not-adaptee": {
+      "authType": "Custom",
+      "outcome": "declined",
+      "values": {}
+    },
+    "oauth-msi": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://169.254.169.254/metadata/identity/oauth2/token",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc"
+      }
+    },
+    "oauth-msi-blank-endpoint": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://169.254.169.254/metadata/identity/oauth2/token",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc"
+      }
+    },
+    "oauth-msi-container-tenant": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://169.254.169.254/metadata/identity/oauth2/token",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc"
+      }
+    },
+    "oauth-msi-custom-endpoint-authority": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.example.net/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://msi.example.net/token",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc"
+      }
+    },
+    "oauth-msi-no-client-id": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.endpoint": "http://169.254.169.254/metadata/identity/oauth2/token",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc"
+      }
+    },
+    "oauth-no-provider-type": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-provider-empty": {
+      "errorClass": "java.lang.RuntimeException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-provider-missing-class": {
+      "errorClass": "java.lang.RuntimeException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-provider-not-a-provider": {
+      "errorClass": "java.lang.RuntimeException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-provider-not-built-in": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-provider-padded": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "oauth-refreshtoken": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.RefreshTokenBasedTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.refresh.token": "sha256:e65009f6e0ae9fc204adcb73a208f63c582b7839bde7fe836da36a3df6ae7a85",
+        "fs.azure.account.oauth2.refresh.token.endpoint": "https://login.microsoftonline.com/Common/oauth2/token"
+      }
+    },
+    "oauth-refreshtoken-custom-endpoint": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.RefreshTokenBasedTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.refresh.token": "sha256:e65009f6e0ae9fc204adcb73a208f63c582b7839bde7fe836da36a3df6ae7a85",
+        "fs.azure.account.oauth2.refresh.token.endpoint": "https://login.example.net/token"
+      }
+    },
+    "oauth-refreshtoken-no-client-id": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-refreshtoken-no-token": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-userpassword": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.UserPasswordTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.user.name": "user@example.com",
+        "fs.azure.account.oauth2.user.password": "sha256:c55bf0309fee4de8125a00ee97699a19a269caa35afcc8d1058bbd6283167fc8"
+      }
+    },
+    "oauth-userpassword-no-endpoint": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-userpassword-no-password": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-userpassword-no-user": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-wi": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc",
+        "fs.azure.account.oauth2.token.file": "/var/run/secrets/azure/tokens/azure-identity-token"
+      }
+    },
+    "oauth-wi-blank-assertion-provider": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc",
+        "fs.azure.account.oauth2.token.file": "/var/run/secrets/azure/tokens/azure-identity-token"
+      }
+    },
+    "oauth-wi-container-token-file": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc",
+        "fs.azure.account.oauth2.token.file": "/var/run/secrets/azure/tokens/azure-identity-token"
+      }
+    },
+    "oauth-wi-no-client-id": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-wi-no-tenant": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.TokenAccessProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "oauth-wi-padded-token-file": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.msi.authority": "https://login.microsoftonline.com/",
+        "fs.azure.account.oauth2.msi.tenant": "tenant-abc",
+        "fs.azure.account.oauth2.token.file": "/mnt/tokens/token"
+      }
+    },
+    "sas-blank-fixed": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.SASTokenProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sas-custom-and-fixed": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "sas-custom-only": {
+      "authType": "SAS",
+      "outcome": "declined",
+      "providerClass": "org.apache.comet.objectstore.ParitySasTokenProvider",
+      "values": {}
+    },
+    "sas-fixed-global": {
+      "authType": "SAS",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.sas.fixed.token": "sha256:332a89b8fbd21ed8631f462437d07dcc560375e25159ff1db89cdb7945c0bd1b"
+      }
+    },
+    "sas-fixed-only": {
+      "authType": "SAS",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.sas.fixed.token": "sha256:332a89b8fbd21ed8631f462437d07dcc560375e25159ff1db89cdb7945c0bd1b"
+      }
+    },
+    "sas-neither": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.SASTokenProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sas-provider-missing-class": {
+      "errorClass": "java.lang.RuntimeException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sas-provider-not-a-provider": {
+      "errorClass": "java.lang.RuntimeException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sas-question-mark": {
+      "authType": "SAS",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.sas.fixed.token": "sha256:4f629ccc08252cde45726db17f66f06819423bba3254103f893dce6a1e626fc8"
+      }
+    },
+    "sk-account-bad-char": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-account-bad-length": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-account-beats-global": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "sk-account-empty": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-account-padded": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-account-valid": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "sk-container-ignored-with-account": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "sk-global-bad-char": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-global-bad-length": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-global-empty": {
+      "errorClass": "java.lang.IllegalArgumentException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-global-padded": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-global-valid": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "sk-keyprovider-custom": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:5be524205bd6aee5594ca7d1288c421a4cca089d63453278d1f75277c6d382bc"
+      }
+    },
+    "sk-keyprovider-custom-null": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.ConfigurationPropertyNotFoundException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-keyprovider-empty": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-keyprovider-not-a-keyprovider": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-keyprovider-padded": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-keyprovider-simple": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "sk-keyprovider-unknown-class": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-shell-echo": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "sk-shell-script-missing": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "sk-shell-script-unset": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "subst-cross-key": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:41800564f8313f5a8d3f468f205a7c39b55f63fa6efdb2dddd0005441f3c44bb"
+      }
+    },
+    "subst-env-default": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "fallback-client",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "subst-env-home": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "<environment>",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "uri-account-without-dot": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.InvalidUriException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "uri-blob-host": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "uri-blob-in-path-only": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "uri-dfs-host": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "uri-empty-container": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.InvalidUriException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "uri-no-at": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.InvalidUriAuthorityException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "uri-null-authority": {
+      "errorClass": "org.apache.hadoop.fs.azurebfs.contracts.exceptions.InvalidUriAuthorityException",
+      "outcome": "failed",
+      "values": {}
+    },
+    "uri-percent-encoded-container": {
+      "authType": "OAuth",
+      "outcome": "resolved",
+      "providerClass": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+      "values": {
+        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/tenant-abc/oauth2/token",
+        "fs.azure.account.oauth2.client.id": "client-123",
+        "fs.azure.account.oauth2.client.secret": "sha256:c1a39329c3e1799f02b7067ae57bbece8f4accbc5b952cc94fe97799332f1b27"
+      }
+    },
+    "uri-port-in-account": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:e1e799c979ec65dcc29a55d9fe8d6dba055a00b83ababed9600d2ea0462f4fe3"
+      }
+    },
+    "uri-second-at": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "uri-upper-case-account": {
+      "authType": "SharedKey",
+      "outcome": "resolved",
+      "values": {
+        "fs.azure.account.key": "sha256:1c1185e02ff3e23b3e5a1c5bc86cf15d4126caa3dcde0fdb6e93adc4deec119e"
+      }
+    },
+    "uri-upper-case-account-lower-case-key": {
+      "outcome": "unconfigured",
+      "values": {}
+    }
+  },
+  "hadoopAzureVersion": "3.4.1"
+}

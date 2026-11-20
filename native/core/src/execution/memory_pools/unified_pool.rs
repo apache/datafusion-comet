@@ -87,22 +87,15 @@ impl MemoryPool for CometUnifiedMemoryPool {
     }
 
     /// Records memory that already exists, so it must not fail; see [`SparkMemory`].
-    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
-    // than the workspace `rust-version`.
-    #[allow(deprecated)]
     fn grow(&self, _: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
         }
         self.spark.acquire(additional);
         self.used
-            .fetch_update(Relaxed, Relaxed, |old| Some(old.saturating_add(additional)))
-            .unwrap();
+            .update(Relaxed, Relaxed, |old| old.saturating_add(additional));
     }
 
-    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
-    // than the workspace `rust-version`.
-    #[allow(deprecated)]
     fn shrink(&self, _: &MemoryReservation, size: usize) {
         if let Err(e) = self.spark.release(size) {
             panic!(
@@ -112,7 +105,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
         if let Err(prev) = self
             .used
-            .fetch_update(Relaxed, Relaxed, |old| old.checked_sub(size))
+            .try_update(Relaxed, Relaxed, |old| old.checked_sub(size))
         {
             panic!(
                 "Task {} overflow when releasing {size} of {prev} bytes",
@@ -121,9 +114,6 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
     }
 
-    // Rust 1.99 deprecates `fetch_update` in favor of `try_update`, which needs Rust 1.95, newer
-    // than the workspace `rust-version`.
-    #[allow(deprecated)]
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
         if additional > 0 {
             // A partial grant is handed back and refused, which triggers spilling in the caller.
@@ -139,7 +129,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
             }
             if let Err(prev) = self
                 .used
-                .fetch_update(Relaxed, Relaxed, |old| old.checked_add(additional))
+                .try_update(Relaxed, Relaxed, |old| old.checked_add(additional))
             {
                 return Err(resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes due to overflow. Reserved: {}",

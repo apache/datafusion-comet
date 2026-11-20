@@ -22,13 +22,23 @@
 //! used when processing List/Array columns in JVM shuffle.
 
 use arrow::array::builder::{
-    Date32Builder, Float64Builder, Int32Builder, Int64Builder, TimestampMicrosecondBuilder,
+    make_builder, Date32Builder, Float64Builder, Int32Builder, Int64Builder, ListBuilder,
+    TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{DataType, TimeUnit};
-use comet::execution::shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use comet::execution::shuffle::spark_unsafe::list::{
+    append_list_element, append_to_builder, SparkUnsafeArray,
+};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 const NUM_ELEMENTS: usize = 10000;
+
+/// Rows in each batch of `benchmark_list_with_one_null`, as in a default Comet batch.
+const LIST_ROWS: usize = 8192;
+
+/// Distinct arrays `benchmark_list_with_one_null` cycles through, so it does not read one array
+/// from cache for every row.
+const DISTINCT_ARRAYS: usize = 64;
 
 /// Create a SparkUnsafeArray in memory with i32 elements.
 /// Layout:
@@ -135,6 +145,29 @@ fn create_spark_unsafe_array_f64(num_elements: usize, with_nulls: bool) -> Vec<u
     }
 
     buffer
+}
+
+/// Create a SparkUnsafeArray of `num_elements` elements of `width` bytes whose element `null_idx`
+/// is null, on an 8-byte boundary as inside an UnsafeRow.
+fn create_spark_unsafe_array_with_one_null(
+    num_elements: usize,
+    width: usize,
+    null_idx: usize,
+) -> Vec<u64> {
+    let header_size = 8 + num_elements.div_ceil(64) * 8;
+    let mut buffer = vec![0u8; header_size + (num_elements * width).div_ceil(8) * 8];
+    buffer[0..8].copy_from_slice(&(num_elements as i64).to_le_bytes());
+    buffer[8 + null_idx / 8] |= 1 << (null_idx % 8);
+    for i in 0..num_elements {
+        let offset = header_size + i * width;
+        buffer[offset..offset + width].copy_from_slice(&(i as i64).to_le_bytes()[..width]);
+    }
+    buffer
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|word| u64::from_ne_bytes(*word))
+        .collect()
 }
 
 fn benchmark_array_conversion(c: &mut Criterion) {
@@ -260,6 +293,53 @@ fn benchmark_array_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+/// Appends a batch of list rows whose arrays each hold one null, as JVM shuffle appends a list
+/// column, for array lengths on both sides of `MIN_BULK_NULLABLE_APPEND_ELEMENTS` in
+/// `native/shuffle/src/spark_unsafe/list.rs`. Arrays at least that long are appended with one copy
+/// of their values and a validity buffer, shorter ones element by element. To compare the two at
+/// every length, save a baseline with that constant set to `usize::MAX`, which keeps every array
+/// on the per-element loop, then restore it and compare against the baseline:
+///
+/// ```shell
+/// cargo bench --bench array_element_append -- list_with_one_null --save-baseline loop
+/// cargo bench --bench array_element_append -- list_with_one_null --baseline loop
+/// ```
+fn benchmark_list_with_one_null(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list_with_one_null");
+    group.throughput(Throughput::Elements(LIST_ROWS as u64));
+
+    for (name, element_type, width) in [("i32", DataType::Int32, 4), ("i64", DataType::Int64, 8)] {
+        for num_elements in [32, 64, 128] {
+            let buffers: Vec<Vec<u64>> = (0..DISTINCT_ARRAYS)
+                .map(|i| {
+                    create_spark_unsafe_array_with_one_null(num_elements, width, i % num_elements)
+                })
+                .collect();
+            let arrays: Vec<SparkUnsafeArray> = buffers
+                .iter()
+                .map(|buffer| SparkUnsafeArray::new(buffer.as_ptr() as i64))
+                .collect();
+
+            group.bench_with_input(
+                BenchmarkId::new(name, num_elements),
+                &arrays,
+                |b, arrays| {
+                    b.iter(|| {
+                        // The capacity Comet gives a list column's values builder.
+                        let mut builder = ListBuilder::new(make_builder(&element_type, 100));
+                        for array in arrays.iter().cycle().take(LIST_ROWS) {
+                            append_list_element(&element_type, &mut builder, array).unwrap();
+                        }
+                        builder.finish()
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 fn config() -> Criterion {
     Criterion::default()
 }
@@ -267,6 +347,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = benchmark_array_conversion
+    targets = benchmark_array_conversion, benchmark_list_with_one_null
 }
 criterion_main!(benches);

@@ -99,6 +99,17 @@ fn spark_decimal_div_internal(
     let (p1, s1) = get_precision_scale(left.data_type());
     let (p2, s2) = get_precision_scale(right.data_type());
 
+    // The exponents below are computed in `u32`, so a negative scale wraps to roughly 4.29e9 and
+    // the BigInt branch would evaluate `10.pow(~4.29e9)`. That is an unbounded allocation rather
+    // than an overflow, so it hangs instead of failing. Comet's serde reports negative-scale
+    // decimal arithmetic as unsupported, which keeps this unreachable from a Spark plan, but
+    // reject it here too so any other caller gets a diagnosable error. See issue #5013.
+    if s1 < 0 || s2 < 0 || s3 < 0 {
+        return Err(DataFusionError::Execution(format!(
+            "spark_decimal_div: negative decimal scale left={s1} right={s2} result={s3}"
+        )));
+    }
+
     let l_exp = ((s2 + s3 + 1) as u32).saturating_sub(s1 as u32);
     let r_exp = (s1 as u32).saturating_sub((s2 + s3 + 1) as u32);
     let result = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
@@ -197,6 +208,51 @@ mod tests {
                 EvalMode::Ansi,
             );
             assert!(matches!(spark_error(result), SparkError::DivideByZero));
+        }
+    }
+
+    #[test]
+    fn test_decimal_div_rejects_negative_scale() {
+        // `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a negative
+        // scale wraps to roughly 4.29e9, clears the precision check and sends the BigInt branch
+        // into `10.pow(~4.29e9)`, an unbounded allocation that hangs rather than failing. The
+        // guard turns that into an error. Comet's serde keeps a Spark plan away from this, so
+        // the guard is for any other caller.
+        for (left, right, result) in [
+            (
+                DataType::Decimal128(10, -1),
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, -1),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, -1),
+            ),
+        ] {
+            let (lp, ls) = match left {
+                DataType::Decimal128(p, s) => (p, s),
+                _ => unreachable!(),
+            };
+            let (rp, rs) = match right {
+                DataType::Decimal128(p, s) => (p, s),
+                _ => unreachable!(),
+            };
+            let err = spark_decimal_div(
+                &[decimal(100, lp, ls), decimal(3, rp, rs)],
+                &result,
+                EvalMode::Legacy,
+            )
+            .expect_err("a negative scale must be rejected");
+            assert!(
+                err.to_string().contains("negative decimal scale"),
+                "unexpected error: {err}"
+            );
         }
     }
 

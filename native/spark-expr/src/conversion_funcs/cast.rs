@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_numeric, cast_boolean_to_timestamp, cast_boolean_to_utf8,
+    is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_float32, cast_decimal128_to_float64, cast_decimal128_to_utf8,
@@ -43,9 +44,14 @@ use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
+    new_null_array, BinaryBuilder, GenericByteArray, GenericStringArray, ListArray, MapArray,
+    StringArray, StructArray,
 };
-use arrow::datatypes::{format_decimal_str, DataType, GenericBinaryType, Schema};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
+use arrow::datatypes::{
+    format_decimal_str, DataType, Float32Type, Float64Type, GenericBinaryType, Int16Type,
+    Int32Type, Int64Type, Int8Type, Schema,
+};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
@@ -61,7 +67,7 @@ use base64::Engine;
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_common::decode_utf8_spark_lossy;
+use datafusion_comet_common::{child_with_parent_nulls, decode_utf8_spark_lossy};
 use std::{
     fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
@@ -119,8 +125,9 @@ impl Cast {
         }
     }
 
-    /// Whether the cast cannot fail for any value, in any eval mode: a cast to the child's own
-    /// type, from NULL, or to a wider number. `cast_array` rejects a dictionary target first.
+    /// Whether the cast cannot fail for any value, in any eval mode, and costs little more than
+    /// reading its input: a cast to the child's own type, from NULL, or to a wider number.
+    /// `cast_array` rejects a dictionary target first.
     pub(crate) fn is_infallible(&self, input_schema: &Schema) -> bool {
         use DataType::*;
         let Ok(from) = self.child.data_type(input_schema) else {
@@ -138,6 +145,20 @@ impl Cast {
                         | (Float32, Float64)
                 ))
     }
+
+    /// Whether the cast cannot fail for any value: what [`Self::is_infallible`] accepts, and a cast
+    /// from a string to an integer in LEGACY or TRY mode, which returns NULL for a string it cannot
+    /// parse. Parsing costs far more per row than those casts.
+    pub(crate) fn cannot_fail(&self, input_schema: &Schema) -> bool {
+        use DataType::*;
+        self.is_infallible(input_schema)
+            || (self
+                .child
+                .data_type(input_schema)
+                .is_ok_and(|from| matches!(from, Utf8 | LargeUtf8))
+                && matches!(self.data_type, Int8 | Int16 | Int32 | Int64)
+                && self.cast_options.eval_mode != EvalMode::Ansi)
+    }
 }
 
 /// Spark cast options
@@ -149,15 +170,24 @@ pub struct SparkCastOptions {
     /// session local timezone by an analyzer in Spark.
     // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
-    /// Allow casts that are supported but not guaranteed to be 100% compatible
-    pub allow_incompat: bool,
     /// True when running against Spark 4.0+. Enables version-specific cast behaviour
     /// such as the handling of leading whitespace before T-prefixed time-only strings.
     pub is_spark4_plus: bool,
+    /// True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
+    /// 0 instead of applying the integral-digit limit to it (SPARK-60118).
+    pub decimal_zero_any_exponent: bool,
+    /// True when the running Spark casts a string far below the target scale's ulp to decimal as 0
+    /// even when the difference to the target scale does not fit in an int, instead of failing
+    /// in `BigDecimal.setScale` (SPARK-60119).
+    pub decimal_tiny_to_zero: bool,
+    /// True when Spark does not apply the 38 integral-digit limit when it casts a string to
+    /// decimal, as it does not with `spark.sql.legacy.allowNegativeScaleOfDecimal`.
+    pub decimal_skip_integral_digit_limit: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
-    /// for that use case
+    /// for that use case. The reader owns the arrays then, so a cast may share their buffers;
+    /// see [cast_binary_to_string].
     pub is_adapting_schema: bool,
     /// String to use to represent null values
     pub null_string: String,
@@ -166,12 +196,14 @@ pub struct SparkCastOptions {
 }
 
 impl SparkCastOptions {
-    pub fn new(eval_mode: EvalMode, timezone: &str, allow_incompat: bool) -> Self {
+    pub fn new(eval_mode: EvalMode, timezone: &str) -> Self {
         Self {
             eval_mode,
             timezone: timezone.to_string(),
-            allow_incompat,
             is_spark4_plus: false,
+            decimal_zero_any_exponent: false,
+            decimal_tiny_to_zero: false,
+            decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -179,12 +211,14 @@ impl SparkCastOptions {
         }
     }
 
-    pub fn new_without_timezone(eval_mode: EvalMode, allow_incompat: bool) -> Self {
+    pub fn new_without_timezone(eval_mode: EvalMode) -> Self {
         Self {
             eval_mode,
             timezone: "".to_string(),
-            allow_incompat,
             is_spark4_plus: false,
+            decimal_zero_any_exponent: false,
+            decimal_tiny_to_zero: false,
+            decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -192,15 +226,10 @@ impl SparkCastOptions {
         }
     }
 
-    pub fn new_with_version(
-        eval_mode: EvalMode,
-        timezone: &str,
-        allow_incompat: bool,
-        is_spark4_plus: bool,
-    ) -> Self {
+    pub fn new_with_version(eval_mode: EvalMode, timezone: &str, is_spark4_plus: bool) -> Self {
         Self {
             is_spark4_plus,
-            ..Self::new(eval_mode, timezone, allow_incompat)
+            ..Self::new(eval_mode, timezone)
         }
     }
 }
@@ -250,7 +279,6 @@ pub(crate) fn cast_array(
         return Ok(Arc::new(array));
     }
 
-    let array = prepare_nested_cast_input(array, to_type)?;
     let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let eval_mode = cast_options.eval_mode;
 
@@ -296,12 +324,26 @@ pub(crate) fn cast_array(
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
-        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
-        }
-        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
-        }
+        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => cast_string_to_decimal(
+            &array,
+            to_type,
+            precision,
+            scale,
+            eval_mode,
+            cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_tiny_to_zero,
+            cast_options.decimal_skip_integral_digit_limit,
+        ),
+        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => cast_string_to_decimal(
+            &array,
+            to_type,
+            precision,
+            scale,
+            eval_mode,
+            cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_tiny_to_zero,
+            cast_options.decimal_skip_integral_digit_limit,
+        ),
         (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
             if eval_mode == EvalMode::Ansi =>
         {
@@ -401,6 +443,7 @@ pub(crate) fn cast_array(
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(to)) => {
+            let array = prepare_repeated_date_cast(array, to_type)?;
             // Cast list elements recursively so nested array casts follow Spark semantics
             // instead of relying on Arrow's top-level cast support.
             let list_array = array.as_list::<i32>();
@@ -420,7 +463,10 @@ pub(crate) fn cast_array(
                 list_array.nulls().cloned(),
             )) as ArrayRef)
         }
-        (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?),
+        (Map(_, _), Map(_, _)) => {
+            let array = prepare_repeated_date_cast(array, to_type)?;
+            Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?)
+        }
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if cast_options.allow_cast_unsigned_ints =>
         {
@@ -441,6 +487,13 @@ pub(crate) fn cast_array(
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
         (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
+        (Boolean, Int8) => Ok(cast_boolean_to_numeric::<Int8Type>(&array)),
+        (Boolean, Int16) => Ok(cast_boolean_to_numeric::<Int16Type>(&array)),
+        (Boolean, Int32) => Ok(cast_boolean_to_numeric::<Int32Type>(&array)),
+        (Boolean, Int64) => Ok(cast_boolean_to_numeric::<Int64Type>(&array)),
+        (Boolean, Float32) => Ok(cast_boolean_to_numeric::<Float32Type>(&array)),
+        (Boolean, Float64) => Ok(cast_boolean_to_numeric::<Float64Type>(&array)),
+        (Boolean, Utf8) => Ok(cast_boolean_to_utf8(&array)),
         (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
         // NTZ → TIMESTAMP: interpret NTZ local-epoch value as session-TZ local time, convert to UTC.
         // Must come before the is_datafusion_spark_compatible fallthrough which would
@@ -476,103 +529,6 @@ pub(crate) fn cast_array(
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
 }
 
-/// True only for infallible casts whose leaves all have fixed width. Even an identity cast on
-/// a variable-width child could retain a large payload hidden by a null ancestor. Structs keep
-/// one slot per parent; lists/maps are only considered at the current preparation boundary,
-/// where their offsets let us bound the hidden values. This is not a cast support matrix.
-fn is_infallible_fixed_width_cast(from_type: &DataType, to_type: &DataType) -> bool {
-    use DataType::*;
-    match (from_type, to_type) {
-        (Int8, Int16 | Int32 | Int64) | (Int16, Int32 | Int64) | (Int32, Int64) => true,
-        (Struct(from), Struct(to)) => {
-            from.len() == to.len()
-                && from.iter().zip(to).all(|(from, to)| {
-                    is_infallible_fixed_width_cast(from.data_type(), to.data_type())
-                })
-        }
-        // In particular, DATE to TIMESTAMP can overflow even in legacy mode. Retain
-        // normalization for every changed leaf not proven safe above, including TRY casts.
-        _ => {
-            (from_type.is_primitive() || matches!(from_type, Boolean | Null))
-                && from_type == to_type
-        }
-    }
-}
-
-fn has_infallible_fixed_width_children(from_type: &DataType, to_type: &DataType) -> bool {
-    use DataType::*;
-    match (from_type, to_type) {
-        (Struct(_), Struct(_)) => is_infallible_fixed_width_cast(from_type, to_type),
-        (List(from), List(to)) | (Map(from, _), Map(to, _)) => {
-            is_infallible_fixed_width_cast(from.data_type(), to.data_type())
-        }
-        _ => false,
-    }
-}
-
-/// Fallible recursive casts must ignore child values hidden by a null parent or outside a slice.
-fn prepare_nested_cast_input(array: ArrayRef, to_type: &DataType) -> DataFusionResult<ArrayRef> {
-    let has_unused_values = match array.data_type() {
-        DataType::Struct(_) => false,
-        DataType::List(_) => {
-            let list = array.as_list::<i32>();
-            list.value_offsets()[0] != 0
-                || list.value_offsets()[list.len()] as usize != list.values().len()
-        }
-        DataType::Map(_, _) => {
-            let map = array.as_map();
-            map.value_offsets()[0] != 0
-                || map.value_offsets()[map.len()] as usize != map.entries().len()
-        }
-        _ => return Ok(array),
-    };
-    let null_count = array.null_count();
-    if null_count == 0 && !has_unused_values {
-        return Ok(array);
-    }
-
-    // Widening integers does not need a copy to mask hidden children. Still compact slices
-    // and dense-null lists/maps: retaining most of their unused children can make even an
-    // infallible cast slower. Reuse only fixed-width leaves (possibly inside structs), so a
-    // hidden nested list/map or unchanged string cannot escape this container's density check.
-    if !has_unused_values
-        && has_infallible_fixed_width_children(array.data_type(), to_type)
-        && !should_compact_infallible_values(&array)
-    {
-        return Ok(array);
-    }
-
-    // Nullable identity indices preserve the rows and their validity. Arrow's take propagates
-    // struct nulls to children and compacts list/map entries, without introducing null map keys
-    // or changing field nullability. Contiguous, non-null containers need no normalization.
-    let indices = UInt64Array::new(
-        (0..array.len() as u64).collect::<Vec<_>>().into(),
-        array.nulls().cloned(),
-    );
-    Ok(take(array.as_ref(), &indices, None)?)
-}
-
-fn should_compact_infallible_values(array: &ArrayRef) -> bool {
-    let offsets = match array.data_type() {
-        DataType::List(_) => array.as_list::<i32>().value_offsets(),
-        DataType::Map(_, _) => array.as_map().value_offsets(),
-        _ => return false,
-    };
-    // Keep the existing path for dense parents without scanning their offsets. In the sparse
-    // case, count child values too: a single null list/map can contain most of the batch.
-    if array.null_count() > array.len() / 4 {
-        return true;
-    }
-    let visible_values: usize = array
-        .nulls()
-        .unwrap()
-        .valid_slices()
-        .map(|(start, end)| (offsets[end] - offsets[start]) as usize)
-        .sum();
-    let total_values = offsets[array.len()] as usize;
-    visible_values < total_values - total_values / 4
-}
-
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
 fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
@@ -603,6 +559,52 @@ fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> b
     }
 }
 
+fn casts_date_to_timestamp(from: &DataType, to: &DataType) -> bool {
+    use DataType::*;
+    match (from, to) {
+        (Date32, Timestamp(_, _)) => true,
+        (List(from), List(to)) | (Map(from, _), Map(to, _)) => {
+            casts_date_to_timestamp(from.data_type(), to.data_type())
+        }
+        (Struct(from), Struct(to)) => from
+            .iter()
+            .zip(to)
+            .any(|(from, to)| casts_date_to_timestamp(from.data_type(), to.data_type())),
+        _ => false,
+    }
+}
+
+/// List and map casts visit the whole child array, including entries outside a slice and
+/// entries owned by null rows. Drop those entries before checking for date overflow.
+fn prepare_repeated_date_cast(array: ArrayRef, to_type: &DataType) -> DataFusionResult<ArrayRef> {
+    let (offsets, len) = match array.data_type() {
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            (list.value_offsets(), list.values().len())
+        }
+        DataType::Map(_, _) => {
+            let map = array.as_map();
+            (map.value_offsets(), map.entries().len())
+        }
+        _ => unreachable!("expected a list or map"),
+    };
+    let sliced = offsets[0] != 0 || offsets[array.len()] as usize != len;
+    if (!sliced && array.null_count() == 0) || !casts_date_to_timestamp(array.data_type(), to_type)
+    {
+        return Ok(array);
+    }
+    if !sliced && (0..array.len()).all(|i| array.is_valid(i) || offsets[i] == offsets[i + 1]) {
+        return Ok(array);
+    }
+
+    // Null indices omit their entries and preserve non-nullable map keys.
+    let indices = UInt64Array::new(
+        (0..array.len() as u64).collect::<Vec<_>>().into(),
+        array.nulls().cloned(),
+    );
+    Ok(take(array.as_ref(), &indices, None)?)
+}
+
 /// Cast between struct types based on logic in
 /// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
 fn cast_struct_to_struct(
@@ -617,8 +619,14 @@ fn cast_struct_to_struct(
                 .iter()
                 .enumerate()
                 .zip(to_fields.iter())
-                .map(|((idx, _from), to)| {
-                    let from_field = Arc::clone(array.column(idx));
+                .map(|((idx, from), to)| {
+                    let from_field = if array.null_count() != 0
+                        && casts_date_to_timestamp(from.data_type(), to.data_type())
+                    {
+                        child_with_parent_nulls(array, idx)?
+                    } else {
+                        Arc::clone(array.column(idx))
+                    };
                     let array_length = from_field.len();
                     let cast_result = spark_cast(
                         ColumnarValue::from(from_field),
@@ -629,11 +637,11 @@ fn cast_struct_to_struct(
                 })
                 .collect::<DataFusionResult<Vec<_>>>()?;
 
-            Ok(Arc::new(StructArray::new(
+            Ok(Arc::new(StructArray::try_new(
                 to_fields.clone(),
                 cast_fields,
                 array.nulls().cloned(),
-            )))
+            )?))
         }
         _ => unreachable!(),
     }
@@ -756,7 +764,6 @@ fn cast_array_to_string(
     spark_cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
-    let mut str = String::with_capacity(array.len() * 16);
 
     let casted_values = cast_array(
         Arc::clone(array.values()),
@@ -773,25 +780,26 @@ fn cast_array_to_string(
         if array.is_null(row_index) {
             builder.append_null();
         } else {
-            str.clear();
             let start = offsets[row_index] as usize;
             let end = offsets[row_index + 1] as usize;
 
-            str.push('[');
-            let mut first = true;
-            for idx in start..end {
-                if !first {
-                    str.push_str(", ");
+            // Write the row straight into the builder's value buffer, then end it with an empty
+            // `append_value`, instead of assembling it in a scratch `String` and copying it again.
+            let written = builder.write_char('[').and_then(|()| {
+                for idx in start..end {
+                    if idx > start {
+                        builder.write_str(", ")?;
+                    }
+                    if string_values.is_null(idx) {
+                        builder.write_str(&spark_cast_options.null_string)?;
+                    } else {
+                        builder.write_str(string_values.value(idx))?;
+                    }
                 }
-                if string_values.is_null(idx) {
-                    str.push_str(&spark_cast_options.null_string);
-                } else {
-                    str.push_str(string_values.value(idx));
-                }
-                first = false;
-            }
-            str.push(']');
-            builder.append_value(&str);
+                builder.write_char(']')
+            });
+            written.expect("writing to a string builder cannot fail");
+            builder.append_value("");
         }
     }
     Ok(Arc::new(builder.finish()))
@@ -929,7 +937,25 @@ fn write_upper_hex<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
 /// Writes `byte` reinterpreted as a signed decimal, as Spark does when printing a byte array.
 #[inline]
 fn write_i8<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
-    write!(out, "{}", byte as i8)
+    let value = byte as i8;
+    let mut magnitude = value.unsigned_abs();
+    // At most "-128": a sign and three digits, filled from the end.
+    let mut buf = [0u8; 4];
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        buf[start] = b'0' + magnitude % 10;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if value < 0 {
+        start -= 1;
+        buf[start] = b'-';
+    }
+    // SAFETY: `buf[start..]` holds only ASCII digits and an optional '-', so it is valid UTF-8.
+    out.write_str(unsafe { std::str::from_utf8_unchecked(&buf[start..]) })
 }
 
 /// Writes the bytes of `value` between square brackets, encoded with `encode` and joined by
@@ -950,8 +976,13 @@ fn write_bracketed<W: Write>(
     out.write_char(']')
 }
 
-/// Casts a binary array to a string array. Without a binary output style the bytes are
-/// reinterpreted as a string as-is, which is what Spark's `Cast` does.
+/// Casts a binary array to a string array. Without a binary output style, or with the `UTF8`
+/// style, the bytes are decoded the way the JVM's `new String(bytes, UTF_8)` does, replacing each
+/// ill-formed sequence with U+FFFD. Spark's `Cast` keeps the bytes, so the strings match what
+/// Spark returns but byte-level results can differ (#4764). Valid input is copied once, or
+/// shares the input's buffers when a scan adapts its schema, where the reader owns them. A plain
+/// cast can run on a batch imported over the Arrow C stream, where each buffer keeps the whole
+/// batch alive, wide sibling columns included, for as long as a sort or a join holds the result.
 ///
 /// The other styles mimic the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
 /// used by SparkSQL's ToPrettyString expression.
@@ -968,12 +999,94 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 
     let num_rows = input.len();
     let offsets = input.value_offsets();
-    let value_bytes = offsets[num_rows].as_usize() - offsets[0].as_usize();
+    let start = offsets[0].as_usize();
+    let end = offsets[num_rows].as_usize();
+    // Bytes of the non-null rows. A null row can still span bytes, for example after `nullif`.
+    // Each run of non-null rows is one subtraction, so sparse nulls don't cost a pass over the rows.
+    let live_bytes = match input.nulls().filter(|nulls| nulls.null_count() > 0) {
+        Some(nulls) => nulls
+            .valid_slices()
+            .map(|(from, to)| offsets[to].as_usize() - offsets[from].as_usize())
+            .sum(),
+        None => end - start,
+    };
+
+    // Check the bytes the rows span once. If they are valid UTF-8, copy them, or reuse the
+    // input's buffers when the reader owns them and the rows fill at least half of their
+    // allocations; otherwise copy the rows in the valid prefix and decode the rest. Skip this
+    // when null rows span more than half of those bytes: decoding the live rows one at a time
+    // then reads less and returns a compact buffer instead of keeping the null rows' bytes alive.
+    let utf8_style = matches!(
+        spark_cast_options.binary_output_style,
+        None | Some(BinaryOutputStyle::Utf8)
+    );
+    let mut valid_prefix = "";
+    let mut checked = false;
+    if utf8_style && 2 * live_bytes >= end - start {
+        checked = true;
+        let data = input.value_data();
+        match std::str::from_utf8(&data[start..end]) {
+            Ok(valid) => {
+                // An offset splits a code point only if it points at a continuation byte.
+                if offsets.iter().all(|offset| {
+                    let offset = offset.as_usize();
+                    offset == end || !matches!(data[offset], 0x80..=0xBF)
+                }) {
+                    // Reuse a buffer only when the reader owns it and the rows fill at least
+                    // half of its allocation. A slice of a large array shares the whole
+                    // allocation, and memory accounting such as a sort's charges all of it to
+                    // every batch that holds it, so the offsets, values and validity bitmap are
+                    // copied then, without decoding the values again. An imported buffer reports
+                    // its length as its capacity, so it is told apart by the caller instead.
+                    let share = spark_cast_options.is_adapting_schema;
+                    let offset_buffer = input.offsets().inner().inner();
+                    let offsets =
+                        if share && start == 0 && fills(offset_buffer, offset_buffer.len()) {
+                            input.offsets().clone()
+                        } else {
+                            // Rebases a slice's offsets onto the narrowed value buffer.
+                            OffsetBuffer::from_lengths(input.offsets().lengths())
+                        };
+                    let values = if share && fills(input.values(), end - start) {
+                        input.values().slice_with_length(start, end - start)
+                    } else {
+                        Buffer::from_slice_ref(&data[start..end])
+                    };
+                    let nulls = input.nulls().map(|nulls| {
+                        if share && fills(nulls.buffer(), nulls.len().div_ceil(8)) {
+                            nulls.clone()
+                        } else {
+                            // `sliced` shares the bitmap when the slice starts on a byte boundary.
+                            let bits = Buffer::from_slice_ref(&nulls.inner().sliced());
+                            NullBuffer::new(BooleanBuffer::new(bits, 0, nulls.len()))
+                        }
+                    });
+                    // SAFETY: the value buffer is valid UTF-8 and every offset falls on a char
+                    // boundary, which is what `GenericStringArray::try_new` checks.
+                    let strings =
+                        unsafe { GenericStringArray::<O>::new_unchecked(offsets, values, nulls) };
+                    return Ok(Arc::new(strings));
+                }
+                valid_prefix = valid;
+            }
+            // SAFETY: `valid_up_to` is the length of the longest prefix that is valid UTF-8.
+            Err(error) => {
+                valid_prefix =
+                    unsafe { std::str::from_utf8_unchecked(&data[start..][..error.valid_up_to()]) }
+            }
+        }
+    }
+
+    let value_bytes = live_bytes;
     // Upper bound on the encoded length so the value buffer is allocated once. For the
-    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x; the builder grows on the rare
-    // invalid byte that expands to U+FFFD. Base64 rounds up to a full 4-char group via
-    // div_ceil, which already covers the group padding.
+    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x and the bytes after the first
+    // ill-formed sequence at up to 3x, since U+FFFD takes three bytes; a batch that was not
+    // checked is sized for valid input. Base64 rounds up to a full 4-char group via div_ceil,
+    // which already covers the group padding.
     let capacity = match spark_cast_options.binary_output_style {
+        None | Some(BinaryOutputStyle::Utf8) if checked => {
+            valid_prefix.len() + 3 * value_bytes.saturating_sub(valid_prefix.len())
+        }
         None | Some(BinaryOutputStyle::Utf8) => value_bytes,
         Some(BinaryOutputStyle::Basic) => 6 * value_bytes + 2 * num_rows,
         Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3),
@@ -984,7 +1097,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     let mut builder = GenericStringBuilder::<O>::with_capacity(num_rows, capacity);
     // Base64 is the only style that cannot encode straight into the builder.
     let mut base64_buffer = String::new();
-    for value in input.iter() {
+    for (value, range) in input.iter().zip(offsets.windows(2)) {
         let Some(value) = value else {
             // The previous iteration always finalized its row with `append_value("")`, so no
             // bytes are pending in the builder here; a future edit that adds a `continue` or
@@ -996,14 +1109,31 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         // the row. Writing to the builder is infallible.
         let written = match spark_cast_options.binary_output_style {
             // Default CAST(binary AS string) and the UTF8 ToPrettyString style (Spark 4.0+) both
-            // render via `new String(bytes, UTF_8)`. Route through the shared JVM-compatible lossy
-            // decoder so ill-formed bytes become U+FFFD (matching Spark) instead of being
-            // reinterpreted unchecked (UB) or panicking on non-UTF-8 input (#4488, #4763). The
-            // valid-UTF-8 path borrows, so it copies once (into the Arrow value buffer). Divergence
-            // for byte-level round-trips such as CAST(CAST(x AS string) AS binary) and value
-            // identity is documented in the compatibility guide and tracked by #4764.
+            // render via `new String(bytes, UTF_8)`. Values in the valid prefix are copied as is;
+            // the rest go through the shared JVM-compatible lossy decoder so ill-formed bytes
+            // become U+FFFD (matching Spark) instead of being reinterpreted unchecked (UB) or
+            // panicking on non-UTF-8 input (#4488, #4763). Divergence for byte-level round-trips
+            // such as CAST(CAST(x AS string) AS binary) and value identity is documented in the
+            // compatibility guide and tracked by #4764.
             None | Some(BinaryOutputStyle::Utf8) => {
-                builder.write_str(&decode_utf8_spark_lossy(value))
+                let row_start = range[0].as_usize() - start;
+                let row_end = range[1].as_usize() - start;
+                match valid_prefix.get(row_start..row_end) {
+                    Some(valid) => builder.write_str(valid),
+                    None => {
+                        // The row holds the first ill-formed sequence, follows it, or starts or
+                        // ends inside a code point. Copy the part of it that was checked when
+                        // the row starts on a character boundary, and decode only the rest: the
+                        // decoder restarts at every boundary, so the result is the same as
+                        // decoding the whole row.
+                        let validated = valid_prefix
+                            .get(row_start..row_end.min(valid_prefix.len()))
+                            .unwrap_or("");
+                        builder.write_str(validated).and_then(|()| {
+                            builder.write_str(&decode_utf8_spark_lossy(&value[validated.len()..]))
+                        })
+                    }
+                }
             }
             Some(BinaryOutputStyle::Basic) => write_bracketed(&mut builder, value, ", ", write_i8),
             Some(BinaryOutputStyle::Base64) => {
@@ -1022,27 +1152,42 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         written.expect("writing to a string builder cannot fail");
         builder.append_value("");
     }
-    Ok(Arc::new(builder.finish()))
+    let strings = builder.finish();
+    // A replacement that grows the value buffer past its capacity doubles the allocation, which
+    // memory accounting then charges in full. Return a compact copy when the rows fill less than
+    // half of it.
+    if utf8_style && !fills(strings.values(), strings.values().len()) {
+        let values = Buffer::from_slice_ref(strings.values().as_slice());
+        let (offsets, _, nulls) = strings.into_parts();
+        // SAFETY: the builder produced valid UTF-8 and offsets on character boundaries, and
+        // only the value buffer's allocation changes.
+        let strings = unsafe { GenericStringArray::<O>::new_unchecked(offsets, values, nulls) };
+        return Ok(Arc::new(strings));
+    }
+    Ok(Arc::new(strings))
+}
+
+/// True when the `used` bytes of `buffer` fill at least half of its allocation, which is when
+/// sharing the buffer costs less than a compact copy.
+fn fills(buffer: &Buffer, used: usize) -> bool {
+    2 * used >= buffer.capacity()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, ListArray, NullArray, PrimitiveArray,
-        StringArray,
+        BinaryArray, Decimal128Array, ListArray, NullArray, PrimitiveArray, StringArray,
     };
-    use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::{
-        Field, Fields, Int32Type, Int64Type, TimeUnit, TimestampMicrosecondType,
-    };
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
 
     #[test]
     fn test_cast_to_dictionary_is_rejected() {
         let error = cast_array(
             Arc::new(StringArray::from(vec!["a"])),
             &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap_err();
 
@@ -1080,7 +1225,7 @@ mod tests {
             let error = cast_array(
                 input,
                 &output_type,
-                &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi),
             )
             .unwrap_err();
 
@@ -1115,7 +1260,7 @@ mod tests {
             Some(&[0xEDu8, 0xA0, 0x80][..]),
         ]);
         // binary_output_style defaults to None, i.e. the plain (non-ToPrettyString) cast path.
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
 
         let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
 
@@ -1139,7 +1284,7 @@ mod tests {
             Some("abc".as_bytes()),
             Some(&[0xEDu8, 0xA0, 0x80][..]),
         ]);
-        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         cast_options.binary_output_style = Some(BinaryOutputStyle::Utf8);
 
         let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
@@ -1161,7 +1306,7 @@ mod tests {
             Some(b"hi".as_slice()),
         ]));
         let cast = |style: Option<BinaryOutputStyle>| {
-            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
             options.binary_output_style = style;
             let result = spark_cast(
                 ColumnarValue::Array(Arc::clone(&input)),
@@ -1225,7 +1370,7 @@ mod tests {
             None,
             Some("héllo".as_bytes()),
         ]));
-        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         let result = spark_cast(
             ColumnarValue::Array(Arc::clone(&input)),
             &DataType::Utf8,
@@ -1240,11 +1385,391 @@ mod tests {
         assert_eq!(result.value(2), "héllo");
     }
 
+    /// Cast options of a scan adapting its schema, where the reader owns the input's buffers
+    /// and a valid input can share them.
+    fn scan_cast_options() -> SparkCastOptions {
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        cast_options.is_adapting_schema = true;
+        cast_options
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_valid_utf8_reuses_buffers() {
+        use arrow::buffer::NullBuffer;
+
+        // The rows fill the value buffer's allocation, which a builder would round up.
+        let input = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 6, 6, 6].into()),
+            Buffer::from_vec("héllo".as_bytes().to_vec()),
+            Some(NullBuffer::from(vec![true, false, true])),
+        );
+        for style in [None, Some(BinaryOutputStyle::Utf8)] {
+            let mut cast_options = scan_cast_options();
+            cast_options.binary_output_style = style;
+
+            let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+            let strings = result.as_string::<i32>();
+            assert_eq!(strings.values().as_ptr(), input.values().as_ptr());
+            assert_eq!(strings.nulls(), input.nulls());
+            assert_eq!(strings.value(0), "héllo");
+            assert!(strings.is_null(1));
+            assert_eq!(strings.value(2), "");
+        }
+    }
+
+    /// Outside a scan, the input may be a batch imported over the Arrow C stream, where each
+    /// buffer keeps the whole batch alive. A plain cast copies the valid bytes once instead.
+    #[test]
+    fn test_cast_binary_to_string_outside_scan_copies_valid_utf8() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let payload = [b'a'; 1024];
+        let input = BinaryArray::from_opt_vec(
+            (0..64)
+                .map(|i| (i % 8 != 3).then_some(payload.as_slice()))
+                .collect(),
+        );
+        for input in [input.clone(), input.slice(8, 48)] {
+            let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+            let strings = result.as_string::<i32>();
+            assert_ne!(strings.values().as_ptr(), input.value(0).as_ptr());
+            assert_ne!(
+                strings.value_offsets().as_ptr(),
+                input.value_offsets().as_ptr()
+            );
+            assert_ne!(
+                strings.nulls().unwrap().buffer().as_ptr(),
+                input.nulls().unwrap().buffer().as_ptr()
+            );
+            // The copies are compact and hold the same rows, rebased to the slice's bytes.
+            let offsets = input.value_offsets();
+            let bytes = &input.value_data()[offsets[0] as usize..offsets[input.len()] as usize];
+            assert_eq!(strings.value_data(), bytes);
+            assert!(strings.values().capacity() < bytes.len() + 128);
+            assert_eq!(strings.value_offsets()[0], 0);
+            assert!(strings.offsets().lengths().eq(input.offsets().lengths()));
+            assert_eq!(strings.nulls(), input.nulls());
+            assert_eq!(strings.value(0).as_bytes(), payload);
+            assert!(strings.is_null(3));
+        }
+
+        let no_nulls = BinaryArray::from(vec![payload.as_slice(); 8]);
+        let result = cast_binary_to_string::<i32>(&no_nulls, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), no_nulls.value(0).as_ptr());
+        assert!(strings.nulls().is_none());
+        assert_eq!(strings.value_offsets(), no_nulls.value_offsets());
+        assert_eq!(strings.value(7).as_bytes(), payload);
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_invalid_bytes_under_null_fall_back() {
+        use arrow::buffer::{Buffer, NullBuffer};
+
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+
+        let under_null = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 3, 4, 6].into()),
+            Buffer::from(b"abc\xff\xc3\xa9".as_slice()),
+            Some(NullBuffer::from(vec![true, false, true])),
+        );
+        let result = cast_binary_to_string::<i32>(&under_null, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 3);
+        assert_eq!(strings.value(0), "abc");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "é");
+
+        // An offset that splits a code point turns both halves into U+FFFD.
+        let split = BinaryArray::from(vec![b"\xc3".as_slice(), b"\xa9".as_slice()]);
+        let result = cast_binary_to_string::<i32>(&split, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "\u{FFFD}");
+        assert_eq!(strings.value(1), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_slice_checks_only_its_rows() {
+        use arrow::buffer::NullBuffer;
+
+        let cast_options = scan_cast_options();
+        // `\xff`, `ab`, null, `cé` and `\xff`, in a value buffer exactly as large as its bytes.
+        let parent = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 1, 3, 3, 6, 7].into()),
+            Buffer::from_vec(b"\xffabc\xc3\xa9\xff".to_vec()),
+            Some(NullBuffer::from(vec![true, true, false, true, true])),
+        );
+
+        let valid = parent.slice(1, 3);
+        let result = cast_binary_to_string::<i32>(&valid, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), valid.value(0).as_ptr());
+        assert_eq!(strings.value_data(), "abcé".as_bytes());
+        assert_eq!(strings.value_offsets(), [0, 2, 2, 5]);
+        assert_eq!(strings.nulls(), valid.nulls());
+        assert_eq!(strings.value(0), "ab");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "cé");
+
+        // In a slice with an invalid row, the rows before it are unchanged and it becomes U+FFFD.
+        let invalid = parent.slice(1, 4);
+        let result = cast_binary_to_string::<i32>(&invalid, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "ab");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "cé");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+
+        // An offset inside a slice that splits a code point turns both halves into U+FFFD.
+        let split = BinaryArray::from(vec![
+            b"\xff".as_slice(),
+            b"\xc3".as_slice(),
+            b"\xa9".as_slice(),
+        ])
+        .slice(1, 2);
+        let result = cast_binary_to_string::<i32>(&split, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "\u{FFFD}");
+        assert_eq!(strings.value(1), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_small_slice_gets_compact_copy() {
+        use arrow::buffer::MutableBuffer;
+
+        let cast_options = scan_cast_options();
+        let payload = [b'a'; 1024];
+        let parent = BinaryArray::from(vec![payload.as_slice(); 64]);
+
+        // The slice's bytes fill an eighth of the allocation it shares, so they are copied.
+        let small = parent.slice(16, 8);
+        let result = cast_binary_to_string::<i32>(&small, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), small.value(0).as_ptr());
+        assert_eq!(strings.value_data().len(), 8 * payload.len());
+        assert!(strings.values().capacity() < 2 * 8 * payload.len());
+        assert_eq!(strings.value_offsets()[0], 0);
+        assert!((0..8).all(|i| strings.value(i).as_bytes() == payload));
+
+        // The first slice's offsets need no rebasing, but they fill little of the parent's
+        // offsets allocation, so they are rebuilt as well.
+        let first = parent.slice(0, 8);
+        let result = cast_binary_to_string::<i32>(&first, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), first.value(0).as_ptr());
+        assert_ne!(
+            strings.value_offsets().as_ptr(),
+            first.value_offsets().as_ptr()
+        );
+        assert_eq!(strings.value_offsets(), first.value_offsets());
+
+        // An unsliced array whose value buffer is oversized keeps its offsets.
+        let mut oversized = MutableBuffer::with_capacity(8 * payload.len());
+        oversized.extend_from_slice(&payload);
+        let unsliced = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 1024].into()),
+            oversized.into(),
+            None,
+        );
+        let result = cast_binary_to_string::<i32>(&unsliced, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), unsliced.value(0).as_ptr());
+        assert_eq!(
+            strings.value_offsets().as_ptr(),
+            unsliced.value_offsets().as_ptr()
+        );
+        assert_eq!(strings.value(0).as_bytes(), payload);
+
+        // A slice whose bytes fill at least half of it still reuses the buffer.
+        let large = parent.slice(16, 40);
+        let result = cast_binary_to_string::<i32>(&large, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), large.value(0).as_ptr());
+        assert_eq!(strings.value_data().len(), 40 * payload.len());
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_small_slice_gets_compact_nulls() {
+        let cast_options = scan_cast_options();
+        // One null row in every eight, like a nullable grouped key that is emitted in slices.
+        let parent = BinaryArray::from_opt_vec(
+            (0..4096)
+                .map(|i| (i % 8 != 3).then_some(b"ab".as_slice()))
+                .collect(),
+        );
+        let parent_nulls = parent.nulls().unwrap().buffer();
+
+        // The slice's bits fill a thirty-second of the parent's bitmap, so they are copied,
+        // whether or not the slice starts on a byte boundary.
+        for offset in [1024, 1027] {
+            let small = parent.slice(offset, 128);
+            let result = cast_binary_to_string::<i32>(&small, &cast_options).unwrap();
+            let strings = result.as_string::<i32>();
+            let nulls = strings.nulls().unwrap();
+            assert_ne!(nulls.buffer().as_ptr(), parent_nulls.as_ptr());
+            assert!(2 * nulls.buffer().capacity() < parent_nulls.capacity());
+            assert_eq!(strings.nulls(), small.nulls());
+            assert_eq!(strings.null_count(), 16);
+        }
+
+        // A slice whose bits fill at least half of the bitmap shares it.
+        let large = parent.slice(1024, 3072);
+        let result = cast_binary_to_string::<i32>(&large, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(
+            strings.nulls().unwrap().buffer().as_ptr(),
+            large.nulls().unwrap().buffer().as_ptr()
+        );
+        assert_eq!(strings.nulls(), large.nulls());
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_mostly_null_copies_live_rows() {
+        use arrow::buffer::NullBuffer;
+
+        let cast_options = scan_cast_options();
+        let payload = [b'a'; 1024];
+        let values = BinaryArray::from(vec![payload.as_slice(); 64]);
+        let with_nulls = |live: &dyn Fn(usize) -> bool| {
+            let nulls = NullBuffer::from((0..64).map(live).collect::<Vec<_>>());
+            BinaryArray::new(
+                values.offsets().clone(),
+                values.values().clone(),
+                Some(nulls),
+            )
+            .slice(16, 32)
+        };
+
+        // Nulls hide most of the slice's bytes: only the two live rows are copied.
+        let mostly_null = with_nulls(&|i| i == 20 || i == 40);
+        let result = cast_binary_to_string::<i32>(&mostly_null, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), mostly_null.value(0).as_ptr());
+        assert_eq!(strings.value_data().len(), 2 * payload.len());
+        assert!(strings.values().capacity() < 4 * payload.len());
+        assert_eq!(strings.null_count(), 30);
+        assert_eq!(strings.value(4).as_bytes(), payload);
+        assert_eq!(strings.value(24).as_bytes(), payload);
+
+        // Nulls hide less than half: the slice's bytes are checked and reused.
+        let mostly_live = with_nulls(&|i| i % 4 != 0);
+        let result = cast_binary_to_string::<i32>(&mostly_live, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), mostly_live.value(0).as_ptr());
+        assert_eq!(strings.nulls(), mostly_live.nulls());
+    }
+
+    /// One null per 128 short rows still takes the fast path, which counts the live bytes by
+    /// run of non-null rows rather than by row.
+    #[test]
+    fn test_cast_binary_to_string_sparse_nulls_share_buffer() {
+        let cast_options = scan_cast_options();
+        let rows: Vec<Option<&[u8]>> = (0..8192)
+            .map(|i| (i % 128 != 127).then_some(b"eightbyt".as_slice()))
+            .collect();
+        let input = BinaryArray::from(rows);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), input.value(0).as_ptr());
+        assert_eq!(strings.null_count(), 64);
+        assert_eq!(strings.value(126), "eightbyt");
+        assert!(strings.is_null(127));
+
+        // Null rows that span bytes count for nothing, run by run.
+        let hidden = BinaryArray::new(
+            input.offsets().clone(),
+            input.values().clone(),
+            Some(NullBuffer::from(
+                (0..8192).map(|i| i % 2 == 0).collect::<Vec<_>>(),
+            )),
+        );
+        let result = cast_binary_to_string::<i32>(&hidden, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), hidden.value(0).as_ptr());
+        assert_eq!(strings.null_count(), 4096);
+    }
+
+    /// The rows from the first ill-formed sequence on decode one at a time. The row that holds
+    /// it reuses its checked prefix, and a row that starts or ends inside a code point is decoded
+    /// whole; both match decoding each row on its own.
+    #[test]
+    fn test_cast_binary_to_string_row_decoding_matches_per_row_decoding() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let wide = "é".repeat(50_000).into_bytes();
+        let truncated: Vec<u8> = [wide.as_slice(), b"abc", &[0xE9]].concat();
+        let rows: Vec<Vec<u8>> = vec![
+            "é".as_bytes().to_vec(),
+            truncated,
+            b"ok".to_vec(),
+            vec![0xC3],
+            vec![0xA9, 0xFF, b'x'],
+            vec![0xFF],
+            "日本".as_bytes().to_vec(),
+        ];
+        // Rows 3 and 4 split a code point between them, so the span of all rows is valid up to
+        // row 1's truncated byte and row 3 starts on a boundary while row 4 does not.
+        for (first, last) in [(0, 7), (3, 7), (0, 4), (1, 2)] {
+            let input = BinaryArray::from_iter_values(rows[first..last].iter());
+            let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+            let strings = result.as_string::<i32>();
+            for (i, row) in rows[first..last].iter().enumerate() {
+                assert_eq!(
+                    strings.value(i),
+                    decode_utf8_spark_lossy(row),
+                    "rows {first}..{last}, row {i}"
+                );
+            }
+        }
+
+        // A slice whose first row is the one with the truncated byte reuses its checked prefix.
+        let input = BinaryArray::from_iter_values(rows.iter()).slice(1, 2);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), decode_utf8_spark_lossy(&rows[1]));
+        assert_eq!(strings.value(1), "ok");
+    }
+
+    /// A replacement that grows the builder's value buffer past its capacity doubles the
+    /// allocation. The result holds a compact copy instead.
+    #[test]
+    fn test_cast_binary_to_string_fallback_buffer_is_compact() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let payload = [b'a'; 64];
+        let mut rows = vec![payload.as_slice(); 8191];
+        let last = [b"aaaaaaaa".as_slice(), &[0xFF]].concat();
+        rows.push(last.as_slice());
+        let input = BinaryArray::from(rows);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        let len = strings.values().len();
+        assert_eq!(len, 8191 * 64 + 8 + 3);
+        assert!(
+            strings.values().capacity() < len + 128,
+            "capacity {} for {len} bytes",
+            strings.values().capacity()
+        );
+        assert_eq!(strings.value(0).as_bytes(), payload);
+        assert_eq!(strings.value(8191), "aaaaaaaa\u{fffd}");
+
+        // An ill-formed byte in the first row sizes the buffer for the worst case, which is
+        // then compacted as well.
+        let first = [&[0xFF], b"aaaaaaaa".as_slice()].concat();
+        let mut rows = vec![first.as_slice()];
+        rows.extend(std::iter::repeat_n(payload.as_slice(), 8191));
+        let input = BinaryArray::from(rows);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        let len = strings.values().len();
+        assert!(strings.values().capacity() < len + 128);
+        assert_eq!(strings.value(0), "\u{fffd}aaaaaaaa");
+    }
+
     #[test]
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
@@ -1256,7 +1781,7 @@ mod tests {
     #[test]
     fn test_cast_invalid_timezone() {
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone");
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
@@ -1282,7 +1807,7 @@ mod tests {
         let string_array = cast_array(
             c,
             &DataType::Utf8,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
         let string_array = string_array.as_string::<i32>();
@@ -1316,7 +1841,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {
@@ -1326,6 +1851,70 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    /// Struct min/max casts its input this way to relabel nullable fields as non-nullable,
+    /// so the values, including a UTC timestamp, must come through unchanged.
+    #[test]
+    fn test_cast_struct_relabels_nullable_fields_as_non_nullable() {
+        let ts_type =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+        let ts: ArrayRef = Arc::new(
+            PrimitiveArray::<TimestampMicrosecondType>::from(vec![-1, 0, 1]).with_timezone("UTC"),
+        );
+        let s: ArrayRef = Arc::new(StringArray::from(vec!["a", "中文", ""]));
+        let inner_from = Fields::from(vec![Field::new("s", DataType::Utf8, true)]);
+        let inner_to = Fields::from(vec![Field::new("s", DataType::Utf8, false)]);
+        let inner: ArrayRef = Arc::new(StructArray::new(inner_from.clone(), vec![s], None));
+        let from_fields = Fields::from(vec![
+            Field::new("ts", ts_type.clone(), true),
+            Field::new("inner", DataType::Struct(inner_from), true),
+        ]);
+        let to_fields = Fields::from(vec![
+            Field::new("ts", ts_type, false),
+            Field::new("inner", DataType::Struct(inner_to), false),
+        ]);
+        // The outer struct itself may be null.
+        let outer: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![ts, inner],
+            Some(vec![true, false, true].into()),
+        ));
+        let to_type = DataType::Struct(to_fields);
+
+        let result = cast_array(
+            Arc::clone(&outer),
+            &to_type,
+            &SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+        )
+        .unwrap();
+
+        assert_eq!(result.data_type(), &to_type);
+        assert_eq!(result.nulls(), outer.nulls());
+        let result = result.as_struct();
+        let original = outer.as_struct();
+        assert_eq!(result.column(0).as_ref(), original.column(0).as_ref());
+        assert_eq!(
+            result.column(1).as_struct().column(0).as_ref(),
+            original.column(1).as_struct().column(0).as_ref()
+        );
+    }
+
+    /// A null under a field relabeled as non-nullable must be an error, not a panic.
+    #[test]
+    fn test_cast_struct_to_non_nullable_field_with_null_returns_error() {
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
+        let from_fields = Fields::from(vec![Field::new("v", DataType::Int64, true)]);
+        let to_fields = Fields::from(vec![Field::new("v", DataType::Int64, false)]);
+        let array: ArrayRef = Arc::new(StructArray::new(from_fields, vec![values], None));
+
+        let result = cast_array(
+            array,
+            &DataType::Struct(to_fields),
+            &SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1354,496 +1943,10 @@ mod tests {
         let result = spark_cast(
             ColumnarValue::Array(outer),
             &DataType::Struct(to_fields),
-            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
         );
 
         assert!(result.is_err());
-    }
-
-    fn nested_date_cast_inputs(
-        days: Vec<i32>,
-        nulls: Option<NullBuffer>,
-    ) -> Vec<(ArrayRef, DataType)> {
-        let offsets = OffsetBuffer::new((0..=days.len() as i32).collect::<Vec<_>>().into());
-        let dates: ArrayRef = Arc::new(Date32Array::from(days));
-        let timestamp = DataType::Timestamp(TimeUnit::Microsecond, None);
-        let fields = Fields::from(vec![Field::new("d", DataType::Date32, false)]);
-        let entries_fields = Fields::from(vec![
-            Field::new("key", DataType::Date32, false),
-            Field::new("value", DataType::Date32, false),
-        ]);
-        vec![
-            (
-                Arc::new(StructArray::new(
-                    fields,
-                    vec![Arc::clone(&dates)],
-                    nulls.clone(),
-                )),
-                DataType::Struct(Fields::from(vec![Field::new(
-                    "d",
-                    timestamp.clone(),
-                    false,
-                )])),
-            ),
-            (
-                Arc::new(ListArray::new(
-                    Arc::new(Field::new("element", DataType::Date32, false)),
-                    offsets.clone(),
-                    Arc::clone(&dates),
-                    nulls.clone(),
-                )),
-                DataType::List(Arc::new(Field::new("element", timestamp.clone(), false))),
-            ),
-            (
-                Arc::new(MapArray::new(
-                    Arc::new(Field::new(
-                        "entries",
-                        DataType::Struct(entries_fields.clone()),
-                        false,
-                    )),
-                    offsets,
-                    StructArray::new(entries_fields, vec![Arc::clone(&dates), dates], None),
-                    nulls,
-                    false,
-                )),
-                DataType::Map(
-                    Arc::new(Field::new(
-                        "entries",
-                        DataType::Struct(Fields::from(vec![
-                            Field::new(
-                                "key",
-                                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                                false,
-                            ),
-                            Field::new("value", timestamp, false),
-                        ])),
-                        false,
-                    )),
-                    false,
-                ),
-            ),
-        ]
-    }
-
-    fn assert_nested_timestamp_values(array: &ArrayRef, expected: &[i64]) {
-        array.to_data().validate_full().unwrap();
-        let values = match array.data_type() {
-            DataType::Struct(_) => array.as_struct().column(0),
-            DataType::List(_) => array.as_list::<i32>().values(),
-            DataType::Map(_, _) => {
-                let keys = array
-                    .as_map()
-                    .keys()
-                    .as_primitive::<TimestampMicrosecondType>();
-                assert_eq!(keys.null_count(), 0);
-                assert_eq!(keys.values().as_ref(), expected);
-                array.as_map().values()
-            }
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            values
-                .as_primitive::<TimestampMicrosecondType>()
-                .iter()
-                .flatten()
-                .collect::<Vec<_>>(),
-            expected,
-        );
-    }
-
-    #[test]
-    fn test_cast_nested_dates_ignores_null_parent_values() {
-        // Non-nullable children contain overflowing dates beneath null parent rows, as IF can
-        // produce without changing its child buffers. Map keys must remain non-nullable.
-        for (array, to_type) in nested_date_cast_inputs(
-            vec![i32::MAX, 0, i32::MIN, 1],
-            Some(NullBuffer::from(vec![false, true, false, true])),
-        ) {
-            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                let options = SparkCastOptions::new(mode, "UTC", false);
-                let casted = cast_array(Arc::clone(&array), &to_type, &options).unwrap();
-                assert_eq!(casted.data_type(), &to_type);
-                assert_eq!(casted.len(), 4);
-                assert!(casted.is_null(0) && casted.is_null(2));
-                assert!(!casted.is_null(1) && !casted.is_null(3));
-                assert_nested_timestamp_values(&casted, &[0, 86_400_000_000]);
-
-                let all_null = cast_array(array.slice(0, 1), &to_type, &options).unwrap();
-                assert_eq!(all_null.len(), 1);
-                assert!(all_null.is_null(0));
-                assert_nested_timestamp_values(&all_null, &[]);
-            }
-        }
-    }
-
-    #[test]
-    fn test_cast_nested_dates_ignores_values_outside_slice() {
-        for (array, to_type) in nested_date_cast_inputs(vec![i32::MAX, 0, 1, i32::MIN], None) {
-            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                let options = SparkCastOptions::new(mode, "UTC", false);
-                // Lists/maps keep their original child buffer even when the parent is sliced.
-                let casted = cast_array(array.slice(1, 2), &to_type, &options).unwrap();
-                assert_eq!(casted.len(), 2);
-                assert_eq!(casted.null_count(), 0);
-                assert_nested_timestamp_values(&casted, &[0, 86_400_000_000]);
-
-                let empty = cast_array(array.slice(1, 0), &to_type, &options).unwrap();
-                assert_eq!(empty.len(), 0);
-                assert_nested_timestamp_values(&empty, &[]);
-            }
-        }
-    }
-
-    #[test]
-    fn test_cast_nested_dates_still_checks_visible_overflow() {
-        for (array, to_type) in nested_date_cast_inputs(
-            vec![i32::MAX, i32::MAX, 0],
-            Some(NullBuffer::from(vec![false, true, true])),
-        ) {
-            for mode in [EvalMode::Legacy, EvalMode::Ansi] {
-                let error = cast_array(
-                    Arc::clone(&array),
-                    &to_type,
-                    &SparkCastOptions::new(mode, "UTC", false),
-                )
-                .unwrap_err();
-                assert!(error.to_string().contains("long overflow"));
-            }
-        }
-    }
-
-    #[test]
-    fn test_infallible_nested_casts_reuse_input_buffers() {
-        let values: ArrayRef = Arc::new(Int32Array::from(vec![i32::MIN, 42, i32::MAX, 0]));
-        let nulls = Some(NullBuffer::from(vec![true, false, true, true]));
-        let offsets = OffsetBuffer::new(vec![0, 1, 2, 3, 4].into());
-        let field = Arc::new(Field::new("value", DataType::Int32, false));
-        let wide_field = Arc::new(Field::new("value", DataType::Int64, false));
-        let entry_fields: Fields = vec![
-            Arc::new(Field::new("key", DataType::Int32, false)),
-            Arc::clone(&field),
-        ]
-        .into();
-        let wide_entry_fields: Fields =
-            vec![Arc::clone(&entry_fields[0]), Arc::clone(&wide_field)].into();
-        let struct_values: ArrayRef = Arc::new(StructArray::new(
-            vec![Arc::clone(&field)].into(),
-            vec![Arc::clone(&values)],
-            None,
-        ));
-        let inputs: Vec<(ArrayRef, DataType)> = vec![
-            (
-                Arc::new(StructArray::new(
-                    vec![Arc::clone(&field)].into(),
-                    vec![Arc::clone(&values)],
-                    nulls.clone(),
-                )),
-                DataType::Struct(vec![Arc::clone(&wide_field)].into()),
-            ),
-            (
-                Arc::new(ListArray::new(
-                    Arc::clone(&field),
-                    offsets.clone(),
-                    Arc::clone(&values),
-                    nulls.clone(),
-                )),
-                DataType::List(Arc::clone(&wide_field)),
-            ),
-            (
-                Arc::new(MapArray::new(
-                    Arc::new(Field::new(
-                        "entries",
-                        DataType::Struct(entry_fields.clone()),
-                        false,
-                    )),
-                    offsets.clone(),
-                    StructArray::new(entry_fields, vec![Arc::clone(&values), values], None),
-                    nulls.clone(),
-                    false,
-                )),
-                DataType::Map(
-                    Arc::new(Field::new(
-                        "entries",
-                        DataType::Struct(wide_entry_fields),
-                        false,
-                    )),
-                    false,
-                ),
-            ),
-            (
-                Arc::new(ListArray::new(
-                    Arc::new(Field::new("item", struct_values.data_type().clone(), false)),
-                    offsets,
-                    struct_values,
-                    nulls,
-                )),
-                DataType::List(Arc::new(Field::new(
-                    "item",
-                    DataType::Struct(vec![wide_field].into()),
-                    false,
-                ))),
-            ),
-        ];
-
-        for (array, to_type) in inputs {
-            let prepared = prepare_nested_cast_input(Arc::clone(&array), &to_type).unwrap();
-            assert!(
-                Arc::ptr_eq(&array, &prepared),
-                "unexpected copy for {to_type}"
-            );
-            let indices = UInt64Array::new(vec![0, 1, 2, 3].into(), array.nulls().cloned());
-            let normalized = take(array.as_ref(), &indices, None).unwrap();
-            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                let options = SparkCastOptions::new(mode, "UTC", false);
-                let actual = cast_array(Arc::clone(&array), &to_type, &options).unwrap();
-                let expected = cast_array(Arc::clone(&normalized), &to_type, &options).unwrap();
-                // Arrow equality compares visible values and validity, allowing unused child
-                // slots under a null parent to retain their original (legal) contents.
-                assert_eq!(actual.to_data(), expected.to_data());
-                assert_eq!(actual.nulls(), array.nulls());
-                actual.to_data().validate_full().unwrap();
-                if matches!(actual.data_type(), DataType::Map(_, _)) {
-                    assert!(Arc::ptr_eq(array.as_map().keys(), actual.as_map().keys()));
-                    assert_eq!(actual.as_map().keys().null_count(), 0);
-                }
-                for input in [array.slice(1, 2), array.slice(1, 0)] {
-                    let casted = cast_array(Arc::clone(&input), &to_type, &options).unwrap();
-                    casted.to_data().validate_full().unwrap();
-                    assert_eq!(casted.to_data(), actual.slice(1, input.len()).to_data());
-                    assert_eq!(casted.null_count(), input.null_count());
-                    // Arrow may omit the bitmap for an empty or entirely valid slice.
-                    if input.null_count() != 0 {
-                        assert_eq!(casted.nulls(), input.nulls());
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_infallible_cast_whitelist_keeps_checked_conversions() {
-        for from in [DataType::Int8, DataType::Int16, DataType::Int32] {
-            assert!(is_infallible_fixed_width_cast(&from, &DataType::Int64));
-        }
-        for fixed in [
-            DataType::Int32,
-            DataType::Date32,
-            DataType::Boolean,
-            DataType::Null,
-        ] {
-            assert!(is_infallible_fixed_width_cast(&fixed, &fixed));
-        }
-        for variable in [
-            DataType::Utf8,
-            DataType::Binary,
-            DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
-            DataType::Struct(vec![Field::new("text", DataType::Utf8, false)].into()),
-        ] {
-            assert!(!is_infallible_fixed_width_cast(&variable, &variable));
-        }
-        for (from, to) in [
-            (DataType::Int64, DataType::Int32),
-            (DataType::Utf8, DataType::Int32),
-            (
-                DataType::Date32,
-                DataType::Timestamp(TimeUnit::Microsecond, None),
-            ),
-        ] {
-            assert!(!is_infallible_fixed_width_cast(&from, &to));
-            let from = DataType::Struct(
-                vec![
-                    Field::new("widen", DataType::Int32, false),
-                    Field::new("checked", from, false),
-                ]
-                .into(),
-            );
-            let to = DataType::Struct(
-                vec![
-                    Field::new("widen", DataType::Int64, false),
-                    Field::new("checked", to, false),
-                ]
-                .into(),
-            );
-            assert!(!is_infallible_fixed_width_cast(&from, &to));
-        }
-    }
-
-    #[test]
-    fn test_infallible_cast_still_compacts_a_large_hidden_list() {
-        let array: ArrayRef = Arc::new(ListArray::new(
-            Arc::new(Field::new("item", DataType::Int32, false)),
-            OffsetBuffer::new(vec![0, 1, 98, 99, 100].into()),
-            Arc::new(Int32Array::from_iter_values(0..100)),
-            Some(NullBuffer::from(vec![true, false, true, true])),
-        ));
-        let target = DataType::List(Arc::new(Field::new("item", DataType::Int64, false)));
-        let prepared = prepare_nested_cast_input(Arc::clone(&array), &target).unwrap();
-        assert!(!Arc::ptr_eq(&array, &prepared));
-        assert_eq!(prepared.as_list::<i32>().values().len(), 3);
-        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-            let result = cast_array(
-                Arc::clone(&array),
-                &target,
-                &SparkCastOptions::new(mode, "UTC", false),
-            )
-            .unwrap();
-            assert_eq!(result.as_list::<i32>().values().len(), 3);
-            assert_eq!(result.nulls(), array.nulls());
-            result.to_data().validate_full().unwrap();
-        }
-    }
-
-    #[test]
-    fn test_infallible_cast_preserves_compaction_through_variable_width_children() {
-        // Each immediate child has one slot, but a null outer parent hides most leaf values.
-        let hidden_values = 65_536;
-        let values: ArrayRef = Arc::new(ListArray::new(
-            Arc::new(Field::new("item", DataType::Int32, false)),
-            OffsetBuffer::new(
-                vec![
-                    0,
-                    1,
-                    hidden_values + 1,
-                    hidden_values + 2,
-                    hidden_values + 3,
-                ]
-                .into(),
-            ),
-            Arc::new(Int32Array::from_iter_values(0..hidden_values + 3)),
-            None,
-        ));
-        let target_values = DataType::List(Arc::new(Field::new("item", DataType::Int64, false)));
-        let nulls = Some(NullBuffer::from(vec![true, false, true, true]));
-        let offsets = OffsetBuffer::new(vec![0, 1, 2, 3, 4].into());
-        let entries = StructArray::new(
-            vec![
-                Field::new("key", DataType::Int32, false),
-                Field::new("value", values.data_type().clone(), false),
-            ]
-            .into(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..4)),
-                Arc::clone(&values),
-            ],
-            None,
-        );
-        let inputs: Vec<(ArrayRef, DataType)> = vec![
-            (
-                Arc::new(StructArray::new(
-                    vec![Field::new("value", values.data_type().clone(), false)].into(),
-                    vec![Arc::clone(&values)],
-                    nulls.clone(),
-                )),
-                DataType::Struct(vec![Field::new("value", target_values.clone(), false)].into()),
-            ),
-            (
-                Arc::new(ListArray::new(
-                    Arc::new(Field::new("item", values.data_type().clone(), false)),
-                    offsets.clone(),
-                    values,
-                    nulls.clone(),
-                )),
-                DataType::List(Arc::new(Field::new("item", target_values.clone(), false))),
-            ),
-            (
-                Arc::new(MapArray::new(
-                    Arc::new(Field::new("entries", entries.data_type().clone(), false)),
-                    offsets,
-                    entries,
-                    nulls,
-                    false,
-                )),
-                DataType::Map(
-                    Arc::new(Field::new(
-                        "entries",
-                        DataType::Struct(
-                            vec![
-                                Field::new("key", DataType::Int32, false),
-                                Field::new("value", target_values, false),
-                            ]
-                            .into(),
-                        ),
-                        false,
-                    )),
-                    false,
-                ),
-            ),
-        ];
-
-        fn leaf_values(array: &ArrayRef) -> &ArrayRef {
-            let lists = match array.data_type() {
-                DataType::Struct(_) => array.as_struct().column(0),
-                DataType::List(_) => array.as_list::<i32>().values(),
-                DataType::Map(_, _) => array.as_map().values(),
-                _ => unreachable!(),
-            };
-            lists.as_list::<i32>().values()
-        }
-
-        for (array, target) in inputs {
-            let prepared = prepare_nested_cast_input(Arc::clone(&array), &target).unwrap();
-            assert!(!Arc::ptr_eq(&array, &prepared), "{target}");
-            assert_eq!(leaf_values(&prepared).len(), 3, "{target}");
-            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                let options = SparkCastOptions::new(mode, "UTC", false);
-                let result = cast_array(Arc::clone(&array), &target, &options).unwrap();
-                let expected = cast_array(Arc::clone(&prepared), &target, &options).unwrap();
-                assert_eq!(result.to_data(), expected.to_data());
-                assert_eq!(result.nulls(), array.nulls());
-                assert_eq!(
-                    leaf_values(&result)
-                        .as_primitive::<Int64Type>()
-                        .values()
-                        .as_ref(),
-                    &[
-                        0,
-                        i64::from(hidden_values + 1),
-                        i64::from(hidden_values + 2)
-                    ]
-                );
-                result.to_data().validate_full().unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn test_infallible_cast_preserves_compaction_of_variable_width_identity_values() {
-        // An unchanged string child needs no conversion, but reusing it would retain the
-        // large hidden payload in the output of the changed struct cast.
-        let hidden = "x".repeat(65_536);
-        let array: ArrayRef = Arc::new(StructArray::new(
-            vec![
-                Field::new("widen", DataType::Int32, false),
-                Field::new("unchanged", DataType::Utf8, false),
-            ]
-            .into(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..4)),
-                Arc::new(StringArray::from(vec!["a", hidden.as_str(), "b", "c"])),
-            ],
-            Some(NullBuffer::from(vec![true, false, true, true])),
-        ));
-        let target = DataType::Struct(
-            vec![
-                Field::new("widen", DataType::Int64, false),
-                Field::new("unchanged", DataType::Utf8, false),
-            ]
-            .into(),
-        );
-        let prepared = prepare_nested_cast_input(Arc::clone(&array), &target).unwrap();
-        assert!(!Arc::ptr_eq(&array, &prepared));
-        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-            let options = SparkCastOptions::new(mode, "UTC", false);
-            let result = cast_array(Arc::clone(&array), &target, &options).unwrap();
-            let expected = cast_array(Arc::clone(&prepared), &target, &options).unwrap();
-            assert_eq!(result.to_data(), expected.to_data());
-            assert_eq!(result.nulls(), array.nulls());
-            assert_eq!(
-                result.as_struct().column(1).as_string::<i32>().value_data(),
-                b"abc"
-            );
-            result.to_data().validate_full().unwrap();
-        }
     }
 
     #[test]
@@ -1865,7 +1968,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {
@@ -1891,11 +1994,9 @@ mod tests {
             Arc::new(values_array),
             None,
         ));
-        let string_array = cast_array_to_string(
-            &list_array,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-        )
-        .unwrap();
+        let string_array =
+            cast_array_to_string(&list_array, &SparkCastOptions::new(EvalMode::Legacy, "UTC"))
+                .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[a, b, c]"#, string_array.value(0));
         assert_eq!(r#"[a, null]"#, string_array.value(1));
@@ -1914,16 +2015,47 @@ mod tests {
             Arc::new(values_array),
             None,
         ));
-        let string_array = cast_array_to_string(
-            &list_array,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-        )
-        .unwrap();
+        let string_array =
+            cast_array_to_string(&list_array, &SparkCastOptions::new(EvalMode::Legacy, "UTC"))
+                .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_sliced_array_with_null_rows_to_string() {
+        // A null row writes no bytes, so the rows after it must still start at the right offset,
+        // and a sliced list reads its values from a non-zero offset into the child array.
+        let list_array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(0)]),
+            Some(vec![Some(1), None]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![Some(-2), Some(3)]),
+        ]);
+        let sliced = list_array.slice(1, 5);
+        let string_array =
+            cast_array_to_string(&sliced, &SparkCastOptions::new(EvalMode::Legacy, "UTC")).unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(string_array.len(), 5);
+        assert_eq!(string_array.value(0), "[1, null]");
+        assert!(string_array.is_null(1));
+        assert_eq!(string_array.value(2), "[]");
+        assert!(string_array.is_null(3));
+        assert_eq!(string_array.value(4), "[-2, 3]");
+    }
+
+    #[test]
+    fn test_write_i8_matches_signed_display_for_every_byte() {
+        for byte in 0..=u8::MAX {
+            let mut out = String::new();
+            write_i8(&mut out, byte).unwrap();
+            assert_eq!(out, (byte as i8).to_string(), "byte {byte}");
+        }
     }
 
     #[test]
@@ -1941,7 +2073,7 @@ mod tests {
         let to_array = cast_array(
             from_array,
             &to_type,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
 
@@ -1955,7 +2087,75 @@ mod tests {
         assert!(values.iter().all(|value| value.is_none()));
     }
     fn legacy_opts() -> SparkCastOptions {
-        SparkCastOptions::new(EvalMode::Legacy, "UTC", false)
+        SparkCastOptions::new(EvalMode::Legacy, "UTC")
+    }
+
+    #[test]
+    fn nested_timestamp_cast_checks_only_visible_dates() {
+        use arrow::array::{Date32Array, TimestampMicrosecondArray};
+
+        // One child per row, even when the struct/list/map is null.
+        fn containers(values: ArrayRef) -> [ArrayRef; 3] {
+            let keys = Arc::new(Field::new("key", values.data_type().clone(), false));
+            let field = Arc::new(Field::new("value", values.data_type().clone(), false));
+            let offsets = OffsetBuffer::new(vec![0, 1, 2, 3, 4, 5].into());
+            let nulls = Some(NullBuffer::from(vec![true, true, false, true, true]));
+            let entries = StructArray::new(
+                vec![keys, Arc::clone(&field)].into(),
+                vec![Arc::clone(&values), Arc::clone(&values)],
+                None,
+            );
+            [
+                Arc::new(StructArray::new(
+                    vec![Arc::clone(&field)].into(),
+                    vec![Arc::clone(&values)],
+                    nulls.clone(),
+                )),
+                Arc::new(ListArray::new(
+                    field,
+                    offsets.clone(),
+                    values,
+                    nulls.clone(),
+                )),
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+                    offsets,
+                    entries,
+                    nulls,
+                    false,
+                )),
+            ]
+        }
+
+        let dates = containers(Arc::new(Date32Array::from(vec![
+            i32::MIN,
+            0,
+            i32::MAX,
+            1,
+            i32::MAX,
+        ])));
+        let timestamps = containers(Arc::new(TimestampMicrosecondArray::from(vec![
+            0,
+            0,
+            0,
+            86_400_000_000,
+            0,
+        ])));
+        for (dates, expected) in dates.into_iter().zip(timestamps) {
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let options = SparkCastOptions::new(mode, "UTC");
+                let cast = |input| cast_array(input, expected.data_type(), &options);
+                for (start, len) in [(1, 3), (1, 1), (2, 1), (2, 0)] {
+                    let actual = cast(dates.slice(start, len)).unwrap();
+                    actual.to_data().validate_full().unwrap();
+                    assert_eq!(actual.to_data(), expected.slice(start, len).to_data());
+                }
+                if mode != EvalMode::Try {
+                    let error = cast(dates.slice(1, 4)).unwrap_err();
+                    assert!(error.to_string().contains("long overflow"));
+                }
+            }
+        }
     }
 
     /// Build a `Map<Utf8, Int32>` MapArray (Parquet-style "key_value" field names).
@@ -2119,7 +2319,7 @@ mod tests {
         let casted = cast_array(
             map_array,
             &to_type,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
 

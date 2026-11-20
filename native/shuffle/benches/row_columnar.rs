@@ -19,11 +19,14 @@
 //!
 //! Measures `process_sorted_row_partition()` performance for converting Spark
 //! UnsafeRow data to Arrow arrays, covering primitive, struct (flat/nested),
-//! list, and map types.
+//! list, and map types, and compares it with `process_sorted_partitions()` on
+//! one sorted spill of the sort-based writer.
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use datafusion_comet_shuffle::spark_unsafe::row::{process_sorted_row_partition, SparkUnsafeRow};
+use datafusion_comet_shuffle::spark_unsafe::row::{
+    process_sorted_partitions, process_sorted_row_partition, SparkUnsafeRow,
+};
 use datafusion_comet_shuffle::spark_unsafe::unsafe_object::SparkUnsafeObject;
 use datafusion_comet_shuffle::CompressionCodec;
 use std::sync::Arc;
@@ -260,6 +263,7 @@ fn run_benchmark(
                 0,
                 None,
                 &CompressionCodec::Zstd(1),
+                false,
             )
             .unwrap();
         });
@@ -377,6 +381,184 @@ fn benchmark_map_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+// ─── Sorted spill ───────────────────────────────────────────────────────────
+
+/// Rows in one spill of the sort-based JVM shuffle writer.
+const SPILL_ROWS: usize = 100_000;
+
+/// Defaults of `spark.comet.shuffle.jvm.batchSize` and
+/// `spark.comet.shuffle.jvm.preferDictionary.ratio`.
+const JVM_SHUFFLE_BATCH_SIZE: usize = 8192;
+const JVM_SHUFFLE_PREFER_DICTIONARY_RATIO: f64 = 10.0;
+
+/// Spark's default shuffle checksum, `spark.shuffle.checksum.algorithm=ADLER32`.
+const ADLER32: i32 = 1;
+
+/// Bytes Spark's sorter stores before each record for its length (`UnsafeAlignedOffset`).
+const UAO_SIZE: usize = 4;
+
+/// Bytes `UnsafeRowSerializer` writes before each row for its size.
+const SERIALIZED_ROW_SIZE_BYTES: usize = 4;
+
+fn spill_schema() -> Vec<ArrowDataType> {
+    vec![
+        ArrowDataType::Int64,
+        ArrowDataType::Int32,
+        ArrowDataType::Float64,
+        ArrowDataType::Utf8,
+        ArrowDataType::Date32,
+    ]
+}
+
+/// One spill of `SPILL_ROWS` rows of `spill_schema`, laid out in a single page the way
+/// `SpillSorter.insertRecord` stores records, and sorted by partition.
+struct SortedSpill {
+    /// Keeps the rows alive: `u64` elements keep every row 8-byte aligned, as in a Spark page.
+    page: Vec<u64>,
+    /// The packed record pointers, sorted by partition, as the sorter holds them.
+    record_pointers: Vec<i64>,
+    /// Address and size of each row, grouped by partition: the arrays the JVM builds for each
+    /// call when it writes the spill one partition at a time.
+    partitions: Vec<(Vec<i64>, Vec<i32>)>,
+}
+
+fn build_sorted_spill(num_partitions: usize) -> SortedSpill {
+    let schema = spill_schema();
+    let bitset = SparkUnsafeRow::get_row_bitset_width(schema.len());
+    let fixed = bitset + schema.len() * UNSAFE_ROW_POINTER_SIZE;
+
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut records: Vec<(usize, usize, usize)> = Vec::with_capacity(SPILL_ROWS);
+    for i in 0..SPILL_ROWS {
+        // A low-cardinality string column, padded to a word as UnsafeRow pads variable data.
+        let s = format!("status-{:03}", i % 100);
+        let row_size = fixed + s.len().div_ceil(8) * 8;
+        let mut row = vec![0u8; row_size];
+        let slot = |field: usize| bitset + field * UNSAFE_ROW_POINTER_SIZE;
+        row[slot(0)..slot(0) + 8].copy_from_slice(&(i as i64).to_le_bytes());
+        row[slot(1)..slot(1) + 4].copy_from_slice(&((i % 1000) as i32).to_le_bytes());
+        row[slot(2)..slot(2) + 8].copy_from_slice(&(i as f64 * 0.5).to_le_bytes());
+        write_pointer(&mut row, slot(3), fixed, s.len());
+        row[fixed..fixed + s.len()].copy_from_slice(s.as_bytes());
+        row[slot(4)..slot(4) + 4].copy_from_slice(&((i % 20000) as i32).to_le_bytes());
+
+        let record_offset = bytes.len();
+        let record_len = SERIALIZED_ROW_SIZE_BYTES + row_size;
+        bytes.extend_from_slice(&(record_len as u32).to_ne_bytes());
+        bytes.extend_from_slice(&(row_size as u32).to_be_bytes());
+        bytes.extend_from_slice(&row);
+
+        // Spread rows over the partitions the way a hash partitioner would.
+        let partition =
+            ((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % num_partitions;
+        records.push((partition, record_offset, row_size));
+    }
+    // A stable sort keeps each partition's rows in page order, like sorting packed pointers.
+    records.sort_by_key(|&(partition, _, _)| partition);
+
+    let mut page = vec![0u64; bytes.len().div_ceil(8)];
+    // SAFETY: `page` holds at least `bytes.len()` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), page.as_mut_ptr() as *mut u8, bytes.len());
+    }
+    let page_addr = page.as_ptr() as i64;
+
+    let partitions = records
+        .chunk_by(|a, b| a.0 == b.0)
+        .map(|run| {
+            run.iter()
+                .map(|&(_, record_offset, row_size)| {
+                    let row_offset = record_offset + UAO_SIZE + SERIALIZED_ROW_SIZE_BYTES;
+                    (page_addr + row_offset as i64, row_size as i32)
+                })
+                .unzip()
+        })
+        .collect();
+    // Every record is in page 0, so a pointer is the partition id and the offset in the page.
+    let record_pointers = records
+        .iter()
+        .map(|&(partition, record_offset, _)| ((partition as i64) << 40) | record_offset as i64)
+        .collect();
+
+    SortedSpill {
+        page,
+        record_pointers,
+        partitions,
+    }
+}
+
+/// Writes one sorted spill the two ways the JVM shuffle writers call native code, at partition
+/// counts where a partition gets 1000, 100 and 10 of the spill's rows: one call per partition,
+/// with the partition's row addresses and sizes, and one call for the whole spill, with the
+/// sorter's packed record pointers.
+fn benchmark_sorted_spill(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sorted_spill");
+    let schema = spill_schema();
+    let codec = CompressionCodec::Lz4Frame;
+
+    for num_partitions in [100, 1000, 10000] {
+        let spill = build_sorted_spill(num_partitions);
+
+        group.bench_function(
+            BenchmarkId::new("per_partition", format!("partitions_{num_partitions}")),
+            |b| {
+                b.iter(|| {
+                    let tmp = Builder::new().tempfile().unwrap();
+                    let path = tmp.path().to_str().unwrap().to_string();
+                    for (addrs, sizes) in &spill.partitions {
+                        process_sorted_row_partition(
+                            addrs.len(),
+                            JVM_SHUFFLE_BATCH_SIZE,
+                            addrs.as_ptr() as *mut i64,
+                            sizes.as_ptr() as *mut i32,
+                            &schema,
+                            path.clone(),
+                            JVM_SHUFFLE_PREFER_DICTIONARY_RATIO,
+                            true,
+                            ADLER32,
+                            None,
+                            &codec,
+                            true,
+                        )
+                        .unwrap();
+                    }
+                });
+            },
+        );
+
+        let page_addresses = [spill.page.as_ptr() as i64];
+        group.bench_function(
+            BenchmarkId::new("per_spill", format!("partitions_{num_partitions}")),
+            |b| {
+                b.iter(|| {
+                    let tmp = Builder::new().tempfile().unwrap();
+                    let mut checksums = vec![i64::MIN; num_partitions];
+                    let mut lengths = vec![0_i64; num_partitions];
+                    unsafe {
+                        process_sorted_partitions(
+                            &spill.record_pointers,
+                            &page_addresses,
+                            UAO_SIZE,
+                            &schema,
+                            tmp.path().to_str().unwrap(),
+                            JVM_SHUFFLE_PREFER_DICTIONARY_RATIO,
+                            JVM_SHUFFLE_BATCH_SIZE,
+                            Some(ADLER32),
+                            &mut checksums,
+                            &mut lengths,
+                            &codec,
+                            true,
+                        )
+                    }
+                    .unwrap();
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn config() -> Criterion {
     Criterion::default()
 }
@@ -387,6 +569,7 @@ criterion_group! {
     targets = benchmark_primitive_columns,
               benchmark_struct_conversion,
               benchmark_list_conversion,
-              benchmark_map_conversion
+              benchmark_map_conversion,
+              benchmark_sorted_spill
 }
 criterion_main!(benches);

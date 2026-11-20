@@ -77,8 +77,14 @@ pub(crate) fn normalize_object_store_url(
     url_str: &str,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<NormalizedObjectStoreUrl, ExecutionError> {
-    let url = Url::parse(url_str)
-        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url_str}: {e}")))?;
+    let url = Url::parse(url_str).map_err(|e| {
+        // `url_str` may carry credentials; `ParseError` does not quote it.
+        let message = match scheme_of_unparsed(url_str) {
+            Some(scheme) => format!("Error parsing {scheme} URL: {e}"),
+            None => format!("Error parsing URL: {e}"),
+        };
+        ExecutionError::GeneralError(message)
+    })?;
     if is_hdfs_scheme(&url, object_store_configs) {
         return Ok(NormalizedObjectStoreUrl { url, is_hdfs: true });
     }
@@ -95,11 +101,22 @@ pub(crate) fn normalize_object_store_url(
     })
 }
 
+/// The text before `://` in a URL that failed to parse, if it is a valid scheme.
+fn scheme_of_unparsed(url_str: &str) -> Option<&str> {
+    let (scheme, _) = url_str.split_once("://")?;
+    let mut chars = scheme.chars();
+    let is_scheme = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    is_scheme.then_some(scheme)
+}
+
 /// True if `scheme` is a configured s3-compliant alias (`fs.comet.s3Compliant.schemes`; empty or
 /// unset means none). These route to `AmazonS3` but are not recognized by
 /// `ObjectStoreScheme::parse`. `s3a` is excluded -- object_store knows it and callers special-case
-/// it. Shared by the Parquet normalizer above and the Iceberg storage-factory gate
-/// (`iceberg_common::storage_factory_for`) so both admit the same schemes.
+/// it. Case-insensitive, which is safe for the Parquet normalizer above because it rewrites the
+/// alias to `s3://` before anything opens the path. The Iceberg storage-factory gate opens the
+/// recorded location as written, so it wraps this in `iceberg_common::is_iceberg_alias_scheme`,
+/// which additionally requires the scheme to be lowercase.
 pub(crate) fn is_s3_compliant_alias_scheme(
     scheme: &str,
     object_store_configs: &HashMap<String, String>,
@@ -299,6 +316,28 @@ mod tests {
             schemes.to_string(),
         );
         configs
+    }
+
+    #[test]
+    fn parse_errors_name_only_a_valid_scheme() {
+        let empty = HashMap::new();
+        let error = |url: &str| match normalize_object_store_url(url, &empty) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("{url} parsed"),
+        };
+        let err = error("s3a://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER");
+        assert!(
+            err.contains("Error parsing s3a URL: invalid port number"),
+            "{err}"
+        );
+        assert!(!err.contains("alice") && !err.contains("SECRET"), "{err}");
+        // A leading digit, then an '@': neither is a scheme, so none of the input is echoed.
+        let err = error("1alice:SECRET@host://x");
+        assert!(err.contains("Error parsing URL: "), "{err}");
+        assert!(!err.contains("alice") && !err.contains("SECRET"), "{err}");
+        let err = error("alice@host://x");
+        assert!(err.contains("Error parsing URL: "), "{err}");
+        assert!(!err.contains("alice") && !err.contains("host"), "{err}");
     }
 
     #[test]

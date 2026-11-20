@@ -29,6 +29,15 @@ object CometIf extends CometExpressionSerde[If] {
   override def convert(
       expr: If,
       inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    // Spark's null guard around a Scala UDF goes to the dispatcher with the UDF when it can.
+    CometScalaUDF
+      .emitNullGuardDispatch(expr, inputs, binding)
+      .orElse(convertNative(expr, inputs, binding))
+
+  private def convertNative(
+      expr: If,
+      inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val predicateExpr = exprToProtoInternal(expr.predicate, inputs, binding)
     val trueExpr = exprToProtoInternal(expr.trueValue, inputs, binding)

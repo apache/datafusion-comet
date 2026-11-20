@@ -44,7 +44,11 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
   override def getSupportLevel(expr: Literal): SupportLevel = {
     val serializable = expr.dataType match {
       // A null literal carries only its type on the wire, so any type serializeDataType handles.
-      case _ if expr.value == null => supportedDataType(expr.dataType, allowComplex = true)
+      case _ if expr.value == null =>
+        supportedDataType(
+          expr.dataType,
+          allowComplex = true,
+          allowDuplicateStructFieldNames = false)
       case ArrayType(elementType, _) => listLiteralElementSupported(elementType)
       case dt => supportedDataType(dt)
     }
@@ -113,7 +117,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
 
         case arr: ArrayType =>
           val listLiteralBuilder: ListLiteral.Builder =
-            makeListLiteral(value.asInstanceOf[ArrayData].array, arr)
+            makeListLiteral(value.asInstanceOf[ArrayData].toArray[Any](arr.elementType), arr)
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
@@ -225,7 +229,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
         array.foreach(v => {
           val casted = v.asInstanceOf[ArrayData]
           listLiteralBuilder.addListValues(if (casted != null) {
-            makeListLiteral(casted.array, a)
+            makeListLiteral(casted.toArray[Any](a.elementType), a)
           } else ListLiteral.newBuilder())
           listLiteralBuilder.addNullMask(casted != null)
         })

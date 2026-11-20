@@ -66,6 +66,75 @@ class IcebergReflectionSuite extends AnyFunSuite {
     val metadata = IcebergReflection.getTableMetadata(table)
     assert(metadata.isDefined)
     assert(metadata.get.isInstanceOf[TableMetadata])
+    val extracted = extractScanMetadata(new MetadataScan(table, schema)).get
+    assert(extracted.nameMapping.isEmpty)
+    assert(extracted.fullTaskSchema.isDefined)
+    assert(extracted.prunedTaskSchema.isDefined)
+  }
+
+  private val scanSchema =
+    new Schema(Types.NestedField.optional(1, "id", Types.IntegerType.get()))
+
+  private def extractScanMetadata(scan: MetadataScan): Option[CometIcebergNativeScanMetadata] =
+    CometIcebergNativeScanMetadata.extract(
+      scan,
+      "file:///tmp/test-table/metadata.json",
+      Map.empty,
+      Collections.emptyList[AnyRef](),
+      Set.empty)
+
+  test("scan metadata preserves name mapping when present and None when absent") {
+    val mapping = """[{"field-id":1,"names":["id","old_id"]}]"""
+    for (expected <- Seq(None, Some(mapping))) {
+      val properties = new java.util.HashMap[String, String]()
+      expected.foreach(properties.put("schema.name-mapping.default", _))
+      val table = new MetadataTable(scanSchema, new PropertiesMetadata(() => properties))
+      val metadata = extractScanMetadata(new MetadataScan(table, scanSchema)).get
+      assert(metadata.nameMapping == expected)
+      assert(metadata.fullTaskSchema.isDefined)
+      assert(metadata.prunedTaskSchema.isDefined)
+      assert(metadata.globalFieldIdMapping == Map("id" -> 1))
+    }
+  }
+
+  test("scan metadata declines when the properties accessor throws") {
+    val metadata =
+      new PropertiesMetadata(() => throw new IllegalStateException("properties failed"))
+    val table = new MetadataTable(scanSchema, metadata)
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  test("scan metadata declines when the properties accessor is missing") {
+    val table = new MetadataTable(scanSchema, new Object)
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  test("scan metadata declines when the properties accessor returns null") {
+    val table = new MetadataTable(scanSchema, new PropertiesMetadata(() => null))
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  // Only the metadata's properties accessor varies. Every case has a valid scan/table schema,
+  // schema history and operations.current(), so other reflection failures cannot mask the bug.
+  class MetadataScan(scanTable: AnyRef, scanSchema: Schema) {
+    def table(): AnyRef = scanTable
+    def projection(): Schema = scanSchema
+  }
+
+  class MetadataTable(tableSchema: Schema, metadata: AnyRef) {
+    def schema(): Schema = tableSchema
+    def schemas(): java.util.Map[Integer, Schema] =
+      Collections.singletonMap(Integer.valueOf(0), tableSchema)
+    def operations(): MetadataOperations = new MetadataOperations(metadata)
+    def name(): String = "test-table"
+  }
+
+  class MetadataOperations(metadata: AnyRef) {
+    def current(): AnyRef = metadata
+  }
+
+  class PropertiesMetadata(read: () => java.util.Map[String, String]) {
+    def properties(): java.util.Map[String, String] = read()
   }
 
   test("findMethod resolves a method once and returns the cached instance") {
@@ -136,6 +205,27 @@ class IcebergReflectionSuite extends AnyFunSuite {
       IcebergReflection.extractFileLocation(classOf[ThrowingLocationFile], file)
     }
     assert(ex.getCause.getMessage == "boom")
+  }
+
+  test("taskCommitFileLocations reads plain SparkWrite task commits") {
+    val commit = new PlainTaskCommit(
+      Array(
+        new LocationFile("s3://bucket/data/a.parquet"),
+        new LocationFile("s3://bucket/data/b.parquet")))
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/data/b.parquet"))
+  }
+
+  test("taskCommitFileLocations reads new files from position-delta task commits") {
+    val commit = new DeltaTaskCommit(
+      Array(new LocationFile("s3://bucket/data/a.parquet")),
+      Array(new LocationFile("s3://bucket/delete/d.parquet")),
+      Array(new LocationFile("s3://bucket/delete/old.parquet")))
+
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/delete/d.parquet"))
   }
 
   test("getFileFormat reads format() when declared") {
@@ -259,6 +349,25 @@ class IcebergReflectionSuite extends AnyFunSuite {
       IcebergReflection.executorReflectionUnresolved)
   }
 
+  test("footer re-reads build parquet-mr's read options without a Hadoop Configuration") {
+    // `ParquetFileReader.open(InputFile)` builds its read options from a new Hadoop
+    // `Configuration` on parquet-mr 1.14 and later, and parsing that configuration's XML
+    // resources was most of the cost of rebuilding a native-written file's metrics.
+    IcebergReflection.resolveParquetFooterReflection().readOptions match {
+      case Some(readOptions) =>
+        val options = readOptions.newOptions()
+        val configuration = options.getClass.getMethod("getConfiguration").invoke(options)
+        assert(configuration.getClass.getSimpleName == "PlainParquetConfiguration")
+      case None =>
+        // Only parquet-mr without `ParquetConfiguration` keeps `open(InputFile)`, whose
+        // defaults are built without Hadoop.
+        intercept[ClassNotFoundException] {
+          IcebergReflection.loadClass(
+            "org.apache.iceberg.shaded.org.apache.parquet.conf.ParquetConfiguration")
+        }
+    }
+  }
+
   /** Schema the transform tests below partition on, one column per transform source type. */
   private val transformSchema = new Schema(
     Types.NestedField.optional(1, "id", Types.LongType.get()),
@@ -307,6 +416,19 @@ class IcebergReflectionSuite extends AnyFunSuite {
     // The partition type Comet serializes alongside the rewritten spec has to agree with what
     // iceberg-rust derives for Transform::Unknown, which is string.
     assert(spec.partitionType().fields().get(0).`type`().toString == "string")
+  }
+
+  class PlainTaskCommit(taskFiles: Array[LocationFile]) {
+    def files(): Array[LocationFile] = taskFiles
+  }
+
+  class DeltaTaskCommit(
+      data: Array[LocationFile],
+      deletes: Array[LocationFile],
+      rewrittenDeletes: Array[LocationFile]) {
+    def dataFiles(): Array[LocationFile] = data
+    def deleteFiles(): Array[LocationFile] = deletes
+    def rewrittenDeleteFiles(): Array[LocationFile] = rewrittenDeletes
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

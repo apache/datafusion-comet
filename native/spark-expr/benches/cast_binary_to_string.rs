@@ -46,7 +46,7 @@ fn build(size: usize, width: usize, null_every: usize) -> ArrayRef {
 }
 
 fn options(style: Option<BinaryOutputStyle>) -> SparkCastOptions {
-    let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     options.binary_output_style = style;
     options
 }

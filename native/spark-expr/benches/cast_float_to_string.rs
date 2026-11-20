@@ -67,7 +67,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let size = 8192;
     let f64_array = create_f64_array(size);
     let f32_array = create_f32_array(size);
-    let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+    let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
 
     let mut group = c.benchmark_group("cast_float_to_string");
     group.bench_function("cast_f64_to_utf8", |b| {

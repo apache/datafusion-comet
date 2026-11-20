@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.DecimalType
  *
  * Spark itself stopped wrapping these in `CheckOverflow` in 3.4 (SPARK-39316), but Comet's native
  * `CheckOverflow` only validates precision (it does not rescale), so the target type must equal
- * the child's actual `dataType`. Always using `expr.dataType` is the safe choice: on Spark 3.4 -
+ * the child's actual `dataType`. Always using `expr.dataType` is the safe choice: on Spark 3.5 -
  * 4.0 it equals the value the rule would otherwise recompute from `SQLConf`, and on Spark 4.1+
  * (SPARK-53968) it preserves the per-expression `allowDecimalPrecisionLoss` captured at view
  * creation time. Recomputing from the live `SQLConf` would re-label a stored DEC(38, 17) result
@@ -40,6 +40,27 @@ import org.apache.spark.sql.types.DecimalType
  */
 object DecimalPrecision {
   def promote(expr: Expression): Expression = {
+    // `transformUp` walks the whole tree and calls `mapChildren` at every node, which allocates
+    // through `children.map` / `mapProductIterator` even when no case matches (the specialized
+    // `mapChildren` overrides do skip the node copy via `fastEquals`, so the cost is the traversal
+    // and its allocations, not a rebuild). The serde calls this once per expression it converts,
+    // so skip it when there is nothing to rewrite.
+    if (containsDecimalArithmetic(expr)) rewrite(expr) else expr
+  }
+
+  /**
+   * Whether [[promote]] could rewrite anything in this tree. Deliberately a superset of the rule:
+   * it ignores the operands, so any arithmetic node the rule handles that produces a decimal
+   * qualifies. Wrapping a child in `CheckOverflow` does not change that child's data type, so a
+   * tree without such a node cannot grow one part way through the rewrite.
+   */
+  private def containsDecimalArithmetic(expr: Expression): Boolean = expr.exists {
+    case e @ (_: Add | _: Subtract | _: Multiply | _: Divide | _: Remainder) =>
+      e.dataType.isInstanceOf[DecimalType]
+    case _ => false
+  }
+
+  private def rewrite(expr: Expression): Expression = {
     expr.transformUp {
       // Recursive exprToProto calls can re-promote every decimal binary operator below. Collapse
       // only equivalent wrappers so the shared promotion rule remains idempotent.

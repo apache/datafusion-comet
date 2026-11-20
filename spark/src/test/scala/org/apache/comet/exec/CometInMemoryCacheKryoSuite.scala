@@ -109,8 +109,7 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-          "spark.comet.sparkToColumnar.enabled" -> "true") {
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
           spark.catalog.clearCache()
           try {
@@ -146,11 +145,11 @@ class CometInMemoryCacheKryoSuite extends CometTestBase {
     }
 
   test("Comet broadcast exchange survives Kryo with registration required") {
-    // Not about the cache: CometBroadcastExchangeExec broadcasts an Array[ChunkedByteBuffer], and
-    // Spark registers ChunkedByteBuffer but not an array of them, so this fails on main today
-    // under registrationRequired=true. The registrator this suite installs covers it because the
-    // cache write path hands back the same type. Kept here rather than split out because that
-    // registration is the thing under test.
+    // Not about the cache: CometBroadcastExchangeExec broadcasts a CometBroadcastValue, which
+    // holds an Array[ChunkedByteBuffer], and Spark registers ChunkedByteBuffer but not an array
+    // of them, so this fails on main today under registrationRequired=true. The registrator this
+    // suite installs covers it because the cache write path hands back the same type. Kept here
+    // rather than split out because that registration is the thing under test.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",

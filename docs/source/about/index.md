@@ -20,12 +20,18 @@ under the License.
 # About
 
 Background on the project: how Comet compares to similar accelerators, how releases
-are versioned, and links to the Apache Software Foundation resources behind it.
+are versioned, answers to common questions, and links to the Apache Software Foundation resources
+behind it.
 
-- [Comparison with Gluten](gluten_comparison.md) — how Comet differs from other Spark accelerators
-- [Versioning Policy](versioning_policy.md) — what our version numbers mean and our release cadence
-- [Blog Posts and Talks](blogs-and-talks.md) — external writing and conference talks about Comet
-- [ASF Links](../asf/index.md) — licensing, donations, security reporting, and the code of conduct
+- [Comparison with Gluten](gluten_comparison.md): how Comet differs from Apache Gluten, the most
+  similar accelerator
+- [Versioning Policy](versioning_policy.md): what our version numbers mean and our release cadence
+- [Frequently Asked Questions](faq.md): answers to common questions about choosing, installing, and
+  running Comet
+- [Blog Posts and Talks](blogs-and-talks.md): external writing and conference talks about Comet
+- [Top-Level Project Proposal](top_level_project_proposal.md): the proposal to promote Comet to a
+  top-level Apache project
+- [ASF Links](../asf/index.md): licensing, donations, security reporting, and the code of conduct
 
 ```{toctree}
 :maxdepth: 1
@@ -34,6 +40,8 @@ are versioned, and links to the Apache Software Foundation resources behind it.
 
 Comparison with Gluten <gluten_comparison>
 Versioning Policy <versioning_policy>
+Frequently Asked Questions <faq>
 Blog Posts and Talks <blogs-and-talks>
+Top-Level Project Proposal <top_level_project_proposal>
 ASF Links <../asf/index>
 ```

@@ -264,6 +264,9 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                         neg_bound,
                         p_out,
                         s_out,
+                        raw,
+                        max_scale,
+                        op,
                         eval_mode,
                         &overflowed,
                     )
@@ -299,6 +302,9 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                         neg_bound,
                         p_out,
                         s_out,
+                        raw,
+                        natural_scale,
+                        op,
                         eval_mode,
                         &overflowed,
                     )
@@ -358,30 +364,42 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
     }
 }
 
-/// Check if the i256 result fits in the output precision. In Ansi mode, return an error
-/// on overflow. In Legacy/Try mode, record the overflow and return i128::MAX as a sentinel
+/// Check if the rescaled i256 result fits in the output precision. In Ansi mode, return an
+/// error on overflow. In Legacy/Try mode, record the overflow and return i128::MAX as a sentinel
 /// value that will be nullified by `null_if_overflow_precision`.
+///
+/// ANSI overflow messages format `report_value` at `report_scale` (Spark's pre-toPrecision
+/// intermediate), not the rescaled result. Multiplication also applies Spark's
+/// MathContext(39, DOWN).
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn check_overflow_and_convert(
     result: i256,
     bound: i256,
     neg_bound: i256,
     precision: u8,
     scale: i8,
+    report_value: i256,
+    report_scale: i8,
+    op: WideDecimalOp,
     eval_mode: EvalMode,
     overflowed: &Cell<bool>,
 ) -> Result<i128, ArrowError> {
     if result > bound || result < neg_bound {
         if eval_mode == EvalMode::Ansi {
-            let unscaled = result.to_string();
-            // Arrow's formatter truncates to its precision argument. This value is already
-            // known to overflow, so pass its actual digit count to preserve every digit.
-            // Spark reports the pre-toPrecision value instead; see
-            // https://github.com/apache/datafusion-comet/issues/5211.
-            let digits = unscaled.trim_start_matches('-').len();
+            let value = match op {
+                WideDecimalOp::Multiply => {
+                    spark_multiply_overflow_value(&report_value.to_string(), report_scale)?
+                }
+                WideDecimalOp::Add | WideDecimalOp::Subtract => {
+                    let unscaled = report_value.to_string();
+                    let digits = unscaled.trim_start_matches('-').len();
+                    format_decimal_str(&unscaled, digits, report_scale)
+                }
+            };
             return Err(ArrowError::ExternalError(Box::new(
                 SparkError::NumericValueOutOfRange {
-                    value: format_decimal_str(&unscaled, digits, scale),
+                    value,
                     precision,
                     scale,
                 },
@@ -395,6 +413,34 @@ fn check_overflow_and_convert(
     } else {
         Ok(result.to_i128().unwrap())
     }
+}
+
+/// Emulate Spark multiply's `MathContext(39, DOWN)` before `toPlainString()`.
+fn spark_multiply_overflow_value(unscaled: &str, scale: i8) -> Result<String, ArrowError> {
+    const MC_PRECISION: usize = 39; // DecimalType.MAX_PRECISION + 1
+    let negative = unscaled.starts_with('-');
+    let digits = unscaled.trim_start_matches('-');
+    if digits.is_empty() {
+        return Ok("0".to_string());
+    }
+
+    if digits.len() <= MC_PRECISION {
+        return Ok(format_decimal_str(unscaled, digits.len(), scale));
+    }
+
+    let truncated = &digits[..MC_PRECISION];
+    let dropped = digits.len() - MC_PRECISION;
+    let new_scale = i8::try_from(scale as i16 - dropped as i16).map_err(|_| {
+        ArrowError::ComputeError(format!(
+            "Spark multiply overflow value scale is out of range: scale={scale}, dropped={dropped}"
+        ))
+    })?;
+    let truncated = if negative {
+        format!("-{truncated}")
+    } else {
+        truncated.to_string()
+    };
+    Ok(format_decimal_str(&truncated, MC_PRECISION, new_scale))
 }
 
 #[cfg(test)]
@@ -587,6 +633,41 @@ mod tests {
                 WideDecimalOp::Multiply,
                 1,
                 0,
+                "9.90",
+            ),
+            (
+                make_batch(
+                    vec![Some(11_000_000_000_000_000_000)],
+                    20,
+                    0,
+                    vec![Some(11_000_000_000_000_000_000)],
+                    20,
+                    0,
+                ),
+                WideDecimalOp::Multiply,
+                38,
+                6,
+                "121000000000000000000000000000000000000",
+            ),
+            (
+                make_batch(
+                    vec![Some(11_000_000_000_000_000_000i128 * 10i128.pow(18))],
+                    38,
+                    18,
+                    vec![Some(11_000_000_000_000_000_000i128 * 10i128.pow(18))],
+                    38,
+                    18,
+                ),
+                WideDecimalOp::Multiply,
+                38,
+                6,
+                "121000000000000000000000000000000000000",
+            ),
+            (
+                make_batch(vec![Some(5)], 38, 0, vec![Some(5)], 38, 0),
+                WideDecimalOp::Add,
+                1,
+                2,
                 "10",
             ),
         ];

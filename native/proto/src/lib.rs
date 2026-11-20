@@ -51,6 +51,16 @@ pub mod spark_config {
     include!(concat!("generated", "/spark.spark_config.rs"));
 }
 
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_native_executors {
+    include!(concat!("generated", "/spark.spark_native_executors.rs"));
+}
+
+/// A hash of the .proto files this crate was built from. A Comet Native Executor cluster
+/// requires a driver's to match its own.
+pub const PROTO_FINGERPRINT: &str = env!("COMET_PROTO_FINGERPRINT");
+
 #[cfg(test)]
 mod tests {
     use super::spark_operator::{

@@ -220,7 +220,7 @@ impl ExpandStream {
         batch: &RecordBatch,
         projection: &[Arc<dyn PhysicalExpr>],
     ) -> Result<RecordBatch, DataFusionError> {
-        let mut columns = vec![];
+        let mut columns = Vec::with_capacity(projection.len());
 
         projection.iter().try_for_each(|expr| {
             let column = expr.evaluate(batch)?;

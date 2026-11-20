@@ -1,6 +1,6 @@
 ---
 name: review-comet-pr
-description: Use when reviewing a DataFusion Comet pull request. Covers the workflow that applies to every PR and routes to the area-specific review skills for expressions, FFI, memory management, shuffle, and Iceberg writes. Provides guidance to a human reviewer rather than posting comments.
+description: Use when reviewing a DataFusion Comet pull request. Covers the workflow that applies to every PR and routes to the area-specific review skills for expressions, FFI, memory management, shuffle, Iceberg writes, and documentation. Provides guidance to a human reviewer rather than posting comments.
 argument-hint: <pr-number>
 ---
 
@@ -43,12 +43,18 @@ change.
 | `native/core/src/execution/memory_pools/`, `CometTaskMemoryManager`, `CometShuffleMemoryAllocator`, `MemoryConsumer` / `try_grow` / `reserve` call sites, pool configs                     | `review-comet-memory-pr`        |
 | `native/shuffle/`, `spark/src/main/scala/org/apache/spark/sql/comet/execution/shuffle/`, `spark/src/main/java/org/apache/spark/shuffle/`, `CometShuffleExchangeExec`                       | `review-comet-shuffle-pr`       |
 | `IcebergWriteStrategy`, `IcebergWriteExec`, `IcebergCommitExec`, `CometIcebergWriteExec`, `CometIcebergNativeWrite`, `iceberg_write.rs`, `iceberg_partition_path.rs`, the iceberg-rust pin | `review-comet-iceberg-write-pr` |
+| `docs/source/`, `README.md`, `AGENTS.md`, `.ai/skills/**/SKILL.md`, `.doc(...)` strings in config classes, doc comments                                                                    | `review-comet-docs`             |
 
 For a new operator, read `docs/source/contributor-guide/adding_a_new_operator.md` alongside this
 skill. There is no dedicated operator review skill yet.
 
-If the PR falls outside all of these, for example build, CI, docs only, or release tooling, this
-skill on its own is the review.
+For a PR that deals with timestamps or the session timezone, read
+`docs/source/contributor-guide/timezones.md` as well, whichever areas it touches. Timezone handling
+cuts across the serde, the native kernels, the scans and the JVM/native boundary, so no area skill
+owns it. "Timestamps and timezones" in step 5 says what to check.
+
+If the PR falls outside all of these, for example build, CI, or release tooling, this skill on its
+own is the review.
 
 ## 2. Gather PR Metadata
 
@@ -90,7 +96,7 @@ Anything that reports `getSupportLevel()` must report it honestly:
 
 - `Compatible()`, matches Spark exactly
 - `Incompatible(Some("reason"))`, differs in documented ways and requires
-  `spark.comet.expr.allowIncompatible=true`
+  `spark.comet.expression.<Name>.allowIncompatible=true`
 - `Unsupported(Some("reason"))`, cannot be implemented
 
 A PR that quietly marks something `Compatible` while the diff shows a known divergence is the single
@@ -166,15 +172,59 @@ Report the comparison in the review even when nothing changed, so the reviewer k
 
 ### Spark version coverage
 
-Comet supports several Spark versions. Version-specific behavior belongs in the shims under
-`spark/src/main/spark-{3.4,3.5,3.x,4.0,4.1,4.2}/org/apache/comet/shims/`, not in branches on a
-version string in shared code, and not in native Rust. If the PR adds a shim for one 4.x version,
-check that the sibling 4.x source sets got it too.
+Comet supports several Spark versions. The check on the Spark version belongs in Scala, either in a
+shim under `spark/src/main/spark-*/` or in one named predicate such as `isSpark42Plus` or
+`SparkFixes.slopeFiltersVarByPairNulls`. It does not belong in an ad hoc comparison on the
+version string in shared code, or in native Rust. If the PR adds a shim for one 4.x version, check
+that the sibling 4.x source sets got it too.
+
+Protobuf fields, native function arguments, and native function names only ever see the behavior,
+such as `wrap_second_millisecond_overflow`, never the version, such as `spark_420_plus` (#6740). A
+fork that backports a Spark fix then changes the one Scala check that sets the flag and leaves the
+protobuf and Rust alone. Flag a version-named field, argument, or function, and comments that say
+"Spark 4.2" for behavior later releases inherit or that leave out the Spark JIRA.
+`Cast.is_spark4_plus` predates the rule and #6891 tracks renaming it,
+so flag it only when a PR adds behavior behind it.
 
 When Spark changed the behavior in a patch release, such as SPARK-55969 or SPARK-54918, a check on
 the minor version is wrong for every earlier patch. CI builds only the newest patch of each line, so
 it can't catch that (#6042, #5701). The pull request CI also runs only the default Spark profile, so
 logic that depends on the Spark version needs the matching `run-spark-*` labels (#6156).
+
+### Timestamps and timezones
+
+Timezone bugs are easy to miss in review and in tests. A mislabelled timestamp column passes any
+test that only projects it, and a result computed in the wrong timezone looks plausible. A PR deals
+with timezones if it touches a datetime expression, a cast to or from a timestamp, how a scan reads
+timestamps, the timestamp type at the JVM/native boundary, or anything that reads the session
+timezone. Searching the diff flags most of these PRs:
+
+```shell
+gh pr diff <pr> --repo apache/datafusion-comet | grep -inE 'time_?zone|zoneid|chrono_tz|timestamp(ntz)?type|timestampmicro|timestamp\('
+```
+
+For such a PR, hold the diff against "The invariant" and "Guidelines" in
+`docs/source/contributor-guide/timezones.md`. Look for these first:
+
+- A `TimestampType` value labelled with the session timezone, or with no timezone. Inside a native
+  plan every `TimestampType` value is labelled exactly `"UTC"`, and every `TimestampNTZType` value
+  has no timezone. Check the declared type and the arrays the code builds, not only the values.
+- A timezone taken from the JVM default or the host. An expression uses the `timeZoneId` Spark
+  stamped on it, passed through `CometTimeZone.nativeId`, not `SQLConf.get.sessionLocalTimeZone`.
+- A path gated on a UTC session. `Etc/UTC` is the session default on Ubuntu and Debian images, so
+  check what the gate does with it, and that the output there is still labelled `"UTC"` rather than
+  `"Etc/UTC"`.
+- A timezone applied to a `TimestampNTZType` value, other than to convert it to `TimestampType`.
+- Tests that use a single session timezone, or only project the result. "Testing timezone-sensitive
+  code" in the same page says what to ask for.
+
+`timezones.md` also describes specific code: where the `"UTC"` label is set, which serdes serialize
+a timezone, how `CometTimeZone` rewrites timezone IDs, what `array_with_timezone` does, how the
+scans adapt timestamps, and which expressions go through the codegen dispatcher. A PR that changes
+any of these updates the page in the same PR. The page also documents some known limitations as
+current behavior, such as chrono-tz's DST horizon and the timezone database versions. A fix for one
+of the bugs tracked in [#6335](https://github.com/apache/datafusion-comet/issues/6335) usually
+changes that text too.
 
 ### Configuration
 
@@ -215,7 +265,8 @@ For a change on a default path, look for tests with the inputs that broke earlie
 
 ### CI
 
-`gh pr checks <pr> --repo apache/datafusion-comet`, and again with `--failed` for detail.
+`gh pr checks <pr> --repo apache/datafusion-comet`. For only the failed checks, add
+`--json name,state,bucket,link --jq '.[] | select(.bucket == "fail")'`.
 
 Summarize failures in the review. Do not compare against failures on `main`.
 
@@ -250,10 +301,13 @@ same PR, because a follow-up that is not filed as an issue does not happen.
 Each area skill names the doc for its subsystem and the specific claims in it that go stale. When you
 load an area skill, read its doc and hold the diff against it.
 
-**Do not ask contributors to hand-edit generated docs.** The compatibility guide pages under
-`docs/source/user-guide/latest/compatibility/expressions/` and
-`docs/source/user-guide/latest/configs.md` are produced by `GenerateDocs` and regenerated by CI on
-every merge to `main`. Review the source that feeds them instead.
+**Do not ask contributors to hand-edit generated docs.** `GenerateDocs` fills in the config tables
+and the expression compatibility tables when the docs are built, and CI rebuilds and publishes the
+docs when a merge to `main` changes their inputs. The
+**Generated Content** section of `docs/source/contributor-guide/style_guide.md` says exactly which
+text is generated. Review the source that feeds it instead. The prose around the generated tables,
+the `_category_template/` files, and the `index.md` pages are written by hand and are reviewed
+normally.
 
 ## Review Bar
 
@@ -280,8 +334,10 @@ Two kinds of finding have to block the merge until the author addresses them: a 
 that the PR introduces, and a performance regression. A correctness problem means Comet can return a
 different answer from Spark, including a result where Spark raises an error, or `Compatible()` over a
 known divergence. Crashes, hangs, leaks, and lost or corrupted data count too. A performance
-regression means an existing path gets slower or uses more memory. A tracking issue for a later fix
-does not address either one.
+regression means a path that real workloads reach often gets slower or uses more memory, or a PR makes
+a shape slower without naming it. A shape that is rare or bounded may be slower when the PR gives its
+measured cost, how often real workloads reach it and why, and the gain on the common case. A tracking
+issue for a later fix does not address either one.
 
 When any finding is one of these, the review is submitted as **Request changes**. `main` needs a
 single approval to merge, and any committer's approval counts, including one given before this

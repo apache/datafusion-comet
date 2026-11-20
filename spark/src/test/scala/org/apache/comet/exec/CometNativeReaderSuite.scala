@@ -1161,6 +1161,74 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  Seq(None, Some("true"), Some("false")).foreach { legacy =>
+    test(s"issue #7030: missing nested fields - legacy ${legacy.getOrElse("default")}") {
+      val fileSchema = StructType.fromDDL(
+        "id int, arrs array<struct<x:int>>, s struct<c:struct<x:int>>, " +
+          "mixed struct<mm:map<string,struct<x:int>>, sa:array<struct<x:int>>>, " +
+          "present struct<x:int>")
+      val readSchema = StructType.fromDDL(
+        "id int, arrs array<struct<missing:int>>, s struct<c:struct<missing:int>>, " +
+          "mixed struct<mm:map<string,struct<missing:int>>, " +
+          "sa:array<struct<missing:int>>>, present struct<x:int>")
+      val rows = java.util.Arrays.asList(
+        Row(1, Seq(Row(1)), Row(Row(1)), Row(Map("k" -> Row(1)), Seq(Row(1))), Row(null)),
+        Row(2, Seq.empty, Row(Row(null)), Row(Map.empty, Seq.empty), Row(null)),
+        Row(3, null, null, null, null),
+        Row(4, Seq(null), Row(null), Row(Map("k" -> null), Seq(null)), Row(null)))
+
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          // Keep a file without null parents so its statistics cannot hide incorrect pruning.
+          spark
+            .createDataFrame(rows.subList(0, 1), fileSchema)
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          spark
+            .createDataFrame(rows.subList(1, rows.size()), fileSchema)
+            .coalesce(1)
+            .write
+            .mode("append")
+            .parquet(path.toString)
+        }
+        val legacyConf =
+          legacy.toSeq.map("spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> _)
+        for (pruning <- Seq("true", "false")) {
+          withSQLConf(
+            (legacyConf ++ Seq(
+              "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+              "spark.sql.optimizer.nestedSchemaPruning.enabled" -> pruning,
+              CometConf.COMET_BATCH_SIZE.key -> "1")): _*) {
+            def read(): DataFrame = spark.read.schema(readSchema).parquet(path.toString)
+            val nativeScan = Seq(classOf[CometNativeScanExec])
+            checkSparkAnswerAndOperator(read(), nativeScan)
+            for (predicate <- Seq("arrs IS NULL", "s IS NULL", "mixed.sa IS NULL")) {
+              checkSparkAnswerAndOperator(read().where(predicate), nativeScan)
+            }
+            checkSparkAnswerAndOperator(
+              read().selectExpr(
+                "id",
+                "arrs IS NULL",
+                "s IS NULL",
+                "mixed IS NULL",
+                "mixed.sa IS NULL",
+                "present IS NULL"),
+              nativeScan)
+            checkSparkAnswerAndOperator(
+              read().selectExpr(
+                "count(arrs)",
+                "count(s)",
+                "count(mixed)",
+                "count(mixed.sa)",
+                "count(present)"),
+              nativeScan)
+          }
+        }
+      }
+    }
+  }
+
   test("issue #4136: struct with all requested fields missing in file") {
     // SPARK-53535 (Spark 4.1) added LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING.
     // With the new default (false), Spark's vectorized reader appends a "marker" leaf field to
@@ -1578,6 +1646,92 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           "Row-group statistics pruning did not fire " +
             s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
       }
+    }
+  }
+
+  test("row-group statistics pruning fires for a floating-point comparison") {
+    // Native comparisons normalize float operands to follow Spark's ordering, which pruning
+    // cannot see through. A scan's data filters are built without that normalization, so they
+    // still prune, and the Filter above the scan applies Spark's semantics to the rows. Spark
+    // orders NaN above every other value, so `d > 500.0D` matches the NaN in the first row
+    // group even though every other value there is smaller: pruning must keep that row group.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .selectExpr("IF(id = 10, double('NaN'), CAST(id AS DOUBLE)) AS d")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        val df = spark.read.parquet(dir.toString).where("d > 500.0D")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val metrics = nativeScans.head.metrics
+        val pruned = metrics("row_groups_pruned_statistics").value
+        val matched = metrics("row_groups_matched_statistics").value
+        assert(
+          pruned > 0 && pruned + matched == numRowGroups,
+          "Row-group statistics pruning did not fire " +
+            s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
+        assert(df.collect().exists(_.getDouble(0).isNaN), "The NaN row was filtered out")
+      }
+    }
+  }
+
+  test("bloom filter pruning matches either signed zero for a floating-point equality") {
+    // A bloom filter holds the bits of each value, so `-0.0` and `0.0` are separate entries,
+    // while Spark's `=` matches either zero. The scan's data filter probes for both, so the file
+    // holding `-0.0` and the file holding `0.0` are both read for either zero. Spark's own reader
+    // probes with the literal's bits and skips the file holding the other zero, so the expected
+    // rows are written out instead of compared with Spark's.
+    import testImplicits._
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      Seq(Seq(-1.0, -0.0, 1.0), Seq(-2.0, 0.0, 2.0)).foreach { values =>
+        values
+          .toDF("d")
+          .coalesce(1)
+          .write
+          .mode("append")
+          .option("parquet.bloom.filter.enabled#d", "true")
+          .option("parquet.enable.dictionary", "false")
+          .parquet(path)
+      }
+
+      def bloomFilterPruning(df: DataFrame): (Long, Long) = {
+        val scans = collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec => s }
+        assert(scans.size == 1, s"Expected one CometNativeScanExec:\n${df.queryExecution}")
+        val metrics = scans.head.metrics
+        (
+          metrics("row_groups_pruned_bloom_filter").value,
+          metrics("row_groups_matched_bloom_filter").value)
+      }
+
+      Seq("-0.0D", "0.0D").foreach { zero =>
+        val df = spark.read.parquet(path).where(s"d = $zero")
+        checkAnswer(df, Seq(Row(-0.0), Row(0.0)))
+        assert(bloomFilterPruning(df) == ((0L, 2L)), s"d = $zero")
+      }
+      // The statistics of both files cover 0.5, so only their bloom filters prune them.
+      val df = spark.read.parquet(path).where("d = 0.5D")
+      checkAnswer(df, Seq.empty[Row])
+      assert(bloomFilterPruning(df) == ((2L, 0L)), "d = 0.5D")
     }
   }
 

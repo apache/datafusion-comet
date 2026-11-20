@@ -108,7 +108,7 @@ impl PhysicalExpr for NegativeExpr {
                 // The shims render this as `{from_type} overflow` under
                 // `ARITHMETIC_OVERFLOW`. For byte/short that is byte-identical to Spark
                 // 4.x, which routes them through `MathUtils.negateExact` ("byte overflow" /
-                // "short overflow"). Spark 3.4/3.5 instead throw
+                // "short overflow"). Spark 3.5 instead throws
                 // `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow."); that error
                 // class is out of reach here, so no string can match every version.
                 let from_type = match array.data_type() {
@@ -209,6 +209,7 @@ impl PhysicalExpr for NegativeExpr {
         {
             return Err(SparkError::ArithmeticOverflow {
                 from_type: "long".to_string(),
+                function_name: String::new(),
             }
             .into());
         }
@@ -260,7 +261,7 @@ mod tests {
 
     fn assert_spark_overflow(err: DataFusionError, expected_from_type: &str) {
         if let DataFusionError::External(ref e) = err {
-            if let Some(SparkError::ArithmeticOverflow { from_type }) =
+            if let Some(SparkError::ArithmeticOverflow { from_type, .. }) =
                 e.downcast_ref::<SparkError>()
             {
                 assert_eq!(from_type, expected_from_type);

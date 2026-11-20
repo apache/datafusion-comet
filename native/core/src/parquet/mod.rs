@@ -24,5 +24,8 @@ pub mod schema_adapter;
 pub mod util;
 
 mod cast_column;
+pub(crate) mod datetime_rebase;
+mod field_resolver;
+pub(crate) mod file_error_context;
 mod name_fold;
 pub(crate) mod objectstore;

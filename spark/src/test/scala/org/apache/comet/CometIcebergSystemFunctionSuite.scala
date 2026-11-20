@@ -62,7 +62,6 @@ class CometIcebergSystemFunctionSuite
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
-      .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
   }
 

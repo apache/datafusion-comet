@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Compare the base DataFusion path, PR #6073's eager normalization, and Spark equality.
-//! Ordinary finite inputs keep the answers identical across all three implementations.
+//! Compare the base DataFusion path, eager normalization of the operands (PR #6073's for `IN`, and
+//! the one `spark_comparison` used for ordering comparisons before it compared them in place), and
+//! Spark's comparisons. Ordinary finite inputs keep the answers identical across all three.
 
 use arrow::array::{ArrayRef, Float64Array, ListArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
@@ -27,7 +28,9 @@ use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{in_list, BinaryExpr, Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_spark_expr::{spark_comparison, spark_in_list, NormalizeNestedFloats};
+use datafusion_comet_spark_expr::{
+    spark_comparison, spark_in_list, FloatOperands, NormalizeNestedFloats,
+};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,11 +66,23 @@ fn expression(version: &str, mode: &str, batch: &RecordBatch) -> Arc<dyn Physica
     let schema = batch.schema();
     let a: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
     let b: Arc<dyn PhysicalExpr> = Arc::new(Column::new("b", 1));
-    if mode == "eq" {
-        return if version == "new" {
-            spark_comparison(a, Operator::Eq, b, &schema).unwrap()
-        } else {
-            Arc::new(BinaryExpr::new(a, Operator::Eq, b))
+    let normalize = |e: Arc<dyn PhysicalExpr>| NormalizeNestedFloats::wrap_if_needed(e, &schema);
+    let comparison = match mode {
+        "eq" => Some(Operator::Eq),
+        "lt" => Some(Operator::Lt),
+        "not_distinct" => Some(Operator::IsNotDistinctFrom),
+        _ => None,
+    };
+    if let Some(op) = comparison {
+        return match version {
+            "new" => spark_comparison(a, op, b, &schema, FloatOperands::Normalize).unwrap(),
+            // `=` already compared in place before ordering comparisons did.
+            "head" if op != Operator::Eq => Arc::new(BinaryExpr::new(
+                normalize(a).unwrap(),
+                op,
+                normalize(b).unwrap(),
+            )),
+            _ => Arc::new(BinaryExpr::new(a, op, b)),
         };
     }
     let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(
@@ -116,7 +131,7 @@ fn benchmark(c: &mut Criterion) {
                     Field::new("b", b.data_type().clone(), true),
                 ]));
                 let batch = RecordBatch::try_new(schema, vec![a, b]).unwrap();
-                for mode in ["dynamic", "constant", "mixed", "eq"] {
+                for mode in ["dynamic", "constant", "mixed", "eq", "lt", "not_distinct"] {
                     let expected = expression("base", mode, &batch)
                         .evaluate(&batch)
                         .unwrap()

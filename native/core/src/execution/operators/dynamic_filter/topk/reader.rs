@@ -23,14 +23,16 @@ use std::sync::Arc;
 use bytes::Bytes;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::Result;
-use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
+use datafusion::datasource::physical_plan::FileSource;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
 use super::super::parquet_reader::{
-    is_direct_column_null_checks, try_attach_parquet_reader_filter,
+    concrete_parquet_source, is_direct_column_null_checks, parquet_file_source,
+    try_attach_parquet_reader_filter,
 };
+use crate::parquet::file_error_context::ParquetErrorContext;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetFileReaderFactory;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
@@ -48,7 +50,7 @@ pub(super) fn try_attach_topk_reader_filter(
     let Some(scan) = input.downcast_ref::<DataSourceExec>() else {
         return Ok(None);
     };
-    let Some((_, source)) = scan.downcast_to_file_source::<ParquetSource>() else {
+    let Some((_, source)) = parquet_file_source(scan) else {
         return Ok(None);
     };
     // Clearing incomplete statistics must not weaken an existing static range
@@ -67,16 +69,22 @@ pub(super) fn try_attach_topk_reader_filter(
     let Some(filtered) = filtered.downcast_ref::<DataSourceExec>() else {
         return Ok(None);
     };
-    let Some((file_config, source)) = filtered.downcast_to_file_source::<ParquetSource>() else {
+    let Some((file_config, source, wrapped)) = concrete_parquet_source(filtered) else {
         return Ok(None);
     };
     let Some(factory) = source.parquet_file_reader_factory() else {
         return Ok(None);
     };
     let mut file_config = file_config.clone();
-    file_config.file_source = Arc::new(source.clone().with_parquet_file_reader_factory(Arc::new(
-        UnknownNullCountReaderFactory::new(Arc::clone(factory)),
-    )));
+    let rebuilt: Arc<dyn FileSource> = Arc::new(source.clone().with_parquet_file_reader_factory(
+        Arc::new(UnknownNullCountReaderFactory::new(Arc::clone(factory))),
+    ));
+    // Keep the read-error context that native Parquet scans carry.
+    file_config.file_source = if wrapped {
+        ParquetErrorContext::wrap(rebuilt)
+    } else {
+        rebuilt
+    };
     Ok(Some(Arc::new(
         filtered.clone().with_data_source(Arc::new(file_config)),
     )))

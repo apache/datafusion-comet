@@ -40,16 +40,14 @@ import org.apache.comet.shims.ShimCometWindowGroupLimit
  * the Spark-sorted child. Every other combination (ROW_NUMBER partitioned, RANK/DENSE_RANK with
  * or without PARTITION BY) maps onto Comet's streaming `PartitionedRankLimitExec`.
  *
- * The Scala type parameter is `SparkPlan` (not `WindowGroupLimitExec`) so this file stays
- * compilable against Spark 3.4, where the exec class does not exist. Field extraction is
+ * The Scala type parameter is `SparkPlan` (not `WindowGroupLimitExec`), and field extraction is
  * delegated to the per-Spark-minor `ShimCometWindowGroupLimit`.
  */
 object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
 
   /**
-   * Fields extracted from a Spark `WindowGroupLimitExec` (Spark 3.5+). `mode` is a Spark-agnostic
-   * string ("Partial" or "Final") because Spark's `WindowGroupLimitMode` type does not exist on
-   * Spark 3.4, and the enclosing file must compile on that profile.
+   * Fields extracted from a Spark `WindowGroupLimitExec`. `mode` is a Spark-agnostic string
+   * ("Partial" or "Final") so the shared serde is independent of Spark's mode type.
    */
   case class Fields(
       partitionSpec: Seq[Expression],
@@ -65,9 +63,8 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       op: SparkPlan,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    // Shim returns `None` for a Spark 3.4 plan (WGL does not exist) or if a future Spark
-    // introduces a rank-like function this shim does not know about. In both cases fall back
-    // to Spark rather than throwing, so a working query stays working across Spark upgrades.
+    // If a future Spark version introduces a rank-like function this shim does not know about,
+    // fall back to Spark rather than throwing so a working query stays working across upgrades.
     val fields = ShimCometWindowGroupLimit.extract(op) match {
       case Some(f) => f
       case None =>
@@ -102,8 +99,8 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
     // The same byte equality decides RANK and DENSE_RANK ties, but it runs on keys that the native
     // planner has normalized: a `FLOAT` or `DOUBLE` order key, scalar or nested in an array or
     // struct, has its NaNs folded together and its signed zeros tied first, as Spark does, so no
-    // float key needs a guard here. Strict floating-point mode declines the nested keys that can
-    // hold a null element or field, through `CometSortOrder`.
+    // float key needs a guard here. `CometSortOrder` separates root null placement from nested
+    // comparison for `ASC NULLS LAST` and `DESC NULLS FIRST` on nullable nested keys.
 
     val childOutput = op.children.head.output
     val partitionProtos = fields.partitionSpec.map(e => e -> exprToProto(e, childOutput))
@@ -162,7 +159,8 @@ case class CometWindowGroupLimitExec(
     mode: String,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometUnaryExec {
+    extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def nodeName: String = "CometWindowGroupLimitExec"
 

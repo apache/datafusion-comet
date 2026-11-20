@@ -119,7 +119,7 @@ fn timestamp_containers() -> [(ArrayRef, DataType); 2] {
 }
 
 fn benchmark(c: &mut Criterion) {
-    let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+    let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
     let mut group = c.benchmark_group("parquet_timestamp_conversion");
     for width in [8, 1024] {
         let (array, target) = array_sibling(width);

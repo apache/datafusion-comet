@@ -41,7 +41,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0));
 
     for (mode, mode_name) in EVAL_MODES {
-        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let spark_cast_options = SparkCastOptions::new(mode, "");
         let cast_to_i8 = Cast::new(
             expr.clone(),
             DataType::Int8,
@@ -88,7 +88,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 
     // Benchmark decimal truncation (Legacy mode only)
-    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "", false);
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "");
     let cast_to_i32 = Cast::new(
         expr.clone(),
         DataType::Int32,
@@ -116,7 +116,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // str -> decimal benchmark
     let decimal_string_batch = create_decimal_cast_string_batch();
     for (mode, mode_name) in EVAL_MODES {
-        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let spark_cast_options = SparkCastOptions::new(mode, "");
         let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));
         for (data_type, name) in [
             (DataType::Decimal128(38, 10), "decimal_38_10"),
@@ -136,6 +136,29 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.finish();
     }
 
+    // str -> decimal with non-ASCII digits, which take the normalization path in
+    // `parse_string_to_decimal` instead of the pure-ASCII fast path
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "");
+    let cast = Cast::new(
+        expr.clone(),
+        DataType::Decimal128(38, 10),
+        spark_cast_options,
+        None,
+        None,
+    );
+    let mut group = c.benchmark_group("cast_string_to_decimal_unicode/legacy");
+    for (name, zero, every_other) in [
+        ("fullwidth", '\u{FF10}', false),
+        ("mixed_ascii_fullwidth", '\u{FF10}', true),
+        ("arabic_indic", '\u{0660}', false),
+    ] {
+        let batch = create_unicode_decimal_cast_string_batch(zero, every_other);
+        group.bench_function(name, |b| {
+            b.iter(|| cast.evaluate(&batch).unwrap());
+        });
+    }
+    group.finish();
+
     // str -> boolean and str -> float benchmarks, with and without the leading/trailing
     // whitespace that exercises the trim helpers in `conversion_funcs::trim`
     let bool_batch = create_boolean_string_batch(false);
@@ -143,7 +166,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let float_batch = create_float_string_batch(false);
     let float_padded_batch = create_float_string_batch(true);
     for (mode, mode_name) in EVAL_MODES {
-        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let spark_cast_options = SparkCastOptions::new(mode, "");
         let mut group = c.benchmark_group(format!("cast_string_to_bool_and_float/{}", mode_name));
         for (data_type, name, batch) in [
             (DataType::Boolean, "boolean", &bool_batch),
@@ -249,6 +272,29 @@ fn create_decimal_cast_string_batch() -> RecordBatch {
                 format!("0.{:05}", rng.random_range(0..100_000u32))
             }
         }
+    })
+}
+
+/// Create batch of decimal strings whose digits are re-spelled in the script whose zero is
+/// `zero`, either all of them or every other one (mixing with ASCII)
+fn create_unicode_decimal_cast_string_batch(zero: char, every_other: bool) -> RecordBatch {
+    let mut rng = StdRng::seed_from_u64(42);
+    string_batch(8192, 10, move |_| {
+        let ascii = format!(
+            "-{}.{}",
+            rng.random_range(0..1_000_000_000u32),
+            rng.random_range(0..1_000_000_000u32)
+        );
+        ascii
+            .chars()
+            .enumerate()
+            .map(|(i, c)| match c.to_digit(10) {
+                Some(d) if !every_other || i % 2 == 0 => {
+                    char::from_u32(u32::from(zero) + d).unwrap()
+                }
+                _ => c,
+            })
+            .collect()
     })
 }
 

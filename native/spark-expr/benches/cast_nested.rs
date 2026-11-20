@@ -15,222 +15,125 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Benchmarks for the nested `cast` paths: struct->struct (child retyped), map->map (value
+//! retyped), and array->string. Each builds an 8192-row input and casts it through the public
+//! `Cast` physical expression, mirroring the scalar cast benches.
+
+use arrow::array::{
+    ArrayRef, Int32Array, ListArray, MapArray, RecordBatch, StringArray, StructArray,
+};
+use arrow::buffer::OffsetBuffer;
+use arrow::datatypes::{DataType, Field, Fields, Int32Type, Schema};
+use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use std::hint::black_box;
 use std::sync::Arc;
-use std::time::Duration;
 
-use arrow::array::{Array, ArrayRef, Date32Array, Int32Array, ListArray, MapArray, StructArray};
-use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::{DataType, Field, TimeUnit};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
+const NUM_ROWS: usize = 8192;
+const ENTRIES_PER_ROW: usize = 2;
 
-const ROWS: usize = 8192;
+/// Single-column batch named `c` wrapping `array`.
+fn batch(array: ArrayRef) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("c", array.data_type().clone(), true)]);
+    RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap()
+}
 
-fn validity(null_percent: usize) -> Option<NullBuffer> {
-    (null_percent != 0).then(|| {
-        NullBuffer::from(
-            (0..ROWS)
-                .map(|row| match null_percent {
-                    // Exact ratios exercise the sparse-compaction boundary without rounding.
-                    25 => row % 4 != 0,
-                    50 => row % 2 != 0,
-                    _ => row % 100 >= null_percent,
-                })
+/// `Struct<a: Int32, b: Utf8>` with `NUM_ROWS` rows.
+fn struct_input() -> ArrayRef {
+    let a = Arc::new(Int32Array::from((0..NUM_ROWS as i32).collect::<Vec<_>>())) as ArrayRef;
+    let b = Arc::new(StringArray::from(
+        (0..NUM_ROWS).map(|i| format!("s{i}")).collect::<Vec<_>>(),
+    )) as ArrayRef;
+    let fields = Fields::from(vec![
+        Field::new("a", DataType::Int32, true),
+        Field::new("b", DataType::Utf8, true),
+    ]);
+    Arc::new(StructArray::new(fields, vec![a, b], None))
+}
+
+/// `Map<Utf8, Int32>` with `NUM_ROWS` rows of `ENTRIES_PER_ROW` entries each.
+fn map_input() -> ArrayRef {
+    let total = NUM_ROWS * ENTRIES_PER_ROW;
+    let keys = Arc::new(StringArray::from(
+        (0..total).map(|i| format!("k{i}")).collect::<Vec<_>>(),
+    )) as ArrayRef;
+    let values = Arc::new(Int32Array::from((0..total as i32).collect::<Vec<_>>())) as ArrayRef;
+    let entries_fields = Fields::from(vec![
+        Field::new("key_value_key", DataType::Utf8, false),
+        Field::new("key_value_value", DataType::Int32, true),
+    ]);
+    let entries = StructArray::new(entries_fields, vec![keys, values], None);
+    let offsets = OffsetBuffer::<i32>::new(
+        (0..=NUM_ROWS)
+            .map(|i| (i * ENTRIES_PER_ROW) as i32)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let entries_field = Arc::new(Field::new(
+        "key_value",
+        DataType::Struct(entries.fields().clone()),
+        false,
+    ));
+    Arc::new(MapArray::new(entries_field, offsets, entries, None, false))
+}
+
+/// `List<Int32>` with `NUM_ROWS` rows whose lengths cycle through 0..=3.
+fn list_input() -> ArrayRef {
+    let data = (0..NUM_ROWS).map(|i| {
+        let len = i % 4;
+        Some(
+            (0..len)
+                .map(|j| Some((i * 4 + j) as i32))
                 .collect::<Vec<_>>(),
         )
-    })
-}
-
-fn list_input(width: usize, null_percent: usize, fallible: bool) -> (ArrayRef, DataType) {
-    let offsets = OffsetBuffer::from_lengths(std::iter::repeat_n(width, ROWS));
-    let values = (0..ROWS * width)
-        .map(|index| (index % 31 != 0).then_some((index % 20000) as i32))
-        .collect::<Vec<_>>();
-    let (values, target): (ArrayRef, DataType) = if fallible {
-        (
-            Arc::new(Date32Array::from(values)),
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-        )
-    } else {
-        (Arc::new(Int32Array::from(values)), DataType::Int64)
-    };
-    let from_field = Arc::new(Field::new("item", values.data_type().clone(), true));
-    (
-        Arc::new(ListArray::new(
-            from_field,
-            offsets,
-            values,
-            validity(null_percent),
-        )),
-        DataType::List(Arc::new(Field::new("item", target, true))),
-    )
-}
-
-fn struct_input(null_percent: usize) -> (ArrayRef, DataType) {
-    let fields = vec![Arc::new(Field::new("value", DataType::Int32, true))].into();
-    (
-        Arc::new(StructArray::new(
-            fields,
-            vec![Arc::new(Int32Array::from_iter_values(0..ROWS as i32))],
-            validity(null_percent),
-        )),
-        DataType::Struct(vec![Field::new("value", DataType::Int64, true)].into()),
-    )
-}
-
-fn map_input(width: usize, null_percent: usize) -> (ArrayRef, DataType) {
-    let fields = vec![
-        Arc::new(Field::new("key", DataType::Int32, false)),
-        Arc::new(Field::new("value", DataType::Int32, true)),
-    ]
-    .into();
-    let entries = StructArray::new(
-        fields,
-        vec![
-            Arc::new(Int32Array::from_iter_values(0..(ROWS * width) as i32)),
-            Arc::new(Int32Array::from_iter(
-                (0..ROWS * width).map(|index| (index % 31 != 0).then_some(index as i32)),
-            )),
-        ],
-        None,
-    );
-    let target_entries = DataType::Struct(
-        vec![
-            Field::new("key", DataType::Int32, false),
-            Field::new("value", DataType::Int64, true),
-        ]
-        .into(),
-    );
-    (
-        Arc::new(MapArray::new(
-            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
-            OffsetBuffer::from_lengths(std::iter::repeat_n(width, ROWS)),
-            entries,
-            validity(null_percent),
-            false,
-        )),
-        DataType::Map(
-            Arc::new(Field::new("entries", target_entries, false)),
-            false,
-        ),
-    )
+    });
+    Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(data))
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let options = SparkCastOptions::new(EvalMode::Ansi, "UTC", false);
+    let options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+    let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c", 0));
+
     let mut group = c.benchmark_group("cast_nested");
-    group.sample_size(30);
-    group.warm_up_time(Duration::from_secs(1));
-    group.measurement_time(Duration::from_secs(2));
-    let mut bench = |name: &str, width: usize, null_percent: usize, input: (ArrayRef, DataType)| {
-        let (array, target) = input;
-        group.throughput(Throughput::Elements(array.len() as u64));
-        let id = BenchmarkId::new(name, format!("width={width}/nulls={null_percent}%"));
-        group.bench_function(id, |b| {
-            b.iter(|| {
-                black_box(
-                    spark_cast(
-                        ColumnarValue::Array(Arc::clone(black_box(&array))),
-                        black_box(&target),
-                        black_box(&options),
-                    )
-                    .unwrap(),
-                )
-            });
-        });
-    };
 
-    for null_percent in [0, 10, 25, 50, 75, 99] {
-        for width in [4, 64] {
-            bench(
-                "list_int_to_long",
-                width,
-                null_percent,
-                list_input(width, null_percent, false),
-            );
-            bench(
-                "map_int_to_long",
-                width,
-                null_percent,
-                map_input(width, null_percent),
-            );
-            // Checked DATE conversion must retain normalization, even in legacy mode.
-            bench(
-                "list_date_to_timestamp",
-                width,
-                null_percent,
-                list_input(width, null_percent, true),
-            );
-        }
-        bench(
-            "struct_int_to_long",
-            1,
-            null_percent,
-            struct_input(null_percent),
-        );
-    }
+    // struct<a: Int32, b: Utf8> -> struct<a: Int64, b: Utf8>: retypes the first child.
+    let struct_batch = batch(struct_input());
+    let struct_target = DataType::Struct(Fields::from(vec![
+        Field::new("a", DataType::Int64, true),
+        Field::new("b", DataType::Utf8, true),
+    ]));
+    let cast_struct = Cast::new(col.clone(), struct_target, options.clone(), None, None);
+    group.bench_function("struct_to_struct", |b| {
+        b.iter(|| black_box(cast_struct.evaluate(black_box(&struct_batch)).unwrap()))
+    });
 
-    let (array, target) = list_input(4, 10, false);
-    bench(
-        "sliced_list_int_to_long",
-        4,
-        10,
-        (array.slice(1, ROWS - 2), target),
-    );
-    let (array, target) = list_input(64, 0, false);
-    bench(
-        "small_slice_int_to_long",
-        64,
-        0,
-        (array.slice(ROWS / 2, 32), target),
-    );
-
-    // One null parent can hide most values even when the parent null count is tiny.
-    let lengths = (0..ROWS).map(|row| if row == ROWS - 1 { 1024 * 1024 } else { 4 });
-    let offsets = OffsetBuffer::from_lengths(lengths);
-    let child_len = offsets[ROWS] as usize;
-    let array: ArrayRef = Arc::new(ListArray::new(
-        Arc::new(Field::new("item", DataType::Int32, false)),
-        offsets,
-        Arc::new(Int32Array::from_iter_values(0..child_len as i32)),
-        Some(NullBuffer::from(
-            (0..ROWS).map(|row| row != ROWS - 1).collect::<Vec<_>>(),
+    // map<Utf8, Int32> -> map<Utf8, Int64>: retypes the value field.
+    let map_batch = batch(map_input());
+    let map_target = DataType::Map(
+        Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, true),
+            ])),
+            false,
         )),
-    ));
-    let target = DataType::List(Arc::new(Field::new("item", DataType::Int64, false)));
-    group.throughput(Throughput::Elements(ROWS as u64));
-    group.bench_function("list_int_to_long/one_large_null_parent", |b| {
-        b.iter(|| {
-            black_box(
-                spark_cast(ColumnarValue::Array(Arc::clone(&array)), &target, &options).unwrap(),
-            )
-        });
+        false,
+    );
+    let cast_map = Cast::new(col.clone(), map_target, options.clone(), None, None);
+    group.bench_function("map_to_map", |b| {
+        b.iter(|| black_box(cast_map.evaluate(black_box(&map_batch)).unwrap()))
     });
 
-    // Invalid visible values exercise the error path instead of measuring a successful cast.
-    let (array, target) = list_input(4, 10, true);
-    let list = array.as_any().downcast_ref::<ListArray>().unwrap();
-    let invalid: ArrayRef = Arc::new(ListArray::new(
-        Arc::new(Field::new("item", DataType::Date32, true)),
-        list.offsets().clone(),
-        Arc::new(Date32Array::from(vec![i32::MAX; list.values().len()])),
-        list.nulls().cloned(),
-    ));
-    group.throughput(Throughput::Elements(ROWS as u64));
-    group.bench_function("list_date_to_timestamp/visible_overflow", |b| {
-        b.iter(|| {
-            black_box(
-                spark_cast(
-                    ColumnarValue::Array(Arc::clone(&invalid)),
-                    &target,
-                    &options,
-                )
-                .unwrap_err(),
-            )
-        });
+    // list<Int32> -> Utf8: renders each list to its Spark string form.
+    let list_batch = batch(list_input());
+    let cast_list = Cast::new(col, DataType::Utf8, options, None, None);
+    group.bench_function("array_to_string", |b| {
+        b.iter(|| black_box(cast_list.evaluate(black_box(&list_batch)).unwrap()))
     });
+
     group.finish();
 }
 

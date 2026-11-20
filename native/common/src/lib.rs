@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod calendar;
 mod error;
 mod ffi_offsets;
 /// Test fixtures, reached by tests in other crates only. See the module docs.
@@ -27,10 +28,16 @@ pub mod tracing;
 mod utf8;
 mod utils;
 
-pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use calendar::{civil_from_days, days_from_civil};
+pub use error::{
+    decimal_overflow_error, error_chain, unwrap_arrow_external_error, SparkError,
+    SparkErrorWithContext, SparkResult,
+};
 pub use ffi_offsets::zero_offsets;
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use schema::{cast_and_stamp_schema, widen_nested_nullability};
+pub use schema::{
+    cast_and_stamp_schema, describe_timestamp_label_mismatch, widen_nested_nullability,
+};
 pub use struct_nulls::{child_with_parent_nulls, children_with_parent_nulls};
 pub use utf8::decode_string_arrays;
 pub use utils::{bytes_to_i128, decode_utf8_spark_lossy};

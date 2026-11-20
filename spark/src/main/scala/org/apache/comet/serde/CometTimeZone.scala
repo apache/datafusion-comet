@@ -40,16 +40,24 @@ object CometTimeZone {
    * offset becomes `UTC`, and a short ID becomes its region. An expression with no timezone gets
    * `UTC`: Spark leaves it unset only on casts that do not use it.
    */
-  def nativeId(timeZoneId: Option[String]): Option[String] = timeZoneId match {
-    case None => Some("UTC")
-    case Some(id) =>
-      Try(DateTimeUtils.getZoneId(id).normalized()).toOption.flatMap {
-        case offset: ZoneOffset if offset.getTotalSeconds == 0 => Some("UTC")
-        case offset: ZoneOffset if offset.getTotalSeconds % 60 == 0 => Some(offset.getId)
-        case _: ZoneOffset => None
-        case region => Some(region.getId)
-      }
-  }
+  def nativeId(timeZoneId: Option[String]): Option[String] =
+    nativeId(timeZoneId, allowRegion = true)
+
+  private[comet] def hasNativeFixedOffset(timeZoneId: Option[String]): Boolean =
+    nativeId(timeZoneId, allowRegion = false).isDefined
+
+  private def nativeId(timeZoneId: Option[String], allowRegion: Boolean): Option[String] =
+    timeZoneId match {
+      case None => Some("UTC")
+      case Some(id) =>
+        Try(DateTimeUtils.getZoneId(id).normalized()).toOption.flatMap {
+          case offset: ZoneOffset if offset.getTotalSeconds == 0 => Some("UTC")
+          case offset: ZoneOffset if offset.getTotalSeconds % 60 == 0 => Some(offset.getId)
+          case _: ZoneOffset => None
+          case region if allowRegion => Some(region.getId)
+          case _ => None
+        }
+    }
 
   /** Whether `timeZoneId` has a zero offset at every instant. */
   def isUtc(timeZoneId: Option[String]): Boolean = nativeId(timeZoneId).contains("UTC")

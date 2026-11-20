@@ -41,6 +41,59 @@ enum MathOp {
     Div,
 }
 
+impl MathOp {
+    fn function_name(self) -> &'static str {
+        match self {
+            Self::Add => "try_add",
+            Self::Sub => "try_subtract",
+            Self::Mul => "try_multiply",
+            Self::Div => "try_divide",
+        }
+    }
+}
+
+/// Arrow's error does not carry the failing row. Only after its fast kernel reports an
+/// overflow, recover the first non-null overflowing pair for Spark's Byte/Short error.
+/// Keep scalar broadcasting and array offsets intact; never inspect values beneath NULLs.
+fn binary_overflow_error<T: ArrowPrimitiveType>(
+    left: &dyn Datum,
+    right: &dyn Datum,
+    op: MathOp,
+) -> Option<SparkError>
+where
+    T::Native: std::fmt::Display,
+{
+    let (left, left_scalar) = left.get();
+    let (right, right_scalar) = right.get();
+    let left = left.as_primitive::<T>();
+    let right = right.as_primitive::<T>();
+    let len = if left_scalar { right.len() } else { left.len() };
+    for row in 0..len {
+        let l = if left_scalar { 0 } else { row };
+        let r = if right_scalar { 0 } else { row };
+        if left.is_null(l) || right.is_null(r) {
+            continue;
+        }
+        let l = left.value(l);
+        let r = right.value(r);
+        let (result, symbol) = match op {
+            MathOp::Add => (l.add_checked(r), "+"),
+            MathOp::Sub => (l.sub_checked(r), "-"),
+            MathOp::Mul => (l.mul_checked(r), "*"),
+            MathOp::Div => return None,
+        };
+        if result.is_err() {
+            return Some(SparkError::BinaryArithmeticOverflow {
+                value1: l.to_string(),
+                symbol: symbol.to_string(),
+                value2: r.to_string(),
+                function_name: op.function_name().to_string(),
+            });
+        }
+    }
+    None
+}
+
 fn try_arithmetic_kernel<T>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
@@ -87,11 +140,35 @@ fn ansi_arithmetic_kernel(
     op: MathOp,
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
-    let run_kernel = |l: &dyn Datum, r: &dyn Datum| match op {
-        MathOp::Add => numeric::add(l, r),
-        MathOp::Sub => numeric::sub(l, r),
-        MathOp::Mul => numeric::mul(l, r),
-        MathOp::Div => numeric::div(l, r),
+    let from_type = integer_type_name(data_type)?;
+    let run_kernel = |l: &dyn Datum, r: &dyn Datum| {
+        let result = match op {
+            MathOp::Add => numeric::add(l, r),
+            MathOp::Sub => numeric::sub(l, r),
+            MathOp::Mul => numeric::mul(l, r),
+            MathOp::Div => numeric::div(l, r),
+        };
+        result.map_err(|error| match error {
+            ArrowError::DivideByZero => divide_by_zero_error().into(),
+            ArrowError::ArithmeticOverflow(_) => {
+                let binary_error = if op != MathOp::Div {
+                    match data_type {
+                        DataType::Int8 => binary_overflow_error::<Int8Type>(l, r, op),
+                        DataType::Int16 => binary_overflow_error::<Int16Type>(l, r, op),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                DataFusionError::from(binary_error.unwrap_or_else(|| {
+                    SparkError::ArithmeticOverflow {
+                        from_type: from_type.to_string(),
+                        function_name: op.function_name().to_string(),
+                    }
+                }))
+            }
+            _ => error.into(),
+        })
     };
 
     let is_scalars = matches!(
@@ -120,14 +197,7 @@ fn ansi_arithmetic_kernel(
         }
     };
 
-    let from_type = integer_type_name(data_type)?;
-
-    let array = result_array.map_err(|e| match e {
-        ArrowError::DivideByZero => divide_by_zero_error().into(),
-        _ => DataFusionError::from(SparkError::ArithmeticOverflow {
-            from_type: String::from(from_type),
-        }),
-    })?;
+    let array = result_array?;
 
     if is_scalars {
         let scalar_val = ScalarValue::try_from_array(array.as_ref(), 0)?;
@@ -151,6 +221,7 @@ where
             ArrowError::DivideByZero => divide_by_zero_error().into(),
             _ => DataFusionError::from(SparkError::ArithmeticOverflow {
                 from_type: String::from(from_type),
+                function_name: String::new(),
             }),
         })
 }
@@ -510,6 +581,175 @@ mod tests {
         match res_scalar {
             ColumnarValue::Scalar(ScalarValue::Int32(v)) => assert_eq!(v, Some(30)),
             _ => panic!("Expected scalar result"),
+        }
+    }
+
+    fn overflow_json(error: DataFusionError) -> serde_json::Value {
+        let DataFusionError::External(error) = error else {
+            panic!("Expected structured Spark error, got {error:?}")
+        };
+        let error = error.downcast_ref::<SparkError>().unwrap();
+        serde_json::from_str(&error.to_json()).unwrap()
+    }
+
+    #[test]
+    fn test_ansi_integral_overflow_payloads() {
+        // Both overflow signs and all scalar/array shapes. In particular, subtraction must
+        // preserve operand order when the scalar is on the left.
+        for (data_type, min, max) in [
+            (DataType::Int8, i8::MIN as i64, i8::MAX as i64),
+            (DataType::Int16, i16::MIN as i64, i16::MAX as i64),
+            (DataType::Int32, i32::MIN as i64, i32::MAX as i64),
+            (DataType::Int64, i64::MIN, i64::MAX),
+        ] {
+            let value = |v| match data_type {
+                DataType::Int8 => ScalarValue::Int8(Some(v as i8)),
+                DataType::Int16 => ScalarValue::Int16(Some(v as i16)),
+                DataType::Int32 => ScalarValue::Int32(Some(v as i32)),
+                DataType::Int64 => ScalarValue::Int64(Some(v)),
+                _ => unreachable!(),
+            };
+            for (op, symbol, function, pairs) in [
+                (MathOp::Add, "+", "try_add", [(max, 1), (min, -1)]),
+                (MathOp::Sub, "-", "try_subtract", [(min, 1), (max, -1)]),
+                (MathOp::Mul, "*", "try_multiply", [(max, 2), (min, -1)]),
+            ] {
+                for (l, r) in pairs {
+                    for (left_scalar, right_scalar) in
+                        [(false, false), (true, false), (false, true), (true, true)]
+                    {
+                        let operand = |v: ScalarValue, scalar| {
+                            if scalar {
+                                ColumnarValue::Scalar(v)
+                            } else {
+                                ColumnarValue::Array(v.to_array().unwrap())
+                            }
+                        };
+                        let args = [
+                            operand(value(l), left_scalar),
+                            operand(value(r), right_scalar),
+                        ];
+                        let error = overflow_json(
+                            checked_arithmetic_internal(&args, &data_type, op, EvalMode::Ansi)
+                                .unwrap_err(),
+                        );
+                        let expected = if matches!(data_type, DataType::Int8 | DataType::Int16) {
+                            serde_json::json!({
+                                "value1": l.to_string(), "symbol": symbol,
+                                "value2": r.to_string(), "functionName": function
+                            })
+                        } else {
+                            serde_json::json!({
+                                "fromType": integer_type_name(&data_type).unwrap(),
+                                "functionName": function
+                            })
+                        };
+                        let class = if matches!(data_type, DataType::Int8 | DataType::Int16) {
+                            "BINARY_ARITHMETIC_OVERFLOW"
+                        } else {
+                            "ARITHMETIC_OVERFLOW"
+                        };
+                        assert_eq!(error["errorClass"], class, "{data_type:?} {op:?}");
+                        assert_eq!(error["params"], expected, "{data_type:?} {op:?}");
+                        // TRY must still return a typed NULL for the identical inputs.
+                        let result =
+                            checked_arithmetic_internal(&args, &data_type, op, EvalMode::Try)
+                                .unwrap();
+                        assert_eq!(result.into_array(1).unwrap().null_count(), 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ansi_wide_integer_overflow_suggestion() {
+        // A separate regression so the baseline also demonstrates the missing suggestion.
+        let args = int32_args(vec![Some(i32::MAX)], vec![Some(1)]);
+        let error =
+            overflow_json(checked_add(&args, &DataType::Int32, EvalMode::Ansi).unwrap_err());
+        assert_eq!(error["params"]["functionName"], "try_add");
+    }
+
+    #[test]
+    fn test_ansi_small_integer_overflow_skips_nulls_and_respects_slices() {
+        macro_rules! check {
+            ($ty:ty, $native:ty) => {{
+                // Ignore both the row before the slice and overflowing garbage beneath NULLs.
+                let left = PrimitiveArray::<$ty>::new(
+                    vec![<$native>::MAX, <$native>::MAX, 1, <$native>::MAX].into(),
+                    Some(NullBuffer::from(vec![true, false, true, true])),
+                )
+                .slice(1, 3);
+                let right = PrimitiveArray::<$ty>::from_iter_values([1, 1, 2]);
+                let args = [
+                    ColumnarValue::Array(Arc::new(left.clone())),
+                    ColumnarValue::Array(Arc::new(right)),
+                ];
+                let error = overflow_json(
+                    checked_add(&args, left.data_type(), EvalMode::Ansi).unwrap_err(),
+                );
+                assert_eq!(error["params"]["value1"], <$native>::MAX.to_string());
+                assert_eq!(error["params"]["value2"], "2");
+
+                let args = [
+                    ColumnarValue::Array(Arc::new(left.slice(0, 2))),
+                    ColumnarValue::Array(Arc::new(PrimitiveArray::<$ty>::from_iter_values([1, 1]))),
+                ];
+                let result = checked_add(&args, left.data_type(), EvalMode::Ansi)
+                    .unwrap()
+                    .into_array(2)
+                    .unwrap();
+                assert_eq!(
+                    result.as_primitive::<$ty>(),
+                    &PrimitiveArray::<$ty>::from_iter([None, Some(2)])
+                );
+            }};
+        }
+        check!(Int8Type, i8);
+        check!(Int16Type, i16);
+    }
+
+    #[test]
+    fn test_ansi_small_integer_null_and_empty_scalar_broadcasts() {
+        for data_type in [DataType::Int8, DataType::Int16] {
+            let null = ScalarValue::try_from(&data_type).unwrap();
+            let max = if data_type == DataType::Int8 {
+                ScalarValue::Int8(Some(i8::MAX))
+            } else {
+                ScalarValue::Int16(Some(i16::MAX))
+            };
+            for op in [MathOp::Add, MathOp::Sub, MathOp::Mul] {
+                for args in [
+                    [
+                        ColumnarValue::Scalar(null.clone()),
+                        ColumnarValue::Array(max.to_array_of_size(3).unwrap()),
+                    ],
+                    [
+                        ColumnarValue::Array(max.to_array_of_size(3).unwrap()),
+                        ColumnarValue::Scalar(null.clone()),
+                    ],
+                    [
+                        ColumnarValue::Scalar(max.clone()),
+                        ColumnarValue::Array(max.to_array_of_size(0).unwrap()),
+                    ],
+                    [
+                        ColumnarValue::Array(max.to_array_of_size(0).unwrap()),
+                        ColumnarValue::Scalar(max.clone()),
+                    ],
+                    [
+                        ColumnarValue::Scalar(null.clone()),
+                        ColumnarValue::Scalar(max.clone()),
+                    ],
+                ] {
+                    let result =
+                        checked_arithmetic_internal(&args, &data_type, op, EvalMode::Ansi).unwrap();
+                    match result {
+                        ColumnarValue::Array(array) => assert_eq!(array.len(), array.null_count()),
+                        ColumnarValue::Scalar(value) => assert!(value.is_null()),
+                    }
+                }
+            }
         }
     }
 }

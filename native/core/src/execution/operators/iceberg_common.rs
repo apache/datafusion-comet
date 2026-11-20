@@ -44,19 +44,19 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
-/// `CometS3CredentialBridge` can read whatever the vendor needs.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
+/// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
+/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`. `hdfs.` and `hadoop.`
+/// carry the HDFS backend's NameNode declarations and Hadoop client settings.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &[
+    "s3.", "gcs.", "adls.", "client.", "opendal.", "hdfs.", "hadoop.",
+];
 
-/// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
-/// the local file system. `memory` is used by the write path to assemble manifest bytes that
-/// stay entirely in-process. For S3, the Comet credential bridge is wired in when a provider
-/// class is configured; `access_mode` is forwarded to the JVM SPI so the read and write paths can
-/// be granted different (e.g. read-only vs read-write) credentials.
+/// Pick an OpenDAL storage backend for a URI whose scheme `builtin_storage_schemes` lists for
+/// `access_mode`, or that is an opted-in S3-compliant alias written in lowercase; anything else is
+/// rejected before the match, so the list alone decides what each mode admits. For S3, the Comet
+/// credential bridge is wired in when a provider class is configured and `access_mode` is
+/// forwarded to the JVM SPI.
 ///
-/// The JVM planner mirrors the schemes admitted here by hand, so that it can decline a scan
-/// cleanly instead of failing at execution. Changing the arms below means updating
-/// `CometScanRule.icebergReadableSchemes` (reads) and
-/// `CometIcebergNativeWrite.SupportedStorageSchemes` (writes).
 /// The bool is false when a read fell back to opendal's default chain because the configured S3
 /// access provider failed to initialise; such a `FileIO` must not be cached, so the next task
 /// retries.
@@ -66,24 +66,23 @@ pub(crate) fn storage_factory_for(
     catalog_name: &str,
     access_mode: AccessMode,
 ) -> Result<(Arc<dyn StorageFactory>, bool), DataFusionError> {
+    // Verbatim match: OpenDAL strips the scheme prefix from every path case-sensitively at open
+    // time, so admitting `S3://` here would only defer the failure. Aliases are held to the same
+    // rule (`is_iceberg_alias_scheme`). The JVM gates match verbatim.
     let scheme = scheme_of(path);
+    if !builtin_storage_schemes(access_mode).contains(&scheme)
+        && !is_s3_family_scheme(scheme, catalog_properties)
+    {
+        return Err(DataFusionError::Execution(format!(
+            "Unsupported storage scheme: {scheme}"
+        )));
+    }
     match scheme {
         "file" => Ok((Arc::new(OpenDalStorageFactory::Fs), true)),
         "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
         "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
-        // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
-        // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
-        // properties into the FileIO and no test covers the write path, so OSS-specific
-        // endpoint/credential configuration could silently be dropped. The JVM write gate
-        // already declines `oss` locations; this is the native-side backstop.
-        "oss" => match access_mode {
-            AccessMode::Read => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
-            AccessMode::Write => Err(DataFusionError::Execution(
-                "OSS is not supported for native Iceberg writes (oss.* properties are not \
-                 forwarded to the native FileIO)"
-                    .to_string(),
-            )),
-        },
+        "oss" => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
+        "hdfs" => Ok((Arc::new(OpenDalStorageFactory::HdfsNative), true)),
         // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) route to the S3 backend. Listed
         // last so the built-in backends above stay authoritative even if one of their schemes is
         // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
@@ -92,7 +91,7 @@ pub(crate) fn storage_factory_for(
         // location-scoped provider gets a storage that serves each file with the credential of
         // its policy location -- see iceberg_location_scoped.
         s if is_s3_family_scheme(s, catalog_properties) => {
-            let alias = is_s3_compliant_alias_scheme(s, catalog_properties);
+            let alias = is_iceberg_alias_scheme(s, catalog_properties);
             let (access, cacheable) =
                 build_s3_access(path, catalog_properties, catalog_name, access_mode)?;
             let factory: Arc<dyn StorageFactory> = match access {
@@ -110,6 +109,7 @@ pub(crate) fn storage_factory_for(
             };
             Ok((factory, cacheable))
         }
+        // Only a listed scheme without an arm reaches here; the tests below fail on that.
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported storage scheme: {scheme}"
         ))),
@@ -153,11 +153,55 @@ impl FileIoCacheKey {
             properties: sorted_properties(catalog_properties),
         })
     }
+
+    /// Whether `other` is a `FileIO` for the same table, access mode and catalog, built from
+    /// credentials that this key's `FileIO` replaces. A catalog that re-vends credentials gives a
+    /// table new properties, and a commit moves its metadata file, so the table is compared by
+    /// [`Self::table_location`]. A commit that keeps the properties supersedes nothing, so
+    /// neighboring snapshots share one provider.
+    ///
+    /// Only a later `s3.session-token-expires-at-ms` supersedes, so both entries must carry one.
+    /// Properties can differ for reasons that say nothing about which is newer: two sessions or
+    /// tenants that share a catalog name can hold different tokens, OAuth credentials or tenant
+    /// ids for one table. Evicting on any difference would make them evict each other on every
+    /// task. Without a later expiry both entries stay, and the LRU bound retires the older one.
+    fn supersedes(&self, other: &Self) -> bool {
+        self.access_mode == other.access_mode
+            && self.catalog_name == other.catalog_name
+            && self.table_location() == other.table_location()
+            && self.properties != other.properties
+            && matches!(
+                (self.token_expires_at_ms(), other.token_expires_at_ms()),
+                (Some(new), Some(old)) if new > old
+            )
+    }
+
+    /// What identifies the table across commits. A read's reference path is a metadata file, and
+    /// Iceberg writes all of a table's metadata files into one directory (`write.metadata.path`, or
+    /// `<location>/metadata`), so a read compares that directory. A write's reference path is the
+    /// table's data location, which a commit doesn't move.
+    fn table_location(&self) -> &str {
+        if self.access_mode == AccessMode::Read as u8 {
+            self.reference_path
+                .rfind('/')
+                .map_or(self.reference_path.as_str(), |i| &self.reference_path[..i])
+        } else {
+            &self.reference_path
+        }
+    }
+
+    fn token_expires_at_ms(&self) -> Option<u64> {
+        self.properties
+            .iter()
+            .find(|(k, _)| k == "s3.session-token-expires-at-ms")
+            .and_then(|(_, v)| v.parse().ok())
+    }
 }
 
 const FILE_IO_CACHE_CAPACITY: usize = 64;
 
-/// Least recently used entries are evicted first.
+/// Least recently used entries are evicted first. Inserting a table's `FileIO` also evicts the ones
+/// it supersedes, so their S3 credential providers can be released once no reader holds them.
 struct FileIoCache {
     entries: HashMap<FileIoCacheKey, FileIO>,
     order: VecDeque<FileIoCacheKey>,
@@ -182,17 +226,27 @@ impl FileIoCache {
         Some(file_io)
     }
 
-    /// Returns the replaced or evicted `FileIO` so the caller can drop it outside the lock.
-    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Option<FileIO> {
+    /// Returns the replaced or evicted `FileIO`s so the caller can drop them outside the lock.
+    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Vec<FileIO> {
         if let Some(previous) = self.entries.insert(key.clone(), file_io) {
-            return Some(previous);
+            return vec![previous];
         }
+        let mut evicted = Vec::new();
+        self.order.retain(|k| {
+            if key.supersedes(k) {
+                evicted.extend(self.entries.remove(k));
+                false
+            } else {
+                true
+            }
+        });
         self.order.push_back(key);
         if self.entries.len() > self.capacity {
-            let oldest = self.order.pop_front()?;
-            return self.entries.remove(&oldest);
+            if let Some(oldest) = self.order.pop_front() {
+                evicted.extend(self.entries.remove(&oldest));
+            }
         }
-        None
+        evicted
     }
 }
 
@@ -300,6 +354,18 @@ fn cached_file_io(
         drop(evicted);
     }
     Ok(file_io)
+}
+
+/// The single point of change for the built-in schemes `storage_factory_for` admits per access
+/// mode; the JVM read and write gates load these lists over JNI. `memory` is write-only: an OpenDAL
+/// memory backend is a fresh empty in-process store the write path assembles manifests in, so a
+/// read finds nothing. `oss` is read-only: no `oss.*` property is forwarded and no test covers it.
+/// `hdfs` is read-only: the write path has not been tested against it.
+pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
+    match access_mode {
+        AccessMode::Read => &["file", "gs", "hdfs", "oss", "s3", "s3a"],
+        AccessMode::Write => &["file", "memory", "gs", "s3", "s3a"],
+    }
 }
 
 pub(crate) fn load_file_io(
@@ -569,7 +635,11 @@ fn env_region_present() -> bool {
 /// S3-compliant scan to the local filesystem. A `/` before the `:` means there is no scheme (the
 /// `:` sits inside a path segment, e.g. `/tmp/a:b`), so those and truly schemeless paths default
 /// to `file`.
-fn scheme_of(path: &str) -> &str {
+///
+/// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule exactly, case
+/// included. Change both together, and keep the cases in
+/// `scheme_of_extracts_scheme_from_all_uri_forms` in step with its `storageScheme` test.
+pub(crate) fn scheme_of(path: &str) -> &str {
     match path.split_once(':') {
         Some((scheme, _)) if !scheme.is_empty() && !scheme.contains('/') => scheme,
         _ => "file",
@@ -582,7 +652,19 @@ fn scheme_of(path: &str) -> &str {
 /// iceberg-rust's storage factory has no `s3n` backend and the Scala Iceberg scheme gate
 /// (`isIcebergReadableScheme`) rejects `s3n` before a path ever reaches this operator.
 fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
-    matches!(scheme, "s3" | "s3a") || is_s3_compliant_alias_scheme(scheme, catalog_properties)
+    matches!(scheme, "s3" | "s3a") || is_iceberg_alias_scheme(scheme, catalog_properties)
+}
+
+/// True if `scheme` is an opted-in S3-compliant alias written exactly as the lowercase form of its
+/// list entry. The shared `is_s3_compliant_alias_scheme` is case-insensitive, which is safe for
+/// the Parquet path because it rewrites an alias URL to `s3://` before anything opens it. The
+/// Iceberg path opens the recorded location as written, and OpenDAL's S3 backend checks it against
+/// a `scheme://bucket/` prefix whose scheme comes from `Url::parse` and so is lowercase, so
+/// `BLOB://bucket/key` would pass a case-insensitive gate here and fail at open time. The JVM
+/// Iceberg gate matches the same way.
+fn is_iceberg_alias_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
+    !scheme.bytes().any(|b| b.is_ascii_uppercase())
+        && is_s3_compliant_alias_scheme(scheme, catalog_properties)
 }
 
 #[cfg(test)]
@@ -771,6 +853,17 @@ mod tests {
             .all(|k| scheme_of(&k.reference_path) != "memory"));
     }
 
+    /// The JVM sets this key from `spark.comet.iceberg.ioTimeout`.
+    #[test]
+    fn io_timeout_reaches_the_file_io() {
+        let key = iceberg_storage_opendal::OPENDAL_IO_TIMEOUT_MS;
+        assert_eq!(key, "opendal.io-timeout-ms");
+        let props = HashMap::from([(key.to_string(), "30000".to_string())]);
+        let (file_io, _) =
+            build_file_io(&props, "file:///tmp/warehouse", "", AccessMode::Read).unwrap();
+        assert_eq!(file_io.config().get(key).map(String::as_str), Some("30000"));
+    }
+
     #[test]
     fn cache_evicts_the_least_recently_used_entry() {
         let mut cache = FileIoCache::new(2);
@@ -783,15 +876,234 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(cache.insert(key("a"), local_file_io()).is_none());
-        assert!(cache.insert(key("b"), local_file_io()).is_none());
+        assert!(cache.insert(key("a"), local_file_io()).is_empty());
+        assert!(cache.insert(key("b"), local_file_io()).is_empty());
         assert!(cache.get(&key("a")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert!(cache.get(&key("b")).is_none());
         assert!(cache.get(&key("a")).is_some());
         assert!(cache.get(&key("c")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// Properties as a REST catalog vends them: a token and its expiry. `t1` expires before `t2`,
+    /// which expires before `t3`.
+    fn vended(token: &str) -> HashMap<String, String> {
+        let n: u64 = token.trim_start_matches('t').parse().unwrap();
+        HashMap::from([
+            ("s3.session-token".to_string(), token.to_string()),
+            (
+                "s3.session-token-expires-at-ms".to_string(),
+                (n * 1000).to_string(),
+            ),
+        ])
+    }
+
+    /// A catalog that re-vends credentials for a table gives it new properties with a later
+    /// expiry, so the table's new `FileIO` evicts the old one, and the old one's credential provider is released once its
+    /// readers finish. That holds whether the metadata file moved or not. Other tables, catalogs
+    /// and access modes keep theirs.
+    #[test]
+    fn cache_evicts_the_file_io_a_table_supersedes() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str, catalog: &str, mode: AccessMode| {
+            FileIoCacheKey::new(&vended(token), path, catalog, mode).unwrap()
+        };
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        let other_table = "s3://b/db/u/metadata/00001-c.metadata.json";
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Read), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", other_table, "cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", v1, "other_cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Write), local_file_io())
+            .is_empty());
+
+        // Re-vended credentials for the same metadata file.
+        assert_eq!(
+            cache
+                .insert(key("t2", v1, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t1", v1, "cat", AccessMode::Read)).is_none());
+
+        // A commit, with credentials vended alongside it.
+        assert_eq!(
+            cache
+                .insert(key("t3", v2, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t2", v1, "cat", AccessMode::Read)).is_none());
+        assert!(cache.get(&key("t3", v2, "cat", AccessMode::Read)).is_some());
+
+        assert!(cache
+            .get(&key("t1", other_table, "cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "other_cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "cat", AccessMode::Write))
+            .is_some());
+        assert_eq!(cache.entries.len(), 4);
+        assert_eq!(cache.order.len(), 4);
+    }
+
+    /// A commit that keeps the credentials leaves the previous snapshot's `FileIO` cached, so a
+    /// time-travel self-join or reads of neighboring snapshots don't rebuild it on each task.
+    /// With `write.metadata.path` set, a table's metadata files sit in that directory, which need
+    /// not end in `/metadata`. A commit under `s3://b/meta/db/t1` still supersedes the table's
+    /// previous `FileIO`, and two tables under `s3://b/metadata/db/` stay apart.
+    #[test]
+    fn cache_compares_reads_by_metadata_directory() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(&vended(token), path, "cat", AccessMode::Read).unwrap()
+        };
+        let custom_v1 = "s3://b/meta/db/t1/00001-a.metadata.json";
+        let custom_v2 = "s3://b/meta/db/t1/00002-b.metadata.json";
+        assert!(cache
+            .insert(key("t1", custom_v1), local_file_io())
+            .is_empty());
+        assert_eq!(cache.insert(key("t2", custom_v2), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", custom_v1)).is_none());
+
+        let shared_t1 = "s3://b/metadata/db/t1/00001-c.metadata.json";
+        let shared_t2 = "s3://b/metadata/db/t2/00001-d.metadata.json";
+        assert!(cache
+            .insert(key("t1", shared_t1), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("t2", shared_t2), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("t1", shared_t1)).is_some());
+        assert_eq!(cache.entries.len(), 3);
+    }
+
+    #[test]
+    fn cache_keeps_the_file_io_of_a_commit_with_unchanged_properties() {
+        let mut cache = FileIoCache::new(8);
+        let properties = HashMap::from([("s3.session-token".to_string(), "t1".to_string())]);
+        let key =
+            |path: &str| FileIoCacheKey::new(&properties, path, "cat", AccessMode::Read).unwrap();
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        assert!(cache.insert(key(v1), local_file_io()).is_empty());
+        assert!(cache.insert(key(v2), local_file_io()).is_empty());
+        assert!(cache.get(&key(v1)).is_some());
+        assert!(cache.get(&key(v2)).is_some());
+    }
+
+    /// Two sessions reading one table with different vended tokens: only the token that expires
+    /// later evicts, so the sessions don't evict each other on every insert.
+    #[test]
+    fn cache_evicts_only_for_a_token_that_expires_later() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, expires_at_ms: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([
+                    ("s3.session-token".to_string(), token.to_string()),
+                    (
+                        "s3.session-token-expires-at-ms".to_string(),
+                        expires_at_ms.to_string(),
+                    ),
+                ]),
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache
+            .insert(key("later", "2000"), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("earlier", "1000"), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("later", "2000")).is_some());
+        assert!(cache.get(&key("earlier", "1000")).is_some());
+
+        assert_eq!(
+            cache.insert(key("latest", "3000"), local_file_io()).len(),
+            2
+        );
+        assert!(cache.get(&key("latest", "3000")).is_some());
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// A write's reference path is the table's data location, compared whole: new properties for
+    /// it supersede, while a sibling table's location, which shares its parent, stays apart.
+    #[test]
+    fn cache_compares_writes_by_data_location() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(&vended(token), path, "cat", AccessMode::Write).unwrap()
+        };
+        let t = "s3://b/warehouse/db/t";
+        let u = "s3://b/warehouse/db/u";
+        assert!(cache.insert(key("t1", t), local_file_io()).is_empty());
+        assert!(cache.insert(key("t1", u), local_file_io()).is_empty());
+        assert_eq!(cache.insert(key("t2", u), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", t)).is_some());
+        assert!(cache.get(&key("t1", u)).is_none());
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// Properties that differ without a later expiry on both sides don't say which entry is newer,
+    /// for example two tenants sharing a catalog name with different OAuth tokens, or a token
+    /// vended without an expiry. Both entries stay, so neither side evicts the other on each task,
+    /// and the LRU bound retires the least recently used one.
+    #[test]
+    fn cache_keeps_entries_without_a_later_expiry() {
+        let mut cache = FileIoCache::new(3);
+        let key = |properties: &[(&str, &str)]| {
+            FileIoCacheKey::new(
+                &properties
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        let tenant_a = key(&[("token", "oauth-a"), ("header.X-Tenant", "a")]);
+        let tenant_b = key(&[("token", "oauth-b"), ("header.X-Tenant", "b")]);
+        let expiring = key(&[
+            ("s3.session-token", "t1"),
+            ("s3.session-token-expires-at-ms", "1000"),
+        ]);
+        assert!(cache.insert(tenant_a.clone(), local_file_io()).is_empty());
+        assert!(cache.insert(tenant_b.clone(), local_file_io()).is_empty());
+        // An expiry on one side only doesn't order the two either way.
+        assert!(cache.insert(expiring.clone(), local_file_io()).is_empty());
+        assert!(cache.get(&tenant_a).is_some());
+        assert!(cache.get(&tenant_b).is_some());
+        assert!(cache.get(&expiring).is_some());
+
+        // The LRU bound still applies: tenant_a is now the least recently used.
+        let unexpiring = key(&[("s3.session-token", "t2")]);
+        assert_eq!(cache.insert(unexpiring.clone(), local_file_io()).len(), 1);
+        assert!(cache.get(&tenant_a).is_none());
+        assert!(cache.get(&tenant_b).is_some());
+        assert!(cache.get(&unexpiring).is_some());
+        assert_eq!(cache.entries.len(), 3);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
@@ -807,7 +1119,177 @@ mod tests {
         // oss.* property forwarding exists and is tested.
         assert!(factory_result("oss://bucket/db/table", AccessMode::Read).is_ok());
         let err = factory_result("oss://bucket/db/table", AccessMode::Write).unwrap_err();
-        assert!(err.contains("OSS"), "unexpected error: {err}");
+        assert!(
+            err.contains("Unsupported storage scheme: oss"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn hdfs_scheme_is_readable_but_not_writable() {
+        assert!(factory_result("hdfs://nn:8020/db/table", AccessMode::Read).is_ok());
+        let err = factory_result("hdfs://nn:8020/db/table", AccessMode::Write).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: hdfs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The JVM declares a nameservice as `hdfs.name-node.<ns>`, and a catalog can declare one with
+    /// Hadoop's own keys under `hadoop.`.
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        let props = HashMap::from([
+            ("hdfs.name-node.ns1".to_string(), "nn1:8020".to_string()),
+            ("hadoop.dfs.ha.namenodes.ns2".to_string(), "a".to_string()),
+            (
+                "hadoop.dfs.namenode.rpc-address.ns2.a".to_string(),
+                "nn2:8020".to_string(),
+            ),
+        ]);
+        let (file_io, _) =
+            build_file_io(&props, "hdfs://ns2/warehouse", "", AccessMode::Read).unwrap();
+        for (key, value) in &props {
+            assert_eq!(file_io.config().get(key), Some(value), "{key}");
+        }
+    }
+
+    /// The cache is shared per executor, and an HDFS `FileIO` keeps its NameNode clients for life.
+    /// Two catalogs that differ only in how they reach HDFS must therefore never share a key, or
+    /// the second would be served by the first one's clients. A regression pin on the key, which
+    /// hashes every property.
+    #[test]
+    fn cache_key_separates_hdfs_catalogs() {
+        let table = "hdfs://nameservice1/warehouse/db/t";
+        let props = |name_node: &str, random_order: &str| {
+            HashMap::from([
+                // What the JVM declares for an `hdfs://nameservice1/...` table.
+                (
+                    "hdfs.name-node.nameservice1".to_string(),
+                    name_node.to_string(),
+                ),
+                (
+                    "hadoop.dfs.client.failover.random.order".to_string(),
+                    random_order.to_string(),
+                ),
+            ])
+        };
+        let key = |props: &HashMap<String, String>| {
+            FileIoCacheKey::new(props, table, "cat", AccessMode::Read)
+        };
+        let base = props("nn1:8020,nn2:8020", "true");
+
+        // Control: the same properties always give the same key, so the inequalities below are
+        // down to the one property that changed.
+        assert!(key(&base).is_some());
+        assert_eq!(key(&base), key(&base.clone()));
+
+        // Only the declaration differs: another NameNode, another list, the same list reordered
+        // (which changes the failover order), and no list at all.
+        for other in [
+            props("nn1:8020,nn3:8020", "true"),
+            props("nn1:8020", "true"),
+            props("nn2:8020,nn1:8020", "true"),
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+        let mut without_name_node = base.clone();
+        without_name_node.remove("hdfs.name-node.nameservice1");
+        assert_ne!(key(&base), key(&without_name_node));
+
+        // Only the `hadoop.dfs.client.failover.*` overrides differ: a changed value, an added
+        // override and a removed one.
+        let mut other_failover = base.clone();
+        other_failover.insert(
+            "hadoop.dfs.client.failover.proxy.provider.nameservice1".to_string(),
+            "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider".to_string(),
+        );
+        let mut without_failover = base.clone();
+        without_failover.remove("hadoop.dfs.client.failover.random.order");
+        for other in [
+            props("nn1:8020,nn2:8020", "false"),
+            other_failover,
+            without_failover,
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+    }
+
+    /// Builds the real HDFS storage from one property the way a `FileIO` does on first use.
+    /// Parsing is all it does: an operator, and with it a NameNode connection, is only made by
+    /// the first storage call, so this needs neither a NameNode nor a runtime. The storage is
+    /// inspected through its serde form, so this is a contract test on the pinned iceberg-rust
+    /// revision and its config field names.
+    fn build_hdfs_storage(key: &str, value: &str) -> Result<serde_json::Value, String> {
+        let config =
+            StorageConfig::from_props(HashMap::from([(key.to_string(), value.to_string())]));
+        let storage = OpenDalStorageFactory::HdfsNative
+            .build(&config)
+            .map_err(|e| e.to_string())?;
+        Ok(serde_json::to_value(&*storage).expect("the storage serializes"))
+    }
+
+    /// One Hadoop option of the parsed storage config.
+    fn parsed_option<'a>(storage: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        storage
+            .pointer("/HdfsNative/config/options")
+            .and_then(|options| options.get(key))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// The contract `CometIcebergNativeScan.hadoopToIcebergHdfsProperties` relies on: it declares
+    /// an HA nameservice as `hdfs.name-node.<nameservice>`, and iceberg-rust expands that into
+    /// Hadoop's own `dfs.ha.namenodes.<ns>` / `dfs.namenode.rpc-address.<ns>.<nn>`, the keys its
+    /// resolver reads for a portless path authority. A portless entry is refused when the
+    /// storage is built, naming the key and the entry.
+    #[test]
+    fn hdfs_nameservice_declaration_is_parsed_by_the_real_storage() {
+        for input in [
+            "nn1:8020,nn2:8020",
+            // Whitespace around entries, a trailing slash and the `hdfs://` prefix are tolerated.
+            " hdfs://nn1:8020/ , nn2:8020 ",
+        ] {
+            let storage = build_hdfs_storage("hdfs.name-node.ns1", input)
+                .unwrap_or_else(|e| panic!("`{input}` should be accepted: {e}"));
+            assert_eq!(
+                parsed_option(&storage, "dfs.ha.namenodes.ns1"),
+                Some("nn0,nn1"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn0"),
+                Some("nn1:8020"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn1"),
+                Some("nn2:8020"),
+                "input `{input}`: {storage}"
+            );
+        }
+
+        // A portless entry would only fail at the first I/O, so it is refused here, and the
+        // error names the offending key and entry rather than the whole list.
+        let err = build_hdfs_storage("hdfs.name-node.ns1", "nn1:8020,nn2").unwrap_err();
+        assert!(
+            err.contains("hdfs.name-node.ns1") && err.contains("nn2") && !err.contains("nn1:8020"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn memory_scheme_is_writable_but_not_readable() {
+        // The write path assembles manifests in a fresh in-process memory store. A read against
+        // a new memory store can never find data, so the factory must decline it up front.
+        assert!(factory_result("memory:manifest.avro", AccessMode::Write).is_ok());
+        assert!(factory_result("memory:///manifest.avro", AccessMode::Write).is_ok());
+        for path in ["memory:manifest.avro", "memory:///key.parquet"] {
+            let err = factory_result(path, AccessMode::Read).unwrap_err();
+            assert!(
+                err.contains("Unsupported storage scheme: memory"),
+                "unexpected error for {path}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -815,7 +1297,6 @@ mod tests {
         for mode in [AccessMode::Read, AccessMode::Write] {
             assert!(factory_result("file:///tmp/x", mode).is_ok());
             assert!(factory_result("/tmp/no-scheme", mode).is_ok());
-            assert!(factory_result("memory:manifest.avro", mode).is_ok());
             // No credential provider configured: the default chain applies in both modes.
             assert!(factory_result("s3://bucket/db/table", mode).is_ok());
             assert!(factory_result("gs://bucket/db/table", mode).is_ok());
@@ -823,8 +1304,81 @@ mod tests {
     }
 
     #[test]
+    fn scheme_list_pre_check_is_load_bearing() {
+        // The oss and memory arms build a backend for either mode; only their absence from the
+        // list for the other mode rejects them. Both facts are asserted so that adding an
+        // access-mode branch back into an arm, or listing the scheme, breaks this test.
+        assert!(factory_result("oss://bucket/path", AccessMode::Read).is_ok());
+        assert!(!builtin_storage_schemes(AccessMode::Write).contains(&"oss"));
+        let err = factory_result("oss://bucket/path", AccessMode::Write).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: oss"),
+            "unexpected error: {err}"
+        );
+        assert!(factory_result("memory:///path", AccessMode::Write).is_ok());
+        assert!(!builtin_storage_schemes(AccessMode::Read).contains(&"memory"));
+        let err = factory_result("memory:///path", AccessMode::Read).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: memory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn mixed_case_scheme_is_rejected_for_both_modes() {
+        // OpenDAL strips the scheme prefix from every path case-sensitively at open time
+        // (`S3://bucket/key` fails its `s3://bucket/` prefix check), so the factory must not
+        // admit what the open cannot serve. The JVM gates match the built-in set verbatim too.
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for path in ["S3://bucket/key", "File:///tmp/x", "GS://bucket/key"] {
+                let err = factory_result(path, mode).unwrap_err();
+                assert!(
+                    err.contains("Unsupported storage scheme"),
+                    "unexpected error for {path} in {mode:?}: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_scheme_is_matched_verbatim() {
+        // An alias location is opened as written, and OpenDAL's S3 backend checks it against a
+        // lowercase `scheme://bucket/` prefix, so a mixed-case alias that passed a
+        // case-insensitive gate here would only fail at open time. The list entry may be written
+        // in any case; the location's scheme must match its lowercase form exactly.
+        for listed in ["blob", " BLOB ", "minio,Blob"] {
+            let props = HashMap::from([(
+                "fs.comet.s3Compliant.schemes".to_string(),
+                listed.to_string(),
+            )]);
+            for mode in [AccessMode::Read, AccessMode::Write] {
+                assert!(
+                    storage_factory_for("blob://bucket/key", &props, "test_cat", mode).is_ok(),
+                    "blob://bucket/key must be admitted for {mode:?} with list {listed:?}"
+                );
+                for path in [
+                    "BLOB://bucket/key",
+                    "Blob://bucket/key",
+                    "BLOB:///bucket/key",
+                ] {
+                    let err = storage_factory_for(path, &props, "test_cat", mode)
+                        .map(|_| ())
+                        .expect_err(&format!(
+                            "{path} must be rejected for {mode:?} with list {listed:?}"
+                        ))
+                        .to_string();
+                    assert!(
+                        err.contains("Unsupported storage scheme"),
+                        "unexpected error for {path} in {mode:?}: {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        let err = factory_result("viewfs://cluster/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
@@ -854,6 +1408,43 @@ mod tests {
     }
 
     #[test]
+    fn listed_schemes_are_accepted_by_storage_factory() {
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for scheme in builtin_storage_schemes(mode) {
+                let url = format!("{scheme}://bucket/path");
+                assert!(
+                    factory_result(&url, mode).is_ok(),
+                    "{scheme} is listed for {mode:?} but the factory rejects it"
+                );
+            }
+        }
+        assert!(builtin_storage_schemes(AccessMode::Read).contains(&"oss"));
+        assert!(!builtin_storage_schemes(AccessMode::Write).contains(&"oss"));
+        assert!(!builtin_storage_schemes(AccessMode::Read).contains(&"memory"));
+        assert!(builtin_storage_schemes(AccessMode::Write).contains(&"memory"));
+    }
+
+    #[test]
+    fn unlisted_schemes_are_rejected_for_both_modes() {
+        let unlisted = [
+            "viewfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
+        ];
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for scheme in unlisted {
+                let err = factory_result(&format!("{scheme}://bucket/path"), mode).unwrap_err();
+                assert!(
+                    err.contains("Unsupported storage scheme"),
+                    "unexpected error for {scheme} in {mode:?}: {err}"
+                );
+                assert!(
+                    !builtin_storage_schemes(mode).contains(&scheme),
+                    "{scheme} must not be listed for {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn scheme_of_extracts_scheme_from_all_uri_forms() {
         // Host-bearing and hostless/opaque vendor forms must resolve to the same scheme, so an
         // S3-compliant scan is not misrouted to the local FS. `blob:/bucket/key` (single slash, the
@@ -861,7 +1452,17 @@ mod tests {
         assert_eq!(scheme_of("blob://bucket/key"), "blob");
         assert_eq!(scheme_of("blob:/bucket/key"), "blob");
         assert_eq!(scheme_of("s3://bucket/key"), "s3");
+        assert_eq!(scheme_of("s3:/bucket/key"), "s3");
+        // Hadoop normalises `hdfs:///p` to `hdfs:/p`. The JVM write gate must read both as
+        // `hdfs` (unsupported) rather than admit the hostless form as `file`.
+        assert_eq!(scheme_of("hdfs:/warehouse/t"), "hdfs");
+        assert_eq!(scheme_of("hdfs:///warehouse/t"), "hdfs");
+        assert_eq!(scheme_of("hdfs://nn:8020/warehouse/t"), "hdfs");
+        assert_eq!(scheme_of("memory:/x"), "memory");
         assert_eq!(scheme_of("file:///tmp/x"), "file");
+        assert_eq!(scheme_of("file:/tmp/x"), "file");
+        // Not lowercased: `storage_factory_for` matches case-sensitively.
+        assert_eq!(scheme_of("S3://bucket/key"), "S3");
         // Schemeless and colon-in-path locals default to the local FS.
         assert_eq!(scheme_of("/tmp/no-scheme"), "file");
         assert_eq!(scheme_of("/tmp/a:b"), "file");

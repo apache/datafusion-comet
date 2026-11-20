@@ -17,20 +17,21 @@
 
 use crate::conversion_funcs::string::{digits_to_i128, div_round_half_up_i128, pow10_i128};
 use crate::conversion_funcs::utils::cast_overflow;
-use crate::conversion_funcs::utils::MICROS_PER_SECOND;
+use crate::conversion_funcs::utils::{timestamp_micros_with_tz, MICROS_PER_SECOND};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Decimal128Array, Float32Array, Float64Array,
     GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
-    PrimitiveArray, Scalar, StringBuilder, TimestampMicrosecondBuilder,
+    PrimitiveArray, Scalar, StringBuilder,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{
     format_decimal_str, i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType,
     Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
+    TimestampMicrosecondType,
 };
-use num::{cast::AsPrimitive, Float, ToPrimitive};
+use num::{cast::AsPrimitive, Bounded, Float, ToPrimitive};
 use std::fmt::{self, Write};
 use std::sync::Arc;
 
@@ -89,54 +90,83 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
     // the same precision/scale, bypassing the DataFusion cast kernel entirely.
 }
 
-macro_rules! cast_float_to_timestamp_impl {
-    ($array:expr, $builder:expr, $primitive_type:ty, $eval_mode:expr) => {{
-        let arr = $array.as_primitive::<$primitive_type>();
-        for i in 0..arr.len() {
-            if arr.is_null(i) {
-                $builder.append_null();
-            } else {
-                let val = arr.value(i) as f64;
-                // Path 1: NaN/Infinity check - error says TIMESTAMP
-                if val.is_nan() || val.is_infinite() {
-                    if $eval_mode == EvalMode::Ansi {
-                        return Err(SparkError::CastInvalidValue {
-                            value: val.to_string(),
-                            from_type: "DOUBLE".to_string(),
-                            to_type: "TIMESTAMP".to_string(),
-                        });
-                    }
-                    $builder.append_null();
-                } else {
-                    // Path 2: Multiply then check overflow - error says BIGINT
-                    let micros = val * MICROS_PER_SECOND as f64;
-                    if micros.floor() <= i64::MAX as f64 && micros.ceil() >= i64::MIN as f64 {
-                        $builder.append_value(micros as i64);
-                    } else {
-                        if $eval_mode == EvalMode::Ansi {
-                            let value_str = if micros.is_infinite() {
-                                if micros.is_sign_positive() {
-                                    "Infinity".to_string()
-                                } else {
-                                    "-Infinity".to_string()
-                                }
-                            } else if micros.is_nan() {
-                                "NaN".to_string()
-                            } else {
-                                format!("{:e}", micros).to_uppercase() + "D"
-                            };
-                            return Err(SparkError::CastOverFlow {
-                                value: value_str,
-                                from_type: "DOUBLE".to_string(),
-                                to_type: "BIGINT".to_string(),
-                            });
-                        }
-                        $builder.append_null();
-                    }
-                }
-            }
+/// Seconds since the epoch as microseconds, or `None` when the value is NaN,
+/// infinite, or the product does not fit in an i64. Legacy and Try turn that
+/// into null. ANSI reports it via [`float_timestamp_error`].
+fn float_timestamp_micros(val: f64) -> Option<i64> {
+    if val.is_nan() || val.is_infinite() {
+        return None;
+    }
+    // Widen-and-multiply, then Spark's range check from DoubleExactNumeric:
+    // floor(x) <= Long.MaxValue && ceil(x) >= Long.MinValue, with the bounds
+    // converted to double. A value that passes is truncated toward zero by `as`.
+    let micros = val * MICROS_PER_SECOND as f64;
+    if micros.floor() <= i64::MAX as f64 && micros.ceil() >= i64::MIN as f64 {
+        Some(micros as i64)
+    } else {
+        None
+    }
+}
+
+/// ANSI error for a value [`float_timestamp_micros`] rejected. NaN and infinity
+/// are `CAST_INVALID_INPUT` into TIMESTAMP, raised as `SparkDateTimeException`
+/// and spelled the way Spark prints a double (`NaN`, `Infinity`). A finite value
+/// whose product does not fit is `CAST_OVERFLOW` into BIGINT. The source type is
+/// DOUBLE even when the array was float32, because the check runs after the
+/// widening.
+fn float_timestamp_error(val: f64) -> SparkError {
+    if val.is_nan() || val.is_infinite() {
+        SparkError::InvalidInputInCastToDatetime {
+            value: double_sql_text(val),
+            from_type: "DOUBLE".to_string(),
+            to_type: "TIMESTAMP".to_string(),
         }
-    }};
+    } else {
+        let micros = val * MICROS_PER_SECOND as f64;
+        SparkError::CastOverFlow {
+            value: double_sql_text(micros),
+            from_type: "DOUBLE".to_string(),
+            to_type: "BIGINT".to_string(),
+        }
+    }
+}
+
+/// Text for a double in an error, which the JVM side parses back to a double. NaN and the
+/// infinities use Spark's spelling.
+fn double_sql_text(value: f64) -> String {
+    if value.is_infinite() {
+        if value.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        }
+    } else if value.is_nan() {
+        "NaN".to_string()
+    } else {
+        format!("{:e}", value).to_uppercase() + "D"
+    }
+}
+
+fn cast_float_to_timestamp_array<T>(
+    array: &PrimitiveArray<T>,
+    eval_mode: EvalMode,
+) -> SparkResult<PrimitiveArray<TimestampMicrosecondType>>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Into<f64>,
+{
+    if eval_mode == EvalMode::Ansi {
+        // `try_unary` skips null slots, so a NaN sitting under a null does not raise.
+        // The first invalid value, in index order, is the error.
+        Ok(array.try_unary(|value| {
+            let val = value.into();
+            float_timestamp_micros(val).ok_or_else(|| float_timestamp_error(val))
+        })?)
+    } else {
+        // Legacy and Try null the same values ANSI rejects, without allocating an
+        // error string. `unary_opt` skips null slots, so this closure does not see them.
+        Ok(array.unary_opt(|value| float_timestamp_micros(value.into())))
+    }
 }
 
 /// A float width that Java renders through `Float.toString` / `Double.toString`.
@@ -333,21 +363,20 @@ macro_rules! cast_whole_num_to_binary {
     }};
 }
 
-macro_rules! cast_int_to_timestamp_impl {
-    ($array:expr, $builder:expr, $primitive_type:ty) => {{
-        let arr = $array.as_primitive::<$primitive_type>();
-        for i in 0..arr.len() {
-            if arr.is_null(i) {
-                $builder.append_null();
-            } else {
-                // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
-                // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
-                // matching spark behavior (irrespective of EvalMode)
-                let micros = (arr.value(i) as i64).saturating_mul(MICROS_PER_SECOND);
-                $builder.append_value(micros);
-            }
-        }
-    }};
+fn cast_int_to_timestamp_array<T>(
+    array: &PrimitiveArray<T>,
+) -> PrimitiveArray<TimestampMicrosecondType>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Into<i64>,
+{
+    // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
+    // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
+    // matching spark behavior (irrespective of EvalMode)
+    array.unary(|value| {
+        let seconds: i64 = value.into();
+        seconds.saturating_mul(MICROS_PER_SECOND)
+    })
 }
 
 macro_rules! cast_int_to_int_macro {
@@ -423,47 +452,31 @@ macro_rules! cast_float_to_int16_down {
             .downcast_ref::<$src_array_type>()
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        // Spark's ANSI cast converts to Int with the exact 32-bit range check
-                        // first and then requires the truncated Int to round-trip through the
-                        // narrower type.
-                        if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
-                            return Err(cast_overflow(
-                                &format!($format_str, value).replace("e", "E"),
-                                $src_type_str,
-                                $dest_type_str,
-                            ));
-                        }
-                        let i32_value = value as i32;
-                        <$rust_dest_type>::try_from(i32_value)
-                            .map_err(|_| {
-                                cast_overflow(
-                                    &format!($format_str, value).replace("e", "E"),
-                                    $src_type_str,
-                                    $dest_type_str,
-                                )
-                            })
-                            .map(Some)
-                    }
-                    None => Ok(None),
+        // The legacy conversion cannot fail, so `unary` maps the values buffer in one pass and
+        // keeps the null buffer. `try_unary` only visits valid slots, so an out-of-range value
+        // under a null cannot raise a spurious overflow error.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                // Spark's ANSI cast converts to Int with the exact 32-bit range check
+                // first and then requires the truncated Int to round-trip through the
+                // narrower type.
+                if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
+                    return Err(cast_overflow(
+                        &format!($format_str, value).replace("e", "E"),
+                        $src_type_str,
+                        $dest_type_str,
+                    ));
+                }
+                let i32_value = value as i32;
+                <$rust_dest_type>::try_from(i32_value).map_err(|_| {
+                    cast_overflow(
+                        &format!($format_str, value).replace("e", "E"),
+                        $src_type_str,
+                        $dest_type_str,
+                    )
                 })
-                .collect::<Result<$dest_array_type, _>>()?,
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let i32_value = value as i32;
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
-                            i32_value as $rust_dest_type,
-                        ))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+            })?,
+            _ => cast_array.unary(|value| value as i32 as $rust_dest_type),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -486,37 +499,26 @@ macro_rules! cast_float_to_int32_up {
             .downcast_ref::<$src_array_type>()
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if !spark_float_fits_integral(
-                            value,
-                            <$rust_dest_type>::MIN as f64,
-                            <$rust_dest_type>::MAX as f64,
-                        ) {
-                            return Err(cast_overflow(
-                                &format!($format_str, value).replace("e", "E"),
-                                $src_type_str,
-                                $dest_type_str,
-                            ));
-                        }
-                        // `as` truncates towards zero and saturates like the JVM's d2i/d2l
-                        Ok(Some(value as $rust_dest_type))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(value as $rust_dest_type))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+        // The legacy conversion cannot fail, so `unary` maps the values buffer in one pass and
+        // keeps the null buffer. `try_unary` only visits valid slots, so an out-of-range value
+        // under a null cannot raise a spurious overflow error.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                if !spark_float_fits_integral(
+                    value,
+                    <$rust_dest_type>::MIN as f64,
+                    <$rust_dest_type>::MAX as f64,
+                ) {
+                    return Err(cast_overflow(
+                        &format!($format_str, value).replace("e", "E"),
+                        $src_type_str,
+                        $dest_type_str,
+                    ));
+                }
+                // `as` truncates towards zero and saturates like the JVM's d2i/d2l
+                Ok(value as $rust_dest_type)
+            })?,
+            _ => cast_array.unary(|value| value as $rust_dest_type),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -540,62 +542,40 @@ macro_rules! cast_decimal_to_int16_down {
             .downcast_ref::<Decimal128Array>()
             .expect("Expected a Decimal128ArrayType");
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let truncated = value / divisor;
-                        let is_overflow = truncated.abs() > i32::MAX.into();
-                        if is_overflow {
-                            return Err(cast_overflow(
-                                &format!(
-                                    "{}BD",
-                                    format_decimal_str(
-                                        &value.to_string(),
-                                        $precision as usize,
-                                        $scale
-                                    )
-                                ),
-                                &format!("DECIMAL({},{})", $precision, $scale),
-                                $dest_type_str,
-                            ));
-                        }
-                        let i32_value = truncated as i32;
-                        <$rust_dest_type>::try_from(i32_value)
-                            .map_err(|_| {
-                                cast_overflow(
-                                    &format!(
-                                        "{}BD",
-                                        format_decimal_str(
-                                            &value.to_string(),
-                                            $precision as usize,
-                                            $scale
-                                        )
-                                    ),
-                                    &format!("DECIMAL({},{})", $precision, $scale),
-                                    $dest_type_str,
-                                )
-                            })
-                            .map(Some)
-                    }
-                    None => Ok(None),
+        let divisor = 10_i128.pow($scale as u32);
+        // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
+        // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
+        // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
+        // always returns `Ok`, instead of `unary`, which would divide the slots under nulls.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                let truncated = value / divisor;
+                let is_overflow = truncated.abs() > i32::MAX.into();
+                if is_overflow {
+                    return Err(cast_overflow(
+                        &format!(
+                            "{}BD",
+                            format_decimal_str(&value.to_string(), $precision as usize, $scale)
+                        ),
+                        &format!("DECIMAL({},{})", $precision, $scale),
+                        $dest_type_str,
+                    ));
+                }
+                let i32_value = truncated as i32;
+                <$rust_dest_type>::try_from(i32_value).map_err(|_| {
+                    cast_overflow(
+                        &format!(
+                            "{}BD",
+                            format_decimal_str(&value.to_string(), $precision as usize, $scale)
+                        ),
+                        &format!("DECIMAL({},{})", $precision, $scale),
+                        $dest_type_str,
+                    )
                 })
-                .collect::<Result<$dest_array_type, _>>()?,
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let i32_value = (value / divisor) as i32;
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
-                            i32_value as $rust_dest_type,
-                        ))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+            })?,
+            _ => cast_array.try_unary(|value| {
+                Ok::<_, SparkError>((value / divisor) as i32 as $rust_dest_type)
+            })?,
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -617,46 +597,29 @@ macro_rules! cast_decimal_to_int32_up {
             .downcast_ref::<Decimal128Array>()
             .expect("Expected a Decimal128ArrayType");
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let truncated = value / divisor;
-                        let is_overflow = truncated.abs() > $max_dest_val.into();
-                        if is_overflow {
-                            return Err(cast_overflow(
-                                &format!(
-                                    "{}BD",
-                                    format_decimal_str(
-                                        &value.to_string(),
-                                        $precision as usize,
-                                        $scale
-                                    )
-                                ),
-                                &format!("DECIMAL({},{})", $precision, $scale),
-                                $dest_type_str,
-                            ));
-                        }
-                        Ok(Some(truncated as $rust_dest_type))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+        let divisor = 10_i128.pow($scale as u32);
+        // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
+        // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
+        // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
+        // always returns `Ok`, instead of `unary`, which would divide the slots under nulls.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                let truncated = value / divisor;
+                let is_overflow = truncated.abs() > $max_dest_val.into();
+                if is_overflow {
+                    return Err(cast_overflow(
+                        &format!(
+                            "{}BD",
+                            format_decimal_str(&value.to_string(), $precision as usize, $scale)
+                        ),
+                        &format!("DECIMAL({},{})", $precision, $scale),
+                        $dest_type_str,
+                    ));
+                }
+                Ok(truncated as $rust_dest_type)
+            })?,
             _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let truncated = value / divisor;
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
-                            truncated as $rust_dest_type,
-                        ))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+                .try_unary(|value| Ok::<_, SparkError>((value / divisor) as $rust_dest_type))?,
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -810,7 +773,7 @@ fn cast_int_to_decimal128_internal<T>(
 ) -> SparkResult<ArrayRef>
 where
     T: ArrowPrimitiveType,
-    T::Native: Into<i128>,
+    T::Native: Into<i128> + Bounded,
 {
     let multiplier = 10_i128.pow(scale as u32);
 
@@ -820,6 +783,17 @@ where
         v.checked_mul(multiplier)
             .filter(|scaled| is_validate_decimal_precision(*scaled, precision))
     };
+
+    // When both ends of the input type fit, no value can overflow in any eval mode, so one
+    // branch-free `unary` pass replaces the per-row check. It also scales the slots under nulls,
+    // which is safe because they hold values of the same type, and keeps the input null buffer.
+    if fits(T::Native::min_value().into()).is_some()
+        && fits(T::Native::max_value().into()).is_some()
+    {
+        let result: Decimal128Array =
+            array.unary::<_, Decimal128Type>(|v| Into::<i128>::into(v) * multiplier);
+        return Ok(Arc::new(result.with_precision_and_scale(precision, scale)?));
+    }
 
     // Single vectorized pass: a value that overflows the multiply or does not fit the output
     // precision maps to null. `unary_opt` only applies the closure to non-null slots and carries
@@ -1097,6 +1071,9 @@ where
     // digits are. The slack generously covers the same scaling error that TIE_GUARD below
     // bounds, so borderline values still take the exact path.
     let overflow_bound = 10_f64.powi(precision as i32) * (1.0 + 1e-12);
+    // Up to precision 18 the bound above keeps a rounded value below 2^63, so it converts
+    // through `i64`, one instruction, instead of the library call `to_i128` makes.
+    let fits_i64 = precision <= 18;
 
     // A value with no decimal form (NaN / infinity) or that does not fit the output
     // precision maps to null. `unary_opt` only applies the closure to non-null slots and
@@ -1121,9 +1098,13 @@ where
         const TIE_GUARD: f64 = 3.552713678800501e-15; // 2^-48
         let r = x.round();
         if (x - r).abs() + x.abs() * TIE_GUARD < 0.5 {
-            return r
-                .to_i128()
-                .filter(|u| is_validate_decimal_precision(*u, precision));
+            // `r` is finite here: NaN fails the comparison above.
+            let unscaled = if fits_i64 {
+                Some(r as i64 as i128)
+            } else {
+                r.to_i128()
+            };
+            return unscaled.filter(|u| is_validate_decimal_precision(*u, precision));
         }
         float_to_decimal128(f, precision, scale)
     });
@@ -1358,22 +1339,30 @@ pub(crate) fn cast_int_to_timestamp(
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
     // Input is seconds since epoch, multiply by MICROS_PER_SECOND to get microseconds.
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
-
-    match array_ref.data_type() {
-        DataType::Int8 => cast_int_to_timestamp_impl!(array_ref, builder, Int8Type),
-        DataType::Int16 => cast_int_to_timestamp_impl!(array_ref, builder, Int16Type),
-        DataType::Int32 => cast_int_to_timestamp_impl!(array_ref, builder, Int32Type),
-        DataType::Int64 => cast_int_to_timestamp_impl!(array_ref, builder, Int64Type),
+    let micros = match array_ref.data_type() {
+        DataType::Int8 => cast_int_to_timestamp_array(array_ref.as_primitive::<Int8Type>()),
+        DataType::Int16 => cast_int_to_timestamp_array(array_ref.as_primitive::<Int16Type>()),
+        DataType::Int32 => cast_int_to_timestamp_array(array_ref.as_primitive::<Int32Type>()),
+        DataType::Int64 => cast_int_to_timestamp_array(array_ref.as_primitive::<Int64Type>()),
         dt => {
             return Err(SparkError::Internal(format!(
                 "Unsupported type for cast_int_to_timestamp: {:?}",
                 dt
             )))
         }
-    }
+    };
 
-    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+    Ok(timestamp_micros_with_tz(micros, target_tz))
+}
+
+/// Spark truncates toward zero through a 256-bit product and keeps the low 64
+/// bits. It does not raise, in any eval mode.
+#[inline(always)]
+fn decimal_to_timestamp_micros(value: i128, scale_factor: i128) -> i64 {
+    let value_256 = i256::from_i128(value);
+    let micros_256 = value_256 * i256::from_i128(MICROS_PER_SECOND as i128);
+    let ts = micros_256 / i256::from_i128(scale_factor);
+    ts.as_i128() as i64
 }
 
 pub(crate) fn cast_decimal_to_timestamp(
@@ -1383,23 +1372,13 @@ pub(crate) fn cast_decimal_to_timestamp(
 ) -> SparkResult<ArrayRef> {
     let arr = array_ref.as_primitive::<Decimal128Type>();
     let scale_factor = 10_i128.pow(scale as u32);
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(arr.len());
+    // `unary_opt` visits valid rows only. `unary` also divides null slots, and
+    // that was slower on every measured shape, including a batch with no nulls.
+    let micros = arr.unary_opt::<_, TimestampMicrosecondType>(|value| {
+        Some(decimal_to_timestamp_micros(value, scale_factor))
+    });
 
-    for i in 0..arr.len() {
-        if arr.is_null(i) {
-            builder.append_null();
-        } else {
-            let value = arr.value(i);
-            // Note: spark's big decimal truncates to
-            // long value and does not throw error (in all leval modes)
-            let value_256 = i256::from_i128(value);
-            let micros_256 = value_256 * i256::from_i128(MICROS_PER_SECOND as i128);
-            let ts = micros_256 / i256::from_i128(scale_factor);
-            builder.append_value(ts.as_i128() as i64);
-        }
-    }
-
-    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+    Ok(timestamp_micros_with_tz(micros, target_tz))
 }
 
 pub(crate) fn cast_float_to_timestamp(
@@ -1407,14 +1386,12 @@ pub(crate) fn cast_float_to_timestamp(
     target_tz: &Option<Arc<str>>,
     eval_mode: EvalMode,
 ) -> SparkResult<ArrayRef> {
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
-
-    match array_ref.data_type() {
+    let micros = match array_ref.data_type() {
         DataType::Float32 => {
-            cast_float_to_timestamp_impl!(array_ref, builder, Float32Type, eval_mode)
+            cast_float_to_timestamp_array(array_ref.as_primitive::<Float32Type>(), eval_mode)?
         }
         DataType::Float64 => {
-            cast_float_to_timestamp_impl!(array_ref, builder, Float64Type, eval_mode)
+            cast_float_to_timestamp_array(array_ref.as_primitive::<Float64Type>(), eval_mode)?
         }
         dt => {
             return Err(SparkError::Internal(format!(
@@ -1422,16 +1399,19 @@ pub(crate) fn cast_float_to_timestamp(
                 dt
             )))
         }
-    }
+    };
 
-    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+    Ok(timestamp_micros_with_tz(micros, target_tz))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::AsArray;
-    use arrow::datatypes::TimestampMicrosecondType;
+    use crate::cast::cast_array;
+    use crate::SparkCastOptions;
+    use arrow::array::{Array, AsArray, TimestampMicrosecondBuilder};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
 
     #[test]
     fn test_spark_cast_int_to_int_overflow() {
@@ -1782,6 +1762,47 @@ mod tests {
         );
     }
 
+    /// `unary` and `try_unary` work on the values buffer, so a value that would overflow but
+    /// sits under a null must neither fail an ANSI cast nor reach the result.
+    #[test]
+    fn test_cast_to_integral_ignores_values_under_nulls() {
+        let nulls = arrow::buffer::NullBuffer::from(vec![true, false, true]);
+        let doubles: ArrayRef = Arc::new(Float64Array::new(
+            vec![1.9, f64::MAX, -2.9].into(),
+            Some(nulls.clone()),
+        ));
+        let decimals: ArrayRef = Arc::new(
+            Decimal128Array::new(vec![12345, i128::MAX, -678].into(), Some(nulls))
+                .with_precision_and_scale(38, 2)
+                .unwrap(),
+        );
+
+        // Int8 goes through the `*_to_int16_down!` macros and Int32 through `*_to_int32_up!`
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for to_type in [DataType::Int8, DataType::Int32] {
+                for (array, expected) in [
+                    (&doubles, [Some(1), None, Some(-2)]),
+                    (&decimals, [Some(123), None, Some(-6)]),
+                ] {
+                    let result = spark_cast_nonintegral_numeric_to_integral(
+                        array,
+                        eval_mode,
+                        array.data_type(),
+                        &to_type,
+                    )
+                    .unwrap();
+                    let result = arrow::compute::cast(&result, &DataType::Int64).unwrap();
+                    assert_eq!(
+                        result.as_primitive::<Int64Type>(),
+                        &Int64Array::from(expected.to_vec()),
+                        "{eval_mode:?} {:?} to {to_type:?}",
+                        array.data_type()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_spark_cast_float_min_value_to_string() {
         let float_array: ArrayRef = Arc::new(Float32Array::from(vec![
@@ -2004,6 +2025,92 @@ mod tests {
                     precision: 3,
                     scale: 2
                 } if value == "1000"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_whole_range_fits_in_every_mode() {
+        // DECIMAL(3, 0) holds every TINYINT and DECIMAL(19, 0) every BIGINT, so the batch takes
+        // the branch-free path: the extremes scale exactly, nulls stay null and ANSI never raises.
+        for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            let array: ArrayRef = Arc::new(Int8Array::from(vec![
+                Some(i8::MIN),
+                None,
+                Some(0),
+                Some(i8::MAX),
+            ]));
+            let result = cast_int_to_decimal128(
+                &array,
+                eval_mode,
+                &DataType::Int8,
+                &DataType::Decimal128(3, 0),
+                3,
+                0,
+            )
+            .unwrap();
+            let d = result.as_primitive::<Decimal128Type>();
+            assert_eq!(d.value(0), -128, "{eval_mode:?}");
+            assert!(d.is_null(1), "{eval_mode:?}");
+            assert_eq!(d.value(2), 0, "{eval_mode:?}");
+            assert_eq!(d.value(3), 127, "{eval_mode:?}");
+            assert_eq!(d.data_type(), &DataType::Decimal128(3, 0));
+
+            let array: ArrayRef = Arc::new(Int64Array::from(vec![Some(i64::MIN), Some(i64::MAX)]));
+            let result = cast_int_to_decimal128(
+                &array,
+                eval_mode,
+                &DataType::Int64,
+                &DataType::Decimal128(23, 4),
+                23,
+                4,
+            )
+            .unwrap();
+            let d = result.as_primitive::<Decimal128Type>();
+            assert_eq!(d.value(0), i64::MIN as i128 * 10_000, "{eval_mode:?}");
+            assert_eq!(d.value(1), i64::MAX as i128 * 10_000, "{eval_mode:?}");
+        }
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_one_digit_short_keeps_per_row_check() {
+        // DECIMAL(2, 0) cannot hold -128 or 127, so the per-row check still runs: values that fit
+        // convert, the ones that don't become null (LEGACY, TRY) or raise (ANSI).
+        let array: ArrayRef = Arc::new(Int8Array::from(vec![Some(99), Some(127), None, Some(-99)]));
+        for eval_mode in [EvalMode::Legacy, EvalMode::Try] {
+            let result = cast_int_to_decimal128(
+                &array,
+                eval_mode,
+                &DataType::Int8,
+                &DataType::Decimal128(2, 0),
+                2,
+                0,
+            )
+            .unwrap();
+            let d = result.as_primitive::<Decimal128Type>();
+            assert_eq!(d.value(0), 99, "{eval_mode:?}");
+            assert!(d.is_null(1), "{eval_mode:?}");
+            assert!(d.is_null(2), "{eval_mode:?}");
+            assert_eq!(d.value(3), -99, "{eval_mode:?}");
+        }
+        let err = cast_int_to_decimal128(
+            &array,
+            EvalMode::Ansi,
+            &DataType::Int8,
+            &DataType::Decimal128(2, 0),
+            2,
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SparkError::NumericValueOutOfRange {
+                    ref value,
+                    precision: 2,
+                    scale: 0
+                } if value == "127"
             ),
             "unexpected error: {err:?}"
         );
@@ -2291,7 +2398,7 @@ mod tests {
         );
 
         for eval_mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-            let options = SparkCastOptions::new(eval_mode, "UTC", false);
+            let options = SparkCastOptions::new(eval_mode, "UTC");
 
             let doubles =
                 cast_array(Arc::clone(&decimals_38_18), &DataType::Float64, &options).unwrap();
@@ -2617,6 +2724,7 @@ mod tests {
             let result = cast_decimal_to_timestamp(&decimal_array, tz, 6).unwrap();
             let ts_array = result.as_primitive::<TimestampMicrosecondType>();
 
+            assert!(ts_array.is_valid(0));
             assert_eq!(ts_array.value(0), 0);
             assert_eq!(ts_array.value(1), 1_000_000);
             assert_eq!(ts_array.value(2), -1_000_000);
@@ -2750,5 +2858,289 @@ mod tests {
             fmt(-i128::MAX, 45),
             "-1.70141183460469231731687303715884105727E-7"
         );
+    }
+
+    fn assert_ts(array: &ArrayRef, expected: &[Option<i64>], tz: Option<&str>) {
+        let ts = array.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.len(), expected.len());
+        assert_eq!(ts.timezone(), tz);
+        let mut nulls = 0;
+        for (i, slot) in expected.iter().enumerate() {
+            match slot {
+                None => {
+                    assert!(ts.is_null(i), "index {i} should be null");
+                    nulls += 1;
+                }
+                Some(value) => {
+                    assert!(ts.is_valid(i), "index {i} should be valid");
+                    assert_eq!(ts.value(i), *value, "index {i}");
+                }
+            }
+        }
+        assert_eq!(ts.null_count(), nulls);
+        if nulls == 0 {
+            assert!(
+                ts.nulls().is_none(),
+                "a batch with no nulls has no null buffer"
+            );
+        }
+    }
+
+    /// Logical nulls and valid values. Values stored under nulls are not compared:
+    /// the builder writes 0 there, and `unary` writes the converted payload.
+    fn assert_logical_timestamps(actual: &ArrayRef, expected: &ArrayRef) {
+        let actual = actual.as_primitive::<TimestampMicrosecondType>();
+        let expected = expected.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(actual.timezone(), expected.timezone());
+        for i in 0..actual.len() {
+            assert_eq!(actual.is_null(i), expected.is_null(i), "index {i}");
+            if actual.is_valid(i) {
+                assert_eq!(actual.value(i), expected.value(i), "index {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_int_to_timestamp_null_slot_matches_builder() {
+        let tz = Some(Arc::from("UTC"));
+        // The slice starts on a null whose payload is i64::MIN. Multiplying that
+        // payload by MICROS_PER_SECOND overflows i64.
+        let raw = Int64Array::from(vec![7_i64, i64::MIN, 5, i64::MAX]);
+        let masked = Int64Array::new(
+            raw.values().clone(),
+            Some(NullBuffer::from(vec![true, false, true, false])),
+        );
+        let input = Array::slice(&masked, 1, 3);
+        let ints = input.as_primitive::<Int64Type>();
+        let mut builder = TimestampMicrosecondBuilder::with_capacity(ints.len());
+        for i in 0..ints.len() {
+            if ints.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(ints.value(i).saturating_mul(MICROS_PER_SECOND));
+            }
+        }
+        let expected: ArrayRef = Arc::new(builder.finish().with_timezone_opt(tz.clone()));
+
+        let out = cast_array(
+            Arc::clone(&input),
+            &DataType::Timestamp(TimeUnit::Microsecond, tz),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
+        )
+        .unwrap();
+        assert_logical_timestamps(&out, &expected);
+    }
+
+    #[test]
+    fn test_cast_int_to_timestamp_edges() {
+        let extremes: ArrayRef = Arc::new(Int64Array::from(vec![Some(i64::MIN), Some(i64::MAX)]));
+        let out = cast_int_to_timestamp(&extremes, &None).unwrap();
+        assert_ts(&out, &[Some(i64::MIN), Some(i64::MAX)], None);
+    }
+
+    #[test]
+    fn test_cast_decimal_to_timestamp_edges() {
+        let tz = Some(Arc::from("UTC"));
+        // Toward zero, and the low 64 bits when the 256-bit product does not fit in i64.
+        let cases = [
+            (15_i128, 7_i8, 1_i64),
+            (-15, 7, -1),
+            (9, 7, 0),
+            (i128::MAX, 6, -1),
+            (i128::MIN, 6, 0),
+            (i128::MAX, 0, -1_000_000),
+        ];
+        for (unscaled, scale, expected) in cases {
+            let array: ArrayRef = Arc::new(
+                Decimal128Array::from(vec![Some(unscaled)])
+                    .with_precision_and_scale(38, scale)
+                    .unwrap(),
+            );
+            let out = cast_decimal_to_timestamp(&array, &tz, scale).unwrap();
+            assert_ts(&out, &[Some(expected)], Some("UTC"));
+        }
+
+        let all_null: ArrayRef = Arc::new(
+            Decimal128Array::new_null(3)
+                .with_precision_and_scale(10, 6)
+                .unwrap(),
+        );
+        let out = cast_decimal_to_timestamp(&all_null, &tz, 6).unwrap();
+        assert_ts(&out, &[None, None, None], Some("UTC"));
+    }
+
+    #[test]
+    fn test_cast_float_to_timestamp_edges() {
+        let tz = Some(Arc::from("UTC"));
+
+        // First valid offender, in index order. 1e16 overflows; 1e20 would be "1E26D".
+        let overflow: ArrayRef = Arc::new(Float64Array::from(vec![
+            None,
+            Some(1.0),
+            Some(1e16),
+            Some(1e20),
+        ]));
+        match cast_float_to_timestamp(&overflow, &tz, EvalMode::Ansi).unwrap_err() {
+            SparkError::CastOverFlow {
+                value,
+                from_type,
+                to_type,
+            } => {
+                assert_eq!(value, "1E22D");
+                assert_eq!(from_type, "DOUBLE");
+                assert_eq!(to_type, "BIGINT");
+            }
+            other => panic!("expected overflow, got {other:?}"),
+        }
+
+        for (value, text) in [(f64::MAX, "Infinity"), (f64::MIN, "-Infinity")] {
+            let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(value)]));
+            match cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err() {
+                SparkError::CastOverFlow {
+                    value: got,
+                    from_type,
+                    to_type,
+                } => {
+                    assert_eq!(got, text);
+                    assert_eq!(from_type, "DOUBLE");
+                    assert_eq!(to_type, "BIGINT");
+                }
+                other => panic!("expected overflow, got {other:?}"),
+            }
+        }
+
+        // Legacy and Try null the same values and do not raise.
+        let mixed: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(2.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            None,
+            Some(-3.0),
+        ]));
+        let legacy = cast_float_to_timestamp(&mixed, &tz, EvalMode::Legacy).unwrap();
+        let try_mode = cast_float_to_timestamp(&mixed, &tz, EvalMode::Try).unwrap();
+        assert_eq!(
+            legacy.as_primitive::<TimestampMicrosecondType>(),
+            try_mode.as_primitive::<TimestampMicrosecondType>()
+        );
+        assert_ts(
+            &legacy,
+            &[Some(2_000_000), None, None, None, Some(-3_000_000)],
+            Some("UTC"),
+        );
+
+        // A NaN under a null is not read, so ANSI does not raise.
+        let raw = Float64Array::from(vec![f64::NAN, 4.0]);
+        let masked = Float64Array::new(
+            raw.values().clone(),
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        let out =
+            cast_float_to_timestamp(&(Arc::new(masked) as ArrayRef), &tz, EvalMode::Ansi).unwrap();
+        assert_ts(&out, &[None, Some(4_000_000)], Some("UTC"));
+
+        // float32 widens to double. f32::MAX's product is a finite f64 that does not fit.
+        let f32_max: ArrayRef = Arc::new(Float32Array::from(vec![Some(f32::MAX)]));
+        match cast_float_to_timestamp(&f32_max, &tz, EvalMode::Ansi).unwrap_err() {
+            SparkError::CastOverFlow {
+                value, from_type, ..
+            } => {
+                assert_eq!(value, "3.4028234663852886E44D");
+                assert_eq!(from_type, "DOUBLE");
+            }
+            other => panic!("expected overflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cast_float_invalid_is_datetime_error() {
+        let tz = Some(Arc::from("UTC"));
+        let cases: [(ArrayRef, &str); 4] = [
+            (Arc::new(Float64Array::from(vec![f64::NAN])), "NaN"),
+            (
+                Arc::new(Float64Array::from(vec![f64::INFINITY])),
+                "Infinity",
+            ),
+            (
+                Arc::new(Float64Array::from(vec![f64::NEG_INFINITY])),
+                "-Infinity",
+            ),
+            (
+                Arc::new(Float32Array::from(vec![f32::INFINITY])),
+                "Infinity",
+            ),
+        ];
+        for (array, expected) in cases {
+            match cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err() {
+                SparkError::InvalidInputInCastToDatetime {
+                    value,
+                    from_type,
+                    to_type,
+                } => {
+                    assert_eq!(value, expected);
+                    assert_eq!(from_type, "DOUBLE");
+                    assert_eq!(to_type, "TIMESTAMP");
+                }
+                other => panic!("expected InvalidInputInCastToDatetime, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_float_timestamp_bounds_at_i64_extremes() {
+        let tz = Some(Arc::from("UTC"));
+        let hi = (i64::MAX as f64) / (MICROS_PER_SECOND as f64);
+        let lo = (i64::MIN as f64) / (MICROS_PER_SECOND as f64);
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(hi), Some(lo)]));
+        let out = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap();
+        assert_ts(&out, &[Some(i64::MAX), Some(i64::MIN)], Some("UTC"));
+    }
+
+    #[test]
+    fn test_cast_float_timestamp_truncates_toward_zero() {
+        let tz = Some(Arc::from("UTC"));
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.5e-6), Some(-1.5e-6)]));
+        let out = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap();
+        assert_ts(&out, &[Some(1), Some(-1)], Some("UTC"));
+    }
+
+    #[test]
+    fn test_cast_float_to_decimal_i64_path_matches_i128_path() {
+        // Precision 18 rounds through `i64` and precision 19 still through `to_i128`; wherever the
+        // value fits both, the unscaled results must agree, up to the edge of precision 18.
+        let mut inputs = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -2.5,
+            99_999_999_999_999.99,
+            -99_999_999_999_999.99,
+            1e14,
+            999_999_999_999_999.9,
+        ];
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..10_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            inputs.push((x as i64 as f64) / 1e5);
+        }
+        for scale in [0i8, 4] {
+            let array: ArrayRef = Arc::new(Float64Array::from(inputs.clone()));
+            let narrow = cast_float64_to_decimal128(&array, 18, scale, EvalMode::Legacy).unwrap();
+            let wide = cast_float64_to_decimal128(&array, 19, scale, EvalMode::Legacy).unwrap();
+            let (narrow, wide) = (
+                narrow.as_primitive::<Decimal128Type>(),
+                wide.as_primitive::<Decimal128Type>(),
+            );
+            for (i, input) in inputs.iter().enumerate() {
+                if !narrow.is_null(i) {
+                    assert_eq!(narrow.value(i), wide.value(i), "{input} at scale {scale}");
+                }
+            }
+        }
     }
 }
