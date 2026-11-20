@@ -38,6 +38,11 @@ described in [Supported Data Sources](datasources.md#supported-storages).
 The following features are not supported and cause Comet to fall back to Spark:
 
 - Decimals encoded in binary format.
+- Scans configured for Parquet modular encryption that read a timestamp inside an array, including
+  through nested structs or maps. Spark decodes the timestamps to avoid INT96 overflow in legacy lists
+  ([#7029](https://github.com/apache/datafusion-comet/issues/7029)). Comet checks the requested
+  schema before opening the files, so the fallback also covers standard lists and plaintext files
+  in these scans.
 - `ShortType` columns, by default. When reading Parquet files written by systems other than Spark that contain
   columns with the logical type `UINT_8` (unsigned 8-bit integers), Comet may produce different results than Spark.
   Spark maps `UINT_8` to `ShortType`, but Comet's Arrow-based readers respect the unsigned type and read the data as

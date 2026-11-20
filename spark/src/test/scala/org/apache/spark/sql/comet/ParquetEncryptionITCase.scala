@@ -167,6 +167,43 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
     }
   }
 
+  test("encrypted legacy arrays preserve INT96 timestamps outside the nanosecond range") {
+    withTempDir { dir =>
+      withSQLConf(
+        DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+        KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+          "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+        InMemoryKMS.KEY_LIST_PROPERTY_NAME -> s"key1: ${key1}",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+        val path = new File(dir, "parquet").getCanonicalPath
+        val input = spark.sql("""
+          |SELECT map('events', array(named_struct('ts', expires), NULL)) AS history,
+          |       expires, array(1, NULL) AS ids
+          |FROM (SELECT TIMESTAMP '9999-12-31 23:59:59' AS expires)
+          |""".stripMargin)
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> "true",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          input.write.option("parquet.encryption.uniform.key", "key1").parquet(path)
+        }
+        verifyParquetEncrypted(path)
+
+        val df = spark.read.parquet(path)
+        if (CometConf.COMET_ENABLED.get(conf)) {
+          checkSparkAnswerAndFallbackReason(
+            df.select("history"),
+            "may overflow INT96 timestamps in legacy arrays")
+          checkSparkAnswerAndOperator(
+            df.select("expires", "ids"),
+            Seq(classOf[CometNativeScanExec]))
+        } else {
+          checkAnswer(df, input)
+        }
+      }
+    }
+  }
+
   test("Plain text footer mode") {
     import testImplicits._
 
