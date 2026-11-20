@@ -29,7 +29,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 /**
  * `CometMergeRowsExec` converts Spark's `MergeRowsExec` and the `MergeRows` logical node that
@@ -63,10 +62,7 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
       .set("spark.sql.shuffle.partitions", "4")
   }
 
-  private def assumeMerge(): Unit = assume(isSpark35Plus, "MergeRowsExec requires Spark 3.5+")
-
   test("MERGE all row-routing groups engage CometMergeRowsExec and match Spark") {
-    assumeMerge()
     val target = s"$catalog.default.rowlevel_target"
     val source = s"$catalog.default.rowlevel_source"
 
@@ -135,7 +131,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
   }
 
   test("MERGE cardinality violation matches Spark's structured exception") {
-    assumeMerge()
     val target = s"$catalog.default.rowlevel_target_card"
     val source = s"$catalog.default.rowlevel_source_card"
 
@@ -254,7 +249,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
   }
 
   test("MERGE with a scalar-subquery assignment runs natively and matches Spark") {
-    assumeMerge()
     val target = s"$catalog.default.subq_target"
     val source = s"$catalog.default.subq_source"
 
@@ -310,7 +304,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
   // a Split instruction, so the test cannot silently stop exercising delete+reinsert semantics.
   private def deltaMergeCase(name: String, splitUpdates: Boolean, matchedClause: String): Unit = {
     test(s"delta-backed MERGE: $name") {
-      assumeMerge()
       val target = s"$catalog.default.delta_t_${name.replaceAll("\\W", "_")}"
       val source = s"$catalog.default.delta_s_${name.replaceAll("\\W", "_")}"
 
@@ -372,7 +365,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
     names.foreach(name => sql(s"DROP TABLE IF EXISTS $name"))
 
   test("disabled MergeRows flag falls back cleanly") {
-    assumeMerge()
     val target = s"$catalog.default.flag_target"
     val source = s"$catalog.default.flag_source"
     dropTables(target, source)
@@ -394,7 +386,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
   }
 
   test("copy-on-write matched delete runs through native MergeRows") {
-    assumeMerge()
     val target = s"$catalog.default.delete_target"
     val source = s"$catalog.default.delete_source"
     dropTables(target, source)
@@ -415,7 +406,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
   }
 
   test("first matching clause prevents later ANSI predicate evaluation") {
-    assumeMerge()
     val target = s"$catalog.default.order_target"
     val source = s"$catalog.default.order_source"
     dropTables(target, source)
@@ -439,7 +429,6 @@ abstract class CometMergeRowsNativeSuiteBase extends CometTestBase with Adaptive
   }
 
   test("CometMergeRowsExec semantic identity reflects instruction groups and cardinality flag") {
-    assumeMerge()
     val target = s"$catalog.default.eq_target"
     val source = s"$catalog.default.eq_source"
     sql(s"DROP TABLE IF EXISTS $target")

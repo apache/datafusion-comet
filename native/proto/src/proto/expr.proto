@@ -96,6 +96,8 @@ message Expr {
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
     AtLeastNNonNulls at_least_n_non_nulls = 76;
+    HigherOrderFunc higher_order_func = 77;
+    LambdaVariable lambda_variable = 78;
   }
 
   reserved 20;
@@ -292,17 +294,16 @@ message Regr {
   Expr child2 = 2;
   RegrType regr_type = 3;
   DataType datatype = 4;
-  // Only consulted for SLOPE and INTERCEPT. When true (Spark 3.5+), VariancePop(x)
-  // is computed only over rows where both y and x are non-null. When false
-  // (Spark 3.4), VariancePop(x) includes every row where x is non-null even if y
-  // is null, matching the pre-fix Spark 3.4 semantics.
+  // Only consulted for SLOPE and INTERCEPT. When true (SPARK-48719), VariancePop(x)
+  // is computed only over rows where both y and x are non-null. When false,
+  // VariancePop(x) includes every row where x is non-null even if y is null,
+  // matching earlier Spark patches.
   bool filter_var_by_pair_nulls = 5;
   // Only consulted for R2. Spark swapped the degenerate-case handling of
   // regr_r2. When true, a constant dependent variable (m2(y) = 0) returns 1.0
   // and a constant independent variable (m2(x) = 0) returns null. When false
   // those two cases are reversed. The swap is present in the Spark versions
-  // Comet builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not
-  // in 3.4.
+  // Comet builds against (3.5.9, 4.0.3+, 4.1, 4.2).
   bool r2_constant_dependent_is_perfect_fit = 6;
   // Only consulted for R2. Division by an underflowed moment product returns
   // null in LEGACY mode and raises DIVIDE_BY_ZERO in ANSI mode.
@@ -473,6 +474,10 @@ message Cast {
   // True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
   // 0, instead of applying the integral-digit limit to it (SPARK-60118).
   bool decimal_zero_any_exponent = 7;
+  // True when the running Spark casts a string far below the target scale's ulp to decimal as 0
+  // even when the difference to the target scale does not fit in an int, instead of failing in
+  // BigDecimal.setScale (SPARK-60119).
+  bool decimal_tiny_to_zero = 8;
   // True when Spark does not apply the 38 integral-digit limit when it casts a string to
   // decimal, as it does not with spark.sql.legacy.allowNegativeScaleOfDecimal.
   bool decimal_skip_integral_digit_limit = 9;
@@ -740,6 +745,27 @@ message RandStr {
 message ArraysZip {
   repeated Expr values = 1;
   repeated string names = 2;
+}
+
+// A DataFusion higher-order function applied to one array argument and a
+// one-parameter lambda, e.g. `array_filter(array, x -> body)`. The lambda body
+// is an ordinary expression tree in which `LambdaVariable` nodes refer to the
+// lambda parameter and `BoundReference` nodes refer to columns of the
+// enclosing operator's input.
+message HigherOrderFunc {
+  // DataFusion higher-order function name, e.g. "array_filter".
+  string func = 1;
+  Expr array = 2;
+  // Unique name of the lambda parameter. `LambdaVariable.name` nodes in the
+  // body resolve against it.
+  string param_name = 3;
+  Expr body = 4;
+}
+
+// Reference to a lambda parameter from inside a `HigherOrderFunc` body. The
+// element type is taken from the array argument at planning time.
+message LambdaVariable {
+  string name = 1;
 }
 
 // Scalar UDF dispatched to the JVM via JNI. Native side exports input arrays

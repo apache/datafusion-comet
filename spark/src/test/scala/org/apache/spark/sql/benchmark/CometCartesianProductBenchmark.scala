@@ -143,7 +143,7 @@ object CometCartesianProductBenchmark extends CometBenchmarkBase {
       ProductInSparkCaseName -> productInSparkConfigs,
       CometCaseName -> cometConfigs)
     val sums = arms.map { case (arm, configs) =>
-      // A local, because `withSQLConf` returns `Unit` on Spark 3.4 and 3.5.
+      // A local, because `withSQLConf` returns `Unit` on Spark 3.5.
       var sum: Any = null
       withSQLConf(configs: _*) {
         val df = spark.sql(query)

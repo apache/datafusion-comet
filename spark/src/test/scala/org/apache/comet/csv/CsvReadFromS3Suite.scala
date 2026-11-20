@@ -25,16 +25,13 @@ import java.nio.charset.StandardCharsets
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.{DataFrame, Row}
-import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 import org.apache.spark.sql.comet.CometCsvNativeScanExec
-import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.functions.{input_file_name, spark_partition_id}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
-import org.apache.comet.{CometConf, CometS3TestBase, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometS3TestBase}
 
 /** Native CSV scans over files in two MinIO buckets. Manual: needs Docker for MinIO. */
 class CsvReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
@@ -84,34 +81,14 @@ class CsvReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
     spark.read.option("header", "false").schema(schema).csv(paths: _*)
 
   /** Whether Spark plans the scan of `paths` with a known partitioning, as 3.4 does for one. */
-  private def isSparkPartitioningKnown(paths: String*): Boolean = {
-    var isKnown = false
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val sparkScans = collect(readCsv(paths: _*).queryExecution.executedPlan) {
-        case scan: BatchScanExec => scan
-      }
-      isKnown = sparkScans.exists(!_.outputPartitioning.isInstanceOf[UnknownPartitioning])
-    }
-    isKnown
-  }
-
-  private def assertSplitFallback(plan: SparkPlan): Unit = {
-    val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
-    assert(
-      reasons.exists(_.contains("Native CSV scan would split a partition that mixes object")),
-      s"fallback reasons: $reasons")
-  }
-
   /**
    * Reads `paths` with Comet off and on, and checks that Comet returns Spark's rows through a
    * native CSV scan whose partitions each read from one bucket. `sparkMixesBuckets` states
-   * whether Spark's own layout puts both buckets in one partition. Where Spark plans the scan
-   * with a known partitioning (one partition on Spark 3.4), Comet must leave it to Spark.
+   * whether Spark's own layout puts both buckets in one partition.
    */
   private def assertMultiBucketRead(paths: Seq[String], sparkMixesBuckets: Boolean): Unit = {
     var expected: Seq[Row] = Nil
     var sparkLayout: Seq[Set[String]] = Nil
-    val isKnownPartitioning = isSparkPartitioningKnown(paths: _*)
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       expected = readCsv(paths: _*).collect().toSeq
       sparkLayout = readCsv(paths: _*)
@@ -132,11 +109,6 @@ class CsvReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
     assert(rows.map(_.toString).sorted == expected.map(_.toString).sorted)
     val plan = df.queryExecution.executedPlan
     val scans = collect(plan) { case scan: CometCsvNativeScanExec => scan }
-    if (sparkMixesBuckets && isKnownPartitioning) {
-      assert(scans.isEmpty, s"expected Spark's CSV scan:\n$plan")
-      assertSplitFallback(plan)
-      return
-    }
     assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
     val partitions = scans.head.nativeOp.getCsvScan.getFilePartitionsList.asScala.toSeq
     val cometLayout =
@@ -176,7 +148,6 @@ class CsvReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
   Seq(false, true).foreach { isAdaptive =>
     test(s"global aggregate over a one-partition CSV scan of two buckets, AQE $isAdaptive") {
-      // Spark 3.4 plans no exchange above a one-partition scan, so Comet must not split it.
       putTwoBucketFiles("csv-agg", "csv-agg", Seq("f1.csv", "f2.csv"))
       val paths = Seq(a("csv-agg"), b("csv-agg"))
       withSQLConf(
@@ -191,13 +162,8 @@ class CsvReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
         assert(df.collect().head.getLong(0) == expected)
         val plan = df.queryExecution.executedPlan
         val scans = collect(plan) { case scan: CometCsvNativeScanExec => scan }
-        if (isSparkPartitioningKnown(paths: _*)) {
-          assert(scans.isEmpty, s"expected Spark's CSV scan:\n$plan")
-          assertSplitFallback(plan)
-        } else {
-          assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
-          assert(scans.head.outputPartitioning.numPartitions == 2)
-        }
+        assert(scans.size == 1, s"expected one native CSV scan:\n$plan")
+        assert(scans.head.outputPartitioning.numPartitions == 2)
       }
     }
   }
@@ -224,15 +190,12 @@ class CsvReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
   }
 
   test("native CSV scan splits a mixed partition of a scan Spark plans as several partitions") {
-    // Spark plans more than one partition, so its partitioning is unknown on every version,
-    // Spark 3.4 included, and Comet may split the mixed one.
     createBucketIfNotExists(secondBucketName)
     putObject(testBucketName, "csv-mix-big/f.csv", csvBytes(100, 129, "A"))
     putObject(secondBucketName, "csv-mix-mid/f.csv", csvBytes(10, 14, "B"))
     putObject(testBucketName, "csv-mix-small/f.csv", csvBytes(1, 3, "A"))
     val paths = Seq(a("csv-mix-big"), b("csv-mix-mid"), a("csv-mix-small"))
     withSQLConf(csvNative ++ twoPartitionsOneMixed: _*) {
-      assert(!isSparkPartitioningKnown(paths: _*))
       assertMultiBucketRead(paths, sparkMixesBuckets = true)
     }
   }
