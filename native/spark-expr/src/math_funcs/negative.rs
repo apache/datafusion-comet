@@ -163,6 +163,12 @@ impl PhysicalExpr for NegativeExpr {
                             // Overflow checks are not supported for other datatypes
                         }
                     }
+                } else if scalar.data_type().is_signed_integer() {
+                    // `arithmetic_negate` is checked and errors on the minimum of a signed
+                    // integer type, but legacy mode wraps it as the array path does.
+                    let negated = neg_wrapping(scalar.to_array()?.as_ref())?;
+                    let wrapped = ScalarValue::try_from_array(&negated, 0)?;
+                    return Ok(ColumnarValue::Scalar(wrapped));
                 }
                 Ok(ColumnarValue::Scalar((scalar.arithmetic_negate())?))
             }
@@ -432,6 +438,33 @@ mod tests {
             (ScalarValue::Int64(Some(i64::MIN)), "long"),
         ] {
             assert_spark_overflow(eval_scalar(scalar, true).unwrap_err(), from_type);
+        }
+
+        // Legacy mode wraps the minimum of a signed integer type, as the array path does
+        for (scalar, expected) in [
+            (ScalarValue::Int32(Some(42)), ScalarValue::Int32(Some(-42))),
+            (ScalarValue::Int32(None), ScalarValue::Int32(None)),
+            (
+                ScalarValue::Int8(Some(i8::MIN)),
+                ScalarValue::Int8(Some(i8::MIN)),
+            ),
+            (
+                ScalarValue::Int16(Some(i16::MIN)),
+                ScalarValue::Int16(Some(i16::MIN)),
+            ),
+            (
+                ScalarValue::Int32(Some(i32::MIN)),
+                ScalarValue::Int32(Some(i32::MIN)),
+            ),
+            (
+                ScalarValue::Int64(Some(i64::MIN)),
+                ScalarValue::Int64(Some(i64::MIN)),
+            ),
+        ] {
+            let ColumnarValue::Scalar(res) = eval_scalar(scalar, false).unwrap() else {
+                panic!("expected scalar result")
+            };
+            assert_eq!(res, expected);
         }
     }
 
