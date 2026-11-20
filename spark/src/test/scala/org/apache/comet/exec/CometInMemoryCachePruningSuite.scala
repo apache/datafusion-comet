@@ -145,13 +145,29 @@ class CometInMemoryCachePruningSuite extends CometTestBase {
     "s >= '\ue000'",
     "s < '\u0080'",
     "s LIKE 'prefix%'",
-    // Both prefixes match é (C3 A9). Only its batch and the batch containing id 0 are needed.
-    "(startswith(s, 'é') AND startswith(s, CAST(X'C3' AS STRING))) OR id = 0",
+    // C3 matches é (C3 A9). Only its batch and the batch containing id 0 are needed.
+    "startswith(s, CAST(X'C3' AS STRING)) OR id = 0",
     "dec >= -1.125 AND dec < 2.125",
     "ts < TIMESTAMP '1960-01-05 00:00:00'",
     "b <=> true",
     "id IN (1, 9, 49)",
     "d = -100.0D OR s = 'prefix-z'")
+
+  test("cache pruning keeps byte prefix matches with trailing FF bytes") {
+    // Use Spark to preserve the raw string bytes on both sides of Comet's cache serializer.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false", SQLConf.COLUMN_BATCH_SIZE.key -> "1") {
+      val cached = spark
+        .sql("SELECT CAST(b AS STRING) AS s FROM VALUES (X'C3FFFF01'), (X'FFFF01') AS t(b)")
+        .cache()
+      try {
+        Seq("C3FFFF", "FFFF").foreach { prefix =>
+          assert(cached.where(s"startswith(s, CAST(X'$prefix' AS STRING))").count() == 1L)
+        }
+      } finally {
+        cached.unpersist(blocking = true)
+      }
+    }
+  }
 
   Seq("native Arrow", "Spark columnar", "row").foreach { writer =>
     test(s"cache pruning matches uncached Spark with $writer input") {
