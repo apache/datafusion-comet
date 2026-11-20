@@ -35,7 +35,7 @@ import org.apache.arrow.flatbuf.{Int => IpcInt, Message, MessageHeader, Schema =
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{FieldVector, IntVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector}
-import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
+import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
@@ -56,26 +56,8 @@ import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 
 class CometCelebornShuffleReaderSuite extends CometTestBase {
 
+  import NativeShuffleTestFrames._
   import testImplicits._
-
-  private def frameBytes(payload: Byte*): Array[Byte] = ByteBuffer
-    .allocate(20 + payload.size)
-    .order(ByteOrder.LITTLE_ENDIAN)
-    .putLong(12L + payload.size)
-    .putLong(0L)
-    .put(Array[Byte](78, 79, 78, 69)) // NONE codec; raw-reader tests need only a framed payload.
-    .put(payload.toArray)
-    .array()
-
-  private final class TrackingInputStream(bytes: Array[Byte])
-      extends ByteArrayInputStream(bytes) {
-    var closeCalls = 0
-
-    override def close(): Unit = {
-      closeCalls += 1
-      super.close()
-    }
-  }
 
   private final class RecordingReaderBackend(client: RecordingCelebornRawClient)
       extends ShuffleManager {
@@ -1224,42 +1206,6 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       // Keep a valid two-column IPC payload but claim zero fields in the outer header and plan.
       ByteBuffer.wrap(mismatched).order(ByteOrder.LITTLE_ENDIAN).putLong(8, 0L)
       assertNativeDecodeFailure(mismatched, "column count mismatch")
-    }
-  }
-
-  private def arrowFrame(
-      root: VectorSchemaRoot,
-      dictionaries: DictionaryProvider = null): Array[Byte] = {
-    val output = new ByteArrayOutputStream()
-    val writer = new ArrowStreamWriter(root, dictionaries, Channels.newChannel(output))
-    val payload =
-      try {
-        writer.start()
-        writer.writeBatch()
-        writer.end()
-        output.toByteArray
-      } finally writer.close()
-    val frame = frameBytes(payload: _*)
-    ByteBuffer
-      .wrap(frame)
-      .order(ByteOrder.LITTLE_ENDIAN)
-      .putLong(8, root.getFieldVectors.size().toLong)
-    frame
-  }
-
-  private def intFrame(): Array[Byte] = {
-    val allocator = new RootAllocator(Long.MaxValue)
-    val values = new IntVector("value", allocator)
-    val root = VectorSchemaRoot.of(values)
-    try {
-      values.allocateNew()
-      Seq(-1, 0, 1).zipWithIndex.foreach { case (value, index) => values.setSafe(index, value) }
-      values.setValueCount(3)
-      root.setRowCount(3)
-      arrowFrame(root)
-    } finally {
-      root.close()
-      allocator.close()
     }
   }
 

@@ -26,7 +26,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
@@ -167,7 +167,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       // is pure reuse bookkeeping: the subquery it points at is counted where that subquery is
       // shown, so counting the wrapper too would invent an un-accelerated Spark operator.
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
-          _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+          _: CometSparkToColumnarExec =>
         stats.transitions += 1
       case _: CometPlan =>
         stats.cometOperators += 1

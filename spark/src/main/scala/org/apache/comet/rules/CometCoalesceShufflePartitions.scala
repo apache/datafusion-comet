@@ -104,7 +104,8 @@ case object CometCoalesceShufflePartitions extends AQEShuffleReadRule {
 
   // A Comet operator whose Spark original's children Spark's rule coalesces one by one, with that
   // original. The class match mirrors Spark's, and Spark's rule decides, for its version, which
-  // of these it actually treats that way. Comet has no counterpart of `CartesianProductExec`.
+  // of these it actually treats that way. `CometCartesianProductExec` is left out because each of
+  // its children is a single partition, so there is nothing to coalesce.
   private object Replaced {
     def unapply(plan: SparkPlan): Option[SparkPlan] = plan match {
       case comet: CometExec if comet.outputPartitioning.isInstanceOf[UnknownPartitioning] =>

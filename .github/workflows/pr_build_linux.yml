@@ -88,6 +88,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
     outputs:
@@ -106,6 +107,7 @@ jobs:
         run: |
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
+          cargo fmt --manifest-path native-executors/Cargo.toml --all -- --check
 
   # Fast syntactic-only scalafix check. Parses sources without compiling, so it
   # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
@@ -115,6 +117,7 @@ jobs:
     name: Lint Scala (syntactic)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -156,6 +159,7 @@ jobs:
     name: Lint Java (${{ matrix.profile.name }})
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
       env:
@@ -163,9 +167,6 @@ jobs:
     strategy:
       matrix:
         profile:
-          - name: "Spark 3.4, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
@@ -288,6 +289,7 @@ jobs:
     name: Strict Scala warnings (Spark 3.5, JDK 17)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
     steps:
@@ -331,6 +333,7 @@ jobs:
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
       env:
@@ -396,6 +399,7 @@ jobs:
     needs: lint
     name: Build Native Library
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     container:
       image: amd64/rust
     steps:
@@ -462,6 +466,7 @@ jobs:
     name: ubuntu-latest/rust-test
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     steps:
@@ -475,6 +480,37 @@ jobs:
 
       - name: Rust test steps
         uses: ./.github/actions/rust-test
+
+  # native/native-executors, the Comet Native Executors cluster (issue #7288),
+  # is a Cargo workspace of its own so that the main build never depends on
+  # Ballista. linux-test-rust doesn't build it, so this job does, and the lint
+  # job checks its formatting. When Comet moves to a DataFusion major that
+  # Ballista hasn't released yet, the upgrade can turn this job off until
+  # Ballista catches up.
+  linux-test-native-executors:
+    needs: lint
+    name: ubuntu-latest/native-executors
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Check Cargo clippy
+        run: |
+          cargo clippy --manifest-path native/native-executors/Cargo.toml --color=never \
+            --all-targets -- -D warnings
+
+      - name: Run Cargo test
+        run: cargo test --manifest-path native/native-executors/Cargo.toml --color=never
 
   linux-test:
     # `lint` is already upstream via build-native; it is listed here so this
@@ -507,6 +543,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergHdfsSuite
               org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
@@ -518,6 +555,7 @@ jobs:
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
+              org.apache.comet.text.CometTextNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.DataGeneratorSuite
@@ -525,7 +563,6 @@ jobs:
             value: |
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
-              org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometDirectColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleInputConversionSuite
@@ -543,6 +580,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.spark.sql.comet.execution.shuffle.CometBlockStoreShuffleReaderSuite
+              org.apache.spark.sql.comet.execution.shuffle.NativeBatchDecoderIteratorSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
@@ -552,10 +590,11 @@ jobs:
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
-              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecCompatibilitySuite
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometMergeRowsSuite
               org.apache.comet.exec.CometTopKSuite
+              org.apache.comet.exec.CometMinMaxSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometRangeExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
@@ -569,6 +608,7 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
+              org.apache.spark.sql.comet.CometCollectMetricsSuite
               org.apache.spark.sql.comet.CometArrowPythonUdfSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
@@ -583,16 +623,19 @@ jobs:
               org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
+              org.apache.comet.local.CometLocalExecutionSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
-              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
+              org.apache.spark.CometPluginsDeprecatedConfigWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometDriverPluginShuffleManagerSuite
               org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
+              org.apache.comet.cloud.s3.CometS3CredentialReleaseSuite
               org.apache.comet.rules.CometMultiStoreScanSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
@@ -633,6 +676,7 @@ jobs:
               org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
               org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
+              org.apache.spark.sql.comet.execution.arrow.CometZstdCompressionCodecSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
@@ -683,6 +727,7 @@ jobs:
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     container:
       image: amd64/rust
       env:
@@ -734,6 +779,7 @@ jobs:
     name: Verify TPC-H Results
     if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:
@@ -808,6 +854,7 @@ jobs:
     name: Verify TPC-DS Results
     if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:

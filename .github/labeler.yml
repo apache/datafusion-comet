@@ -95,12 +95,9 @@ area:ffi:
   - changed-files:
       - any-glob-to-any-file:
           - 'native/jni-bridge/**'
-          - 'native/core/src/execution/columnar_to_row.rs'
           - 'spark/src/main/**/vector/**'
           - 'common/src/main/**/vector/**'
-          - 'spark/src/main/scala/org/apache/comet/NativeColumnarToRowConverter.scala'
           - 'spark/src/main/scala/org/apache/spark/sql/comet/CometColumnarToRowExec.scala'
-          - 'spark/src/main/scala/org/apache/spark/sql/comet/CometNativeColumnarToRowExec.scala'
           - 'spark/src/main/scala/org/apache/spark/sql/comet/CometSparkToColumnarExec.scala'
 
 area:memory:

@@ -265,7 +265,7 @@ case class CometNativeScanExec(
       sparkContext,
       Seq.empty,
       Map(sourceKey -> commonData),
-      Map(sourceKey -> perPartitionData),
+      Map(sourceKey -> PartitionPlanData.wrap(perPartitionData)),
       serializedPlan,
       PlanDataInjector.planFingerprint(serializedPlan),
       perPartitionData.length,

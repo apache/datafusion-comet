@@ -28,14 +28,14 @@ import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal, MakeDate}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
-import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
+import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
@@ -114,33 +114,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       dataSchema: StructType,
       requiredSchema: StructType,
       resolver: Resolver): StructType = {
-    // Ordinary fields keep their names, which projection below also matches exactly. Index
-    // only ID-bearing required fields so wide ordinary schemas do not need quadratic lookups.
-    val requiredFieldsWithIds = requiredSchema.fields
-      .filter(ParquetUtils.hasFieldId)
-      .map(field => field.name -> field)
-      .toMap
     StructType(dataSchema.fields.flatMap { field =>
       if (containsVariantType(field.dataType)) {
         requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
       } else {
-        // Nested schema pruning drops root metadata from the relation's data schema. Spark
-        // 3.4 still retains it in requiredSchema, which its Parquet reader uses for ID matching.
-        // Use that ID here too, without changing the table schema's types or projection indexes.
-        // When pruning also drops requiredSchema's ID (Spark 3.5+), leave the missing
-        // data-schema ID untouched so lookup remains name-based.
-        Some(
-          requiredFieldsWithIds
-            .get(field.name)
-            .map { required =>
-              field.copy(metadata = new MetadataBuilder()
-                .withMetadata(field.metadata)
-                .putLong(
-                  ParquetUtils.FIELD_ID_METADATA_KEY,
-                  ParquetUtils.getFieldId(required).toLong)
-                .build())
-            }
-            .getOrElse(field))
+        Some(field)
       }
     })
   }
@@ -160,18 +138,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     }
 
     // AQE DPP (SubqueryAdaptiveBroadcastExec) is converted to CometSubqueryBroadcastExec
-    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, Spark 3.5+).
+    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule).
     // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is converted by
     // CometExecRule.convertSubqueryBroadcasts. Both are resolved through the lazy
     // partition serialization path in CometNativeScanExec.
-    //
-    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the AQE DPP conversion
-    // rule can't run. CometScanRule.transformV1Scan rejects AQE DPP on 3.4, so this check
-    // is a safety net: if the scan somehow reached here with AQE DPP on 3.4, reject it.
-    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
-    }
-
     if (SQLConf.get.ignoreCorruptFiles ||
       scanExec.relation.options
         .get("ignorecorruptfiles") // Spark sets this to lowercase.
@@ -244,13 +214,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     // the scan is supported if no fallback reasons were added to the node
     !hasFallbackReason(scanExec)
   }
-
-  /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
-  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
-    e.exists {
-      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
-      case _ => false
-    }
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 

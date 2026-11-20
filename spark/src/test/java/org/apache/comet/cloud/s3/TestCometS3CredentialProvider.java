@@ -20,11 +20,13 @@
 package org.apache.comet.cloud.s3;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Test-only provider instantiated by the dispatcher when its FQCN is passed across JNI. State is
- * static because the dispatcher caches one instance per (FQCN, dispatchKey) for the JVM lifetime.
+ * static because the dispatcher keeps one instance per (FQCN, dispatchKey, catalogProperties) until
+ * its last reference is released or the JVM shuts down.
  */
 public class TestCometS3CredentialProvider implements CometS3CredentialProvider {
 
@@ -40,7 +42,18 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
   static volatile CometS3Credentials nextResult =
       new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
 
+  /** When set, {@code close()} counts down {@link #closeEntered} and waits for this latch. */
+  static volatile CountDownLatch blockClose;
+
+  static volatile CountDownLatch closeEntered;
+
+  /** When set, {@code close()} counts this down once it has counted the close. */
+  static volatile CountDownLatch closeFinished;
+
+  static volatile String lastCloseThread;
+
   private volatile String tenantId;
+  private volatile boolean closed;
 
   static void reset() {
     initCount.set(0);
@@ -53,6 +66,10 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
     throwOnNext = null;
     throwOnClose = null;
     nextResult = new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
+    blockClose = null;
+    closeEntered = null;
+    closeFinished = null;
+    lastCloseThread = null;
   }
 
   @Override
@@ -63,6 +80,9 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
 
   @Override
   public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) {
+    if (closed) {
+      throw new IllegalStateException("TestCometS3CredentialProvider used after close()");
+    }
     callCount.incrementAndGet();
     lastBucket = context.getBucket();
     lastPath = context.getPath();
@@ -78,11 +98,28 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
 
   @Override
   public void close() throws Exception {
-    closeCount.incrementAndGet();
-    Exception toThrow = throwOnClose;
-    if (toThrow != null) {
-      throwOnClose = null;
-      throw toThrow;
+    closed = true;
+    lastCloseThread = Thread.currentThread().getName();
+    CountDownLatch entered = closeEntered;
+    if (entered != null) {
+      entered.countDown();
+    }
+    try {
+      CountDownLatch block = blockClose;
+      if (block != null) {
+        block.await();
+      }
+      closeCount.incrementAndGet();
+      Exception toThrow = throwOnClose;
+      if (toThrow != null) {
+        throwOnClose = null;
+        throw toThrow;
+      }
+    } finally {
+      CountDownLatch finished = closeFinished;
+      if (finished != null) {
+        finished.countDown();
+      }
     }
   }
 }

@@ -51,7 +51,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, OperatorOuterClass, QueryPlanSerde, Unsupported}
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -1839,7 +1839,6 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("AQE DPP broadcast roots retain temporary logical links after an unchanged replan") {
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     // With direct read, the aggregate under the broadcast reads the dim side's shuffle stage
     // through a ShuffleScan only once its stage is prepared, so each replan stays unchanged.
     Seq(false, true).foreach { directRead =>
@@ -1910,8 +1909,8 @@ class CometExecRuleSuite extends CometTestBase {
     // AQE adopts a replan that differs from its current plan, after which it cannot link a stage
     // built over a reused operator back into its logical plan. A broadcast stage it cannot link
     // no longer fixes the join's build side, which broke the exchange reuse that Spark's
-    // SPARK-34637 DPP test checks on Spark 3.4. The aggregate under the broadcast is the root of
-    // its native block, so a refreshed native plan there changes the plan that AQE compares.
+    // The aggregate under the broadcast is the root of its native block, so a refreshed native
+    // plan there changes the plan that AQE compares.
     def reusedOverStage(plan: SparkPlan): Seq[SparkPlan] = plan.collect {
       case native: CometNativeExec
           if native.children.exists(_.isInstanceOf[ShuffleQueryStageExec]) =>
@@ -2001,8 +2000,9 @@ class CometExecRuleSuite extends CometTestBase {
           Seq(0.0d, -0.0d)
             .flatMap(v =>
               Seq(ordinary, infinities).map(list => (list :+ literal(v), false, 1))) ++
-          Seq((ordinary ++ Seq(literal(0.0d), literal(-0.0d)), false, 0)) ++
-          (if (isSpark35Plus) Seq((Seq.empty[Expression], false, 0)) else Nil)
+          Seq(
+            (ordinary ++ Seq(literal(0.0d), literal(-0.0d)), false, 0),
+            (Seq.empty[Expression], false, 0))
         for ((list, needsNormalization, extraStaticCandidates) <- lists;
           asSet <- Seq(false, true) if !asSet || list.forall(_.isInstanceOf[Literal]);
           negate <- Seq(false, true);
@@ -2754,7 +2754,6 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should not allow try_sum mixed execution") {
-    assume(isSpark35Plus, "try_sum was added in Spark 3.5")
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -3080,7 +3079,7 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
 
-        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // Cast to bigint so the test uses a type supported by bloom_filter_agg.
         // argument; later versions widened it to any integral type.
         val sparkPlan =
           createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
@@ -3119,7 +3118,7 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
 
-        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // Cast to bigint so the test uses a type supported by bloom_filter_agg.
         // argument; later versions widened it to any integral type.
         val sparkPlan =
           createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
@@ -3264,7 +3263,7 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
-    // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
+    // Spark 3.5 rejects `array<map<...>>` as a grouping key in the analyzer (not orderable),
     // so the plan never reaches CometExecRule on those versions. The guard we're exercising
     // (containsMapType) only matters on Spark 4.0+, which permits the GROUP BY to be analyzed.
     assume(isSpark40Plus)
