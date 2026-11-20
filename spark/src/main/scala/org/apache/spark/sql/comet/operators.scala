@@ -31,7 +31,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionEquals, ExpressionSet, Generator, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -1471,16 +1471,7 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         CometExecUtils.getProjectionNativePlan(inputs ++ aliases, inputs, childOp.head)
       if (projected.isEmpty) return None
       builder.clearChildren().addChildren(projected.get.toBuilder.setPlanId(builder.getPlanId))
-      val attributes = aliases.map(_.toAttribute)
-      val replacements = shared.map(ExpressionEquals(_)).zip(attributes).toMap
-      val extended = inputs ++ attributes
-      op.projectList.map { expr =>
-        val rewritten = expr.transformDown {
-          case node if replacements.contains(ExpressionEquals(node)) =>
-            replacements(ExpressionEquals(node))
-        }
-        QueryPlanSerde.rewrittenExprToProto(expr, rewritten, extended)
-      }
+      QueryPlanSerde.projectWithMaterializedInputs(op.projectList, inputs, aliases)
     }
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {

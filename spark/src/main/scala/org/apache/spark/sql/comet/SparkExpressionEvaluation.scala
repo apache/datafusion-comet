@@ -21,12 +21,14 @@ package org.apache.spark.sql.comet
 
 import scala.collection.mutable
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, And, Attribute, BinaryComparison, Cast, CodegenObjectFactoryMode, Divide, DivModLike, EqualNullSafe, EvalMode, Expression, ExpressionEquals, ExprId, IntegralDivide, IsNotNull, IsNull, LeafExpression, Literal, Multiply, Not, Or, PredicateHelper, Remainder, Subtract, UnaryMinus}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, And, Attribute, BinaryComparison, Cast, CodegenObjectFactoryMode, Divide, DivModLike, EqualNullSafe, EvalMode, Expression, ExpressionEquals, IntegralDivide, IsNotNull, IsNull, LeafExpression, Literal, Multiply, Not, Or, PredicateHelper, Remainder, Subtract, UnaryMinus}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.execution.{FilterExec, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DoubleType, IntegralType, LongType}
+import org.apache.spark.sql.types.{DoubleType, FloatType, IntegralType, LongType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.QueryPlanSerde
 
 private[comet] object SparkExpressionEvaluation extends PredicateHelper {
@@ -37,22 +39,27 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
     case _ => false
   }
 
-  // Spark can skip an operand of arithmetic or a comparison on NULL (#7246, #7468).
-  // Moving the parent earlier must not expose a failure from such an operand. Include
-  // the implicit widening Spark inserts for integral columns in DIV and /.
-  private def simpleOperand(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute => true
-    case c: Cast
-        if c.child.dataType.isInstanceOf[IntegralType] &&
-          (c.dataType == LongType || c.dataType == DoubleType) =>
-      simpleOperand(c.child)
+  private def widening(c: Cast): Boolean = c.child.dataType match {
+    case _: IntegralType => c.dataType == LongType || c.dataType == DoubleType
+    case FloatType => c.dataType == DoubleType
     case _ => false
   }
 
+  private def simpleOperand(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute => true
+    case c: Cast => widening(c) && simpleOperand(c.child)
+    case _ => false
+  }
+
+  // Moving an expression must preserve which of its operands can fail. Spark skips some
+  // operands on NULL (#7246, #7468) and can precompute shared terms inside a Boolean guard.
   private def hasMatchingOperandGuards(expr: Expression): Boolean = expr match {
     case _: Literal | _: Attribute => true
-    case _: Abs | _: Cast | _: UnaryMinus | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or |
-        _: EqualNullSafe =>
+    case c: Cast => widening(c) && hasMatchingOperandGuards(c.child)
+    case _: Abs | _: UnaryMinus | _: IsNull | _: IsNotNull | _: Not | _: EqualNullSafe =>
+      expr.children.forall(hasMatchingOperandGuards)
+    case _: And | _: Or =>
+      QueryPlanSerde.canSkipEvaluation(expr.children.tail) &&
       expr.children.forall(hasMatchingOperandGuards)
     case d: DivModLike => simpleOperand(d.left) && hasMatchingOperandGuards(d.right)
     case _: Add | _: Subtract | _: Multiply | _: BinaryComparison =>
@@ -78,41 +85,39 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
         e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
 
   def filterCondition(op: FilterExec): Expression = {
-    if (!op.condition.isInstanceOf[And] ||
+    if (op.getTagValue(CometExecRule.PARTIAL_READER).isDefined ||
+      !op.condition.isInstanceOf[And] ||
       !containsAnsiDivision(op.condition) ||
-      !wholeStageCodegenEnabled(op) ||
-      !hasMatchingOperandGuards(op.condition)) {
+      !wholeStageCodegenEnabled(op)) {
       return op.condition
     }
 
-    // Spark's GeneratePredicateHelper checks an attribute for NULL at its first use, even
-    // when the original IS NOT NULL tests a null-intolerant expression over that attribute.
-    // It runs the remaining checks last, so they cannot suppress an earlier division error.
-    val (nullChecks, predicates) = splitConjunctivePredicates(op.condition).partition {
+    val conjuncts = splitConjunctivePredicates(op.condition)
+    val (nullChecks, predicates) = conjuncts.partition {
       case IsNotNull(e) => isNullIntolerant(e) && e.references.subsetOf(op.child.outputSet)
       case _ => false
     }
-    val pending = mutable.Set.empty[ExprId]
-    pending ++= nullChecks.flatMap(_.references).map(_.exprId)
-    val ordered = Seq.newBuilder[Expression]
-    predicates.foreach { predicate =>
-      predicate.references.foreach { attr =>
-        if (pending.remove(attr.exprId)) ordered += IsNotNull(attr)
-      }
-      ordered += predicate
+    // Spark 4.2 can precompute a shared term before the first predicate that refers to it.
+    val filterCse = isSpark42Plus &&
+      op.conf.getConfString("spark.sql.subexpressionElimination.filterExec.enabled").toBoolean
+    val canReorder = QueryPlanSerde.withSharedSubexpressions(if (filterCse) predicates else Nil) {
+      conjuncts.forall(hasMatchingOperandGuards)
     }
-    ordered ++= nullChecks.filter {
-      case IsNotNull(a: Attribute) => pending.contains(a.exprId)
-      case _ => true
-    }
+    if (!canReorder) return op.condition
+
+    // GeneratePredicateHelper checks a required column at first use, even when the original
+    // IS NOT NULL tests a null-intolerant expression over that column. Remaining checks run last.
+    val required = nullChecks.flatMap(_.references).map(_.exprId).toSet
+    val ordered = (predicates.flatMap { p =>
+      p.references.toSeq.filter(a => required.contains(a.exprId)).map(IsNotNull(_)) :+ p
+    } ++ nullChecks).distinct
 
     // A generated filter rejects a NULL conjunct immediately. SQL AND continues past NULL
     // because a later false can still decide the result.
-    val conjuncts = ordered.result()
-    val guards = conjuncts.init.map { p =>
+    val guards = ordered.init.map { p =>
       if (p.nullable) EqualNullSafe(p, Literal.TrueLiteral) else p
     }
-    buildBalancedPredicate(guards :+ conjuncts.last, And.apply)
+    buildBalancedPredicate(guards :+ ordered.last, And.apply)
   }
 
   /**
@@ -120,7 +125,8 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
    * AND or OR. Its interpreted projection only caches them on first use.
    */
   def sharedGuardedDivisions(op: ProjectExec): Seq[Expression] = {
-    if (!op.conf.subexpressionEliminationEnabled ||
+    if (op.getTagValue(CometExecRule.PARTIAL_READER).isDefined ||
+      !op.conf.subexpressionEliminationEnabled ||
       !op.projectList.exists(containsAnsiDivision) ||
       !codegenFactoryEnabled(op)) {
       return Nil

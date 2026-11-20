@@ -1048,6 +1048,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    materializedInputs.value match {
+      case Some((projectInputs, replacements)) if projectInputs eq inputs =>
+        replacements.get(expr) match {
+          case Some(attr) => return exprToProtoInternal(attr, inputs, binding)
+          case _ =>
+        }
+      case _ =>
+    }
+
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
       if (!CometConf.isExprEnabled(exprConfName)) {
@@ -1368,6 +1377,23 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    */
   def sharedExpressionsBeforePromotion: Seq[Expression] =
     sharedSubexpressions.value.map(_.original).getOrElse(Nil)
+
+  private val materializedInputs =
+    new DynamicVariable[Option[(Seq[Attribute], Map[Expression, Attribute])]](None)
+
+  // Bind exact matches during serialization so parent serializers still see the original
+  // shared expressions when deciding which arguments can skip evaluation. A serializer with
+  // its own inputs (such as a lambda) cannot reference the extra projection columns.
+  def projectWithMaterializedInputs(
+      expressions: Seq[Expression],
+      inputs: Seq[Attribute],
+      aliases: Seq[Alias]): Seq[Option[Expr]] = {
+    val extended = inputs ++ aliases.map(_.toAttribute)
+    val replacements = aliases.map(a => DecimalPrecision.promote(a.child) -> a.toAttribute).toMap
+    materializedInputs.withValue(Some((extended, replacements))) {
+      expressions.map(exprToProto(_, extended))
+    }
+  }
 
   /**
    * Runs `f`, which serializes an operator whose expressions are `expressions`. Code that

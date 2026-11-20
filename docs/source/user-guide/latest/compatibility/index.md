@@ -178,10 +178,14 @@ appears to guard the division. Spark's generated filter checks a column for NULL
 predicate first needs it. A generated projection can evaluate a repeated expression before
 either operand of an `AND` or `OR`.
 
-Comet follows these evaluation orders for simple divisions such as `abs(10 DIV x)`
-([#7480](https://github.com/apache/datafusion-comet/issues/7480)). With a computed dividend,
-Comet can still skip a division that Spark evaluates. For example, suppose a Parquet scan
-returns a row with `x = 0` and `y = NULL`.
+Comet raises the same error for both queries in
+[#7480](https://github.com/apache/datafusion-comet/issues/7480). Whether Comet can reproduce
+Spark's evaluation order depends on the surrounding expressions and the consuming operator.
+For example, below a `LIMIT`, moving a division ahead of a filter condition could raise an
+error on a row beyond the limit. Comet keeps the original order in that filter.
+
+A computed dividend can also prevent reordering. Suppose a Parquet scan returns a row
+with `x = 0` and `y = NULL`.
 
 ```sql
 SELECT x FROM t WHERE y IS NOT NULL AND (x + 10) DIV x > 0
