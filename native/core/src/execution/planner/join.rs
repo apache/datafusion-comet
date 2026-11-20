@@ -47,7 +47,7 @@ use datafusion::{
     },
 };
 use datafusion_comet_operators::{
-    CometFilterExec, CometProjectionExec, MembershipKeyReductionExec,
+    CometFilterExec, CometProjectionExec, MembershipKeyReductionExec, SortInputCoalesceExec,
 };
 use datafusion_comet_proto::{
     spark_expression::Expr,
@@ -220,7 +220,8 @@ fn reduce_before_sort(
     let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
         return Ok(None);
     };
-    let input = sort.input();
+    // The reducer packs its own output, so it replaces any input coalescer.
+    let input = SortInputCoalesceExec::unwrap_input(sort.input());
     let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
         return Ok(None);
     };
@@ -268,7 +269,11 @@ fn reduce_before_sort(
         vec![Arc::clone(&reducer)],
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
     )?;
-    Arc::make_mut(&mut params.right).native_plan = sort;
+    let right = Arc::make_mut(&mut params.right);
+    right.native_plan = sort;
+    right
+        .additional_native_plans
+        .retain(|plan| !plan.is::<SortInputCoalesceExec>());
     // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
     Ok(Some(reducer))
 }

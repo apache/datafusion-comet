@@ -938,6 +938,9 @@ message Sort {
   optional int32 skip = 4;
   // Attach this TopK execution's live threshold to an eligible native reader.
   bool dynamic_filter_enabled = 5;
+  // Combine small input batches before a sort without a fetch, once the input is past the
+  // sort's in-place threshold.
+  bool coalesce_input = 6;
 }
 
 message HashAggregate {

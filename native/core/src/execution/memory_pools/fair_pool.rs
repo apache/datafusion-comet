@@ -448,6 +448,97 @@ mod tests {
         (0..n).map(|_| tasks.start()).collect()
     }
 
+    /// Sorts 3000 batches of 60 wide rows in `pool`, optionally combining them first. Returns
+    /// how many rows came out, how many times the sort spilled, and how many input batches were
+    /// combined.
+    async fn sort_small_batches(
+        pool: &Arc<dyn MemoryPool>,
+        coalesce: bool,
+    ) -> datafusion::common::Result<(usize, usize, usize)> {
+        use arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::physical_expr::expressions::col;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort::SortExec;
+        use datafusion::physical_plan::{collect, ExecutionPlan};
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        use datafusion_comet_operators::SortInputCoalesceExec;
+
+        let input: Vec<RecordBatch> = (0..3000)
+            .map(|b| {
+                let ids: Vec<i64> = (0..60).map(|i| (b * 60 + i) * 7919 % 180_000).collect();
+                let text = ids.iter().map(|i| format!("{i:0>210}"));
+                RecordBatch::try_from_iter([
+                    ("id", Arc::new(Int64Array::from(ids.clone())) as ArrayRef),
+                    (
+                        "s",
+                        Arc::new(StringArray::from_iter_values(text)) as ArrayRef,
+                    ),
+                ])
+                .unwrap()
+            })
+            .collect();
+        let schema = input[0].schema();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::clone(pool))
+            .build_arc()?;
+        let config = SessionConfig::new().with_sort_spill_reservation_bytes(64 * 1024);
+        let gate = config.options().execution.sort_in_place_threshold_bytes;
+        let ctx = SessionContext::new_with_config_rt(config, runtime);
+        let source: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[input], Arc::clone(&schema), None)?;
+        let coalescer = Arc::new(SortInputCoalesceExec::new(Arc::clone(&source), 8192, gate));
+        let sort_input: Arc<dyn ExecutionPlan> = if coalesce {
+            Arc::clone(&coalescer) as _
+        } else {
+            source
+        };
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            col("id", &schema)?,
+            Default::default(),
+        )])
+        .unwrap();
+        let sort = Arc::new(SortExec::new(ordering, sort_input));
+        let output = collect(Arc::clone(&sort) as _, ctx.task_ctx()).await?;
+        let spills = sort
+            .metrics()
+            .and_then(|metrics| metrics.spill_count())
+            .unwrap_or(0);
+        let combined = coalescer
+            .metrics()
+            .and_then(|metrics| metrics.sum_by_name("coalesced_input_batches"))
+            .map_or(0, |value| value.as_usize());
+        Ok((
+            output.iter().map(|batch| batch.num_rows()).sum(),
+            spills,
+            combined,
+        ))
+    }
+
+    /// The coalescer in front of a sort cannot spill, so this pool limits it only by the pool
+    /// size. A combined batch must still be small enough for the sort's fair share, or the sort
+    /// fails after a spill where the uncombined batches fit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sort_fits_its_share_with_combined_input_where_it_fits_without() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool = pool(&fake, 3 * 1024 * 1024);
+        // Another consumer that can spill, such as a second sort in the task, halves the share.
+        let _other_sort = spillable("ExternalSorter[1]", &pool);
+
+        let (rows, spills, _) = sort_small_batches(&pool, false).await.unwrap();
+        assert_eq!(rows, 180_000);
+        assert!(
+            spills > 0,
+            "the plain sort must spill for this test to mean anything"
+        );
+        let (rows, spills, combined) = sort_small_batches(&pool, true).await.unwrap();
+        assert_eq!(rows, 180_000);
+        assert!(spills > 0, "the sort over combined input must spill too");
+        assert!(combined > 0, "no input batches were combined");
+        assert_eq!(pool.reserved(), 0);
+    }
+
     #[test]
     fn consumers_that_can_spill_share_their_tasks_share_of_the_pool() {
         // Eight running tasks share a 1040-byte pool, and Spark grants this one its 130 bytes.
