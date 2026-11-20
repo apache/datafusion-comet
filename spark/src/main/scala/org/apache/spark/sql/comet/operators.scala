@@ -1459,20 +1459,21 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
       op: ProjectExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val inputs = op.child.output
+    val output = op.child.output
     val shared = SparkExpressionEvaluation.sharedGuardedDivisions(op)
-    val exprs = if (shared.isEmpty || childOp.isEmpty) {
-      op.projectList.map(exprToProto(_, inputs))
+    val inputs = if (shared.isEmpty || childOp.isEmpty) {
+      output
     } else {
       // The rest of the right operand can fail on rows already decided by the left operand.
       // Materialize only the shared part. Both projections belong to this Spark operator.
       val aliases = shared.zipWithIndex.map { case (e, index) => Alias(e, s"shared_$index")() }
       val projected =
-        CometExecUtils.getProjectionNativePlan(inputs ++ aliases, inputs, childOp.head)
+        CometExecUtils.getProjectionNativePlan(output ++ aliases, output, childOp.head)
       if (projected.isEmpty) return None
       builder.clearChildren().addChildren(projected.get.toBuilder.setPlanId(builder.getPlanId))
-      QueryPlanSerde.projectWithMaterializedInputs(op.projectList, inputs, aliases)
+      new QueryPlanSerde.ProjectInputs(output, aliases)
     }
+    val exprs = op.projectList.map(exprToProto(_, inputs))
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
       val projectBuilder = OperatorOuterClass.Projection

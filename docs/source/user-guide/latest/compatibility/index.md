@@ -182,7 +182,10 @@ Comet raises the same error for both queries in
 [#7480](https://github.com/apache/datafusion-comet/issues/7480). Whether Comet can reproduce
 Spark's evaluation order depends on the surrounding expressions and the consuming operator.
 For example, below a `LIMIT`, moving a division ahead of a filter condition could raise an
-error on a row beyond the limit. Comet keeps the original order in that filter.
+error on a row beyond the limit. Comet keeps the original order in that filter. It also
+keeps that order when `spark.sql.codegen.hugeMethodLimit` is below its default. With
+the default, a runtime compilation failure can still make Spark switch to a standalone
+filter after Comet has planned for whole-stage evaluation.
 
 A computed dividend can also prevent reordering. Suppose a Parquet scan returns a row
 with `x = 0` and `y = NULL`.

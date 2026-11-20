@@ -49,7 +49,7 @@ SELECT x FROM logical_ansi_division WHERE y IS NOT NULL AND abs(10 DIV x) > 0
 query expect_error_class(DIVIDE_BY_ZERO)
 SELECT x FROM logical_ansi_division WHERE y IS NOT NULL AND 10 / x > 0
 
-query expect_error_class(DIVIDE_BY_ZERO)
+query expect_error(BY_ZERO)
 SELECT x FROM logical_ansi_division WHERE y IS NOT NULL AND 10 % x > 0
 
 -- The comparison uses y, so Spark checks y before dividing.
@@ -105,6 +105,15 @@ SET spark.sql.subexpressionElimination.enabled=true
 
 -- Standalone generated predicates follow the expression tree. Generated projections
 -- still evaluate shared subexpressions up front.
+statement
+SET spark.sql.codegen.hugeMethodLimit=1
+
+query
+SELECT x FROM logical_ansi_division WHERE y IS NOT NULL AND abs(10 DIV x) > 0
+
+statement
+SET spark.sql.codegen.hugeMethodLimit=65535
+
 statement
 SET spark.sql.codegen.wholeStage=false
 

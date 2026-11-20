@@ -88,6 +88,7 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
     if (op.getTagValue(CometExecRule.PARTIAL_READER).isDefined ||
       !op.condition.isInstanceOf[And] ||
       !containsAnsiDivision(op.condition) ||
+      op.conf.hugeMethodLimit < SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get ||
       !wholeStageCodegenEnabled(op)) {
       return op.condition
     }

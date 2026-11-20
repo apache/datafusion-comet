@@ -95,7 +95,7 @@ object CometExecRule {
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
 
-  val PARTIAL_READER: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.partialReader")
+  private[apache] val PARTIAL_READER: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.partialReader")
 
   /**
    * Info message for a native operator that keeps a `Scan` over an input that now reads its
@@ -1076,7 +1076,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
     // External actions such as foreachPartition or RDD.take can stop reading without adding a
     // physical-plan node. Require a materializing exchange before enabling batch observation.
-    visit(plan, None)
+    visit(plan, if (producesObjects(plan)) Some(true) else None)
   }
 
   /**
@@ -1512,18 +1512,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
       op.children.foreach(visit(_, childReader))
     }
-    // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many
-    // of them to read, as `take(1)` does. The plan's root is the `DeserializeToObjectExec` that
-    // `Dataset.rdd` adds. When the Dataset ends in a typed operation such as `map`, Spark's
-    // `EliminateSerialization` drops that deserializer together with the operation's serializer,
-    // so the root is the operation itself, which produces objects too, or a typed filter or a
-    // project over it. A Dataset's own plan ends in rows, so no other plan has such a root.
-    def producesObjects(op: SparkPlan): Boolean = op match {
-      case _: ObjectProducerExec => true
-      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
-      case _ => false
-    }
     visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
+  }
+
+  // Dataset.rdd's consumer can stop at any row. EliminateSerialization can remove its
+  // DeserializeToObjectExec, leaving a typed operator, filter or projection at the root.
+  private def producesObjects(op: SparkPlan): Boolean = op match {
+    case _: ObjectProducerExec => true
+    case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+    case _ => false
   }
 
   /**

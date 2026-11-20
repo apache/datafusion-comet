@@ -1048,12 +1048,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    materializedInputs.value match {
-      case Some((projectInputs, replacements)) if projectInputs eq inputs =>
-        replacements.get(expr) match {
-          case Some(attr) => return exprToProtoInternal(attr, inputs, binding)
-          case _ =>
-        }
+    inputs match {
+      case project: ProjectInputs if project.materialized.contains(expr) =>
+        return exprToProtoInternal(project.materialized(expr), inputs, binding)
       case _ =>
     }
 
@@ -1372,27 +1369,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     lazy val common: Seq[Expression] = original.map(DecimalPrecision.promote)
   }
 
-  /**
-   * The operator's shared expressions before decimal promotion, for rewriting the project list.
-   */
-  def sharedExpressionsBeforePromotion: Seq[Expression] =
+  private[apache] def sharedExpressionsBeforePromotion: Seq[Expression] =
     sharedSubexpressions.value.map(_.original).getOrElse(Nil)
 
-  private val materializedInputs =
-    new DynamicVariable[Option[(Seq[Attribute], Map[Expression, Attribute])]](None)
-
-  // Bind exact matches during serialization so parent serializers still see the original
-  // shared expressions when deciding which arguments can skip evaluation. A serializer with
-  // its own inputs (such as a lambda) cannot reference the extra projection columns.
-  def projectWithMaterializedInputs(
-      expressions: Seq[Expression],
-      inputs: Seq[Attribute],
-      aliases: Seq[Alias]): Seq[Option[Expr]] = {
-    val extended = inputs ++ aliases.map(_.toAttribute)
-    val replacements = aliases.map(a => DecimalPrecision.promote(a.child) -> a.toAttribute).toMap
-    materializedInputs.withValue(Some((extended, replacements))) {
-      expressions.map(exprToProto(_, extended))
-    }
+  // Bind exact matches when serializing against these inputs. Parent serializers need
+  // the original tree for canSkipEvaluation, and lambdas have their own binding scope.
+  private[apache] final class ProjectInputs(inputs: Seq[Attribute], aliases: Seq[Alias])
+      extends IndexedSeq[Attribute] {
+    private val attributes = inputs.toVector ++ aliases.map(_.toAttribute)
+    val materialized: Map[Expression, Attribute] =
+      aliases.map(a => DecimalPrecision.promote(a.child) -> a.toAttribute).toMap
+    override def length: Int = attributes.length
+    override def apply(index: Int): Attribute = attributes(index)
   }
 
   /**
