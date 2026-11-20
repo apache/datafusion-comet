@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.util.control.NonFatal
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, ExpressionSet, If, IsNull, KnownNotNull, Literal, Or, RuntimeReplaceable, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, ExpressionSet, If, IsNull, KnownNotNull, LambdaFunction, Literal, NamedLambdaVariable, Or, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -170,6 +170,20 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     CometInvokeTargets.declineReason(target) match {
       case Some(reason) =>
         return Left(s"$exprName: codegen dispatch: $reason")
+      case None =>
+    }
+
+    // The kernel is fed only column references, so a lambda parameter bound by a lambda outside
+    // `target` would never be supplied and would read as NULL.
+    val boundByTarget = target.collect { case l: LambdaFunction =>
+      l.arguments.map(_.exprId)
+    }.flatten
+    target.collectFirst {
+      case v: NamedLambdaVariable if !boundByTarget.contains(v.exprId) => v
+    } match {
+      case Some(v) =>
+        return Left(
+          s"$exprName: codegen dispatch: lambda variable ${v.name} is bound outside the expression")
       case None =>
     }
 
