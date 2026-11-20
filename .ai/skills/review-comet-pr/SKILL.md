@@ -183,8 +183,8 @@ such as `wrap_second_millisecond_overflow`, never the version, such as `spark_42
 fork that backports a Spark fix then changes the one Scala check that sets the flag and leaves the
 protobuf and Rust alone. Flag a version-named field, argument, or function, and comments that say
 "Spark 4.2" for behavior later releases inherit or that leave out the Spark JIRA.
-`Cast.is_spark4_plus` and `get_json_object_spark34` predate the rule and #6891 tracks renaming them,
-so flag them only when a PR adds behavior behind them.
+`Cast.is_spark4_plus` predates the rule and #6891 tracks renaming it,
+so flag it only when a PR adds behavior behind it.
 
 When Spark changed the behavior in a patch release, such as SPARK-55969 or SPARK-54918, a check on
 the minor version is wrong for every earlier patch. CI builds only the newest patch of each line, so
