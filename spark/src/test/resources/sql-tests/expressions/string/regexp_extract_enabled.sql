@@ -121,7 +121,7 @@ SELECT regexp_extract(s, '(\\d+)-(\\d+)', -1) FROM test_regexp_extract_enabled
 
 -- Spark checks idx only on a row where the pattern matches, so an out-of-range idx is not an
 -- error when no row matches
-query
+query expect_native(regexp_extract)
 SELECT regexp_extract(s, 'NOMATCH', 1) FROM test_regexp_extract_enabled
 
 statement
@@ -130,12 +130,26 @@ CREATE TABLE test_regexp_extract_no_digits(s string) USING parquet
 statement
 INSERT INTO test_regexp_extract_no_digits VALUES ('abc'), (NULL), (''), ('foo-bar')
 
-query
-SELECT regexp_extract(s, '\\d+', 1), regexp_extract(s, '(\\d+)', 2), regexp_extract(s, '(\\d+)', -1)
+query expect_native(regexp_extract)
+SELECT regexp_extract(s, '\\d+'), regexp_extract(s, '\\d+', 1), regexp_extract(s, '(\\d+)', 2),
+  regexp_extract(s, '(\\d+)', -1)
 FROM test_regexp_extract_no_digits
 
-query
-SELECT regexp_extract('no digits', '\\d+', 1), regexp_extract(NULL, '\\d+', 1)
+query expect_native(regexp_extract)
+SELECT regexp_extract(s, '\\d+', 1) FROM test_regexp_extract_no_digits WHERE s IS NULL
+
+query expect_native(regexp_extract)
+SELECT regexp_extract('no digits', '\\d+', 1)
+
+-- one matching row among rows that do not match still fails
+statement
+CREATE TABLE test_regexp_extract_one_digit(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_extract_one_digit VALUES ('abc'), (NULL), ('x1y'), ('def')
+
+query expect_error(group index)
+SELECT regexp_extract(s, '\\d+', 1) FROM test_regexp_extract_one_digit
 
 -- invalid regex syntax (unclosed group): both engines fail at pattern compile time.
 -- Spark surfaces INVALID_PARAMETER_VALUE.PATTERN, Comet surfaces a regex parse error.
