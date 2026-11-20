@@ -89,12 +89,20 @@ impl SparkFilePath {
         let mut shown = String::with_capacity(prefix.len() + body.len());
         shown.push_str(prefix);
         let mut depth = 0usize;
-        for part in body.split_inclusive('/') {
+        let mut parts = body.split_inclusive('/');
+        while let Some(part) = parts.next() {
             let segment = part.trim_end_matches('/');
             if depth == 0 {
                 shown.push_str(part.rsplit_once('@').map_or(part, |(_, host)| host));
             } else {
                 shown.push_str(part);
+            }
+            // url's parent-segment handling keeps a drive letter even on non-file URLs.
+            // Once one is reached, the remaining components cannot become the bucket.
+            if matches!(segment.as_bytes(), [letter, b':' | b'|'] | [letter, b':' | b'|', b'\\', ..] if letter.is_ascii_alphabetic())
+            {
+                shown.extend(parts);
+                break;
             }
             match segment {
                 "" if depth == 0 => {}
@@ -346,6 +354,10 @@ mod tests {
                 "s3a:///old/%2e%2E/bucket/café@1",
             ),
             ("s3a:bucket/part@1", "s3a:bucket/part@1"),
+            (
+                "s3a:///bucket/C:/../../part@1",
+                "s3a:///bucket/C:/../../part@1",
+            ),
             (
                 "HDFS://user@host:8020/%2E/café.parquet",
                 "HDFS://host:8020/%2E/café.parquet",
