@@ -4294,13 +4294,23 @@ pub(crate) mod test {
             &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000)])
         );
 
-        let err = roundtrip(&batch, schema).await.unwrap_err();
+        let err = roundtrip(&batch, Arc::clone(&schema)).await.unwrap_err();
         assert!(
             matches!(
                 error_chain(&err).find_map(|e| e.downcast_ref::<SparkError>()),
                 Some(SparkError::ParquetTimestampOverflow { .. })
             ),
             "{err}"
+        );
+
+        let mut options = default_options();
+        options.checked_timestamp_overflow = false;
+        let mut stream = scan_parquet(&batch, schema, options)?;
+        let unchecked = stream.next().await.unwrap()?;
+        let values = unchecked.column(0).as_struct().column(0);
+        assert_eq!(
+            values.as_primitive::<TimestampMicrosecondType>(),
+            &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000), None])
         );
         Ok(())
     }
