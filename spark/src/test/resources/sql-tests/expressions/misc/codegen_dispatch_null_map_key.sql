@@ -45,6 +45,11 @@ query expect_dispatch(exists)
 SELECT id, exists(map_keys(try_cast(m AS map<int, int>)), k -> k IS NULL)
 FROM test_null_map_key ORDER BY id
 
+-- A widening key cast cannot make a null key, so the lambda runs natively
+query expect_native(exists)
+SELECT id, exists(map_keys(try_cast(m AS map<decimal(20, 0), int>)), k -> k IS NULL)
+FROM test_null_map_key ORDER BY id
+
 -- A widening key cast cannot fail, so the tree stays in the dispatcher
 query expect_dispatch(transform_values)
 SELECT id, map_keys(transform_values(try_cast(m AS map<decimal(20, 0), int>), (k, v) -> v))

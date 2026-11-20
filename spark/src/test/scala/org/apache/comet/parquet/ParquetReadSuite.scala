@@ -53,7 +53,7 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -475,7 +475,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("TIMESTAMP_MILLIS overflow after the first batch of a file") {
-    // Spark 3.4 and 3.5 wrap a reader error in cannotReadFilesError only while FileScanRDD reads
+    // Spark 3.5 wraps a reader error in cannotReadFilesError only while FileScanRDD reads
     // the first batch of a file split. A later batch throws from hasNext without the wrapper:
     // https://github.com/apache/spark/blob/v3.5.9/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L126-L132
     // https://github.com/apache/spark/blob/v3.5.9/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L285-L298
@@ -2553,10 +2553,10 @@ abstract class ParquetReadSuite extends CometTestBase {
           Seq(false, true).foreach { pruning =>
             withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> pruning.toString) {
               withClue(s"nested schema pruning $pruning: ") {
-                // Spark 3.4 keeps the root id in requiredSchema. From 3.5, pruning removes it
-                // while scan.output still carries it. With no id, the renamed root is absent
-                // from the file by name, so Spark reads null even though its output has an id.
-                val hasRootId = !pruning || !isSpark35Plus
+                // Pruning removes the root id from requiredSchema while scan.output still carries
+                // it. With no id, the renamed root is absent from the file by name, so Spark reads
+                // null even though its output has an id.
+                val hasRootId = !pruning
                 def read(): DataFrame =
                   spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
                 def checkRead(query: => DataFrame, expected: Seq[Row]): Unit = {
