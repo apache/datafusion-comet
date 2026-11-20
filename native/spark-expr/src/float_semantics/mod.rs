@@ -54,7 +54,9 @@ mod kernels;
 mod normalize;
 
 pub use compare::{spark_comparator, spark_equality};
-pub(crate) use compare::{spark_comparator_ignoring_nulls, spark_equality_ignoring_nulls};
+pub(crate) use compare::{
+    spark_comparator_ignoring_nulls, spark_equality_by_ordinal, spark_equality_ignoring_nulls,
+};
 pub(crate) use kernels::{compare_float_array_scalar, compare_float_arrays, comparison_with_nulls};
 pub use normalize::{
     has_float_leaf, normalize_comparison_operand, normalize_floats, normalize_nested_floats,

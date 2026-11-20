@@ -17,19 +17,18 @@
 
 use std::sync::Arc;
 
+use super::array_match::{invoke_with_mask, MatchOperation, MatchRows};
 use super::{set_bits_before, with_values};
-use crate::float_semantics::{compare_floats, spark_equality};
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, ListArray, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, ListArray, PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::compute::filter;
-use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
-use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
+use arrow::datatypes::{ArrowPrimitiveType, DataType};
+use datafusion::common::Result;
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Operator, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use num::Float;
 
 /// Spark's `array_remove` for arrays whose elements hold floats at any depth.
 ///
@@ -65,193 +64,96 @@ impl ScalarUDFImpl for SparkArrayRemove {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let [array, value] = take_function_args(self.name(), &args.args)?;
-        let all_scalars = matches!(
-            (array, value),
-            (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
-        );
-        let rows = if all_scalars { 1 } else { args.number_rows };
-        let array = array.to_array(rows)?;
-        // Spark arrays use Arrow's 32-bit List layout.
-        let Some(list) = array.as_list_opt::<i32>() else {
-            return exec_err!("spark_array_remove takes a list, got {}", array.data_type());
-        };
-        let result = match value {
-            ColumnarValue::Scalar(needle) => remove_constant(list, needle)?,
-            ColumnarValue::Array(value) => array_remove(list, value)?,
-        };
-        if all_scalars {
-            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                &result, 0,
-            )?))
-        } else {
-            Ok(ColumnarValue::Array(result))
-        }
+        invoke_with_mask(self, args, Operator::IsDistinctFrom, from_mask)
     }
 }
 
-fn array_remove(array: &ListArray, value: &ArrayRef) -> Result<ArrayRef> {
-    // Spark casts the value to the element type. Anything else fails in `spark_equality`.
-    match (array.value_type(), value.data_type()) {
-        (DataType::Float32, DataType::Float32) => Ok(remove_floats::<Float32Type>(array, value)),
-        (DataType::Float64, DataType::Float64) => Ok(remove_floats::<Float64Type>(array, value)),
-        _ => {
-            let equal = spark_equality(array.values().as_ref(), value.as_ref())?;
-            remove_where(array, value, equal)
-        }
-    }
+fn from_mask(array: &ListArray, values: &ArrayRef, keep: BooleanBuffer) -> Result<ArrayRef> {
+    let offsets = OffsetBuffer::new(set_bits_before(&keep, array.offsets()).into());
+    let values = filter(values, &BooleanArray::new(keep, None))?;
+    Ok(with_values(array, offsets, values, array.nulls().cloned()))
 }
 
-/// [`array_remove`] of the same value from every row, which a float array does in one pass over
-/// all the values, as DataFusion does for its own `array_remove`.
-fn remove_constant(array: &ListArray, needle: &ScalarValue) -> Result<ArrayRef> {
-    match (array.value_type(), needle) {
-        (DataType::Float32, ScalarValue::Float32(Some(needle))) => {
-            remove_float_constant::<Float32Type>(array, *needle)
-        }
-        (DataType::Float64, ScalarValue::Float64(Some(needle))) => {
-            remove_float_constant::<Float64Type>(array, *needle)
-        }
-        _ => array_remove(array, &needle.to_array_of_size(array.len())?),
-    }
-}
-
-fn remove_float_constant<T>(array: &ListArray, needle: T::Native) -> Result<ArrayRef>
-where
-    T: ArrowPrimitiveType,
-    T::Native: Float,
-{
-    let offsets = array.offsets();
-    let first = offsets[0] as usize;
-    let values = array
-        .values()
-        .slice(first, offsets[array.len()] as usize - first);
-    let floats = values.as_primitive::<T>();
-    let buffer = floats.values();
-    // For a fixed value, Spark's genEqual is one test per element: IEEE `!=`, under which the two
-    // zeros are equal and a NaN differs from every number, or `is_nan` for a NaN value.
-    let differs = if needle.is_nan() {
-        BooleanBuffer::collect_bool(buffer.len(), |index| !buffer[index].is_nan())
-    } else {
-        BooleanBuffer::collect_bool(buffer.len(), |index| buffer[index] != needle)
-    };
-    // Null elements stay.
-    let keep = match floats.nulls() {
-        Some(nulls) => &differs | &!nulls.inner(),
-        None => differs,
-    };
-    // A null row keeps its elements in the values; the list's null hides them.
-    let kept_offsets = kept_offsets(&keep, offsets);
-    let kept_values = filter(&values, &BooleanArray::new(keep, None))?;
-    Ok(with_values(
-        array,
-        kept_offsets,
-        kept_values,
-        array.nulls().cloned(),
-    ))
-}
-
-/// The offsets of the elements that `keep` keeps, for a `keep` that starts at `offsets[0]`: the
-/// number of its set bits before each offset.
-fn kept_offsets(keep: &BooleanBuffer, offsets: &OffsetBuffer<i32>) -> OffsetBuffer<i32> {
-    OffsetBuffer::new(set_bits_before(keep, offsets).into())
-}
-
-/// Copies the floats of each row that are null or differ from the row's value in Spark's
-/// `genEqual`, straight from the flattened values. A row is null when the array or the value is.
-fn remove_floats<T>(array: &ListArray, value: &ArrayRef) -> ArrayRef
-where
-    T: ArrowPrimitiveType,
-    T::Native: Float,
-{
-    let values = array.values().as_primitive::<T>();
-    let needles = value.as_primitive::<T>().values();
-    let (buffer, nulls) = (values.values(), values.nulls());
-    let row_nulls = NullBuffer::union(array.nulls(), value.nulls());
-    let mut kept: Vec<T::Native> = Vec::with_capacity(values.len());
-    let mut validity = nulls.map(|_| BooleanBufferBuilder::new(values.len()));
-    let mut offsets = Vec::with_capacity(array.len() + 1);
-    offsets.push(0i32);
-    for (row, bounds) in array.offsets().windows(2).enumerate() {
-        if row_nulls.as_ref().is_none_or(|nulls| nulls.is_valid(row)) {
-            let needle = needles[row];
-            let (start, end) = (bounds[0] as usize, bounds[1] as usize);
+impl MatchOperation<i32> for SparkArrayRemove {
+    fn apply_float<T: ArrowPrimitiveType>(
+        rows: &MatchRows<'_, i32>,
+        values: &PrimitiveArray<T>,
+        equal: impl Fn(usize, usize) -> bool,
+    ) -> Result<ArrayRef> {
+        let (buffer, nulls) = (values.values(), values.nulls());
+        let mut kept: Vec<T::Native> = Vec::with_capacity(values.len());
+        let mut validity = nulls.map(|_| BooleanBufferBuilder::new(values.len()));
+        let mut offsets = Vec::with_capacity(rows.array.len() + 1);
+        offsets.push(0i32);
+        for (range, needle) in rows.iter() {
             match (nulls, validity.as_mut()) {
                 (Some(nulls), Some(validity)) => {
-                    for index in start..end {
+                    for index in range {
                         let valid = nulls.is_valid(index);
-                        if !valid || !compare_floats(buffer[index], needle).is_eq() {
+                        if !valid || !equal(index, needle) {
                             kept.push(buffer[index]);
                             validity.append(valid);
                         }
                     }
                 }
                 _ => kept.extend(
-                    buffer[start..end]
-                        .iter()
-                        .copied()
-                        .filter(|&element| !compare_floats(element, needle).is_eq()),
+                    range
+                        .filter(|&index| !equal(index, needle))
+                        .map(|index| buffer[index]),
                 ),
             }
+            offsets.push(kept.len() as i32);
         }
-        offsets.push(kept.len() as i32);
+        let kept = PrimitiveArray::<T>::new(
+            kept.into(),
+            validity.map(|mut validity| NullBuffer::new(validity.finish())),
+        );
+        Ok(with_values(
+            rows.array,
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(kept),
+            rows.nulls.clone(),
+        ))
     }
-    let kept = PrimitiveArray::<T>::new(
-        kept.into(),
-        validity.map(|mut validity| NullBuffer::new(validity.finish())),
-    );
-    with_values(
-        array,
-        OffsetBuffer::new(offsets.into()),
-        Arc::new(kept),
-        row_nulls,
-    )
-}
 
-/// Copies each row's elements except the non-null ones for which `equal(element, row)` holds. A
-/// row is null when the array or the value is.
-fn remove_where<F>(array: &ListArray, value: &ArrayRef, equal: F) -> Result<ArrayRef>
-where
-    F: Fn(usize, usize) -> bool,
-{
-    let values = array.values();
-    let element_nulls = values.logical_nulls();
-    let row_nulls = NullBuffer::union(array.nulls(), value.nulls());
-    let mut keep = BooleanBufferBuilder::new(values.len());
-    keep.append_n(values.len(), false);
-    let mut offsets = Vec::with_capacity(array.len() + 1);
-    offsets.push(0i32);
-    let mut kept = 0i32;
-    for (row, bounds) in array.offsets().windows(2).enumerate() {
-        if row_nulls.as_ref().is_none_or(|nulls| nulls.is_valid(row)) {
-            for element in bounds[0] as usize..bounds[1] as usize {
+    fn apply(rows: &MatchRows<'_, i32>, equal: impl Fn(usize, usize) -> bool) -> Result<ArrayRef> {
+        let values = rows.array.values();
+        let element_nulls = values.logical_nulls();
+        let mut keep = BooleanBufferBuilder::new(values.len());
+        keep.append_n(values.len(), false);
+        let mut offsets = Vec::with_capacity(rows.array.len() + 1);
+        offsets.push(0i32);
+        let mut kept = 0i32;
+        for (range, needle) in rows.iter() {
+            for element in range {
                 let is_null = element_nulls
                     .as_ref()
                     .is_some_and(|nulls| nulls.is_null(element));
-                if is_null || !equal(element, row) {
+                if is_null || !equal(element, needle) {
                     keep.set_bit(element, true);
                     kept += 1;
                 }
             }
+            offsets.push(kept);
         }
-        offsets.push(kept);
+        let kept_values = filter(values, &BooleanArray::new(keep.finish(), None))?;
+        Ok(with_values(
+            rows.array,
+            OffsetBuffer::new(offsets.into()),
+            kept_values,
+            rows.nulls.clone(),
+        ))
     }
-    let kept_values = filter(values, &BooleanArray::new(keep.finish(), None))?;
-    Ok(with_values(
-        array,
-        OffsetBuffer::new(offsets.into()),
-        kept_values,
-        row_nulls,
-    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::test_util::{bits, first_row_field_bits, list};
     use super::*;
-    use crate::float_semantics::{EDGE_VALUES, NEGATIVE_NAN};
-    use arrow::array::{Float32Array, Float64Array, StructArray};
-    use arrow::datatypes::{Field, Fields};
+    use crate::float_semantics::{compare_floats, EDGE_VALUES, NEGATIVE_NAN};
+    use arrow::array::{AsArray, Float32Array, Float64Array, StructArray};
+    use arrow::datatypes::{Field, Fields, Float32Type};
+    use datafusion::common::ScalarValue;
     use datafusion::config::ConfigOptions;
 
     fn invoke(array: ColumnarValue, value: ColumnarValue, rows: usize) -> Result<ColumnarValue> {
@@ -462,6 +364,7 @@ mod tests {
         let array = list(&[Some(vec![Some(1.0)])]);
         for value in [
             ColumnarValue::Scalar(ScalarValue::Float32(Some(1.0))),
+            ColumnarValue::Scalar(ScalarValue::Float32(None)),
             ColumnarValue::Array(Arc::new(Float32Array::from(vec![1.0f32]))),
         ] {
             assert!(invoke(ColumnarValue::Array(Arc::clone(&array)), value, 1).is_err());
