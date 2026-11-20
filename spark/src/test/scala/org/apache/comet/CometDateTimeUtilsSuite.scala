@@ -67,6 +67,18 @@ class CometDateTimeUtilsSuite extends CometTestBase {
     }
   }
 
+  /**
+   * Same as checkCastToTimestampAsLong but also asserts the plan runs natively, so a Spark
+   * fallback cannot hide a native cast regression.
+   */
+  private def checkNativeCastToTimestampAsLong(values: Seq[String]): Unit = {
+    withTempPath { dir =>
+      val df = roundtripParquet(values.toDF("a"), dir).coalesce(1)
+      checkSparkAnswerAndOperator(
+        df.withColumn("ts", col("a").cast(DataTypes.TimestampType).cast(DataTypes.LongType)))
+    }
+  }
+
   private def checkCastToTimestampNTZ(values: Seq[String]): Unit = {
     withTempPath { dir =>
       val df = roundtripParquet(values.toDF("a"), dir).coalesce(1)
@@ -304,6 +316,34 @@ class CometDateTimeUtilsSuite extends CometTestBase {
           "2020-11-01 01:59:59",
           // Just after fall-back (unambiguous EST)
           "2020-11-01 02:00:00"))
+    }
+  }
+
+  test("extreme-year session TZ uses historic zone offset") {
+    // Session-TZ casts of years outside chrono's NaiveDate range: far-past uses the
+    // zone's historic / LMT offset; far-future uses permanent/final standard. Compare
+    // Comet to Spark via Long (seconds) so the 422s America/Los_Angeles LMT vs PST
+    // gap survives truncation and toJavaTimestamp range limits are avoided. Also
+    // covers years just outside chrono's [-262143, 262142] bounds that previously
+    // panicked, and Asia/Colombo 262400 where a 2000+rem probe hit temporary +06:00.
+    for (tz <- Seq("UTC", "America/Los_Angeles", "Asia/Tokyo", "Asia/Colombo")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        checkNativeCastToTimestampAsLong(
+          Seq(
+            "-290308-12-21 19:59:05.224192",
+            "-262544-01-01 00:00:00",
+            "-262543-01-01 00:00:00",
+            // Residue that under a 1600+rem probe lands after LMT→standard (1900).
+            "-262500-01-01 00:00:00",
+            "262542-01-01 00:00:00",
+            // Far-future January must use permanent/final standard offset, not LMT
+            // or a temporary historical standard (Colombo +06:00 in 1996–2006).
+            "262543-01-01 00:00:00",
+            "262400-01-01 00:00:00",
+            // Far-future leap day: the probe year must also be a leap year.
+            "262400-02-29 00:00:00",
+            "-262400-02-29 00:00:00"))
+      }
     }
   }
 
