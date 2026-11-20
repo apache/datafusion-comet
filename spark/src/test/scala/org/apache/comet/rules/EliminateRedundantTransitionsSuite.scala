@@ -19,9 +19,13 @@
 
 package org.apache.comet.rules
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
+import org.apache.spark.sql.comet.execution.shuffle.{CometToColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnionExec}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 
 import org.apache.comet.CometConf
 
@@ -63,5 +67,32 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
         sparkBranch == sparkTransition,
         s"Spark-only branch should be left untouched:\n${result.treeString}")
     }
+  }
+
+  // A native shuffle reads Arrow-backed Comet vectors. If its child turns row-based after Comet
+  // chose native shuffle, Spark add its own `RowToColumnar` under it, whose vectors are unable
+  // to be read.
+  test("native shuffle over Spark's RowToColumnar moves to the JVM columnar shuffle") {
+    val rowChild = sparkPlanFor("SELECT id, CAST(id AS STRING) AS s FROM range(10)")
+    assert(!rowChild.supportsColumnar)
+    val partitioning = HashPartitioning(rowChild.output.take(1), 4)
+    val shuffle = CometShuffleExchangeExec(
+      partitioning,
+      RowToColumnarExec(rowChild),
+      ShuffleExchangeExec(partitioning, rowChild),
+      shuffleType = CometNativeShuffle)
+
+    val result = EliminateRedundantTransitions(spark).apply(shuffle)
+
+    result match {
+      case CometShuffleExchangeExec(_, child, _, _, CometColumnarShuffle, _) =>
+        assert(child == rowChild, s"RowToColumnar should be removed:\n${result.treeString}")
+      case _ =>
+        fail(s"Expected the JVM columnar shuffle:\n${result.treeString}")
+    }
+    assert(result.executeColumnar().map(_.numRows()).sum() == 10)
+
+    val e = intercept[SparkException](shuffle.executeColumnar().count())
+    assert(e.getMessage.contains("expects Arrow-backed Comet vectors"), e.getMessage)
   }
 }
