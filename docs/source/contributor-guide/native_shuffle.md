@@ -47,6 +47,15 @@ them. Spark's `RowToColumnarExec` alone does not satisfy this input contract. Th
 native shuffle whose input was converted by `spark.comet.convert.shuffleInput.enabled`: the rule
 switches it back to JVM columnar shuffle, which reads the restored stage's rows.
 
+A native shuffle's child can also become row-based after Comet chose native shuffle, for example
+when Amazon EMR wraps a reused exchange's child in a nested `AdaptiveSparkPlanExec` that reports
+row-based output. Spark then inserts its own `RowToColumnarExec`, which native shuffle cannot read.
+`EliminateRedundantTransitions` removes it and switches the exchange to JVM shuffle, which reads
+the rows and places them as Spark's partitioner does. When JVM shuffle cannot take the exchange,
+for example with `spark.comet.shuffle.mode=native`, the rule keeps native shuffle and replaces the
+transition with `CometSparkToColumnarExec`. Under the Celeborn shuffle manager the plan is left
+unchanged.
+
 ## When Native Shuffle is Used
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
