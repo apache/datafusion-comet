@@ -72,3 +72,21 @@ SELECT v = 1 OR 100 / v > 1 FROM test_lazy_logical WHERE v IS NOT NULL
 
 query expect_error(CAST_INVALID_INPUT)
 SELECT v, v IN (1, CAST(s AS INT)) FROM test_lazy_logical WHERE v IS NOT NULL
+
+-- IN is NULL for a NULL value without evaluating any candidate, and a value that can fail, such
+-- as an ANSI addition, is still evaluated lazily
+statement
+CREATE TABLE test_lazy_in(v int, s string) USING parquet
+
+statement
+INSERT INTO test_lazy_in SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (0, 'bad'), (NULL, 'bad'), (2, '2') AS t(v, s)
+
+query
+SELECT v, v IN (0, CAST(s AS INT)) FROM test_lazy_in
+
+query
+SELECT v, v NOT IN (0, CAST(s AS INT)) FROM test_lazy_in
+
+query
+SELECT v, (v + 1) IN (1, CAST(s AS INT)) FROM test_lazy_in
