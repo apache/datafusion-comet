@@ -84,6 +84,8 @@ import org.apache.comet.vector.NativeUtil
  * @param outputTypes
  *   The Spark types of the plan's output columns, if the caller knows them. Used only to check
  *   timestamp labels under `spark.comet.testing.strictTimestampLabels.enabled`.
+ * @param mapKeyDedupPolicy
+ *   Map builder policy captured when the driver constructed the RDD, if applicable.
  */
 class CometExecIterator(
     val id: Long,
@@ -100,7 +102,8 @@ class CometExecIterator(
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
     outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
-    outputTypes: Seq[DataType] = Seq.empty)
+    outputTypes: Seq[DataType] = Seq.empty,
+    mapKeyDedupPolicy: Option[String] = None)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -120,7 +123,7 @@ class CometExecIterator(
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     // serialize Comet related Spark configs in protobuf format
-    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs(mapKeyDedupPolicy)
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -891,7 +894,7 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  def serializeCometSQLConfs(): Array[Byte] = {
+  def serializeCometSQLConfs(mapKeyDedupPolicy: Option[String] = None): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
@@ -913,7 +916,9 @@ object CometExecIterator extends Logging {
       SQLConf.get.getConfString(normalizationKey, "false").trim.toBoolean
     builder.putEntries(normalizationKey, disableNormalization.toString)
     val dedupPolicy = SQLConf.MAP_KEY_DEDUP_POLICY
-    builder.putEntries(dedupPolicy.key, SQLConf.get.getConf(dedupPolicy).toString)
+    builder.putEntries(
+      dedupPolicy.key,
+      mapKeyDedupPolicy.getOrElse(SQLConf.get.getConf(dedupPolicy).toString))
 
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were

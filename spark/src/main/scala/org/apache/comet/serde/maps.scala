@@ -20,11 +20,13 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
+import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -157,9 +159,20 @@ private object MapBuilderKeySupport {
     case _ => false
   }
 
+  // Spark codegen emits canonical NaNs for scalar literals. Java serialization does the same
+  // for the boxed elements of folded GenericArrayData. Protobuf preserves their raw bits.
+  private def sparkPreservesLiteralBits(value: Any): Boolean = value match {
+    case f: Float => java.lang.Float.floatToRawIntBits(f) == java.lang.Float.floatToIntBits(f)
+    case d: Double =>
+      java.lang.Double.doubleToRawLongBits(d) == java.lang.Double.doubleToLongBits(d)
+    case a: GenericArrayData => a.array.forall(sparkPreservesLiteralBits)
+    case _ => true
+  }
+
   // Constructors evaluate their children across the batch and can broadcast a large value
   // before LAST_WIN discards it. Only build entries from fixed-width, eagerly evaluable fields.
   private def safeElement(expr: Expression): Boolean = expr match {
+    case Literal(v, _) if !sparkPreservesLiteralBits(v) => false
     case s: CreateNamedStruct => s.valExprs.nonEmpty && s.valExprs.forall(safeElement)
     case _: UnaryMinus | _: Add | _: Subtract | _: Multiply =>
       isFloatingPoint(expr.dataType) && expr.children.forall(safeElement)
@@ -177,7 +190,8 @@ private object MapBuilderKeySupport {
   }
 
   private def safeInput(expr: Expression): Boolean = expr match {
-    case Literal(_, ArrayType(element, _)) => CometLiteral.listLiteralElementSupported(element)
+    case Literal(value, ArrayType(element, _)) =>
+      CometLiteral.listLiteralElementSupported(element) && sparkPreservesLiteralBits(value)
     case zip: ArraysZip => zip.children.nonEmpty && zip.children.forall(simpleArray)
     case _ => simpleArray(expr)
   }

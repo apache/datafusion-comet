@@ -126,6 +126,23 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("map_from_arrays matches Spark's NaN bits for scalar and folded array literals") {
+    val f = lit(java.lang.Float.intBitsToFloat(0xffc00001))
+    val d = lit(java.lang.Double.longBitsToDouble(0xfff8000000000001L))
+    withParquetTable(Seq((1.0f, 2)), "float_keys") {
+      val df = spark
+        .table("float_keys")
+        .select(
+          map_keys(map_from_arrays(array(col("_1"), f), array(lit(1), lit(2)))),
+          map_keys(map_from_arrays(array(d), array(col("_2")))))
+      assertExpressionImpl(df.queryExecution.executedPlan, Seq.empty, Seq("map_from_arrays"))
+      val row = df.collect().head
+      assert(java.lang.Float.floatToRawIntBits(row.getSeq[Float](0)(1)) == 0x7fc00000)
+      assert(
+        java.lang.Double.doubleToRawLongBits(row.getSeq[Double](1)(0)) == 0x7ff8000000000000L)
+    }
+  }
+
   test("map_from_arrays reports duplicate floating-point keys using the JVM's formatting") {
     val f = java.lang.Float.intBitsToFloat(2)
     val d = java.lang.Double.longBitsToDouble(2L)
@@ -276,32 +293,59 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("float map builders read key normalization on each execution of the same plan") {
+  test("float map builders match Spark's policy and normalization on repeated actions") {
     assume(isSpark40Plus)
     val disableNormalization = "spark.sql.legacy.disableMapKeyNormalization"
     withTable("map_normalization") {
       sql("CREATE TABLE map_normalization(k ARRAY<DOUBLE>, v ARRAY<INT>) USING parquet")
       sql("INSERT INTO map_normalization VALUES (array(0.0D, double('-0.0')), array(1, 2))")
-      for (comet <- Seq(false, true)) {
+      for {
+        comet <- Seq(false, true)
+        wholeStage <- Seq(false, true)
+      } {
+        // Whole-stage codegen captures the policy on the driver. Without it, the projection
+        // creates a builder per task. Both initialize the normalizer on the first insertion.
+        val (firstPolicy, secondPolicy) =
+          if (wholeStage) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
         withSQLConf(
           CometConf.COMET_ENABLED.key -> comet.toString,
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-          SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN",
-          disableNormalization -> "false") {
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage.toString,
+          SQLConf.MAP_KEY_DEDUP_POLICY.key -> firstPolicy,
+          disableNormalization -> "true") {
           val df = sql(
             "SELECT map_values(map_from_arrays(k, v)), " +
               "map_values(map_from_entries(arrays_zip(k, v))) FROM map_normalization")
-          assert(df.collect().toSeq == Seq(Row(Seq(2), Seq(2))))
+          assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
           if (comet) {
             assertExpressionImpl(
               df.queryExecution.executedPlan,
               native = Seq("map_from_arrays", "map_from_entries"),
               dispatched = Seq.empty)
           }
-          withSQLConf(disableNormalization -> "true") {
-            assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
+          withSQLConf(
+            SQLConf.MAP_KEY_DEDUP_POLICY.key -> secondPolicy,
+            disableNormalization -> "false") {
+            assert(df.collect().toSeq == Seq(Row(Seq(2), Seq(2))))
           }
         }
+      }
+    }
+  }
+
+  test("float map builder uses the session dedup policy before a shuffle in an RDD action") {
+    withParquetTable(Seq((Seq(1.0, 1.0), Seq(7, 8))), "duplicate_keys") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+        val df = sql("SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys")
+          .repartition(2, col("s"))
+        assertExpressionImpl(
+          df.queryExecution.executedPlan,
+          native = Seq("map_from_arrays"),
+          dispatched = Seq.empty)
+        assert(df.rdd.collect().toSeq == Seq(Row(1)))
       }
     }
   }
