@@ -105,7 +105,9 @@ class CometShuffleRowChecksumSuite extends CometTestBase with AdaptiveSparkPlanH
       val random = udf(() => scala.util.Random.nextLong()).asNondeterministic()
       withSQLConf(checksumConf ++ path.conf: _*) {
         withParquetTable(rows, "t") {
-          val df = spark.table("t").select(col("_1"), random().as("r")).repartition(10, col("_1"))
+          // Partitioned by the random value, so a recomputed row can land in another partition:
+          // the case where a partial retry loses rows or reads them twice.
+          val df = spark.table("t").select(col("_1"), random().as("r")).repartition(10, col("r"))
           run(df)
           val (kind, dep) = shuffleOf(df)
           assert(kind == path.kind)
@@ -118,6 +120,26 @@ class CometShuffleRowChecksumSuite extends CometTestBase with AdaptiveSparkPlanH
             mismatched.nonEmpty,
             s"$kind: no mismatch recorded. Checksums: $first, then ${checksums(dep.shuffleId)}. " +
               s"Static determinacy of the map stage: ${dep.rdd.outputDeterministicLevel}")
+        }
+      }
+    }
+  }
+
+  // The same rows on both attempts must give the same checksums. A false mismatch would roll
+  // back the consumers for nothing, or abort a job whose result stage already wrote output.
+  Seq(sparkShuffle, jvmShuffle).foreach { path =>
+    test(s"${path.name}: an unchanged recomputed map output is not flagged") {
+      withSQLConf(checksumConf ++ path.conf: _*) {
+        withParquetTable(rows, "t") {
+          val df = spark.table("t").repartition(10, col("_1"))
+          run(df)
+          val (kind, dep) = shuffleOf(df)
+          assert(kind == path.kind)
+          val first = checksums(dep.shuffleId)
+          tracker.unregisterAllMapAndMergeOutput(dep.shuffleId)
+          run(df)
+          assert(checksums(dep.shuffleId) == first)
+          assert(tracker.shuffleStatuses(dep.shuffleId).checksumMismatchIndices.isEmpty)
         }
       }
     }
