@@ -24,7 +24,7 @@ import java.util.IdentityHashMap
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeWriteExec, CometParquetResultExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.comet.util.Utils.containsVariantType
@@ -184,7 +184,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case CometColumnarToRowExec(child: CometCollectLimitExec) =>
         child
       case other =>
-        other
+        CometParquetResultExec.wrap(other)
     }
   }
 

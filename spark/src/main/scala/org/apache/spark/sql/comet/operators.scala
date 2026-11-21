@@ -655,7 +655,11 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
 
     // Build complete NativeScan with common fields + this partition's file list
     val scanBuilder = OperatorOuterClass.NativeScan.newBuilder()
-    scanBuilder.setCommon(common)
+    if (CometParquetResultExec.isCollecting(op.getPlanId)) {
+      scanBuilder.setCommon(common.toBuilder.setCheckFilteredTimestampOverflow(true))
+    } else {
+      scanBuilder.setCommon(common)
+    }
     scanBuilder.setFilePartition(partitionOnly.getFilePartition)
 
     op.toBuilder.setNativeScan(scanBuilder).build()

@@ -306,9 +306,9 @@ for production, so do not turn it off to avoid an entry on this page.
   `ArithmeticException: long overflow` when its reader decodes such a value. Comet checks the
   conversion in a V1 Parquet query such as `SELECT s.ts FROM t WHERE id <=> match_id` when
   collecting the full result. Spark evaluates that comparison after decoding the timestamps.
-  Comet can still return NULL when Spark can push a predicate into Parquet, as in
-  `WHERE s.k >= 0` with nested filter pushdown enabled, or when a `LIMIT` can stop the
-  filtered scan early ([#5739](https://github.com/apache/datafusion-comet/issues/5739)).
+  Other filtered scans can still return NULL on overflow. Examples include queries with a
+  `LIMIT` or a predicate that Spark can push into Parquet, such as `WHERE s.k >= 0` with
+  nested filter pushdown enabled ([#5739](https://github.com/apache/datafusion-comet/issues/5739)).
   A nested timestamp stored as an Arrow dictionary can also return NULL on overflow
   ([#5553](https://github.com/apache/datafusion-comet/issues/5553)).
 - **Reads that Spark rejects.** Comet returns rows where Spark fails the read for `INT` columns

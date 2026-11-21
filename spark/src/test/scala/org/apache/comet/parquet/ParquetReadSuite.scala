@@ -688,9 +688,15 @@ abstract class ParquetReadSuite extends CometTestBase {
               withSQLConf(
                 SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "1",
                 CometConf.COMET_BATCH_SIZE.key -> "2") {
-                checkSparkAnswerAndOperator(
-                  df.where(predicate).select("s.ts").limit(1),
-                  Seq(classOf[CometNativeScanExec]))
+                val filtered = df.where(predicate).select("s.ts")
+                checkSparkAnswerAndOperator(filtered.limit(1), Seq(classOf[CometNativeScanExec]))
+
+                // The same plan can serve a partial RDD read and a full SQL collection.
+                val first = filtered.queryExecution.toRdd.take(1)
+                assert(
+                  first.length == 1 && !first.head.isNullAt(0) && first.head.getLong(0) == 0L)
+                val error = intercept[SparkException](filtered.collect())
+                assert(causeChain(error).last.isInstanceOf[ArithmeticException])
               }
             }
 

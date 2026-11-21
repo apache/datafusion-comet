@@ -69,23 +69,18 @@ case class CometNativeScanExec(
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan,
     @transient scan: CometScanExec, // Lazy access to file partitions without serializing with plan
-    sourceKey: String, // Key for PlanDataInjector to match common+partition data at runtime
-    allowFilteredTimestampCheck: Boolean = false)
+    sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
     with ShimStreamSourceAwareSparkPlan
     with CometScanWithPlanData {
 
-  def withFullRead(fullyRead: Boolean): CometNativeScanExec = {
-    val allowCheck = fullyRead && dataFilters.nonEmpty &&
-      requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType)
-    if (allowCheck == allowFilteredTimestampCheck) {
-      this
-    } else {
-      val updated = copy(allowFilteredTimestampCheck = allowCheck)
-      updated.copyTagsFrom(this)
-      updated
-    }
+  private[comet] def canCheckFilteredTimestampOverflow: Boolean = {
+    lazy val hasSubquery = dataFilters.exists(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+    (nativeOp.getNativeScan.getCommon.getHasDataFilters || hasSubquery) &&
+    requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
+    // The resolved subquery can become a source filter when pushdown is enabled.
+    (!conf.parquetFilterPushDown || (!hasSubquery && !scan.hasSparkSourceFilters(dataFilters)))
   }
 
   override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
@@ -197,27 +192,20 @@ case class CometNativeScanExec(
       val base = nativeOp.getNativeScan.getCommon
       val scalarSubqueryFilters = dataFilters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
-      val pushedSubqueries = if (conf.parquetFilterPushDown) scalarSubqueryFilters else Nil
-      pushedSubqueries.foreach { f =>
+      scalarSubqueryFilters.foreach { f =>
         f.foreach {
           case s: ExecScalarSubquery =>
             s.updateResult()
           case _ =>
         }
       }
-      val resolvedFilters = pushedSubqueries
+      val resolvedFilters = scalarSubqueryFilters
         .map(_.transform { case s: ExecScalarSubquery =>
           Literal.create(s.eval(null), s.dataType)
         })
-      // Translate the live Catalyst filters after subquery resolution, including predicates
-      // Comet skipped or could not serialize. Spark may still pass those to parquet-mr.
-      val filtered = base.getHasDataFilters || scalarSubqueryFilters.nonEmpty
-      val checkFilteredTimestamps = filtered && allowFilteredTimestampCheck &&
-        (!conf.parquetFilterPushDown || !scan.hasSparkSourceFilters(dataFilters))
-      if (scalarSubqueryFilters.nonEmpty || checkFilteredTimestamps) {
+      if (resolvedFilters.nonEmpty) {
         val commonBuilder = base.toBuilder
-        commonBuilder.setHasDataFilters(filtered)
-        commonBuilder.setCheckFilteredTimestampOverflow(checkFilteredTimestamps)
+        commonBuilder.setHasDataFilters(true)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
@@ -321,8 +309,8 @@ case class CometNativeScanExec(
       CometScanUtils.canonicalizeOriginalPlan(originalPlan),
       SerializedPlan(None),
       null, // Transient scan not needed for canonicalization
-      "", // sourceKey not needed for canonicalization
-      allowFilteredTimestampCheck)
+      ""
+    ) // sourceKey not needed for canonicalization
   }
 
   override def stringArgs: Iterator[Any] = Iterator(output)
@@ -333,20 +321,14 @@ case class CometNativeScanExec(
         this.originalPlan == other.originalPlan &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
         this.partitionFilters == other.partitionFilters &&
-        this.dataFilters == other.dataFilters &&
-        this.allowFilteredTimestampCheck == other.allowFilteredTimestampCheck
+        this.dataFilters == other.dataFilters
       case _ =>
         false
     }
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
-      originalPlan,
-      serializedPlanOpt,
-      partitionFilters,
-      dataFilters,
-      Boolean.box(allowFilteredTimestampCheck))
+    Objects.hashCode(originalPlan, serializedPlanOpt, partitionFilters, dataFilters)
 
   private val driverMetricKeys =
     Set(
@@ -409,4 +391,53 @@ object CometNativeScanExec {
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
   }
+}
+
+/**
+ * Spark can expose the same plan to collect and to an RDD consumer that stops after one row. A
+ * larger native batch may decode timestamps past that row. Scope the extra overflow check to the
+ * collecting action's tasks, even when the actions share a cached execution RDD.
+ */
+case class CometParquetResultExec(child: SparkPlan) extends UnaryExecNode with CometPlan {
+  override def output: Seq[Attribute] = child.output
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+
+  override protected def doExecute(): RDD[InternalRow] = child.execute()
+
+  override def executeCollect(): Array[InternalRow] =
+    CometParquetResultExec.candidate(child) match {
+      case Some(scan) =>
+        val key = CometParquetResultExec.collectingScanId
+        val previous = sparkContext.getLocalProperty(key)
+        sparkContext.setLocalProperty(key, scan.nativeOp.getPlanId.toString)
+        try child.executeCollect()
+        finally sparkContext.setLocalProperty(key, previous)
+      case None => child.executeCollect()
+    }
+
+  override protected def withNewChildInternal(newChild: SparkPlan): CometParquetResultExec =
+    copy(child = newChild)
+}
+
+object CometParquetResultExec {
+  private val collectingScanId = "comet.parquet.collectingScanId"
+
+  private[comet] def isCollecting(planId: Int): Boolean = {
+    val task = TaskContext.get()
+    task != null && planId.toString == task.getLocalProperty(collectingScanId)
+  }
+
+  @scala.annotation.tailrec
+  private def candidate(plan: SparkPlan): Option[CometNativeScanExec] = plan match {
+    case scan: CometNativeScanExec if scan.canCheckFilteredTimestampOverflow => Some(scan)
+    case _: CometColumnarToRowExec | _: CometProjectExec | _: CometFilterExec | _: ProjectExec |
+        _: FilterExec | _: WholeStageCodegenExec | _: InputAdapter =>
+      candidate(plan.children.head)
+    case _ => None
+  }
+
+  def wrap(plan: SparkPlan): SparkPlan =
+    if (!plan.supportsColumnar && candidate(plan).isDefined) CometParquetResultExec(plan)
+    else plan
 }
