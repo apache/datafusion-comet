@@ -1356,7 +1356,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
-    // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
     lazy val original: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
@@ -1366,7 +1365,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         Nil
       }
 
-    lazy val common: Seq[Expression] = original.map(DecimalPrecision.promote)
+    // Promotion wraps decimal arithmetic in CheckOverflow, so check whether it can raise
+    // after promotion.
+    lazy val raising: Seq[Expression] = original.map(DecimalPrecision.promote).filterNot(cannotRaise)
   }
 
   private[apache] def sharedExpressionsBeforePromotion: Seq[Expression] =
@@ -1384,6 +1385,54 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
+   * Whether evaluating `expr` on a row cannot raise, whatever the row holds. This fails closed:
+   * an expression is assumed to raise unless it is listed. Numeric arithmetic and casts between
+   * the types `plainCastType` lists raise only in the ANSI eval mode they carry, but some
+   * expressions raise in any mode, such as `element_at` with the index 0, the arithmetic of
+   * intervals and a date cast to a timestamp, so those stay out.
+   */
+  private def cannotRaise(expr: Expression): Boolean =
+    !expr.exists(!nodeCannotRaise(_))
+
+  private def nodeCannotRaise(node: Expression): Boolean = {
+    def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    node match {
+      case _: Literal | _: AttributeReference | _: BoundReference | _: GetStructField => true
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+          _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
+        true
+      case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
+          _: Contains =>
+        true
+      case c: Cast =>
+        evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
+        plainCastType(c.dataType)
+      case a: Add => plainArithmetic(a, a.evalMode)
+      case a: Subtract => plainArithmetic(a, a.evalMode)
+      case a: Multiply => plainArithmetic(a, a.evalMode)
+      case a: Divide => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
+      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case _ => false
+    }
+  }
+
+  /**
+   * Whether a cast to or from `dataType` outside the ANSI eval mode cannot raise. This fails
+   * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
+   * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
+   * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
+   * too, since a cast key can become NULL.
+   */
+  private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
+    case ArrayType(elementType, _) => plainCastType(elementType)
+    case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
+    case _ => false
+  }
+
+  /**
    * Runs `f`, which serializes an operator whose expressions are `expressions`. Code that
    * serializes expressions outside an operator's conversion, such as when the plan runs, calls it
    * with the expressions Spark evaluates together, or no argument is skipped. `alwaysShared` is
@@ -1398,17 +1447,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
    * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
-   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
-   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
-   * share is unknown.
+   * `TernaryExpression` does. Not if one of them holds a subexpression that can raise and that
+   * the operator's expressions share and Spark eliminates: Spark evaluates that for every row,
+   * and raises if it fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`,
+   * where what they share is unknown.
    */
   def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
 
   /**
    * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
    * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
-   * the operator's expressions share and Spark eliminates, nor outside
+   * can raise and that the operator's expressions share and Spark eliminates, nor outside
    * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
    * promotion so callers may pass either original or already-promoted trees.
    */
@@ -1416,8 +1465,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // Subexpression elimination never shares a leaf, such as a column or a literal
     skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
       // Avoid decimal promotion when Spark shares nothing.
-      s.common.isEmpty || !skippable.exists { expr =>
-        DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
+      s.raising.isEmpty || !skippable.exists { expr =>
+        DecimalPrecision.promote(expr).exists(e => s.raising.exists(_.semanticEquals(e)))
       }
     }
   }

@@ -662,6 +662,32 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         convertToComet(s, CometExchangeSink).getOrElse(s)
 
+      // For an AQE shuffle read over a Comet shuffle stage, while AQE prepares a plan. Spark's
+      // OptimizeSkewedJoin runs before this rule in the same pass and splits a skewed partition
+      // by putting such a read between the stage and the join, so the join and everything above
+      // it can only be converted if the read is a native input too (issue #6530). The read then
+      // feeds the native plan in place of the stage, and reads only the partitions it specifies.
+      // AQE adds its other reads after the operators above them have been converted.
+      case read @ AQEShuffleReadExec(CometSinkPlaceHolder(_, _, stage: ShuffleQueryStageExec), _)
+          if queryStagePrep && stage.shuffle.isInstanceOf[CometShuffleExchangeExec] &&
+            !conf.getConf(SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN) =>
+        val stageRead = read.withNewChildren(Seq(stage))
+        convertToComet(stageRead, CometExchangeSink).getOrElse(stageRead)
+
+      // With forceOptimizeSkewedJoin, AQE keeps a split that adds a shuffle only because its cost
+      // evaluator counts the split join, and it counts only Spark's own joins. A native join
+      // there would make AQE drop the split, so the case above leaves the reads, and with them
+      // the join, on Spark. The reason goes on the join, because partition coalescing replaces
+      // the reads after this rule.
+      case join: BaseJoinExec
+          if queryStagePrep && conf.getConf(SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN) &&
+            join.children.exists(isCometSkewSplit) =>
+        withFallbackReason(
+          join,
+          "A skew join stays on Spark while " +
+            s"${SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN.key} is true, because AQE would " +
+            "discard a split that adds a shuffle if Comet ran the join")
+
       case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
         preserveSparkAggregateBuffers(s)
 
@@ -741,6 +767,17 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * Whether `plan` is a read that splits a skewed partition of a Comet shuffle stage and that
+   * `transform` left on Spark, or the sort that a sort-merge join puts above such a read.
+   */
+  private def isCometSkewSplit(plan: SparkPlan): Boolean = plan match {
+    case sort: SortExec => isCometSkewSplit(sort.child)
+    case read @ AQEShuffleReadExec(CometSinkPlaceHolder(_, _, stage: ShuffleQueryStageExec), _) =>
+      read.hasSkewedPartition && stage.shuffle.isInstanceOf[CometShuffleExchangeExec]
+    case _ => false
   }
 
   /**

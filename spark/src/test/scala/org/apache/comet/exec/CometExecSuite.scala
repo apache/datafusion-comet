@@ -239,6 +239,31 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("getFallbackReasons and isFullyAccelerated for a DataFrame") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val info = new ExtendedExplainInfo()
+
+      val fallback =
+        sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
+      fallback.collect()
+      val reasons = info.getFallbackReasons(fallback)
+      assert(reasons.exists(_.contains("Sampling with replacement is not supported")), reasons)
+      assert(reasons == info.getFallbackReasons(fallback.queryExecution.executedPlan))
+      assert(!info.isFullyAccelerated(fallback))
+
+      val native = sql("SELECT _1 + 1 FROM tbl WHERE _2 > 10")
+      checkSparkAnswerAndOperator(native)
+      assert(info.getFallbackReasons(native).isEmpty, info.getFallbackReasons(native))
+      assert(info.isFullyAccelerated(native))
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val sparkOnly = sql("SELECT _1 + 1 FROM tbl WHERE _2 > 10")
+        sparkOnly.collect()
+        assert(!info.isFullyAccelerated(sparkOnly))
+      }
+    }
+  }
+
   test("sample falls back to Spark when disabled") {
     withSQLConf(CometConf.COMET_EXEC_SAMPLE_ENABLED.key -> "false") {
       withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {

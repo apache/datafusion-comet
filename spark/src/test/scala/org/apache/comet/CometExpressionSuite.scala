@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, GetStructField, In, InSet, IntegralDivide, Literal, Lower, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp, Upper}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -195,6 +195,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case result => fail(s"Expected both Spark and Comet to fail, got $result")
           }
         }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: a shared subexpression that cannot raise does not force a fallback") {
+    withParquetTable(Seq((Some(1), "Bad"), (None, "7"), (None, null)), "nonnulls") {
+      withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+        // Upper(_2) is shared by the last two children, which are skipped on a row that reaches n=1
+        // at its first child. Spark evaluates it for every row, but it cannot fail, so skipping it
+        // shows nothing.
+        val df = spark.table("nonnulls")
+        val shared = Upper(df.col("_2").expr)
+        checkSparkAnswerAndImpl(
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(1, Seq(df.col("_1").expr, shared, Lower(shared))))),
+          native = Seq("atleastnnonnulls"))
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: a shared field of a struct does not force a fallback") {
+    withParquetTable(Seq((Some((1, "Bad")), 1), (None, 2), (Some((2, null)), 3)), "nonnulls") {
+      withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+        // Both the field and the Upper of it are shared by the last two children, as when the structs
+        // an explode produces are cleaned up with na.drop. Reading a field never fails.
+        val df = spark.table("nonnulls")
+        val name = GetStructField(df.col("_1").expr, 1)
+        checkSparkAnswerAndImpl(
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(1, Seq(df.col("_2").expr, Upper(name), Lower(Upper(name)))))),
+          native = Seq("atleastnnonnulls"))
       }
     }
   }
