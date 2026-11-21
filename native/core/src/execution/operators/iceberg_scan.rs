@@ -47,7 +47,9 @@ use iceberg::{Error, ErrorKind};
 use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::iceberg_common::load_file_io;
-use crate::execution::operators::iceberg_narrow_types::{stores_narrow_filter_column, FileSchemas};
+use crate::execution::operators::iceberg_narrow_types::{
+    stores_narrow_filter_column, FileSchemas, SharedFooters,
+};
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_exec::METADATA_SIZE_HINT;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -87,6 +89,9 @@ pub struct IcebergScanExec {
     tasks: Vec<FileScanTask>,
     /// Number of data files to read concurrently
     data_file_concurrency_limit: usize,
+    /// Whether to check each data file's column types before pushing its residual (see
+    /// iceberg_narrow_types)
+    narrow_type_check: bool,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -99,6 +104,7 @@ impl IcebergScanExec {
         catalog_name: String,
         tasks: Vec<FileScanTask>,
         data_file_concurrency_limit: usize,
+        narrow_type_check: bool,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
@@ -113,6 +119,7 @@ impl IcebergScanExec {
             catalog_name,
             tasks,
             data_file_concurrency_limit,
+            narrow_type_check,
             metrics,
         })
     }
@@ -204,18 +211,27 @@ impl IcebergScanExec {
         // filtered column with a narrower type (see iceberg_narrow_types).
         let task_io = Arc::new(file_io.clone());
         let concurrency_limit = self.data_file_concurrency_limit;
+        let narrow_type_check = self.narrow_type_check;
         let narrow_type_splits = metrics.narrow_type_splits.clone();
+        let footers = Arc::new(SharedFooters::new(&tasks));
+        let reader_io = if narrow_type_check {
+            footers.file_io(file_io)
+        } else {
+            file_io
+        };
         let task_stream = futures::stream::once(async move {
             let mut tasks = tasks;
             Self::fill_delete_file_sizes(&mut tasks, &task_io, concurrency_limit).await?;
-            let schemas = Arc::new(FileSchemas::new(&tasks));
+            let schemas = Arc::new(FileSchemas::new(&tasks, footers));
             let checked = futures::stream::iter(tasks)
                 .map(move |task| {
                     let task_io = Arc::clone(&task_io);
                     let schemas = Arc::clone(&schemas);
                     let narrow_type_splits = narrow_type_splits.clone();
                     async move {
-                        if !stores_narrow_filter_column(&task, &task_io, &schemas).await? {
+                        if !narrow_type_check
+                            || !stores_narrow_filter_column(&task, &task_io, &schemas).await?
+                        {
                             return Ok(task);
                         }
                         narrow_type_splits.add(1);
@@ -240,7 +256,7 @@ impl IcebergScanExec {
                 DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
             })?
         };
-        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(reader_io, iceberg_runtime)
             .with_batch_size(batch_size)
             .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
@@ -583,6 +599,7 @@ impl fmt::Debug for IcebergScanExec {
                 "data_file_concurrency_limit",
                 &self.data_file_concurrency_limit,
             )
+            .field("narrow_type_check", &self.narrow_type_check)
             .finish_non_exhaustive()
     }
 }

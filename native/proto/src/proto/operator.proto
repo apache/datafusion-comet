@@ -456,6 +456,10 @@ message IcebergScanCommon {
   // projections or filters, so PlanDataInjector keys planning data by metadata_location,
   // scan_hash_code and the operator's plan_id rather than metadata_location alone.
   int32 scan_hash_code = 15;
+
+  // Whether the scan checks each data file's column types before pushing a residual into its
+  // read (spark.comet.scan.icebergNative.narrowTypeCheck.enabled).
+  bool narrow_type_check = 17;
 }
 
 message IcebergScan {

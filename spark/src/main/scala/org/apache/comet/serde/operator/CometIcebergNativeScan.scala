@@ -1336,6 +1336,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
+    commonBuilder.setNarrowTypeCheck(CometConf.COMET_ICEBERG_NARROW_TYPE_CHECK_ENABLED.get())
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
     (metadata.catalogProperties + ioTimeoutProperty()).foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)

@@ -25,24 +25,35 @@
 //! compare (apache/iceberg-rust#3507), and the row filter casts the literal down to the file's type
 //! (apache/iceberg-rust#3540). The JVM cannot tell which files are narrower, so the scan reads the
 //! footer of a file whose residual needs it and does not push the residual for a narrower file.
-//! The filter above the scan still applies the full predicate.
+//! The filter above the scan still applies the full predicate. The reader gets the footer bytes
+//! that the check read, so the scan fetches each footer once.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Schema as ArrowSchema};
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::stream::BoxStream;
 use iceberg::arrow::ArrowFileReader;
 use iceberg::encryption::StandardKeyMetadata;
 use iceberg::expr::{BoundPredicate, BoundReference, PredicateOperator};
-use iceberg::io::{FileIO, FileMetadata};
+use iceberg::io::{
+    FileIO, FileIOBuilder, FileMetadata, FileRead, FileWrite, InputFile, OutputFile, Storage,
+    StorageConfig, StorageFactory,
+};
 use iceberg::scan::FileScanTask;
 use iceberg::spec::{NameMapping, PrimitiveType, Schema, Type};
 use iceberg::{Error, ErrorKind};
+use parking_lot::Mutex;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::encryption::decrypt::FileDecryptionProperties;
 use parquet::file::metadata::{
     PageIndexPolicy, ParquetMetaDataOptions, ParquetMetaDataReader, ParquetStatisticsPolicy,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 use crate::parquet::parquet_exec::METADATA_SIZE_HINT;
@@ -50,27 +61,86 @@ use crate::parquet::parquet_support::field_id;
 
 /// The Arrow schemas of the data files whose tasks have a residual, each read at most once even
 /// when several splits of a file are checked at the same time.
-pub(crate) struct FileSchemas(HashMap<String, OnceCell<Arc<ArrowSchema>>>);
+pub(crate) struct FileSchemas {
+    schemas: HashMap<String, OnceCell<Arc<ArrowSchema>>>,
+    footers: Arc<SharedFooters>,
+}
 
 impl FileSchemas {
-    pub(crate) fn new(tasks: &[FileScanTask]) -> Self {
-        Self(
-            tasks
-                .iter()
-                .filter(|task| task.predicate().is_some())
-                .map(|task| (task.data_file_path().to_string(), OnceCell::new()))
-                .collect(),
-        )
+    pub(crate) fn new(tasks: &[FileScanTask], footers: Arc<SharedFooters>) -> Self {
+        let schemas = tasks
+            .iter()
+            .filter(|task| task.predicate().is_some())
+            .map(|task| (task.data_file_path().to_string(), OnceCell::new()))
+            .collect();
+        Self { schemas, footers }
     }
 
     async fn get(&self, task: &FileScanTask, file_io: &FileIO) -> Result<Arc<ArrowSchema>, Error> {
-        match self.0.get(task.data_file_path()) {
-            Some(cell) => cell
-                .get_or_try_init(|| load_file_schema(task, file_io))
-                .await
-                .cloned(),
-            None => load_file_schema(task, file_io).await,
+        let load = || load_file_schema(task, file_io, &self.footers);
+        match self.schemas.get(task.data_file_path()) {
+            Some(cell) => cell.get_or_try_init(load).await.cloned(),
+            None => load().await,
         }
+    }
+}
+
+/// Byte ranges read from a file, with their bytes.
+type ReadRanges = Vec<(Range<u64>, Bytes)>;
+
+/// Footer bytes that the check read, which the reader takes instead of fetching them again. A
+/// file's bytes are dropped once each of its splits has opened the file.
+pub(crate) struct SharedFooters {
+    splits: HashMap<String, usize>,
+    footers: Mutex<HashMap<String, SharedFooter>>,
+}
+
+struct SharedFooter {
+    ranges: Arc<ReadRanges>,
+    opens_left: usize,
+}
+
+impl SharedFooters {
+    pub(crate) fn new(tasks: &[FileScanTask]) -> Self {
+        let mut splits = HashMap::new();
+        for task in tasks {
+            *splits.entry(task.data_file_path().to_string()).or_default() += 1;
+        }
+        Self {
+            splits,
+            footers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// A `FileIO` that reads through `file_io` and serves the shared footer bytes.
+    pub(crate) fn file_io(self: &Arc<Self>, file_io: FileIO) -> FileIO {
+        let storage = SharedFooterStorage {
+            state: Some((file_io, Arc::clone(self))),
+        };
+        FileIOBuilder::new(Arc::new(SharedFooterStorageFactory {
+            storage: Some(storage),
+        }))
+        .build()
+    }
+
+    fn insert(&self, path: &str, ranges: ReadRanges) {
+        let opens_left = self.splits.get(path).copied().unwrap_or_default();
+        if opens_left > 0 {
+            let ranges = Arc::new(ranges);
+            let footer = SharedFooter { ranges, opens_left };
+            self.footers.lock().insert(path.to_string(), footer);
+        }
+    }
+
+    fn take(&self, path: &str) -> Option<Arc<ReadRanges>> {
+        let mut footers = self.footers.lock();
+        let footer = footers.get_mut(path)?;
+        let ranges = Arc::clone(&footer.ranges);
+        footer.opens_left -= 1;
+        if footer.opens_left == 0 {
+            footers.remove(path);
+        }
+        Some(ranges)
     }
 }
 
@@ -116,14 +186,13 @@ fn safe_on_narrow_file(op: PredicateOperator) -> bool {
 }
 
 /// Ids of the `int`, `long` and `double` columns that `predicate` compares with an operator that
-/// [`safe_on_narrow_file`] rejects, or with any operator under a `NOT`.
+/// [`safe_on_narrow_file`] rejects, once each `NOT` is pushed down to the comparisons.
 fn at_risk_field_ids(predicate: &BoundPredicate) -> HashSet<i32> {
     fn visit(predicate: &BoundPredicate, negated: bool, out: &mut HashSet<i32>) {
         let mut add = |reference: &BoundReference, op: PredicateOperator| {
+            let op = if negated { op.negate() } else { op };
             let field = reference.field();
-            if (negated || !safe_on_narrow_file(op))
-                && exact_arrow_type(&field.field_type).is_some()
-            {
+            if !safe_on_narrow_file(op) && exact_arrow_type(&field.field_type).is_some() {
                 out.insert(field.id);
             }
         };
@@ -133,7 +202,7 @@ fn at_risk_field_ids(predicate: &BoundPredicate) -> HashSet<i32> {
                 .inputs()
                 .into_iter()
                 .for_each(|input| visit(input, negated, out)),
-            BoundPredicate::Not(expr) => visit(expr.inputs()[0], true, out),
+            BoundPredicate::Not(expr) => visit(expr.inputs()[0], !negated, out),
             BoundPredicate::Unary(expr) => add(expr.term(), expr.op()),
             BoundPredicate::Binary(expr) => add(expr.term(), expr.op()),
             BoundPredicate::Set(expr) => add(expr.term(), expr.op()),
@@ -149,12 +218,17 @@ fn at_risk_field_ids(predicate: &BoundPredicate) -> HashSet<i32> {
 async fn load_file_schema(
     task: &FileScanTask,
     file_io: &FileIO,
+    footers: &SharedFooters,
 ) -> Result<Arc<ArrowSchema>, Error> {
     let path = task.data_file_path();
     let file_size = task.file_size_in_bytes();
+    let ranges = Arc::new(Mutex::new(Vec::new()));
     let mut reader = ArrowFileReader::new(
         FileMetadata { size: file_size },
-        file_io.new_input(path)?.reader().await?,
+        Box::new(RecordingRead {
+            inner: file_io.new_input(path)?.reader().await?,
+            ranges: Arc::clone(&ranges),
+        }),
     );
     let options = ParquetMetaDataOptions::new()
         .with_column_stats_policy(ParquetStatisticsPolicy::SkipAll)
@@ -182,7 +256,143 @@ async fn load_file_schema(
     let arrow_metadata =
         ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::new())
             .map_err(footer_error)?;
+    drop(reader);
+    footers.insert(path, std::mem::take(&mut *ranges.lock()));
     Ok(Arc::clone(arrow_metadata.schema()))
+}
+
+/// Keeps every range it reads, for [`SharedFooters`].
+struct RecordingRead {
+    inner: Box<dyn FileRead>,
+    ranges: Arc<Mutex<ReadRanges>>,
+}
+
+#[async_trait]
+impl FileRead for RecordingRead {
+    async fn read(&self, range: Range<u64>) -> iceberg::Result<Bytes> {
+        let bytes = self.inner.read(range.clone()).await?;
+        self.ranges.lock().push((range, bytes.clone()));
+        Ok(bytes)
+    }
+}
+
+/// Serves a read that falls inside a shared footer range from memory.
+struct SharedFooterRead {
+    footer: Arc<ReadRanges>,
+    inner: Box<dyn FileRead>,
+}
+
+#[async_trait]
+impl FileRead for SharedFooterRead {
+    async fn read(&self, range: Range<u64>) -> iceberg::Result<Bytes> {
+        for (cached, bytes) in self.footer.iter() {
+            if cached.start <= range.start && range.end <= cached.end {
+                let start = (range.start - cached.start) as usize;
+                let end = (range.end - cached.start) as usize;
+                return Ok(bytes.slice(start..end));
+            }
+        }
+        self.inner.read(range).await
+    }
+}
+
+fn deserialized() -> Error {
+    Error::new(
+        ErrorKind::Unexpected,
+        "Comet's shared-footer storage cannot be used after deserialization",
+    )
+}
+
+/// Builds the [`SharedFooterStorage`] it holds. Serde exists only to satisfy the typetag
+/// supertraits; Comet never serializes storage.
+#[derive(Debug, Serialize, Deserialize)]
+struct SharedFooterStorageFactory {
+    #[serde(skip)]
+    storage: Option<SharedFooterStorage>,
+}
+
+#[typetag::serde(name = "CometSharedFooterStorageFactory")]
+impl StorageFactory for SharedFooterStorageFactory {
+    fn build(&self, _config: &StorageConfig) -> iceberg::Result<Arc<dyn Storage>> {
+        let storage = self.storage.clone().ok_or_else(deserialized)?;
+        Ok(Arc::new(storage))
+    }
+}
+
+/// Delegates to a `FileIO`, and opens a file with the footer bytes the check shared for it.
+/// Serde exists only to satisfy the typetag supertraits; Comet never serializes storage.
+#[derive(Clone, Serialize, Deserialize)]
+struct SharedFooterStorage {
+    #[serde(skip)]
+    state: Option<(FileIO, Arc<SharedFooters>)>,
+}
+
+impl SharedFooterStorage {
+    fn file_io(&self) -> iceberg::Result<&FileIO> {
+        Ok(&self.state.as_ref().ok_or_else(deserialized)?.0)
+    }
+}
+
+impl fmt::Debug for SharedFooterStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedFooterStorage")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+#[typetag::serde(name = "CometSharedFooterStorage")]
+impl Storage for SharedFooterStorage {
+    async fn exists(&self, path: &str) -> iceberg::Result<bool> {
+        self.file_io()?.exists(path).await
+    }
+
+    async fn metadata(&self, path: &str) -> iceberg::Result<FileMetadata> {
+        self.file_io()?.new_input(path)?.metadata().await
+    }
+
+    async fn read(&self, path: &str) -> iceberg::Result<Bytes> {
+        self.file_io()?.new_input(path)?.read().await
+    }
+
+    async fn reader(&self, path: &str) -> iceberg::Result<Box<dyn FileRead>> {
+        let (file_io, footers) = self.state.as_ref().ok_or_else(deserialized)?;
+        let inner = file_io.new_input(path)?.reader().await?;
+        Ok(match footers.take(path) {
+            Some(footer) => Box::new(SharedFooterRead { footer, inner }),
+            None => inner,
+        })
+    }
+
+    async fn write(&self, path: &str, bs: Bytes) -> iceberg::Result<()> {
+        self.file_io()?.new_output(path)?.write(bs).await
+    }
+
+    async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn FileWrite>> {
+        self.file_io()?.new_output(path)?.writer().await
+    }
+
+    async fn delete(&self, path: &str) -> iceberg::Result<()> {
+        self.file_io()?.delete(path).await
+    }
+
+    async fn delete_prefix(&self, path: &str) -> iceberg::Result<()> {
+        self.file_io()?.delete_prefix(path).await
+    }
+
+    async fn delete_stream(&self, paths: BoxStream<'static, String>) -> iceberg::Result<()> {
+        self.file_io()?.delete_stream(paths).await
+    }
+
+    fn new_input(&self, path: &str) -> iceberg::Result<InputFile> {
+        self.file_io()?;
+        Ok(InputFile::new(Arc::new(self.clone()), path.to_string()))
+    }
+
+    fn new_output(&self, path: &str) -> iceberg::Result<OutputFile> {
+        self.file_io()?;
+        Ok(OutputFile::new(Arc::new(self.clone()), path.to_string()))
+    }
 }
 
 /// Decryption properties built from a data file's `StandardKeyMetadata`, as iceberg-rust's reader
@@ -279,7 +489,10 @@ mod tests {
     use iceberg_storage_opendal::OpenDalStorageFactory;
     use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
 
-    use super::{at_risk_field_ids, narrow_field_ids, stores_narrow_filter_column, FileSchemas};
+    use super::{
+        at_risk_field_ids, narrow_field_ids, stores_narrow_filter_column, FileSchemas,
+        SharedFooters,
+    };
 
     /// `id BIGINT` (1), `t INT` (2), `d DOUBLE` (3), `s STRING` (4).
     fn table_schema() -> Arc<Schema> {
@@ -375,10 +588,19 @@ mod tests {
             at_risk(Reference::new("s").greater_than(Datum::string("a"))),
             ids(&[])
         );
-        // Under a NOT, equality becomes inequality.
+        // A NOT applies to the comparisons below it, as `rewrite_not` would apply it.
         assert_eq!(
             at_risk(!Reference::new("id").equal_to(Datum::long(1))),
             ids(&[1])
+        );
+        assert_eq!(
+            at_risk(!Reference::new("t").is_in([Datum::int(1), Datum::int(2)])),
+            ids(&[2])
+        );
+        assert_eq!(at_risk(!Reference::new("d").is_null()), ids(&[]));
+        assert_eq!(
+            at_risk(!!Reference::new("id").equal_to(Datum::long(1))),
+            ids(&[])
         );
     }
 
@@ -520,8 +742,12 @@ mod tests {
             .unwrap()
     }
 
+    fn schemas(tasks: &[FileScanTask]) -> FileSchemas {
+        FileSchemas::new(tasks, Arc::new(SharedFooters::new(tasks)))
+    }
+
     async fn check(task: &FileScanTask) -> bool {
-        let schemas = FileSchemas::new(std::slice::from_ref(task));
+        let schemas = schemas(std::slice::from_ref(task));
         stores_narrow_filter_column(task, &fs_file_io(), &schemas)
             .await
             .unwrap()
@@ -618,7 +844,7 @@ mod tests {
         );
         let first = task(&path, size, Some(t_gt(1)));
         let second = task(&path, size, Some(id_gt(0)));
-        let schemas = FileSchemas::new(&[first.clone(), second.clone()]);
+        let schemas = schemas(&[first.clone(), second.clone()]);
         let file_io = fs_file_io();
         assert!(stores_narrow_filter_column(&first, &file_io, &schemas)
             .await
@@ -627,5 +853,48 @@ mod tests {
         assert!(stores_narrow_filter_column(&second, &file_io, &schemas)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_reader_gets_the_footer_bytes_the_check_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("int.parquet");
+        let size = write_parquet(
+            &path,
+            vec![field("id", DataType::Int32, Some(1))],
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        );
+        let splits = [
+            task(&path, size, Some(id_gt(0))),
+            task(&path, size, Some(id_gt(0))),
+        ];
+        let footers = Arc::new(SharedFooters::new(&splits));
+        let schemas = FileSchemas::new(&splits, Arc::clone(&footers));
+        assert!(
+            stores_narrow_filter_column(&splits[0], &fs_file_io(), &schemas)
+                .await
+                .unwrap()
+        );
+
+        // Replace the file's bytes, so that a read served from storage stands out.
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, vec![0_u8; original.len()]).unwrap();
+        let reader_io = footers.file_io(fs_file_io());
+        let tail = size - 8..size;
+        let read_tail = || async {
+            let reader = reader_io.new_input(path.to_str().unwrap()).unwrap();
+            reader
+                .reader()
+                .await
+                .unwrap()
+                .read(tail.clone())
+                .await
+                .unwrap()
+        };
+        for _ in &splits {
+            assert_eq!(read_tail().await, original[tail.start as usize..]);
+        }
+        // Every split has opened the file, so the shared bytes are gone.
+        assert_eq!(read_tail().await, vec![0_u8; 8]);
     }
 }
