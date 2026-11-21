@@ -34,18 +34,21 @@ edition = "2021"
 publish = false
 
 [dependencies]
-arrow-flight = "59.2.0"
-ballista-core = "55.0.0"
-ballista-executor = { version = "55.0.0", default-features = false, features = ["arrow-ipc-optimizations"] }
+# Ballista and DataFusion are pinned to git refs because neither has released 56.0.0 yet: Ballista
+# at a commit of its main branch, which is on DataFusion's 56.0.0-rc1 tag, the same tag as
+# native/Cargo.toml. Move back to releases once both ship.
+arrow-flight = "60.0.0"
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e", default-features = false, features = ["arrow-ipc-optimizations"] }
 # `rest-api` compiles the scheduler's event-log writer (COMET_SCHEDULER_EVENT_LOG_DIR) and its REST
-# API. In Ballista 55.0.0 it logs through `tracing` without enabling it, so that is enabled here.
-ballista-scheduler = { version = "55.0.0", default-features = false, features = ["rest-api", "tracing"] }
-datafusion = { version = "55.2.0", default-features = false }
+# API.
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e", default-features = false, features = ["rest-api"] }
+datafusion = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1", default-features = false }
 # Comet's core crate, under the name of its library. Without the default hdfs-opendal feature,
 # which links libjvm through libhdfs.
 comet = { package = "datafusion-comet", path = "../core", default-features = false }
 datafusion-comet-proto = { path = "../proto" }
-datafusion-proto = "55.2.0"
+datafusion-proto = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
 env_logger = "0.11"
 futures = "0.3"
 log = "0.4"
