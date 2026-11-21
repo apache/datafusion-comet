@@ -124,10 +124,10 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
     jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
-    CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero, NormalizeNestedFloats,
-    NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    CheckOverflowInTableInsert, CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero,
+    NormalizeNestedFloats, NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn,
+    WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -933,6 +933,15 @@ impl PhysicalPlanner {
                     fail_on_error,
                     spark_expr.expr_id,
                     query_context,
+                )))
+            }
+            ExprStruct::CheckOverflowInTableInsert(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(CheckOverflowInTableInsert::new(
+                    child,
+                    expr.from_type.clone(),
+                    expr.to_type.clone(),
+                    expr.column_name.clone(),
                 )))
             }
             ExprStruct::ScalarFunc(expr) => {

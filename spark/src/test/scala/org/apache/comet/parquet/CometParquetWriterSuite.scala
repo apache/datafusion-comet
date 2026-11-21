@@ -36,13 +36,14 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
-import org.apache.spark.SPARK_VERSION_SHORT
+import org.apache.spark.{SPARK_VERSION_SHORT, SparkThrowable}
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOutputCommitProtocol}
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, TableIdentifier}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
+import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometProjectExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, BasicWriteTaskStatsTracker, FileFormatWriter, SQLHadoopMapReduceCommitProtocol, WriteFilesExec, WriteJobStatsTracker, WriteTaskStats, WriteTaskStatsTracker}
@@ -53,7 +54,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometNativeException}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.hadoop.fs.RecordingFileSystem
 import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
@@ -1690,6 +1691,173 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
             s"Expected the target table's nested field names in the written file, got $schema")
         }
         checkAnswer(spark.table("comet_rename_target"), Row(2L, Row("x", "y")) :: Nil)
+      }
+    }
+  }
+
+  private def withInsertWriter(nativeWriter: Boolean)(f: => Unit): Unit =
+    if (nativeWriter) withNativeWriter(f) else f
+
+  private def assertCometInsert(plan: SparkPlan, nativeWriter: Boolean): Unit =
+    if (nativeWriter) {
+      assertHasCometNativeWriteExec(plan)
+    } else {
+      assert(plan.exists(_.isInstanceOf[CometProjectExec]), plan.treeString)
+    }
+
+  private def withNarrowingTables(sourceType: String, targetType: String, values: Seq[String])(
+      f: => Unit): Unit =
+    withTable("comet_narrow_source", "comet_narrow_target") {
+      sql(s"CREATE TABLE comet_narrow_source(c $sourceType) USING parquet")
+      sql(s"CREATE TABLE comet_narrow_target(c $targetType) USING parquet")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql(s"INSERT INTO comet_narrow_source VALUES ${values.map(v => s"($v)").mkString(", ")}")
+      }
+      withClue(s"$sourceType -> $targetType: ")(f)
+    }
+
+  /** Runs `select` into the target in Spark and in Comet, and returns Spark's error. */
+  private def assertInsertFailsAsSpark(
+      select: String,
+      nativeWriter: Boolean): SparkThrowable with Throwable = {
+    val insert = s"INSERT INTO comet_narrow_target SELECT $select FROM comet_narrow_source"
+    def sparkError(e: Throwable): SparkThrowable with Throwable =
+      causeChain(e)
+        .collect { case t: SparkThrowable with Throwable => t }
+        .lastOption
+        .getOrElse(fail(s"$insert did not raise a SparkThrowable", e))
+    var expected: SparkThrowable with Throwable = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = sparkError(intercept[Exception](sql(insert)))
+    }
+    withInsertWriter(nativeWriter) {
+      val (plan, e) = captureFailedWritePlan(sql(insert))
+      assertCometInsert(plan, nativeWriter)
+      assert(!causeChain(e).exists(_.isInstanceOf[CometNativeException]), e)
+      val actual = sparkError(e)
+      assert(actual.getClass == expected.getClass)
+      assert(actual.getErrorClass == expected.getErrorClass)
+      assert(actual.getSqlState == expected.getSqlState)
+      assert(actual.getMessage == expected.getMessage)
+    }
+    expected
+  }
+
+  for (nativeWriter <- Seq(false, true)) {
+    test(s"a narrowing INSERT stays in Comet (native writer: $nativeWriter)") {
+      val inserts = Seq(
+        ("bigint", "int", Seq("1", "NULL", "2147483647", "-2147483648")),
+        ("int", "tinyint", Seq("127", "-128")),
+        ("bigint", "smallint", Seq("32767", "-32768")),
+        ("double", "bigint", Seq("1.5", "-2.9", "NULL")),
+        ("decimal(20,2)", "decimal(10,2)", Seq("1.25", "-99999999.99", "NULL")),
+        ("decimal(20,2)", "int", Seq("1.99", "-7.5")),
+        ("struct<x: bigint>", "struct<x: int>", Seq("named_struct('x', 1)", "NULL")),
+        ("array<bigint>", "array<int>", Seq("array(1, NULL, -2)", "NULL")),
+        ("map<bigint, bigint>", "map<int, int>", Seq("map(1, 2147483647)", "NULL")))
+      inserts.foreach { case (sourceType, targetType, values) =>
+        withNarrowingTables(sourceType, targetType, values) {
+          withTable("comet_narrow_expected") {
+            sql(s"CREATE TABLE comet_narrow_expected(c $targetType) USING parquet")
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              sql("INSERT INTO comet_narrow_expected SELECT c FROM comet_narrow_source")
+            }
+            withInsertWriter(nativeWriter) {
+              val plan = captureWritePlan(
+                sql("INSERT INTO comet_narrow_target SELECT c FROM comet_narrow_source"))
+              assertCometInsert(plan, nativeWriter)
+            }
+            checkAnswer(spark.table("comet_narrow_target"), spark.table("comet_narrow_expected"))
+          }
+        }
+      }
+    }
+
+    test(
+      s"a narrowing INSERT that overflows fails as Spark does (native writer: $nativeWriter)") {
+      val overflows = Seq(
+        ("bigint", "int", "3000000000"),
+        ("bigint", "int", "-2147483649"),
+        ("int", "tinyint", "128"),
+        ("bigint", "smallint", "-32769"),
+        ("double", "int", "double('NaN')"),
+        ("double", "bigint", "double('Infinity')"),
+        ("double", "bigint", "1e20"),
+        ("double", "decimal(10,2)", "1e12"),
+        ("decimal(20,2)", "decimal(10,2)", "123456789012.34"),
+        ("decimal(20,2)", "int", "3000000000.5"),
+        ("struct<x: bigint>", "struct<x: int>", "named_struct('x', 3000000000)"),
+        ("array<bigint>", "array<int>", "array(1, 3000000000)"),
+        ("map<bigint, bigint>", "map<int, int>", "map(3000000000, 1)"),
+        ("map<bigint, bigint>", "map<int, int>", "map(1, 3000000000)"))
+      overflows.foreach { case (sourceType, targetType, value) =>
+        withNarrowingTables(sourceType, targetType, Seq(value)) {
+          val error = assertInsertFailsAsSpark("c", nativeWriter)
+          assert(error.getErrorClass == "CAST_OVERFLOW_IN_TABLE_INSERT", error)
+        }
+      }
+
+      // Spark reports any arithmetic error under the cast as an overflow of the column.
+      withNarrowingTables("bigint", "int", Seq("1")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          val error = assertInsertFailsAsSpark("c div 0", nativeWriter)
+          assert(error.getErrorClass == "CAST_OVERFLOW_IN_TABLE_INSERT", error)
+        }
+      }
+
+      // Other errors under the cast keep their class and query context.
+      withNarrowingTables("string", "int", Seq("'abc'")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          val error = assertInsertFailsAsSpark("CAST(c AS BIGINT)", nativeWriter)
+          assert(error.getErrorClass == "CAST_INVALID_INPUT", error)
+          assert(error.getQueryContext.nonEmpty, error)
+        }
+      }
+    }
+
+    test(
+      s"a narrowing INSERT with a shared cast fails as Spark does (native writer: $nativeWriter)") {
+      // Subexpression elimination evaluates the cast that both columns share before the checks,
+      // so Spark reports the cast's own error unless it is off.
+      val cases = Seq(true -> "CAST_OVERFLOW", false -> "CAST_OVERFLOW_IN_TABLE_INSERT")
+      cases.foreach { case (eliminate, errorClass) =>
+        withNarrowingTables("bigint", "int, d int", Seq("3000000000")) {
+          withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> eliminate.toString) {
+            val error = assertInsertFailsAsSpark("c, c", nativeWriter)
+            assert(error.getErrorClass == errorClass, error)
+          }
+        }
+      }
+    }
+
+    test(
+      s"a narrowing INSERT with a rewritten cast keeps its error (native writer: $nativeWriter)") {
+      // SPARK-42286: Spark rethrows the child's error as it is when the optimizer has replaced the
+      // cast under CheckOverflowInTableInsert, here by pushing it into the CASE WHEN branches.
+      val inserts = Seq(
+        "tinyint" -> ("0 - (CASE WHEN c = 1.2345678901234567E19D THEN 1.2345678901234567E19D " +
+          "ELSE c END)"),
+        "decimal(9,0)" -> "0 - (CASE WHEN c = 1 THEN 1 ELSE c END)")
+      inserts.foreach { case (targetType, select) =>
+        withNarrowingTables("double", targetType, Seq("1.2345678901234567E19D")) {
+          val error = assertInsertFailsAsSpark(select, nativeWriter)
+          assert(error.getErrorClass != "CAST_OVERFLOW_IN_TABLE_INSERT", error)
+        }
+      }
+    }
+  }
+
+  test("a narrowing INSERT of an overflowing literal fails as Spark does") {
+    withNarrowingTables("bigint", "int", Seq("1")) {
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> ConstantFolding.ruleName) {
+        val error = assertInsertFailsAsSpark("3000000000L", nativeWriter = false)
+        assert(error.getErrorClass == "CAST_OVERFLOW_IN_TABLE_INSERT", error)
+        val (plan, _) = captureFailedWritePlan(
+          sql("INSERT INTO comet_narrow_target SELECT 3000000000L FROM comet_narrow_source"))
+        assertExpressionImpl(
+          plan,
+          native = Seq("checkoverflowintableinsert"),
+          dispatched = Seq("cast"))
       }
     }
   }

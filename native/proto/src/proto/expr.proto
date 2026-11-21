@@ -98,6 +98,7 @@ message Expr {
     AtLeastNNonNulls at_least_n_non_nulls = 76;
     HigherOrderFunc higher_order_func = 77;
     LambdaVariable lambda_variable = 78;
+    CheckOverflowInTableInsert check_overflow_in_table_insert = 79;
   }
 
   reserved 20;
@@ -593,6 +594,14 @@ message CheckOverflow {
   Expr child = 1;
   DataType datatype = 2;
   bool fail_on_error = 3;
+}
+
+// The types are Spark SQL type names, which the JVM parses back to build Spark's error.
+message CheckOverflowInTableInsert {
+  Expr child = 1;
+  string from_type = 2;
+  string to_type = 3;
+  string column_name = 4;
 }
 
 message ScalarFunc {

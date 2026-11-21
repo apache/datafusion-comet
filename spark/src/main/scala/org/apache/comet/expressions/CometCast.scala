@@ -22,7 +22,7 @@ package org.apache.comet.expressions
 import scala.util.Try
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, CheckOverflowInTableInsert, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
 
@@ -30,7 +30,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallback
 import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SparkFixes, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, isSharedSubexpression, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometCast
@@ -643,5 +643,33 @@ object CometCast
       .collectFirst { case u: Unsupported => u }
       .orElse(levels.collectFirst { case i: Incompatible => i })
       .getOrElse(Compatible())
+  }
+}
+
+/**
+ * Spark rethrows the child's error unchanged when the optimizer has replaced the cast
+ * (SPARK-42286), and never sees the error of a cast that subexpression elimination evaluates
+ * before it. So only a `Cast` child that the operator does not share is wrapped.
+ */
+object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflowInTableInsert] {
+
+  override def convert(
+      expr: CheckOverflowInTableInsert,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.child match {
+      case cast: Cast if !isSharedSubexpression(cast) =>
+        exprToProtoInternal(cast, inputs, binding).map { child =>
+          val builder = ExprOuterClass.CheckOverflowInTableInsert
+            .newBuilder()
+            .setChild(child)
+            .setFromType(cast.child.dataType.sql)
+            .setToType(cast.dataType.sql)
+            .setColumnName(expr.columnName)
+          ExprOuterClass.Expr.newBuilder().setCheckOverflowInTableInsert(builder).build()
+        }
+      case child =>
+        exprToProtoInternal(child, inputs, binding)
+    }
   }
 }

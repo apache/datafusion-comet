@@ -337,7 +337,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ParseUrl] -> CometParseUrl)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Cast] -> CometCast)
+    classOf[Cast] -> CometCast,
+    classOf[CheckOverflowInTableInsert] -> CometCheckOverflowInTableInsert)
 
   private val jsonExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[LengthOfJsonArray] -> CometLengthOfJsonArray,
@@ -1444,6 +1445,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
     }
   }
+
+  /**
+   * Whether `expr` is a subexpression that the operator's expressions share and Spark eliminates,
+   * so that Spark evaluates it for every row before the expressions that use it. False outside
+   * `withSharedSubexpressions`, where what they share is unknown.
+   */
+  def isSharedSubexpression(expr: Expression): Boolean =
+    !expr.isInstanceOf[LeafExpression] && sharedSubexpressions.value.exists { s =>
+      s.common.nonEmpty && {
+        val promoted = DecimalPrecision.promote(expr)
+        s.common.exists(_.semanticEquals(promoted))
+      }
+    }
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
