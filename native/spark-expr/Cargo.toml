@@ -380,6 +380,10 @@ name = "murmur3"
 harness = false
 
 [[bench]]
+name = "hash_nulls"
+harness = false
+
+[[bench]]
 name = "xxhash64"
 harness = false
 
