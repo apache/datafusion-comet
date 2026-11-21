@@ -473,10 +473,10 @@ fn prefix_sum(counts: &[u32]) -> Vec<u32> {
     cursors
 }
 
-/// A `NullBuffer` that is null wherever `filter` does not select the row, so that a filtered row
-/// can be represented as a null list entry. Mirrors DataFusion's `filter_to_nulls`, which lives
+/// A `NullBuffer` that is null wherever `filter` does not select the row, including where the
+/// predicate itself is null, so that a filtered row can be masked like a null input. Mirrors DataFusion's `filter_to_nulls`, which lives
 /// in `datafusion-functions-aggregate-common` and is not re-exported by the `datafusion` facade.
-fn filter_to_nulls(filter: &BooleanArray) -> NullBuffer {
+pub(super) fn filter_to_nulls(filter: &BooleanArray) -> NullBuffer {
     let selected = match filter.nulls() {
         Some(nulls) => filter.values() & nulls.inner(),
         None => filter.values().clone(),

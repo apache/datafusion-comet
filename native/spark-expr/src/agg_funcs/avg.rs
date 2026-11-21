@@ -19,8 +19,9 @@ use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
     types::{Float64Type, Int64Type},
-    Array, ArrayRef, ArrowNumericType, Int64Array, PrimitiveArray,
+    Array, ArrayRef, ArrowNumericType, BooleanArray, Int64Array, PrimitiveArray,
 };
+use arrow::buffer::{NullBuffer, ScalarBuffer};
 use arrow::compute::sum;
 use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
@@ -29,6 +30,8 @@ use datafusion::logical_expr::{
 };
 use datafusion::physical_expr::expressions::format_state_name;
 use std::sync::Arc;
+
+use super::collect::filter_to_nulls;
 
 use arrow::array::ArrowNativeTypeOp;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -235,7 +238,7 @@ where
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&arrow::array::BooleanArray>,
+        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to update_batch");
@@ -334,12 +337,43 @@ where
         ])
     }
 
+    /// Each row's own partial state, as `state` emits it: the value and a count of one, or a
+    /// zero sum and count for a null or filtered-out row.
     fn convert_to_state(
         &self,
-        _values: &[ArrayRef],
-        _opt_filter: Option<&arrow::array::BooleanArray>,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
     ) -> Result<Vec<ArrayRef>> {
-        not_impl_err!("Input batch conversion to state not implemented")
+        let values = values[0].as_primitive::<T>();
+        let filter_nulls = opt_filter.map(filter_to_nulls);
+        let mask = NullBuffer::union(filter_nulls.as_ref(), values.nulls());
+        let (sums, counts): (ScalarBuffer<T::Native>, ScalarBuffer<i64>) = match mask {
+            // Every row is included, so the input values are the sums as they are.
+            None => (values.values().clone(), vec![1; values.len()].into()),
+            // `merge_batch` reads the sums' values without their nulls, so an excluded row
+            // needs a zero sum as well as a zero count.
+            Some(mask) => {
+                let (sums, counts): (Vec<_>, Vec<_>) = values
+                    .values()
+                    .iter()
+                    .zip(mask.iter())
+                    .map(|(&value, included)| {
+                        if included {
+                            (value, 1)
+                        } else {
+                            (T::default_value(), 0)
+                        }
+                    })
+                    .unzip();
+                (sums.into(), counts.into())
+            }
+        };
+        let sums =
+            PrimitiveArray::<T>::new(sums, None).with_data_type(self.return_data_type.clone());
+        Ok(vec![
+            Arc::new(sums) as ArrayRef,
+            Arc::new(Int64Array::new(counts, None)) as ArrayRef,
+        ])
     }
 
     fn size(&self) -> usize {
@@ -363,6 +397,58 @@ mod tests {
         partial.update_batch(&[Arc::new(Float64Array::from(vec![None, None]))])?;
         assert_eq!(partial.state()?, empty);
         assert_eq!(partial.evaluate()?, ScalarValue::Float64(None));
+        Ok(())
+    }
+
+    /// Converting rows straight to partial states, as a partial aggregate that stops aggregating
+    /// does, gives each row the state that aggregating it alone into a group would.
+    #[test]
+    fn convert_to_state_matches_one_row_groups() -> Result<()> {
+        let new_accumulator = || {
+            AvgGroupsAccumulator::<Float64Type, _>::new(&Float64, |sum: f64, count: i64| {
+                Ok(sum / count as f64)
+            })
+        };
+        let check = |values: ArrayRef, filter: Option<&BooleanArray>| -> Result<()> {
+            let converted = new_accumulator().convert_to_state(&[Arc::clone(&values)], filter)?;
+            let groups: Vec<usize> = (0..values.len()).collect();
+            let mut grouped = new_accumulator();
+            grouped.update_batch(&[values], &groups, filter, groups.len())?;
+            assert_eq!(converted, grouped.state(EmitTo::All)?);
+            Ok(())
+        };
+
+        let values = Float64Array::from(vec![
+            Some(1.5),
+            None,
+            Some(-2.0),
+            Some(4.0),
+            Some(8.0),
+            None,
+        ]);
+        let no_nulls = Float64Array::from(vec![1.5, -2.0, 4.0, 8.0]);
+        // A null predicate, as `FILTER (WHERE d > 1)` gives where `d` is null, excludes its row.
+        let filter = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            None,
+            Some(false),
+            Some(true),
+            Some(true),
+        ]);
+
+        for values in [values.clone(), no_nulls.clone()] {
+            let filter = filter.slice(0, values.len());
+            check(Arc::new(values.clone()), None)?;
+            check(Arc::new(values), Some(&filter))?;
+        }
+        // Sliced inputs and filters, whose buffers start at an offset.
+        let sliced = values.slice(1, 3);
+        let sliced_filter = filter.slice(1, 3);
+        check(Arc::new(sliced.clone()), None)?;
+        check(Arc::new(sliced), Some(&sliced_filter))?;
+        check(Arc::new(no_nulls.slice(1, 3)), None)?;
+        check(Arc::new(no_nulls.slice(1, 3)), Some(&filter.slice(2, 3)))?;
         Ok(())
     }
 }
