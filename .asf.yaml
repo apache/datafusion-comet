@@ -189,6 +189,19 @@ github:
     creation_cap:
       enabled: true
       max_open_pull_requests: 3
+      # The following contributors have shown sustained engagement with the project,
+      # through merged PRs, issues, PR reviews, and discussions, so the cap is not
+      # applied to them.
+      #
+      # ASF makes GitHub's bypass list match this list exactly, so a login added by
+      # hand in the repository settings is removed on the next sync. An unknown login
+      # fails the whole sync.
+      bypass_users:
+        - 0lai0
+        - dwsmith1983
+        - hsiang-c
+        - peterxcli
+        - rich7420
 # publishes the content of the `asf-site` branch to
 # https://datafusion.apache.org/comet/
 publish:
