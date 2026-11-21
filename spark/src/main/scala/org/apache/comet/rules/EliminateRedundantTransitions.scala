@@ -185,6 +185,14 @@ case class EliminateRedundantTransitions(session: SparkSession)
         val columnar = s.copy(child = child, shuffleType = CometColumnarShuffle)
         columnar.copyTagsFrom(s)
         columnar
+
+      // When columnar shuffle can't take the rows, keep native shuffle and convert them to Arrow
+      // with Comet's `CometSparkToColumnarExec` instead of fallback to Spark's `RowToColumnar`
+      case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
+          if CometShuffleExchangeExec.isNativeConversionSupported(s, child) =>
+        val columnar = s.copy(child = CometSparkToColumnarExec(child))
+        columnar.copyTagsFrom(s)
+        columnar
     }
 
     eliminatedPlan match {
