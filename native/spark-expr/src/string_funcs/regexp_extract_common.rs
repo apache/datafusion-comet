@@ -111,7 +111,7 @@ pub(super) fn parse_args<'a>(
     // Spark checks `idx` only on a row where the pattern matches, so an out-of-range index is
     // an error only when some row matches. Checking per batch fails the same query: Spark
     // fails the task on the first matching row and this fails the batch that contains it.
-    // A matching scalar subject still fails a batch with no rows (#7725).
+    // A non-null scalar subject is still evaluated in a batch with no rows (#7725).
     let group_count = regex.captures_len() as i32 - 1;
     if !(0..=group_count).contains(&idx) {
         if any_row_matches(fn_name, &regex, &args[0])? {

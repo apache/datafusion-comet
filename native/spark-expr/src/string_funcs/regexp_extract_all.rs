@@ -507,16 +507,28 @@ mod tests {
     fn invalid_regex_without_a_non_null_subject_returns_null() {
         let large_nulls =
             ColumnarValue::Array(Arc::new(LargeStringArray::from(vec![None::<&str>, None])));
-        let null = ColumnarValue::Scalar(ScalarValue::Utf8(None));
+        let sliced_nulls = ColumnarValue::Array(Arc::new(
+            StringArray::from(vec![Some("abc"), None, None]).slice(1, 2),
+        ));
         for (subject, expected) in [
             (array(vec![None, None]), vec![None, None]),
             (large_nulls, vec![None, None]),
-            (null, vec![None]),
+            (sliced_nulls, vec![None, None]),
+            (ColumnarValue::Scalar(ScalarValue::Utf8(None)), vec![None]),
+            (
+                ColumnarValue::Scalar(ScalarValue::LargeUtf8(None)),
+                vec![None],
+            ),
             (array(vec![]), vec![]),
         ] {
             let result = run(vec![subject, pattern(r"(unclosed"), idx(1)]).unwrap();
             assert_eq!(result, expected);
         }
+
+        let cache = PatternCache::new();
+        spark_regexp_extract_all(&[array(vec![None, None]), pattern(r"\d+"), idx(0)], &cache)
+            .unwrap();
+        assert_eq!(cache.compile_count(), 0);
 
         let err = call_raw(&[
             array(vec![None, Some("abc"), None]),
@@ -529,7 +541,11 @@ mod tests {
 
         let ints =
             ColumnarValue::Array(Arc::new(arrow::array::Int32Array::from(vec![None::<i32>])));
-        assert!(call_raw(&[ints, pattern(r"\d+"), idx(0)]).is_err());
+        let err = call_raw(&[ints, pattern(r"\d+"), idx(0)]).err().unwrap();
+        assert!(
+            err.to_string().contains("expects Utf8 or LargeUtf8"),
+            "{err}"
+        );
     }
 
     /// One expression evaluates many batches; the pattern must compile once and results

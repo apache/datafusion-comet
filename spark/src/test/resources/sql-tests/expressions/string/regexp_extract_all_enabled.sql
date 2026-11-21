@@ -155,6 +155,13 @@ SELECT regexp_extract_all(s, '\\d+', 1) FROM test_regexp_extract_all_one_digit
 query expect_error(regexp_extract_all)
 SELECT regexp_extract_all(s, '(unclosed', 1) FROM test_regexp_extract_all_enabled
 
+-- Spark compiles the pattern only for a row whose subject is not NULL, so a pattern that does
+-- not compile is not an error when every subject is NULL. '(unclosed' is invalid in Java and
+-- Rust, and the lookahead is valid in Java but not in Rust.
+query expect_native(regexp_extract_all)
+SELECT regexp_extract_all(s, '(unclosed', 1), regexp_extract_all(s, '(?=\\d)\\w+', 0)
+FROM test_regexp_extract_all_enabled WHERE s IS NULL
+
 -- Java-only regex feature: lookahead. Rust regex rejects this at compile time;
 -- Spark accepts it. This is one of the documented incompatibilities behind the
 -- Incompatible support level, not an invariant we test for cross-engine equivalence.
