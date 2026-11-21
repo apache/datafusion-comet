@@ -345,16 +345,8 @@ fn checked_arithmetic_internal(
     }
 
     // Materialize operands for Try-mode and float division
-    let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
-        (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
-        (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
-            (l.to_array_of_size(r.len())?, Arc::clone(r))
-        }
-        (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
-            (Arc::clone(l), r.to_array_of_size(l.len())?)
-        }
-        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
-    };
+    let arrays = ColumnarValue::values_to_arrays(args)?;
+    let (left_arr, right_arr) = (&arrays[0], &arrays[1]);
 
     let result_array = match data_type {
         DataType::Int8 => try_arithmetic_kernel(
