@@ -47,7 +47,12 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
     HashExprConfig("sha2_224", "SELECT sha2(c_str, 224) FROM parquetV1Table"),
     HashExprConfig("sha2_256", "SELECT sha2(c_str, 256) FROM parquetV1Table"),
     HashExprConfig("sha2_384", "SELECT sha2(c_str, 384) FROM parquetV1Table"),
-    HashExprConfig("sha2_512", "SELECT sha2(c_str, 512) FROM parquetV1Table"))
+    HashExprConfig("sha2_512", "SELECT sha2(c_str, 512) FROM parquetV1Table"),
+    HashExprConfig(
+      "sha2_dynamic_bits",
+      """SELECT sha2(c_str,
+        |  element_at(array(0, 224, 256, 384, 512, 128), pmod(c_int, 6) + 1))
+        |FROM parquetV1Table""".stripMargin))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
@@ -84,7 +89,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
   }
 
   // Run only these cases with --wide-decimal. The fallback arm is the path used by
-  // wide-decimal hash on main before native support; codegen dispatch is tracked in #5835.
+  // wide-decimal hash on main before native support.
   private def runWideDecimalBenchmarks(values: Int): Unit = {
     runBenchmarkWithTable("Wide decimal hash", values) { rows =>
       withTempPath { dir =>

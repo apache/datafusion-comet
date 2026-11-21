@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
 import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructType}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType, withNullShortCircuit}
 
 object CometXxHash64 extends CometExpressionSerde[XxHash64] {
 
@@ -74,19 +74,10 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
 
 object CometSha2 extends CometExpressionSerde[Sha2] {
 
-  private val nonFoldableNumBitsReason =
-    "The `numBits` argument must be a foldable literal value"
+  override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
 
-  override def getUnsupportedReasons(): Seq[String] =
-    HashUtils.unsupportedReasons :+ nonFoldableNumBitsReason
-
-  override def getSupportLevel(expr: Sha2): SupportLevel = {
-    if (!expr.right.foldable) {
-      Unsupported(Some(nonFoldableNumBitsReason))
-    } else {
-      HashUtils.supportLevelForChildren(expr)
-    }
-  }
+  override def getSupportLevel(expr: Sha2): SupportLevel =
+    HashUtils.supportLevelForChildren(expr)
 
   override def convert(
       expr: Sha2,
@@ -94,7 +85,9 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
-    scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
+    withNullShortCircuit(
+      expr,
+      scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr))
   }
 }
 
