@@ -31,20 +31,23 @@ import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{AllocationListener, AllocationReservation, ArrowBuf, BufferAllocator, BufferManager, ForeignAllocation, RootAllocator}
 import org.apache.arrow.memory.rounding.RoundingPolicy
 import org.apache.arrow.vector.compression.CompressionUtil
-import org.apache.spark.SparkException
-
-import com.github.luben.zstd.Zstd
 
 /**
- * Checks that the zstd codec never writes past the buffer it allocates for its output.
+ * Checks that Arrow's zstd codec, which Comet's cache compresses with, never writes past the
+ * buffer it allocates for its output.
  *
  * The buffers come from [[GuardedAllocator]], which hands the codec exactly the capacity it asked
  * for and keeps a sentinel-filled guard region right behind it, so an overrun shows up as a
  * changed sentinel instead of as silent corruption of whatever the allocator placed next (#7305).
- * The defect is explained on [[CometZstdCompressionCodec]]. The inputs are the ones that provoke
- * it: bytes that look structured enough for zstd to try entropy coding but do not compress.
+ * Before Arrow 20.0.0 (apache/arrow-java#1119), `ZstdCompressionCodec.doCompress` allocated
+ * `compressBound(n) + 8` bytes and pointed zstd 8 bytes in, past the uncompressed-length prefix,
+ * but still told it the capacity was `compressBound(n) + 8`. zstd only promises not to write past
+ * the capacity it is given, and while it entropy-codes the literals of a block that turns out not
+ * to compress it can fill the destination up to that capacity before falling back to a stored
+ * block, so it could run up to 8 bytes past the buffer. The inputs are the ones that provoke it:
+ * bytes that look structured enough for zstd to try entropy coding but do not compress.
  */
-class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
+class ArrowZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
 
   // zstd-jni unpacks its native library into java.io.tmpdir, which the test JVM points at
   // target/tmp. Nothing else creates that directory in a fresh checkout.
@@ -103,22 +106,9 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("Arrow's zstd codec writes past the output buffer it allocates") {
-    // Documents the defect this suite guards against (apache/arrow-java#1119, fixed in Arrow
-    // 20.0.0). Once Comet moves to an Arrow with the fix, CometZstdCompressionCodec and this test
-    // go together.
+  test("Arrow's zstd codec stays within the output buffer it allocates") {
     withAllocators { (root, guarded) =>
       val codec = new ZstdCompressionCodec(1)
-      Lengths.foreach { len =>
-        (0 until 50).foreach(seed => roundTrip(codec, root, guarded, protoLike(len, seed)))
-      }
-      guarded.overruns should be > 0
-    }
-  }
-
-  test("Comet's zstd codec stays within the output buffer it allocates") {
-    withAllocators { (root, guarded) =>
-      val codec = new CometZstdCompressionCodec(1)
       var raw = 0
       var packed = 0
       def count(storedRaw: Boolean): Unit = if (storedRaw) raw += 1 else packed += 1
@@ -132,19 +122,6 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
       // that really compressed.
       raw should be > 0
       packed should be > 0
-    }
-  }
-
-  test("a zstd error releases the output buffer and surfaces as an internal error") {
-    withAllocators { (root, _) =>
-      val compressed = root.buffer(16)
-      // zstd reports an error as the negated error code.
-      val e = intercept[SparkException] {
-        CometZstdCompressionCodec.checkWritten(-Zstd.errDstSizeTooSmall(), compressed)
-      }
-      e.getMessage should include("zstd failed to compress a cached batch")
-      e.getMessage should include("INTERNAL_ERROR")
-      root.getAllocatedMemory shouldBe 0
     }
   }
 }
