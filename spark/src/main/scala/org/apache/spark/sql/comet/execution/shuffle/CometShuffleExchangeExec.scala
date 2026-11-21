@@ -585,8 +585,8 @@ object CometShuffleExchangeExec
         ShuffleExchangeExec(s.outputPartitioning, rowChild, s.shuffleOrigin)).isEmpty
 
   /**
-   * Whether native shuffle can take `s` by converting `rowChild` rows to Arrow Pure: does not tag
-   * the node
+   * Whether native shuffle can keep `s` by converting `rowChild` rows to Arrow Celeborn is
+   * excluded because its native shuffle needs a native Comet child. Pure: does not tag the node
    */
   def isNativeConversionSupported(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean =
     !isCometCelebornShuffleManagerEnabled(s.conf) &&
