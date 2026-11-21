@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::case_when::{cannot_fail, is_infallible};
+use super::case_when::cannot_fail;
 use super::null_short_circuit::{evaluate_projected, project};
 use crate::{
     spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckedBinaryExpr, FloatOperands, IfExpr,
@@ -104,17 +104,18 @@ impl LazyLogical {
 ///
 /// Spark's `In` returns true at the first candidate that equals the value, and NULL if none does
 /// and one is NULL, which is that of `value = c1 OR value = c2 OR ...`. A candidate that can fail
-/// is then evaluated only for the rows that the ones before it have not matched. The value is
-/// evaluated once per term, so this requires it to be a cheap expression that cannot fail.
-/// This returns `None` when no candidate after the first can fail, when the value cannot be
-/// evaluated again, and when a candidate has another type than the value.
+/// is then evaluated only for the rows that the ones before it have not matched, and no candidate
+/// is evaluated for a row whose value is NULL, which Spark returns NULL for at once. The value is
+/// evaluated once per term, so this requires it to be deterministic.
+/// This returns `None` when no candidate after the first can fail, when the value is not
+/// deterministic, and when a candidate has another type than the value.
 pub fn lazy_in_list(
     value: &Arc<dyn PhysicalExpr>,
     candidates: &[Arc<dyn PhysicalExpr>],
     negated: bool,
     schema: &Schema,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
-    if candidates.iter().skip(1).all(|c| cannot_fail(c, schema)) || !is_infallible(value, schema) {
+    if candidates.iter().skip(1).all(|c| cannot_fail(c, schema)) || !is_deterministic(value) {
         return Ok(None);
     }
     let value_type = value.data_type(schema)?;
@@ -147,7 +148,11 @@ pub fn lazy_in_list(
             )?
         });
     }
-    let chain = balanced_or(&terms, schema)?;
+    let mut chain = balanced_or(&terms, schema)?;
+    if value.nullable(schema)? {
+        let value_is_set: Arc<dyn PhysicalExpr> = Arc::new(IsNotNullExpr::new(Arc::clone(value)));
+        chain = Arc::new(CaseWhenExpr::try_new(vec![(value_is_set, chain)], None)?);
+    }
     Ok(Some(if negated {
         Arc::new(NotExpr::new(chain))
     } else {
@@ -481,6 +486,39 @@ mod tests {
         assert_eq!(
             evaluate(&expr, &batch)?,
             vec![Some(false), Some(false), None, Some(true)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_skips_candidates_for_a_null_value() -> Result<()> {
+        // Spark returns NULL for a NULL value without evaluating CAST(s AS INT)
+        let batch = batch(vec![Some(0), None, Some(2)], vec!["bad", "bad", "2"]);
+        let schema = batch.schema();
+        let candidates = vec![lit(0), ansi_cast(col("s", &schema)?, DataType::Int32)];
+        let value = col("v", &schema)?;
+        let expr = crate::spark_in_list(Arc::clone(&value), candidates.clone(), false, &schema)?;
+        assert_eq!(evaluate(&expr, &batch)?, vec![Some(true), None, Some(true)]);
+        let expr = crate::spark_in_list(value, candidates, true, &schema)?;
+        assert_eq!(
+            evaluate(&expr, &batch)?,
+            vec![Some(false), None, Some(false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_of_a_checked_arithmetic_value() -> Result<()> {
+        // (v + 1) IN (1, CAST(s AS INT)), where v + 1 is planned as a CheckedBinaryExpr
+        let batch = batch(vec![Some(0), None, Some(2)], vec!["bad", "bad", "2"]);
+        let schema = batch.schema();
+        let plus_one = Arc::new(BinaryExpr::new(col("v", &schema)?, Operator::Plus, lit(1)));
+        let value: Arc<dyn PhysicalExpr> = Arc::new(CheckedBinaryExpr::new(plus_one, None));
+        let candidates = vec![lit(1), ansi_cast(col("s", &schema)?, DataType::Int32)];
+        let expr = crate::spark_in_list(value, candidates, false, &schema)?;
+        assert_eq!(
+            evaluate(&expr, &batch)?,
+            vec![Some(true), None, Some(false)]
         );
         Ok(())
     }
