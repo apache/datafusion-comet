@@ -589,7 +589,8 @@ object CometShuffleExchangeExec
    * the node
    */
   def isNativeConversionSupported(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean =
-    CometSparkToColumnarExec.isSchemaSupported(rowChild.schema, ListBuffer.empty) && ???
+    !isCometCelebornShuffleManagerEnabled(s.conf) &&
+      CometSparkToColumnarExec.isSchemaSupported(rowChild.schema, ListBuffer.empty)
 
   /**
    * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
