@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import java.io.File
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.{ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
@@ -73,6 +74,9 @@ class CometNativeShuffleWriter[K, V](
   // var exposing it trips `-Xlint:inaccessible`. The shuffle package, which includes the
   // tests that read it, is the only thing that ever touches this.
   private[shuffle] var mapStatus: MapStatus = _
+  // Temp data file for this local map attempt. Cleared after a successful commit so
+  // stop(true) does not delete the committed data file.
+  private[shuffle] var localTempData: Option[File] = None
   private var stopped = false
   private lazy val effectivePartitionCount =
     remoteDestination.map(_.numPartitions).getOrElse(outputPartitioning.numPartitions)
@@ -107,6 +111,7 @@ class CometNativeShuffleWriter[K, V](
             destination.onSizeLimitExceeded(failure)
           }
         }
+        discardLocalTemp(Some(failure))
         throw failure
     }
   }
@@ -116,9 +121,9 @@ class CometNativeShuffleWriter[K, V](
       val resolver =
         SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
       val dataFile = resolver.getDataFile(shuffleId, mapId)
-      Some(
-        CometNativeShuffleWriter
-          .LocalShuffleOutput(resolver, dataFile.getPath.replace(".data", ".data.tmp")))
+      val tempDataFile = CometNativeShuffleWriter.localTempDataFile(resolver, dataFile)
+      localTempData = Some(tempDataFile)
+      Some(CometNativeShuffleWriter.LocalShuffleOutput(resolver, tempDataFile.getPath))
     } else {
       None
     }
@@ -274,6 +279,7 @@ class CometNativeShuffleWriter[K, V](
           partitionLengths,
           Array.empty,
           tempDataFilePath.toFile)
+        localTempData = None
         mapStatus =
           MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
     }
@@ -485,7 +491,13 @@ class CometNativeShuffleWriter[K, V](
 
   override def stop(success: Boolean): Option[MapStatus] = {
     remoteDestination match {
-      case None => if (success) Some(mapStatus) else None
+      case None =>
+        if (success) {
+          Some(mapStatus)
+        } else {
+          discardLocalTemp(None)
+          None
+        }
       case Some(destination) =>
         synchronized {
           if (stopped) {
@@ -512,9 +524,34 @@ class CometNativeShuffleWriter[K, V](
   }
 
   override def getPartitionLengths(): Array[Long] = partitionLengths
+
+  private def discardLocalTemp(failure: Option[Throwable]): Unit = {
+    val temp = localTempData
+    localTempData = None
+    temp.foreach { file =>
+      try {
+        Files.deleteIfExists(file.toPath)
+      } catch {
+        case cleanup: Throwable =>
+          failure match {
+            case Some(original) => original.addSuppressed(cleanup)
+            case None =>
+              logWarning("Could not delete the native shuffle temp data file", cleanup)
+          }
+      }
+    }
+  }
 }
 
 private[shuffle] object CometNativeShuffleWriter {
+
+  // Spark appends a unique suffix in this directory. Replacing `.data` would also
+  // rewrite a directory whose name contains `.data`.
+  private[shuffle] def localTempDataFile(
+      resolver: IndexShuffleBlockResolver,
+      dataFile: File): File = {
+    resolver.createTempFile(dataFile)
+  }
 
   /**
    * Declared here rather than inside the class: as an inner case class every type test against it
