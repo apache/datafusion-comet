@@ -33,7 +33,7 @@ import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutputWriter, ShufflePartitionWriter}
 import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage
-import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.shuffle.sort.SpillSorter
 import org.apache.spark.shuffle.sort.io.LocalDiskShuffleExecutorComponents
 import org.apache.spark.sql.catalyst.InternalRow
@@ -227,25 +227,6 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
     }
   }
 
-  private def newWriter(
-      file: File,
-      allocator: CometShuffleMemoryAllocatorTrait,
-      taskContext: TaskContextImpl,
-      conf: SparkConf): CometDiskBlockWriter = {
-    new CometDiskBlockWriter(
-      file,
-      allocator,
-      pageSize,
-      pageSize,
-      taskContext,
-      new UnsafeRowSerializer(1).newInstance(),
-      schema,
-      new ShuffleWriteMetrics,
-      conf,
-      false,
-      new JLinkedList[CometDiskBlockWriter]())
-  }
-
   for (checksumEnabled <- Seq(false, true)) {
     val state = if (checksumEnabled) "enabled" else "disabled"
     test(s"a writer's checksum follows shuffle checksums being $state across spills") {
@@ -262,7 +243,18 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       SQLConf.get.setConfString(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key, "2")
       try {
         val file = new File(tempDir, "partition0")
-        val writer = newWriter(file, allocator, newTaskContext(tmm, 0L), conf)
+        val writer = new CometDiskBlockWriter(
+          file,
+          allocator,
+          pageSize,
+          pageSize,
+          newTaskContext(tmm, 0L),
+          new UnsafeRowSerializer(1).newInstance(),
+          schema,
+          new ShuffleWriteMetrics,
+          conf,
+          false,
+          new JLinkedList[CometDiskBlockWriter]())
         if (checksumEnabled) {
           writer.setChecksum(Long.MinValue)
           writer.setChecksumAlgo("adler32")
