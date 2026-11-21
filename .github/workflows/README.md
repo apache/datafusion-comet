@@ -195,14 +195,14 @@ the PR tier on ASF's runners. The contributor's fork runs it, and the merge
 queue, which stays on ASF, runs the queue tier on the merge result before
 anything lands. That is the PR tier plus the Spark 4.1 `sql_hive` shards, macOS and
 the other queue-tier jobs, with path filters still applied; the nightly-only and
-label-only suites are not part of it. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
-(#11788). Three files carry it:
+label-only suites are not part of it. The design follows `apache/datafusion` (#25591), `apache/arrow-rs`
+(#11788) and `apache/spark` (#60098). Three files carry it:
 
 | File                 | Role                                                                                                                                                       |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ci_fork.yml`        | Fires on a push to any branch of a fork except `asf-site` and calls `ci.yml`, after cancelling the branch's older runs. Its jobs are skipped upstream.     |
 | `compute-changes.py` | `is_fork_push` gives a fork the `pr` tier. `is_fork_pull_request` takes the `pr` tier away upstream, and leaves every `run-*` label and the `labeled` run. |
-| `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run` and every 15 minutes.                                             |
+| `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run`, every 10 minutes for recent ones and every four hours for all.   |
 
 Things that follow from that, and are easy to break:
 
@@ -267,7 +267,7 @@ Things that follow from that, and are easy to break:
   request, and a release branch has no queue to catch what a fork run misses.
 - **The bridge never checks out or runs anything from the pull request.** It
   runs with `checks: write` from the default branch and reads the fork's public
-  run list. Its logic is tested by `dev/ci/test-fork-ci-status.cjs`, which
+  run data. Its logic is tested by `dev/ci/test-fork-ci-status.cjs`, which
   Preflight runs, against mocked GitHub APIs. `workflow_run` and `schedule`
   events use the copy on the default branch, so a change to the bridge cannot be
   exercised by the pull request that makes it.

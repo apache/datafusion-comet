@@ -127,11 +127,12 @@ To get it working:
    change touches what they cover. If that comparison cannot be made, it runs the whole tier.
 
 On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is first
-written when the upstream run finishes. After that, a pull request updated in the last six hours
-whose check is still running or has no run yet is rechecked every 15 minutes. A check that already
-shows a result is rechecked only by a sweep that takes 25 open pull requests every 15 minutes, which
-is about two hours to go round 200 of them. So after you re-run a failed job in your fork, the pull
-request can keep showing the old result for hours. Your fork's **Actions** tab is the source of truth:
+written when the upstream run finishes. After that, it is rechecked every 10 minutes on pull requests
+updated in the last three days, and every four hours on all of them. So after you re-run a failed job
+in your fork, the result usually reaches a pull request updated in the last three days within 15
+minutes of the rerun finishing, and any other one within four hours. The check does not show a rerun,
+or a run that appears after the check, as in progress, because GitHub cannot reopen a completed
+check. Your fork's **Actions** tab is the source of truth:
 read the details and re-run failed jobs there. If the check says **Enable CI on your fork** or **No fork CI
 run for this commit**, see [When the fork check finds no run](#when-the-fork-check-finds-no-run).
 
@@ -201,7 +202,7 @@ when your branch already includes the fork workflows. If `main` has nothing new 
 commit (`git commit --allow-empty`) will do. The check picks up the new run within a few minutes.
 
 A pull request opened before the PR tier moved to forks on 30 October 2026 had the PR tier run here
-for the commits pushed up to then, and those results still show on it. The sweep still adds a
+for the commits pushed up to then, and those results still show on it. The scheduled pass still adds a
 `CI (fork)` check to it. It is the failed **Enable CI on your fork** one if your fork has no
 enabled workflow, and the neutral **No fork CI run for this commit** one if it has, so set up your
 fork as above before your next push.
