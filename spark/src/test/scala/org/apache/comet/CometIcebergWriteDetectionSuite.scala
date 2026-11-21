@@ -2409,9 +2409,10 @@ class DetectionDelegatingFileIO extends FileIO with HadoopConfigurable {
   override def initialize(properties: java.util.Map[String, String]): Unit =
     delegate.initialize(properties)
   override def setConf(conf: Configuration): Unit = delegate.setConf(conf)
-  // No `override` modifier: `Configurable.getConf` exists on some supported Iceberg versions
-  // (e.g. 1.8.1) and not others, and a plain def satisfies both shapes.
-  def getConf: Configuration = delegate.getConf
+  // `getConf` is abstract through Hadoop's `Configurable` up to Iceberg 1.11 and a default method
+  // of `HadoopConfigurable` in 1.12. Scala requires `override` for the default method and accepts
+  // it for the abstract one, so this spelling compiles against both.
+  override def getConf: Configuration = delegate.getConf
   override def serializeConfWith(
       confSerializer: java.util.function.Function[
         Configuration,

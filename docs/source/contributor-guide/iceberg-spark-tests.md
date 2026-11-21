@@ -123,17 +123,18 @@ git add -A
 git diff apache-iceberg-1.9.1 > ../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 ```
 
-Repeat for each Iceberg version (1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
+Repeat for each Iceberg version (1.9.1, 1.10.0, 1.11.0, 1.12.0). The file contents differ between versions, so each
 diff must be generated against its own tag.
 
 ## Running Tests in CI
 
-The `iceberg_1_9`, `iceberg_1_10` and `iceberg_1_11` jobs in `ci.yml` apply these diffs and
+The `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` and `iceberg_1_12` jobs in `ci.yml` apply these diffs and
 run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.9.1 and 1.10.0 run
-against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
-Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.9.1 and
-1.10.0 run once a night against `main`. Those two run earlier on a pull request labeled
-`run-iceberg-tests`. Each job
+against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3; Iceberg 1.12.0, the first release with a Spark 4.2
+module, runs against Spark 4.2.0.
+Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.9.1, 1.10.0 and
+1.12.0 run once a night against `main`, 1.12.0 because Spark 4.2 support is still experimental. Those three run
+earlier on a pull request labeled `run-iceberg-tests`. Each job
 calls `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
 [.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
 for how the pull-request, merge-queue and nightly tiers differ.
@@ -164,7 +165,7 @@ Apply the `run-iceberg-tests` label to a pull request whenever it touches the Ic
 path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other logic whose behavior
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg's
 own Spark tests, but the Iceberg 1.11 job does and every pull request gets its verdict. Without the
-label, the first verdict on the older Iceberg versions is the nightly run's, after the change has
+label, the first verdict on the other Iceberg versions is the nightly run's, after the change has
 landed.
 
 ### Which writer ran each Iceberg write
@@ -188,5 +189,8 @@ shows the count and share of each writer, the most common fallback reasons, and 
 operators. Each shard and the extensions job gets its own table. The shard coverage job adds one for
 all shards together, counting only the latest attempt of each shard. A shard whose latest attempt
 recorded no writes is named above the table rather than counted from an earlier attempt. The raw
-records are uploaded with the job's other reports. The summary never fails a job.
+records are uploaded with the job's other reports. The shard coverage job and the extensions job fail
+when none of their writes ran on the native writer, because Iceberg's tests pass on either writer and
+would not otherwise show the native writer declining every write. A shard's own summary never fails
+its job.
 `dev/local-ci.sh iceberg` prints the same summary after each shard and after the extensions target.
