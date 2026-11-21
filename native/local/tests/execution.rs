@@ -477,7 +477,6 @@ async fn partition_order_cancel_releases_running_partitions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partition_order_runs_at_most_the_given_number_of_partitions() {
     let (plan, observations) = observe(ordered_input(6, 3));
-    let executed = || observations.executions.lock().unwrap().clone();
     let mut stream = LocalQuery::new(plan, context(), 2, usize::MAX)
         .execute()
         .unwrap();
@@ -490,7 +489,7 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
             .unwrap()
             .unwrap();
     }
-    assert_eq!(executed(), vec![0, 1]);
+    assert_executed_once(&observations, 2);
     // Finishing the first partition starts the third.
     timeout(DEADLINE, stream.next())
         .await
