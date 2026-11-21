@@ -27,7 +27,9 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometGenerateExecSuite extends CometTestBase {
 
   import testImplicits._

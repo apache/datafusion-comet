@@ -28,9 +28,11 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ExpressionsTestGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
+@ExpressionsTestGroup
 class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertions {
   // scalastyle:off
   private val edgeCases = Seq(

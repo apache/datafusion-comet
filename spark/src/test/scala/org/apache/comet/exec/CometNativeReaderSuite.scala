@@ -38,7 +38,9 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.tags.ScansTestGroup
 
+@ScansTestGroup
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit

@@ -27,6 +27,7 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.comet.annotation.Public
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Guards the enumerated public API described in `docs/source/about/versioning_policy.md`.
@@ -36,6 +37,7 @@ import org.apache.comet.annotation.Public
  * accident, or the policy is genuinely changing and both the doc and this list need updating in
  * the same PR.
  */
+@ExecTestGroup
 class CometPublicApiSuite extends AnyFunSuite {
 
   private val expected: Set[String] = Set(

@@ -35,8 +35,10 @@ import org.apache.spark.util.sketch.BloomFilter
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+import org.apache.comet.tags.ExecTestGroup
 
 /** Tests compatibility-sensitive execution paths shared by the supported Spark versions. */
+@ExecTestGroup
 class CometExecCompatibilitySuite extends CometTestBase {
   import testImplicits._
 

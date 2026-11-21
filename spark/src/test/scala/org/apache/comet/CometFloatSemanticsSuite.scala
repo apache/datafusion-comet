@@ -23,6 +23,8 @@ import org.scalatest.exceptions.TestFailedException
 
 import org.apache.spark.sql.CometTestBase
 
+import org.apache.comet.tags.ExpressionsTestGroup
+
 /**
  * The part of the `-0.0` and NaN sweep (#6385) that the SQL file tests cannot express.
  *
@@ -37,6 +39,7 @@ import org.apache.spark.sql.CometTestBase
  *
  * The edge values and how the sign-bit NaN is made are described in `comparison.sql`.
  */
+@ExpressionsTestGroup
 class CometFloatSemanticsSuite extends CometTestBase {
 
   import CometFloatSemanticsSuite._

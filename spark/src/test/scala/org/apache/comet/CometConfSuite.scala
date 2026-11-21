@@ -23,6 +23,9 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.tags.ExecTestGroup
+
+@ExecTestGroup
 class CometConfSuite extends AnyFunSuite {
 
   test("primary key wins over alternative when both are set") {

@@ -32,6 +32,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.esotericsoftware.kryo.Kryo
 
 import org.apache.comet.{CometConf, CometKryoRegistrator}
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Covers Comet's cached batch format under `spark.kryo.registrationRequired=true`.
@@ -47,6 +48,7 @@ import org.apache.comet.{CometConf, CometKryoRegistrator}
  * This needs its own suite because `spark.serializer` and `spark.kryo.registrator` are read when
  * `SparkEnv` builds the serializer, so they cannot be changed per test.
  */
+@ExecTestGroup
 class CometInMemoryCacheKryoSuite extends CometTestBase {
 
   override protected def beforeAll(): Unit = {
@@ -270,6 +272,7 @@ abstract class CometInMemoryCacheKryoRegistrationSuite(expectedBatch: String)
 }
 
 /** Registers Spark's cached batch and nothing of Comet's, so the plugin keeps Spark's format. */
+@ExecTestGroup
 class CometInMemoryCacheKryoUnregisteredSuite
     extends CometInMemoryCacheKryoRegistrationSuite(classOf[DefaultCachedBatch].getName) {
   override protected def registrations: Seq[(String, String)] =
@@ -281,6 +284,7 @@ class CometInMemoryCacheKryoUnregisteredSuite
  * [[CometKryoRegistrator]], and not Spark's cached batch, so before Spark 4.1 only Comet's format
  * can be stored, and the plugin has to install it.
  */
+@ExecTestGroup
 class CometInMemoryCacheKryoClassesToRegisterSuite
     extends CometInMemoryCacheKryoRegistrationSuite(
       ArrowCachedBatchSerializer.cachedBatchClass.getName) {

@@ -54,6 +54,7 @@ import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
+import org.apache.comet.tags.ScansTestGroup
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -61,6 +62,7 @@ import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
  *
  * Note: Requires Iceberg dependencies to be added to pom.xml
  */
+@ScansTestGroup
 class CometIcebergNativeSuite
     extends CometTestBase
     with RESTCatalogHelper

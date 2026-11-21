@@ -60,7 +60,9 @@ import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometSh
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
+import org.apache.comet.tags.ShuffleTestGroup
 
+@ShuffleTestGroup
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {

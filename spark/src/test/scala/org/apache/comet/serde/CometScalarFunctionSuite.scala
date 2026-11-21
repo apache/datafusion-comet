@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.{Abs, Cos, Expression, Literal,
 import org.apache.spark.sql.types.{DataType, DoubleType, IntegerType}
 
 import org.apache.comet.{CometExplainInfo, CometSparkSessionExtensions}
+import org.apache.comet.tags.ExpressionsTestGroup
 
 /**
  * Synthetic expression whose constructor declares `evalMode`, used to prove class-level detection
@@ -85,6 +86,7 @@ case class TestEvalContextExpression(child: Expression, evalContext: Any)
     copy(child = newChildren.head)
 }
 
+@ExpressionsTestGroup
 class CometScalarFunctionSuite extends CometTestBase {
 
   private def fallbackReasons(expr: Expression): Set[String] = {
