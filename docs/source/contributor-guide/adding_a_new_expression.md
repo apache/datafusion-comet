@@ -395,10 +395,10 @@ SELECT unhex(col) FROM test_unhex
 
 -- literal arguments
 query
-SELECT unhex('48656C6C6F'), unhex(''), unhex(NULL)
+SELECT unhex('48656C6C6F'), unhex('')
 ```
 
-Each `query` block automatically runs the SQL through both Spark and Comet and compares results, and also verifies that Comet executes the expression natively (not falling back to Spark).
+Each `query` block automatically runs the SQL through both Spark and Comet, compares results, and checks that the planned query uses Comet operators rather than falling back to Spark. The NULL row in the table covers NULL input. `unhex(NULL)` would not test `unhex`, because Spark's `NullPropagation` rule replaces it with a NULL literal before Comet sees it.
 
 Run the test with:
 
@@ -410,7 +410,7 @@ For full documentation on the test file format, including directives like `Confi
 
 ##### Tips
 
-- **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
+- **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite disables constant folding, so all-literal expressions can reach Comet, but other optimizer rules and Comet's plan-time literal handling can still remove them. See [Make sure the expression reaches Comet](sql-file-tests.md#make-sure-the-expression-reaches-comet).
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
 - **For `FLOAT` and `DOUBLE` input, include `-0.0` and a NaN with the sign bit set.** [Floating-Point Semantics](floating_point.md) explains which Spark rule an expression follows and how to test it.
 - **Keep one file per expression** to make failures easy to locate.
@@ -453,13 +453,13 @@ relying on `CodegenDispatchFallback` to keep it in the pipeline, use `checkSpark
 the choice is asserted rather than assumed:
 
 ```scala
-test("bit_length dispatches on binary and stays native on string") {
+test("round dispatches on double and stays native on decimal") {
   withTable("t") {
-    sql("CREATE TABLE t (b BINARY, s STRING) USING parquet")
-    sql("INSERT INTO t VALUES (X'48656c6c6f', 'hello'), (NULL, NULL)")
+    sql("CREATE TABLE t (d DOUBLE, dec DECIMAL(10, 2)) USING parquet")
+    sql("INSERT INTO t VALUES (2.5, 2.50), (NULL, NULL)")
 
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(b) FROM t"), dispatched = Seq("bit_length"))
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(s) FROM t"), native = Seq("bit_length"))
+    checkSparkAnswerAndImpl(sql("SELECT round(d, 1) FROM t"), dispatched = Seq("round"))
+    checkSparkAnswerAndImpl(sql("SELECT round(dec, 1) FROM t"), native = Seq("round"))
   }
 }
 ```
