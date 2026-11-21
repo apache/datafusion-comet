@@ -49,10 +49,6 @@ import org.apache.comet.{CometConf, CometIcebergTestBase}
  *   -Dsuites=org.apache.comet.exec.CometNativeExecutorsSuite
  * }}}
  *
- * The TPC-H tests need the cluster of https://github.com/apache/datafusion-comet/pull/7289. On
- * the cluster in this repository, q1, q6, q11 and q15 pass and the other queries, which join,
- * fail while the scheduler plans them.
- *
  * `CometNativeExecutorsPlanSuite` checks the stage graphs and the refusals without a cluster, and
  * runs in CI.
  */
