@@ -640,6 +640,70 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("TIMESTAMP_MILLIS overflow when Spark applies filters above the Parquet reader") {
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int64 id;
+        |  optional int64 match_id;
+        |  optional group s {
+        |    optional int32 k;
+        |    optional int64 ts(TIMESTAMP_MILLIS);
+        |  }
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      Seq(0L, Long.MaxValue / 1000 + 1).zipWithIndex.foreach { case (millis, k) =>
+        val record = new SimpleGroup(schema)
+        record.add(0, k.toLong)
+        record.add(1, 0L)
+        val nested = record.addGroup(2)
+        nested.add(0, k)
+        nested.add(1, millis)
+        writer.write(record)
+      }
+      writer.close()
+
+      Seq(false, true).foreach { rowFilterPushdown =>
+        withSQLConf(
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilterPushdown.toString) {
+          readParquetFile(path.toString) { df =>
+            def checkOverflow(predicate: String): Unit = {
+              val filtered = df.where(predicate).select("s.ts")
+              assert(collect(filtered.queryExecution.executedPlan) {
+                case _: CometNativeScanExec => true
+              }.nonEmpty)
+              val error = checkSparkError(filtered, errorClass)
+              assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+              assert(error.getCause.getClass == classOf[ArithmeticException])
+              assert(error.getCause.getMessage == "long overflow")
+            }
+
+            // A column-to-column comparison has no V1 filter. Comet's row filter could
+            // otherwise discard the second row before converting its timestamp.
+            checkOverflow("id <=> match_id")
+            withSQLConf(SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key -> "") {
+              checkOverflow("s.k >= 0")
+              checkOverflow("s.k < 0")
+            }
+            checkSparkAnswerAndOperator(
+              df.where("s.k < 0").select("s.ts"),
+              Seq(classOf[CometNativeScanExec]))
+
+            if (isSpark40Plus) {
+              withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+                checkOverflow("id <=> (SELECT min(id) FROM range(2))")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("filtered TIMESTAMP_MILLIS scan preserves empty NOT IN null semantics") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "part-r-0.parquet")
