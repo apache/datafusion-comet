@@ -23,6 +23,7 @@ syntax = "proto3";
 
 package spark.spark_native_executors;
 
+import "expr.proto";
 import "operator.proto";
 import "partitioning.proto";
 
@@ -80,6 +81,9 @@ message Fragment {
   map<string, string> conf = 4;
   // Spark's estimate of the stage's output size in bytes, from Stage.estimated_output_bytes.
   optional uint64 estimated_output_bytes = 5;
+  // The order each partition is sorted in, from Stage.output_ordering, for a stage whose sorted
+  // partitions are merged. Empty otherwise.
+  repeated spark.spark_expression.Expr output_ordering = 6;
 }
 
 message StageInput {
