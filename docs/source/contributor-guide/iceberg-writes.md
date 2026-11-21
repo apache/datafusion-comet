@@ -226,9 +226,9 @@ native side refuses to run without them, since defaulting them would make every 
 file names.
 
 `catalog_properties` can carry credentials. `CometIcebergWriteExec.stringArgs` deliberately prints
-only the data location and writer mode, because the default `argString` would put the protobuf's
-text dump, secrets included, into `explain()`, the SQL UI and the event log. Keep it that way when
-adding fields.
+only the data location, without its password, query or fragment, and the writer mode, because the
+default `argString` would put the protobuf's text dump, secrets included, into `explain()`, the SQL
+UI and the event log. Keep it that way when adding fields.
 
 On Spark 4.x, copy-on-write `DELETE`/`UPDATE`/`MERGE` rows arrive with an operation code and file
 metadata columns around the data columns. `dropNonDataColumns` inserts a native `Projection` that

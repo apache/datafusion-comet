@@ -28,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
@@ -672,6 +673,14 @@ case class CometScanRule(session: SparkSession)
           IcebergReflection.getMetadataLocation(table)
         }
 
+        metadataLocationOpt match {
+          case Some(location) if Try(new java.net.URI(location)).isFailure =>
+            fallbackReasons += "Iceberg metadata location " +
+              s"${NativeConfig.displayLocation(location)} is not a valid URI"
+            return withFallbackReasons(scanExec, fallbackReasons.toSet)
+          case _ =>
+        }
+
         val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
           try {
             // For REST catalogs, the metadata file may not exist on disk since metadata
@@ -1032,8 +1041,9 @@ case class CometScanRule(session: SparkSession)
         val allLocationsOpenable = taskValidation.hostlessLocation match {
           case Some(loc) =>
             fallbackReasons += "Iceberg scan references a data/delete file location without a " +
-              s"URL host ('$loc'); Comet's native Iceberg reader opens files by their raw " +
-              "location and cannot promote a bucket from the path"
+              s"URL host ('${NativeConfig.displayLocation(loc)}'); Comet's native Iceberg " +
+              "reader opens files by their raw location and cannot promote a bucket from " +
+              "the path"
             false
           case None => true
         }

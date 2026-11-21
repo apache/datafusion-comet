@@ -840,6 +840,39 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("displayLocation - shows a location as displayPath does, or only its scheme") {
+    val cases = Seq(
+      "s3a://alice:SECRET@bucket/warehouse/db/t?sig=SAS-MARKER#FRAG-MARKER" ->
+        "s3a://***@bucket/warehouse/db/t",
+      "s3a://alice@bucket/warehouse/db/t" -> "s3a://***@bucket/warehouse/db/t",
+      "abfss://data:SECRET@acct.dfs.core.windows.net/warehouse?sig=SAS-MARKER" ->
+        "abfss://data@acct.dfs.core.windows.net/warehouse",
+      "s3a://alice:/SECRET@bucket/p" -> "s3a://<unparseable>",
+      "s3a://alice:?SECRET@bucket/p" -> "s3a://<unparseable>",
+      // `URI` rejects a space or a bad escape, which an Iceberg location may still hold.
+      "s3a://alice:SECRET@bucket/dir with space/t?sig=SAS-MARKER" -> "s3a://<unparseable>",
+      "S3A://alice:SECRET@bucket/bad%zzescape?sig=SAS-MARKER" -> "s3a://<unparseable>",
+      "alice:SECRET@bucket/dir with space?sig=SAS-MARKER" -> "<unparseable>",
+      "not a scheme://alice:SECRET@bucket/t?sig=SAS-MARKER" -> "<unparseable>",
+      "1s3://alice:SECRET@bucket/dir with space" -> "<unparseable>")
+    for ((location, shown) <- cases) {
+      val display = NativeConfig.displayLocation(location)
+      withClue(s"$location: ") {
+        Seq("alice", "SECRET", "SAS-MARKER", "FRAG-MARKER").foreach(marker =>
+          display should not include marker)
+        display shouldBe shown
+      }
+    }
+
+    Seq(
+      "s3://bucket/warehouse/db/t",
+      "gs://bucket/warehouse/db/t",
+      "abfss://data@acct.dfs.core.windows.net/warehouse",
+      "file:/tmp/warehouse/db/t",
+      "/tmp/warehouse/db/t").foreach(location =>
+      NativeConfig.displayLocation(location) shouldBe location)
+  }
+
   test("extractScanObjectStoreOptions - files in one container keep the first file's options") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")

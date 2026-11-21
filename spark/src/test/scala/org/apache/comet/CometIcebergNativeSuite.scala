@@ -29,6 +29,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.Using
 
 import org.apache.hadoop.fs.Path
+import org.apache.iceberg.{DataFiles, FileFormat}
 import org.apache.iceberg.data.IcebergGenerics
 import org.apache.iceberg.expressions.Expressions
 import org.apache.iceberg.spark.Spark3Util
@@ -8782,6 +8783,84 @@ class CometIcebergNativeSuite
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
+      }
+    }
+  }
+
+  private def scanRuleFallbackReasons(query: String): Seq[String] = {
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkPlan = stripAQEPlan(spark.sql(query).queryExecution.executedPlan)
+    }
+    val scan = collect(sparkPlan) { case b: BatchScanExec => b }.head
+    new ExtendedExplainInfo().getFallbackReasons(CometScanRule(spark).apply(scan))
+  }
+
+  test("Iceberg scan fallback names a hostless file location without its secrets") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.loc_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.loc_cat.type" -> "hadoop",
+        "spark.sql.catalog.loc_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val cases = Seq(
+          (
+            "hostless_query",
+            "s3:///bucket/key.parquet?X-Amz-Signature=SAS-MARKER",
+            "s3:///bucket/key.parquet"),
+          ("hostless_user_info", "s3:/alice:SECRET@bucket/key.parquet", "s3://<unparseable>"))
+        for ((name, location, shown) <- cases) {
+          val table = s"loc_cat.db.$name"
+          spark.sql(s"CREATE TABLE $table (id INT) USING iceberg")
+          // Planned only: the data file is never opened.
+          val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+          icebergTable
+            .newAppend()
+            .appendFile(
+              DataFiles
+                .builder(icebergTable.spec())
+                .withPath(location)
+                .withFileSizeInBytes(100L)
+                .withRecordCount(1L)
+                .withFormat(FileFormat.PARQUET)
+                .build())
+            .commit()
+          val reasons = scanRuleFallbackReasons(s"SELECT * FROM $table")
+          assert(reasons.exists(_.contains(s"without a URL host ('$shown')")), reasons)
+          Seq("alice", "SECRET", "SAS-MARKER").foreach(marker =>
+            assert(!reasons.exists(_.contains(marker)), reasons))
+        }
+      }
+    }
+  }
+
+  test("Iceberg scan fallback names a metadata location without its secrets") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      // `URI` rejects the space Hadoop's `Path` leaves in the metadata location.
+      val spaced = new File(warehouseDir, "dir with SAS-MARKER")
+      withSQLConf(
+        "spark.sql.catalog.space_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.space_cat.type" -> "hadoop",
+        "spark.sql.catalog.space_cat.warehouse" -> spaced.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "space_cat.db.spaced_metadata"
+        spark.sql(s"CREATE TABLE $table (id INT) USING iceberg")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.sql(s"INSERT INTO $table VALUES (1)")
+        }
+        val reasons = scanRuleFallbackReasons(s"SELECT * FROM $table")
+        assert(
+          reasons.contains("Iceberg metadata location <unparseable> is not a valid URI"),
+          reasons)
+        assert(!reasons.exists(_.contains("SAS-MARKER")), reasons)
       }
     }
   }

@@ -23,6 +23,8 @@ import java.net.URI
 import java.util.Locale
 import java.util.regex.Pattern
 
+import scala.util.Try
+
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.comet.util.Utils
@@ -183,6 +185,23 @@ object NativeConfig {
       s"$scheme//$authority${Option(uri.getRawPath).getOrElse("")}"
     }
   }
+
+  private val uriScheme = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*")
+
+  /**
+   * [[displayPath]] of a location held as a string, such as an Iceberg data location. A location
+   * that `URI` cannot parse shows as `scheme://<unparseable>`, or as `<unparseable>` when it has
+   * no `scheme://` prefix, such as `file:/a b` or a plain path.
+   */
+  private[apache] def displayLocation(location: String): String =
+    Try(new URI(location)).map(displayPath).getOrElse {
+      val scheme = location.take(math.max(location.indexOf("://"), 0))
+      if (uriScheme.matcher(scheme).matches()) {
+        s"${scheme.toLowerCase(Locale.ROOT)}://<unparseable>"
+      } else {
+        "<unparseable>"
+      }
+    }
 
   /**
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`

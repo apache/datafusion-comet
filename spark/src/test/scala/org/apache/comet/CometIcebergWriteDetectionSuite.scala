@@ -37,7 +37,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec, SerializedPlan}
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, CommandExecutionMode, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -46,7 +46,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.OperatorOuterClass.{IcebergWrite, IcebergWriteCommon, IcebergWriterMode, Operator}
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
 class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTestBase {
@@ -772,6 +772,62 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         planInsertWriteExec(s"$catalog.$ns.hostless_s3"),
         "hostless_s3",
         "s3 data location has no bucket")
+    }
+  }
+
+  test("fall-back: a hostless s3 data location's reason leaves out its secrets") {
+    withDetectionCatalog { _ =>
+      val cases = Seq(
+        (
+          "hostless_s3_query",
+          "s3:/nonexistent-bucket/iceberg/db/t?sig=SAS-MARKER#FRAG-MARKER",
+          "s3:/nonexistent-bucket/iceberg/db/t"),
+        (
+          "hostless_s3_user_info",
+          "s3:/alice:SECRET@nonexistent-bucket/iceberg/db/t",
+          "s3://<unparseable>"))
+      for ((tableName, location, shown) <- cases) {
+        createTable(
+          tableName,
+          partitionSpec = "",
+          properties = Some(s"'write.data.path'='$location'"))
+        val writeExec = planInsertWriteExec(s"$catalog.$ns.$tableName")
+        CometIcebergNativeWrite.getSupportLevel(writeExec) match {
+          case Unsupported(Some(reason)) =>
+            assert(reason == s"s3 data location has no bucket in its authority: $shown", reason)
+            Seq("alice", "SECRET", "SAS-MARKER", "FRAG-MARKER").foreach(marker =>
+              assert(!reason.contains(marker), reason))
+          case other => fail(s"expected Unsupported for $tableName, got $other")
+        }
+      }
+    }
+  }
+
+  test("fall-back: a data location that URI cannot parse is declined without its secrets") {
+    withDetectionCatalog { _ =>
+      val cases = Seq(
+        ("s3_space_query", "s3://nonexistent-bucket/dir with space/t?sig=SAS-MARKER", "s3"),
+        ("s3_space_user_info", "s3://alice:SECRET@nonexistent-bucket/dir with space/t", "s3"),
+        (
+          "gs_space_user_info",
+          "gs://alice:SECRET@nonexistent-bucket/dir with space/t?sig=SAS-MARKER",
+          "gs"),
+        ("file_space", "file:/nonexistent/dir with space SAS-MARKER/t", "file"),
+        ("plain_space", "/nonexistent/dir with space SAS-MARKER/t", "file"))
+      for ((tableName, location, scheme) <- cases) {
+        createTable(
+          tableName,
+          partitionSpec = "",
+          properties = Some(s"'write.data.path'='$location'"))
+        val writeExec = planInsertWriteExec(s"$catalog.$ns.$tableName")
+        CometIcebergNativeWrite.getSupportLevel(writeExec) match {
+          case Unsupported(Some(reason)) =>
+            assert(reason == s"$scheme data location is not a valid URI", reason)
+            Seq("alice", "SECRET", "SAS-MARKER").foreach(marker =>
+              assert(!reason.contains(marker), reason))
+          case other => fail(s"expected Unsupported for $tableName, got $other")
+        }
+      }
     }
   }
 
@@ -1695,6 +1751,69 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       hadoop)
     val unresolved = CometIcebergNativeWrite.gcsDataLocationRejection(location, None)
     assert(unresolved.exists(_.contains("gs://")), unresolved)
+  }
+
+  test("gs data location reasons leave out a password, query and fragment") {
+    val location = "gs://alice:SECRET@bucket/iceberg/db/t?sig=SAS-MARKER#FRAG-MARKER"
+    val shown = "gs://***@bucket/iceberg/db/t"
+    val hadoop =
+      CometIcebergNativeWrite.gcsDataLocationRejection(location, Some(classOf[HadoopFileIO]))
+    val unresolved = CometIcebergNativeWrite.gcsDataLocationRejection(location, None)
+    assert(
+      hadoop.contains(
+        s"gs:// data location $shown is written through ${classOf[HadoopFileIO].getName}, " +
+          "whose fs.gs.* Hadoop configuration is not forwarded to the native writer"),
+      hadoop)
+    assert(
+      unresolved.contains(s"could not resolve the FileIO for the gs:// data location $shown"),
+      unresolved)
+    (hadoop.toSeq ++ unresolved).foreach { reason =>
+      Seq("alice", "SECRET", "SAS-MARKER", "FRAG-MARKER").foreach(marker =>
+        assert(!reason.contains(marker), reason))
+    }
+  }
+
+  test("CometIcebergWrite's plan string hides data location secrets") {
+    val common = IcebergWriteCommon
+      .newBuilder()
+      .setDataLocation("s3a://alice:SECRET@bucket/iceberg/db/t?sig=SAS-MARKER#FRAG-MARKER")
+      .setWriterMode(IcebergWriterMode.ICEBERG_WRITER_FANOUT)
+    val nativeOp =
+      Operator.newBuilder().setIcebergWrite(IcebergWrite.newBuilder().setCommon(common)).build()
+    val child = TransitionProbeLeaf(columnar = false)
+    val output = Seq(
+      AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
+    val write = CometIcebergWriteExec(
+      nativeOp,
+      IcebergWriteExec(null, output, child),
+      child,
+      output,
+      batchWrite = null,
+      table = null,
+      partitionSpecId = 0)
+    val rendered = write.simpleString(Int.MaxValue)
+    assert(rendered.contains("s3a://***@bucket/iceberg/db/t, ICEBERG_WRITER_FANOUT"), rendered)
+    Seq("alice", "SECRET", "SAS-MARKER", "FRAG-MARKER").foreach(marker =>
+      assert(!rendered.contains(marker), rendered))
+  }
+
+  test("CometIcebergNativeScan's plan string hides metadata location secrets") {
+    val scan = CometIcebergNativeScanExec(
+      Operator.newBuilder().build(),
+      output = Seq.empty,
+      runtimeFilters = Seq.empty,
+      originalPlan = null,
+      serializedPlanOpt = SerializedPlan(None),
+      metadataLocation =
+        "s3a://alice:SECRET@bucket/db/t/metadata/v3.metadata.json?sig=SAS-MARKER#FRAG-MARKER",
+      scanHashCode = 0,
+      nativeIcebergScanMetadata = null)
+    val rendered = scan.simpleString(Int.MaxValue)
+    assert(
+      rendered.contains("s3a://***@bucket/db/t/metadata/v3.metadata.json, canonicalized"),
+      rendered)
+    Seq("alice", "SECRET", "SAS-MARKER", "FRAG-MARKER").foreach(marker =>
+      assert(!rendered.contains(marker), rendered))
   }
 
   test("gs data location under ResolvingFileIO with a GCSFileIO that fails to initialize") {
