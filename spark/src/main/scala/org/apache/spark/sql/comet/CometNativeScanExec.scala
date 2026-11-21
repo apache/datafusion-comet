@@ -37,6 +37,7 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
@@ -76,11 +77,15 @@ case class CometNativeScanExec(
     with CometScanWithPlanData {
 
   private[comet] def canCheckFilteredTimestampOverflow: Boolean = {
+    // Spark 3.5 can cache a translated nested filter when displaying metadata, before the
+    // reader is constructed. Its nested pushdown setting may have changed since then.
+    lazy val nested = !isSpark40Plus || DataSourceUtils.supportNestedPredicatePushdown(relation)
     lazy val hasSubquery = dataFilters.exists(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+    lazy val mayPushFilter = hasSubquery ||
+      dataFilters.exists(f => DataSourceStrategy.translateFilter(f, nested).isDefined)
     (nativeOp.getNativeScan.getCommon.getHasDataFilters || hasSubquery) &&
     requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
-    // The resolved subquery can become a source filter when pushdown is enabled.
-    (!conf.parquetFilterPushDown || (!hasSubquery && !scan.hasSparkSourceFilters(dataFilters)))
+    (!conf.parquetFilterPushDown || !mayPushFilter)
   }
 
   override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
@@ -203,9 +208,13 @@ case class CometNativeScanExec(
         .map(_.transform { case s: ExecScalarSubquery =>
           Literal.create(s.eval(null), s.dataType)
         })
-      if (resolvedFilters.nonEmpty) {
+      // Like Spark's cached reader, retain the filter translation from RDD construction.
+      // The task injector restricts the check to actions that collect the full result.
+      val checkOverflow = canCheckFilteredTimestampOverflow
+      if (resolvedFilters.nonEmpty || checkOverflow) {
         val commonBuilder = base.toBuilder
         commonBuilder.setHasDataFilters(true)
+        commonBuilder.setCheckFilteredTimestampOverflow(checkOverflow)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
@@ -430,7 +439,7 @@ object CometParquetResultExec {
 
   @scala.annotation.tailrec
   private def candidate(plan: SparkPlan): Option[CometNativeScanExec] = plan match {
-    case scan: CometNativeScanExec if scan.canCheckFilteredTimestampOverflow => Some(scan)
+    case scan: CometNativeScanExec => Some(scan)
     case _: CometColumnarToRowExec | _: CometProjectExec | _: CometFilterExec | _: ProjectExec |
         _: FilterExec | _: WholeStageCodegenExec | _: InputAdapter =>
       candidate(plan.children.head)
@@ -438,6 +447,9 @@ object CometParquetResultExec {
   }
 
   def wrap(plan: SparkPlan): SparkPlan =
-    if (!plan.supportsColumnar && candidate(plan).isDefined) CometParquetResultExec(plan)
-    else plan
+    if (!plan.supportsColumnar && candidate(plan).exists(_.canCheckFilteredTimestampOverflow)) {
+      CometParquetResultExec(plan)
+    } else {
+      plan
+    }
 }

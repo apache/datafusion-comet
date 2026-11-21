@@ -703,19 +703,42 @@ abstract class ParquetReadSuite extends CometTestBase {
             // A column-to-column comparison has no V1 filter. Comet's row filter could
             // otherwise discard the second row before converting its timestamp.
             checkWithAndWithoutLimit("id <=> match_id")
-            withSQLConf(SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key -> "") {
-              checkOverflow("s.k >= 0")
-              checkOverflow("s.k < 0")
-            }
             checkSparkAnswerAndOperator(
               df.where("s.k < 0").select("s.ts"),
               Seq(classOf[CometNativeScanExec]))
 
             if (isSpark40Plus) {
+              withSQLConf(SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key -> "") {
+                checkOverflow("s.k >= 0")
+                checkOverflow("s.k < 0")
+              }
               withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
                 checkWithAndWithoutLimit("id <=> (SELECT min(id) FROM range(2))")
               }
             }
+          }
+        }
+      }
+
+      // Spark 4.x translates filters when it builds the reader. Spark 3.5 can translate
+      // them earlier when it builds the scan metadata for display.
+      if (isSpark40Plus) {
+        val nestedPushdown = SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key
+        Seq(false, true).foreach { cometEnabled =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> cometEnabled.toString,
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+            nestedPushdown -> "") {
+            val filtered = spark.read.parquet(path.toString).where("s.k < 0").select("s.ts")
+            val nativeScans = collect(filtered.queryExecution.executedPlan) {
+              case _: CometNativeScanExec => true
+            }
+            assert(nativeScans.nonEmpty == cometEnabled)
+            withSQLConf(nestedPushdown -> "parquet") {
+              assert(filtered.collect().isEmpty)
+            }
+            // Spark reuses the reader that prunes the overflowing row group.
+            assert(filtered.collect().isEmpty)
           }
         }
       }
