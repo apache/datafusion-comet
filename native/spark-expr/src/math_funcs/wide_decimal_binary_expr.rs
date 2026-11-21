@@ -121,7 +121,9 @@ impl Display for WideDecimalBinaryExpr {
 /// Compute `value / divisor` with HALF_UP rounding.
 #[inline]
 fn div_round_half_up(value: i256, divisor: i256) -> i256 {
-    let (quot, rem) = (value / divisor, value % divisor);
+    let quot = value / divisor;
+    // `quot` truncates toward zero, so `|quot * divisor| <= |value|` and neither step overflows.
+    let rem = value.wrapping_sub(quot.wrapping_mul(divisor));
     // HALF_UP: if |remainder| * 2 >= |divisor|, round away from zero
     let abs_rem_x2 = if rem < i256::ZERO {
         rem.wrapping_neg()
@@ -489,6 +491,55 @@ mod tests {
         match expr.evaluate(batch)? {
             ColumnarValue::Array(arr) => Ok(arr),
             _ => panic!("expected array"),
+        }
+    }
+
+    /// HALF_UP division computed from `/` and `%` separately.
+    fn div_round_half_up_reference(value: i256, divisor: i256) -> i256 {
+        let (quot, rem) = (value / divisor, value % divisor);
+        let twice_rem = rem.wrapping_abs().wrapping_mul(i256::from_i128(2));
+        if twice_rem >= divisor.wrapping_abs() {
+            if (value < i256::ZERO) != (divisor < i256::ZERO) {
+                quot.wrapping_sub(i256::ONE)
+            } else {
+                quot.wrapping_add(i256::ONE)
+            }
+        } else {
+            quot
+        }
+    }
+
+    #[test]
+    fn test_div_round_half_up_matches_reference() {
+        // Callers divide by 10^k for k in 1..=76.
+        for exp in [1, 2, 6, 18, 19, 38, 39, 76] {
+            let divisor = i256_pow10(exp);
+            let half = divisor / i256::from_i128(2);
+            let values = [
+                i256::ZERO,
+                i256::ONE,
+                half - i256::ONE,
+                half,
+                half + i256::ONE,
+                divisor - i256::ONE,
+                divisor,
+                divisor + half,
+                i256::from_i128(i128::MAX),
+                i256::from_i128(i128::MIN),
+                i256::MAX,
+                i256::MIN,
+                i256::MAX - half,
+                i256::MIN + half,
+            ];
+            for value in values {
+                for value in [value, value.wrapping_neg()] {
+                    assert_eq!(
+                        div_round_half_up(value, divisor),
+                        div_round_half_up_reference(value, divisor),
+                        "value {value}, divisor 10^{exp}"
+                    );
+                }
+            }
         }
     }
 
