@@ -809,6 +809,37 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       "s3a://bucket/dir%0A/data%3Fsig=X"
   }
 
+  test("displayPath - a password whose `/`, `?` or `#` ends the authority early is not shown") {
+    val hidden = "s3a://<unparseable>"
+    // `URI` ends the authority at the first `/`, `?` or `#`, so the rest of the user info lands
+    // in the path, query or fragment. `Path` ends it only at `/` and quotes `?` and `#`.
+    val cases = Seq(
+      new URI("s3a://alice:/SECRET@bucket/p") -> hidden,
+      new Path("s3a://alice:/SECRET@bucket/p").toUri -> hidden,
+      new URI("s3a://alice:123/SECRET@bucket/p") -> hidden,
+      new Path("s3a://alice:123/SECRET@bucket/p").toUri -> hidden,
+      new URI("s3a://alice:SEC/RET@bucket/p") -> hidden,
+      new URI("s3a://alice:?SECRET@bucket/p") -> hidden,
+      new Path("s3a://alice:?SECRET@bucket/p").toUri -> "s3a://***@bucket/p",
+      new URI("s3a://alice:#SECRET@bucket/p") -> hidden,
+      new Path("s3a://alice:#SECRET@bucket/p").toUri -> "s3a://***@bucket/p",
+      new URI("s3a://alice:p@ss@bucket/p") -> "s3a://***@bucket/p",
+      new Path("s3a://alice:p@ss@bucket/p").toUri -> "s3a://***@bucket/p",
+      // A real `@` after the authority cannot be told apart from one of these.
+      new URI("s3a://bucket/a@b/p") -> hidden,
+      new Path("s3a://bucket/a@b/p").toUri -> hidden,
+      new URI("a@b/p") -> "<unparseable>",
+      // An encoded `@` is not one.
+      new URI("s3a://bucket/a%40b/p") -> "s3a://bucket/a%40b/p")
+    for ((uri, shown) <- cases) {
+      val display = NativeConfig.displayPath(uri)
+      withClue(s"$uri: ") {
+        Seq("alice", "SEC", "p@ss").foreach(marker => display should not include marker)
+        display shouldBe shown
+      }
+    }
+  }
+
   test("extractScanObjectStoreOptions - files in one container keep the first file's options") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
