@@ -38,8 +38,8 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, Correlation, Covariance, EvalMode, HllPlusPlus, SparkPercentile,
-    Variance, ZeroOrder,
+    ApproxPercentile, Avg, Correlation, Covariance, EvalMode, HllPlusPlus, Regr, RegrType,
+    SparkPercentile, Variance, ZeroOrder,
 };
 use futures::StreamExt;
 use std::hint::black_box;
@@ -179,6 +179,131 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+const REGRESSION_BATCHES: usize = 32;
+const REGRESSION_BATCH_SIZE: usize = 8192;
+const REGRESSION_ROWS: usize = REGRESSION_BATCHES * REGRESSION_BATCH_SIZE;
+
+// Measure Partial aggregation (update + state emission), including the DataFusion
+// grouping path. Full-query Spark benchmarks also cover finalization and shuffle.
+fn regression_benchmark(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("regr_partial");
+    for (groups, null_every, clustered) in [
+        (1024, 0, false),
+        (1024, 101, false),
+        (1024, 2, false),
+        (65536, 0, false),
+        (1, 0, false),
+        (1024, 0, true),
+    ] {
+        let batches = regression_batches(groups, null_every, clustered);
+        let partitions = &[batches];
+        for (name, kind) in [
+            ("regr_sxx", RegrType::SXX),
+            ("regr_syy", RegrType::SYY),
+            ("regr_sxy", RegrType::SXY),
+            ("regr_slope", RegrType::Slope),
+            ("regr_intercept", RegrType::Intercept),
+            ("regr_r2", RegrType::R2),
+        ] {
+            // Cover every function with and without nulls, clustered keys, and
+            // one group. Limit the high-cardinality control to compound states.
+            if groups == 65536 && !matches!(kind, RegrType::Slope | RegrType::R2) {
+                continue;
+            }
+            let udf = Arc::new(AggregateUDF::new_from_impl(Regr::new(
+                kind,
+                name,
+                true,
+                true,
+                EvalMode::Legacy,
+                None,
+                datafusion_comet_spark_expr::create_query_context_map(),
+            )));
+            let group_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c0", 0));
+            // Spark rewrites SXX/SYY to the pair-null-filtered selected column,
+            // which Comet's serde passes twice to the native moment accumulator.
+            let indices = match kind {
+                RegrType::SXX => [4, 4],
+                RegrType::SYY => [3, 3],
+                _ => [1, 2],
+            };
+            let inputs: Vec<Arc<dyn PhysicalExpr>> = indices
+                .map(|i| Arc::new(Column::new(&format!("c{i}"), i)) as Arc<dyn PhysicalExpr>)
+                .to_vec();
+            let nulls = match null_every {
+                0 => "no_null",
+                2 => "half_null",
+                _ => "sparse_null",
+            };
+            let layout = if clustered { "/clustered" } else { "" };
+            group.bench_function(format!("{name}/{groups}_groups/{nulls}{layout}"), |b| {
+                b.to_async(&rt).iter(|| {
+                    agg_test(
+                        partitions,
+                        group_col.clone(),
+                        inputs.clone(),
+                        udf.clone(),
+                        name,
+                    )
+                })
+            });
+        }
+    }
+    group.finish();
+}
+
+fn regression_batches(groups: usize, null_every: usize, clustered: bool) -> Vec<RecordBatch> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("c0", DataType::Utf8, false),
+        Field::new("c1", DataType::Float64, true),
+        Field::new("c2", DataType::Float64, false),
+        Field::new("c3", DataType::Float64, true),
+        Field::new("c4", DataType::Float64, true),
+    ]));
+    (0..REGRESSION_BATCHES)
+        .map(|batch| {
+            let mut keys = StringBuilder::new();
+            let mut y = Float64Builder::new();
+            let mut x = Float64Builder::new();
+            let mut paired_x = Float64Builder::new();
+            for row in 0..REGRESSION_BATCH_SIZE {
+                let i = batch * REGRESSION_BATCH_SIZE + row;
+                let xv = i as f64 * 0.25 + 1.0;
+                let yv = xv * 1.5 + (i % 17) as f64;
+                let valid = match null_every {
+                    0 => true,
+                    2 => !(i / groups).is_multiple_of(2),
+                    // Coprime to the group count and batch size: every batch
+                    // contains sparse nulls and every group still has valid rows.
+                    _ => !i.is_multiple_of(null_every),
+                };
+                let group_index = if clustered {
+                    i / (REGRESSION_ROWS / groups)
+                } else {
+                    i % groups
+                };
+                keys.append_value(format!("group_{group_index}"));
+                y.append_option(valid.then_some(yv));
+                x.append_value(xv);
+                paired_x.append_option(valid.then_some(xv));
+            }
+            let y: ArrayRef = Arc::new(y.finish());
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(keys.finish()),
+                    y.clone(),
+                    Arc::new(x.finish()),
+                    y,
+                    Arc::new(paired_x.finish()),
+                ],
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
 fn comet_variance(stats_type: StatsType) -> Arc<AggregateUDF> {
     Arc::new(AggregateUDF::new_from_impl(Variance::new(
         "variance",
@@ -293,6 +418,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark
+    targets = criterion_benchmark, regression_benchmark
 }
 criterion_main!(benches);
