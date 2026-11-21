@@ -580,9 +580,8 @@ object CometShuffleExchangeExec
    * child. Pure: does not tag the node
    */
   def isColumnarShuffleSupported(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean =
-    !isCometCelebornShuffleManagerEnabled(s.conf) &&
-      columnarShuffleFailureReasons(
-        ShuffleExchangeExec(s.outputPartitioning, rowChild, s.shuffleOrigin)).isEmpty
+    columnarShuffleFailureReasons(
+      ShuffleExchangeExec(s.outputPartitioning, rowChild, s.shuffleOrigin)).isEmpty
 
   /**
    * Whether native shuffle can keep `s` by converting `rowChild` rows to Arrow Celeborn is
