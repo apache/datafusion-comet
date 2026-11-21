@@ -585,6 +585,13 @@ object CometShuffleExchangeExec
         ShuffleExchangeExec(s.outputPartitioning, rowChild, s.shuffleOrigin)).isEmpty
 
   /**
+   * Whether native shuffle can take `s` by converting `rowChild` rows to Arrow Pure: does not tag
+   * the node
+   */
+  def isNativeConversionSupported(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean =
+    CometSparkToColumnarExec.isSchemaSupported(rowChild.schema, ListBuffer.empty) && ???
+
+  /**
    * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
    * converted rows, may put in a different partition from Spark's partitioner. Native shuffle
    * must not take over such a shuffle from the JVM columnar shuffle: a join with an input that is
