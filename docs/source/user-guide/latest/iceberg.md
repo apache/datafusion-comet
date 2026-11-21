@@ -132,7 +132,10 @@ with a range, `IN`, or `!=` predicate, the native scan reads each data file's Pa
 For a file that stores such a column with a narrower type, it does not push the filter into
 iceberg-rust, and the filter above the scan applies it
 ([#7138](https://github.com/apache/datafusion-comet/issues/7138)). Other files keep their row-group
-and page pruning. The check costs one extra footer read for each data file that such a filter scans.
+and page pruning. iceberg-rust reuses the footer bytes the check read, so the check costs one extra
+footer decode for each data file that such a filter scans. To turn it off, for a table whose data
+files all store each column with the table's type, set
+`spark.comet.scan.icebergNative.narrowTypeCheck.enabled` to `false`.
 
 **Partitioning:**
 

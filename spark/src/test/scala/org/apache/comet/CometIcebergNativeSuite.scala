@@ -452,6 +452,47 @@ class CometIcebergNativeSuite
       spark.sql(s"INSERT INTO $table VALUES (4, 4.0), (5, 5.0)")
       checkNarrowFileScans(table, narrowFilePredicates, splits = 1)
       checkNarrowFileScans(table, equalityPredicates, splits = 0)
+
+      // With the check off, the scan pushes the residual to every file.
+      withSQLConf(CometConf.COMET_ICEBERG_NARROW_TYPE_CHECK_ENABLED.key -> "false") {
+        val df = spark.sql(s"SELECT * FROM $table WHERE id > 0")
+        df.collect()
+        val scan = collectIcebergNativeScans(df.queryExecution.executedPlan).head
+        assert(scan.metrics("narrow_type_splits").value == 0)
+      }
+    }
+  }
+
+  // iceberg-rust's page index skips every page of a narrower file, as it skips the only page of
+  // each file in the test above.
+  test("residuals keep rows from every page of a file written before a type promotion (#7138)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withNarrowFileCatalog { _ =>
+      val table = "narrow_cat.db.promoted_pages"
+      spark.sql(s"""
+        CREATE TABLE $table (id INT, d FLOAT) USING iceberg
+        TBLPROPERTIES ('write.parquet.page-row-limit' = '100')
+      """)
+      spark
+        .range(600)
+        .selectExpr("CAST(id AS INT) AS id", "CAST(id AS FLOAT) AS d")
+        .coalesce(1)
+        .writeTo(table)
+        .append()
+      val files = spark.sql(s"SELECT file_path FROM $table.files").collect().map(_.getString(0))
+      assert(files.length == 1, files.mkString(", "))
+      val pages = withParquetReader(files.head) { reader =>
+        reader.readOffsetIndex(reader.getRowGroups.get(0).getColumns.get(0)).getPageCount
+      }
+      assert(pages > 1, s"id is stored in $pages page")
+
+      spark.sql(s"ALTER TABLE $table ALTER COLUMN id TYPE BIGINT")
+      spark.sql(s"ALTER TABLE $table ALTER COLUMN d TYPE DOUBLE")
+      // Every literal fits the file's types, so only the page index could drop these rows.
+      checkNarrowFileScans(
+        table,
+        Seq("id > 100", "id IN (50, 250, 450)", "d >= 100.0 AND d <= 300.0"),
+        splits = 1)
     }
   }
 
