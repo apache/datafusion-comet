@@ -32,7 +32,7 @@ import org.apache.spark.memory.{MemoryConsumer, MemoryMode}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Cast, Descending, DynamicPruningExpression, Expression, IsNotNull, Literal, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Cast, Coalesce, Descending, DynamicPruningExpression, Expression, IsNotNull, Literal, SortOrder}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{Inner, JoinType, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
@@ -1727,7 +1727,9 @@ class CometJoinSuite extends CometTestBase {
       assert(!eligible(CoalesceExec(1, shuffle), keys))
       assert(!eligible(shuffle, keys, Inner))
       assert(!eligible(shuffle, keys, condition = Some(Literal.TrueLiteral)))
-      assert(!eligible(shuffle, Seq(Cast(keys.head, IntegerType))))
+      val cast = Cast(keys.head, IntegerType)
+      assert(!eligible(shuffle, Seq(cast)))
+      assert(!eligible(shuffle, Seq(Coalesce(Seq(cast, Literal(0))))))
     }
   }
 
@@ -1808,6 +1810,13 @@ class CometJoinSuite extends CometTestBase {
             config.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native",
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val computed = run(s"l._2 = coalesce(r._1, ${wideKey - 1}L)", expected :+ 8)
+            val reduced = collectFirst(computed.queryExecution.executedPlan) {
+              case j: CometSortMergeJoinExec => j
+            }.get
+            val input = reduced.longMetric("right_key_reduction_input_rows").value
+            val output = reduced.longMetric("right_key_reduction_output_rows").value
+            assert(output > 0 && output < input, computed.queryExecution.executedPlan.treeString)
             for ((condition, ids) <- Seq(
                 ("l._2 <=> r._1", Seq(1, 1, 2, 3, 3, 4, 5, 6, 7)),
                 (s"$equality AND l._3 = r._2", Seq(3, 3, 5, 6, 7)))) {
@@ -1817,6 +1826,42 @@ class CometJoinSuite extends CometTestBase {
               assert(!join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled)
               assert(!join.metrics.contains("right_key_reduction_input_rows"))
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("right key reduction coalesces nullable integer columns with and without a literal") {
+    val left = Seq[java.lang.Integer](null, -1, 0, 5, 7, 9).map(Tuple1(_))
+    val keys = Seq[(java.lang.Integer, java.lang.Integer)]((5, 9), (null, 7), (null, null))
+    val right = Seq.fill(8192)(keys).flatten
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_BATCH_SIZE.key -> "4096",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "true") {
+      withParquetTable(left, "reduction_left") {
+        withParquetTable(right, "reduction_right") {
+          for ((keyType, key, expected) <- Seq(
+              ("INT", "coalesce(r.a, r.b)", Seq(5, 7)),
+              ("TINYINT", "coalesce(r.a, r.b, -1Y)", Seq(-1, 5, 7)),
+              ("SMALLINT", "coalesce(r.a, r.b, -1S)", Seq(-1, 5, 7)))) {
+            val df = sql(s"""SELECT /*+ MERGE(r) */ l._1 FROM reduction_left l
+                            |LEFT SEMI JOIN (
+                            |  SELECT CAST(_1 AS $keyType) AS a, CAST(_2 AS $keyType) AS b
+                            |  FROM reduction_right
+                            |) r ON CAST(l._1 AS $keyType) = $key""".stripMargin)
+            assert(df.collect().map(_.getInt(0)).sorted.toSeq == expected, keyType)
+            val plan = df.queryExecution.executedPlan
+            val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+              .getOrElse(fail(plan.treeString))
+            assert(join.rightKeys.head.dataType.sql == keyType)
+            val input = join.longMetric("right_key_reduction_input_rows").value
+            val output = join.longMetric("right_key_reduction_output_rows").value
+            assert(input == right.size && output > 0 && output < input, plan.treeString)
           }
         }
       }

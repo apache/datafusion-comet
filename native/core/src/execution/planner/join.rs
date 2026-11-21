@@ -32,7 +32,7 @@ use datafusion::{
     config::ConfigOptions,
     physical_expr::{
         expressions::{CastExpr, Column},
-        LexOrdering, PhysicalExpr,
+        LexOrdering, PhysicalExpr, PhysicalSortExpr,
     },
     physical_plan::{
         empty::EmptyExec,
@@ -217,19 +217,23 @@ fn reduce_before_sort(
     if params.join_type != DFJoinType::LeftSemi || params.join_filter.is_some() {
         return Ok(None);
     }
-    let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
+    let right = Arc::make_mut(&mut params.right);
+    let Some(sort) = right.native_plan.downcast_ref::<SortExec>() else {
         return Ok(None);
     };
+    // Removing duplicates before a fetch can bring new keys into the first N rows.
+    if sort.fetch().is_some() {
+        return Ok(None);
+    }
     let input = sort.input();
-    let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
+    let ([(_, key)], [options]) = (params.join_on.as_mut_slice(), sort_options) else {
         return Ok(None);
     };
     let schema = input.schema();
     let order = sort.expr().first();
     if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
-        || schema.fields().len() != 1
-        || !schema.field(0).data_type().is_signed_integer()
-        || !key.is::<Column>()
+        || !key.data_type(&schema).is_ok_and(|t| t.is_signed_integer())
+        || (key.is::<Column>() && schema.fields().len() != 1)
         || sort.expr().len() != 1
         || order.options != *options
         || !order.expr.eq(key)
@@ -257,18 +261,37 @@ fn reduce_before_sort(
             log::debug!(
                 "Skipping semi-join right-key reduction before sort {}: another Spark \
                  consumer holds execution memory in this task",
-                params.right.plan_id
+                right.plan_id
             );
             return Ok(None);
         }
     }
+    // A projected FFI column can keep the entire imported batch alive while the
+    // sort only accounts for that column. Successful reductions already copy via take.
+    let copy_bypassed_keys = input.is::<ScanExec>() && schema.fields().len() > 1;
+    let (input, ordering) = if key.is::<Column>() {
+        (Arc::clone(input), sort.expr().clone())
+    } else {
+        // Spark admitted an integer coalesce. Evaluate it once and use that column for
+        // reduction, sorting, and the join. A left-semi join needs no other right columns.
+        let name = "membership_key";
+        let projected: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
+            [(Arc::clone(key), name.to_owned())],
+            Arc::clone(input),
+        )?);
+        // Key evaluation moves out of the sort but still contributes to its compute time.
+        right.additional_native_plans.push(Arc::clone(&projected));
+        *key = Arc::new(Column::new(name, 0));
+        let ordering = LexOrdering::from([PhysicalSortExpr::new(Arc::clone(key), *options)]);
+        (projected, ordering)
+    };
     let reducer: Arc<dyn ExecutionPlan> =
-        Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
-    let sort = Arc::clone(&params.right.native_plan).replace_children(
-        vec![Arc::clone(&reducer)],
-        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-    )?;
-    Arc::make_mut(&mut params.right).native_plan = sort;
+        Arc::new(MembershipKeyReductionExec::new(input).with_bypass_copy(copy_bypassed_keys));
+    let sort = Arc::new(
+        SortExec::new(ordering, Arc::clone(&reducer))
+            .with_preserve_partitioning(sort.preserve_partitioning()),
+    );
+    right.native_plan = sort;
     // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
     Ok(Some(reducer))
 }
@@ -309,8 +332,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             .collect();
 
         let reducer = if join.right_key_reduction_enabled
-            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
-                if sort.fetch.is_none() && sort.skip.is_none())
+            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort)) if sort.skip.is_none())
         {
             reduce_before_sort(planner, &mut join_params, &sort_options)?
         } else {
