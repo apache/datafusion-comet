@@ -42,6 +42,8 @@ mod delta_scan;
 // JVM-planned Delta sibling of the kernel handler above; see delta_spark_scan.rs.
 #[cfg(feature = "delta")]
 mod delta_spark_scan;
+#[cfg(feature = "delta")]
+pub(crate) use delta_spark_scan::redacted_url_display;
 #[cfg(feature = "contrib-lance")]
 mod lance_scan;
 

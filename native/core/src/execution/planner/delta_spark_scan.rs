@@ -43,10 +43,13 @@ use crate::execution::operators::ExecutionError;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::planner::PhysicalPlanner;
 use crate::execution::planner::PlanCreationResult;
-use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
+use crate::parquet::objectstore::s3_blob_fs_support::{
+    normalize_object_store_url, scheme_of_unparsed,
+};
+use crate::parquet::objectstore::url_redaction::without_secrets;
 use crate::parquet::parquet_support::{
-    hash_object_store_configs, object_store_registration_url, object_store_url_key,
-    prepare_object_store_with_config_hash,
+    hash_object_store_configs, is_azure_scheme, object_store_registration_url,
+    object_store_url_key, prepare_object_store_with_config_hash,
 };
 
 /// Type name the JVM-planned Delta contrib claims within the `ContribScan` envelope. The
@@ -310,56 +313,45 @@ fn url_user_info(url: &Url) -> String {
     url.username().to_string()
 }
 
-/// A display form of `url` safe to embed in an error message: userinfo (e.g. the access/secret
-/// key pair embedded as `s3a://AKIA...:secret@bucket/...`, or a Delta shallow-clone container
-/// name) is replaced with a literal `***`, mirroring `DeltaScanSupport.redactedAuthority` on the
-/// JVM side (`scheme://***@host[:port]`). Scheme and host/port are kept verbatim (not
-/// lowercased) and the path is kept in full -- userinfo is the only secret-bearing component,
-/// and dropping the path would make the two defense-in-depth checks that call this ([`
-/// check_same_object_store_authority`] and [`check_store_identity`]) unable to name which file
-/// triggered the error.
+/// A display form of `url` safe to embed in an error message. Every call site formats a URL
+/// that may come from a foreign proto producer, so this is total and never shows a credential:
+/// the password, query and fragment (where a SAS token or presigned signature lives) are
+/// dropped, and the username is shown as `***`, mirroring `DeltaScanSupport.redactedAuthority`
+/// on the JVM side, except in an ABFS URL, where it names the container and is kept. Scheme,
+/// host, port and path stay, so [`check_same_object_store_authority`] and
+/// [`check_store_identity`] can name the file. A URL with nothing to hide is returned as given.
 ///
-/// `url` need not be a valid [`Url`] -- every call site formats a `GeneralError` from a URL that
-/// may originate from a foreign/bypassed proto producer, including ones a credential-bearing URL
-/// can produce by FAILING to parse in the first place (e.g. `s3a://AKIA:secret@bucket:notaport/x`
-/// is `Url::parse`-rejected as `InvalidPort`, but still carries userinfo), so this must be total
-/// (never panic) AND must still redact on the parse-failure path -- it is exactly the credentials
-/// that make a URL unusual enough to fail parsing that most need to never reach a log line.
-/// The fallback below is purely textual: it looks for a `://` scheme delimiter and, within the
-/// authority segment that follows (up to the next `/`, mirroring where a real URL's authority
-/// ends), replaces everything up to and including the LAST `@` with `***@` -- same last-`@` split
-/// as the successfully-parsed path and `DeltaScanSupport.redactedAuthority` on the JVM side. A
-/// string with no `://` is treated as having no authority at all and its whole text is searched
-/// for a trailing userinfo-shaped `...@host` prefix the same way. A string with neither shape
-/// (no `@` anywhere before its authority ends) has no evident secret to redact and is returned
-/// unchanged.
-fn redacted_url_display(url: &str) -> String {
-    if let Ok(parsed) = Url::parse(url) {
-        if parsed.username().is_empty() && parsed.password().is_none() {
-            return url.to_string();
+/// A string that fails to parse is returned as given only when it has none of `://`, `@`, `?`
+/// and `#`. Otherwise its structure is unknown (a `/` in a password ends the authority early,
+/// for one), so only its scheme is shown, as `s3a://<unparseable>`. A URL with no `//` after
+/// its scheme parses with an opaque path that can hold userinfo, and its scheme can be a
+/// username (`alice:SECRET@bucket`), so it is shown as `<unparseable>`.
+pub(crate) fn redacted_url_display(url: &str) -> String {
+    let parsed = match Url::parse(url) {
+        Ok(parsed) if parsed.cannot_be_a_base() => return "<unparseable>".to_string(),
+        Ok(parsed) => parsed,
+        Err(_) if !url.contains(['@', '?', '#']) && !url.contains("://") => return url.to_string(),
+        Err(_) => {
+            return match scheme_of_unparsed(url) {
+                Some(scheme) => format!("{scheme}://<unparseable>"),
+                None => "<unparseable>".to_string(),
+            }
         }
-        let host_port = match (parsed.host_str(), parsed.port()) {
-            (Some(host), Some(port)) => format!("{host}:{port}"),
-            (Some(host), None) => host.to_string(),
-            (None, _) => String::new(),
-        };
-        let mut redacted = format!("{}://***@{host_port}{}", parsed.scheme(), parsed.path());
-        if let Some(query) = parsed.query() {
-            redacted.push('?');
-            redacted.push_str(query);
-        }
-        return redacted;
-    }
-
-    let (scheme_prefix, rest) = match url.find("://") {
-        Some(scheme_end) => (&url[..scheme_end + 3], &url[scheme_end + 3..]),
-        None => ("", url),
     };
-    let authority_len = rest.find('/').unwrap_or(rest.len());
-    match rest[..authority_len].rfind('@') {
-        Some(at) => format!("{scheme_prefix}***@{}", &rest[at + 1..]),
-        None => url.to_string(),
+    let masks_username = !parsed.username().is_empty() && !is_azure_scheme(parsed.scheme());
+    if !masks_username
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+    {
+        return url.to_string();
     }
+    let mut shown = without_secrets(&parsed);
+    if masks_username {
+        // Fails only for a URL that cannot have userinfo, which then has no username to mask.
+        let _ = shown.set_username("***");
+    }
+    shown.to_string()
 }
 
 /// A store resolved by [`PartitionStoreResolver::resolve`]: the within-store `path` of the
@@ -844,23 +836,20 @@ mod tests {
         assert_eq!(redacted_url_display(input), input);
 
         // Not a valid URL (no scheme, so `Url::parse` rejects it as relative), but does have a
-        // userinfo-shaped prefix before its first '/' -- must still redact it rather than leak
-        // it verbatim.
+        // userinfo-shaped prefix -- must not be echoed.
         let input = "secret@host/path";
         let redacted = redacted_url_display(input);
         assert!(
             !redacted.contains("secret"),
             "expected the userinfo-shaped prefix to be redacted: {redacted}"
         );
-        assert_eq!(redacted, "***@host/path");
+        assert_eq!(redacted, "<unparseable>");
     }
 
     #[test]
     fn redacted_url_display_redacts_credentials_from_a_scheme_prefixed_url_that_fails_to_parse() {
-        // Invalid port -- `url::Url::parse` rejects this outright (InvalidPort), so this never
-        // reaches the successfully-parsed branch above; it must still be caught by the fallback,
-        // which must recognize the `scheme://` prefix so it doesn't stop at the FIRST '/' in
-        // that prefix (a bug that would leave userinfo un-redacted for exactly this shape).
+        // Invalid port -- `url::Url::parse` rejects this outright (InvalidPort), so only the
+        // scheme is shown.
         let url = "s3a://AKIA:secret@bucket:notaport/path";
         assert!(Url::parse(url).is_err(), "fixture must fail to parse");
         let redacted = redacted_url_display(url);
@@ -868,7 +857,152 @@ mod tests {
             !redacted.contains("AKIA") && !redacted.contains("secret"),
             "expected credentials to be redacted: {redacted}"
         );
-        assert_eq!(redacted, "s3a://***@bucket:notaport/path");
+        assert_eq!(redacted, "s3a://<unparseable>");
+    }
+
+    /// Userinfo, query and fragment markers the test URLs carry, none of which may be shown.
+    const URL_MARKERS: [&str; 4] = ["alice", "SECRET", "SAS-MARKER", "FRAG-MARKER"];
+
+    fn assert_no_url_marker(shown: &str) {
+        for marker in URL_MARKERS {
+            assert!(!shown.contains(marker), "{marker} echoed: {shown}");
+        }
+    }
+
+    #[test]
+    fn redacted_url_display_drops_the_query_and_fragment() {
+        for (url, expected) in [
+            (
+                "s3a://bucket/a/part-0.parquet?sig=SAS-MARKER#FRAG-MARKER",
+                "s3a://bucket/a/part-0.parquet",
+            ),
+            (
+                "s3a://alice:SECRET@bucket/a/part-0.parquet?sig=SAS-MARKER",
+                "s3a://***@bucket/a/part-0.parquet",
+            ),
+            (
+                "https://bucket.s3.amazonaws.com/a/part-0.parquet?X-Amz-Signature=SAS-MARKER",
+                "https://bucket.s3.amazonaws.com/a/part-0.parquet",
+            ),
+        ] {
+            let shown = redacted_url_display(url);
+            assert_no_url_marker(&shown);
+            assert_eq!(shown, expected);
+        }
+    }
+
+    #[test]
+    fn redacted_url_display_keeps_the_abfs_container() {
+        for url in [
+            "abfss://data:SECRET@acct.dfs.core.windows.net/t/p.parquet?sig=SAS-MARKER",
+            "abfss://data:SECRET@acct.dfs.core.windows.net/t/p.parquet",
+        ] {
+            let shown = redacted_url_display(url);
+            assert_no_url_marker(&shown);
+            assert_eq!(shown, "abfss://data@acct.dfs.core.windows.net/t/p.parquet");
+        }
+    }
+
+    #[test]
+    fn redacted_url_display_names_only_the_scheme_of_an_unparseable_url() {
+        for url in [
+            "s3a://alice:SECRET@bucket:notaport/p?sig=SAS-MARKER",
+            "s3a://bucket:notaport/p?sig=SAS-MARKER",
+            // The `/` in the password ends the authority, which then has a bad port.
+            "s3a://alice:SECRET/x@bucket/p",
+        ] {
+            assert!(
+                Url::parse(url).is_err(),
+                "fixture must fail to parse: {url}"
+            );
+            let shown = redacted_url_display(url);
+            assert_no_url_marker(&shown);
+            assert_eq!(shown, "s3a://<unparseable>");
+        }
+    }
+
+    #[test]
+    fn redacted_url_display_hides_opaque_and_relative_strings_with_secrets() {
+        for (url, expected) in [
+            // No `//`, so these parse with an opaque path that keeps the userinfo; in the
+            // second, the "scheme" is the username.
+            ("s3a:alice:SECRET@bucket/p", "<unparseable>"),
+            ("alice:SECRET@bucket://x", "<unparseable>"),
+            // Relative, so they fail to parse, and carry a query or fragment.
+            ("t/p.parquet?sig=SAS-MARKER", "<unparseable>"),
+            ("t/p.parquet#FRAG-MARKER", "<unparseable>"),
+            ("s3a://:SECRET@bucket/p", "s3a://bucket/p"),
+            // Nothing to hide: shown as given.
+            ("t/p.parquet", "t/p.parquet"),
+            ("hdfs:/tmp/p.parquet", "hdfs:/tmp/p.parquet"),
+        ] {
+            let shown = redacted_url_display(url);
+            assert_no_url_marker(&shown);
+            assert_eq!(shown, expected, "for {url}");
+        }
+    }
+
+    #[test]
+    fn parse_errors_do_not_echo_the_url() {
+        let options = HashMap::new();
+        for url in [
+            "s3a://bucket:notaport/p?sig=SAS-MARKER",
+            "s3a://alice:SECRET/x@bucket/p?sig=SAS-MARKER",
+        ] {
+            let authority_err = check_same_object_store_authority(&[partitioned_file(url)])
+                .unwrap_err()
+                .to_string();
+            let mut resolver =
+                PartitionStoreResolver::new(Arc::new(RuntimeEnv::default()), &options);
+            let resolve_err = match resolver.resolve(url.to_string()) {
+                Ok(_) => panic!("{url} must fail to parse"),
+                Err(e) => e.to_string(),
+            };
+            for msg in [authority_err, resolve_err] {
+                assert_no_url_marker(&msg);
+                assert!(
+                    msg.contains("Error parsing URL s3a://<unparseable>: invalid port number"),
+                    "expected the scheme and the parse error: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_authority_error_does_not_echo_the_query() {
+        let files = vec![
+            partitioned_file("s3a://bucket-a/part-0.parquet?sig=SAS-MARKER"),
+            partitioned_file("s3a://bucket-b/part-1.parquet#FRAG-MARKER"),
+        ];
+        let msg = check_same_object_store_authority(&files)
+            .unwrap_err()
+            .to_string();
+        assert_no_url_marker(&msg);
+        assert!(
+            msg.contains("found s3a://bucket-a/part-0.parquet and s3a://bucket-b/part-1.parquet"),
+            "expected both files without their query or fragment: {msg}"
+        );
+    }
+
+    #[test]
+    fn store_identity_error_does_not_echo_userinfo_or_query() {
+        let mut seen = HashMap::new();
+        let data = "s3://alice:SECRET@bucket/a/part-0.parquet?sig=SAS-MARKER";
+        let dv = "s3://bucket/_delta_log/deletion_vector_x.bin?sig=SAS-MARKER";
+        let (data_store_url, data_user_info) = store_url_and_user_info(data);
+        let (dv_store_url, dv_user_info) = store_url_and_user_info(dv);
+        check_store_identity(&data_store_url, &data_user_info, data, &mut seen).unwrap();
+        let msg = check_store_identity(&dv_store_url, &dv_user_info, dv, &mut seen)
+            .unwrap_err()
+            .to_string();
+        assert_no_url_marker(&msg);
+        assert!(
+            msg.contains(
+                "found s3://***@bucket/a/part-0.parquet and \
+                 s3://bucket/_delta_log/deletion_vector_x.bin"
+            ),
+            "expected both files without their credentials or query: {msg}"
+        );
     }
 
     #[test]
@@ -922,8 +1056,8 @@ mod tests {
             "expected the parse-error message to redact credentials: {msg}"
         );
         assert!(
-            msg.contains("***@bucket"),
-            "expected the parse-error message to still name the redacted host: {msg}"
+            msg.contains("s3a://<unparseable>"),
+            "expected the parse-error message to still name the scheme: {msg}"
         );
     }
 }

@@ -739,7 +739,7 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
 }
 
 /// Check if the scheme is an Azure ABFS URL.
-fn is_azure_scheme(scheme: &str) -> bool {
+pub(crate) fn is_azure_scheme(scheme: &str) -> bool {
     matches!(scheme, "abfs" | "abfss")
 }
 

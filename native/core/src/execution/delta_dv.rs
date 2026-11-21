@@ -47,6 +47,7 @@ use roaring::{RoaringBitmap, RoaringTreemap};
 
 use crate::execution::operators::ExecutionError;
 use crate::execution::operators::ExecutionError::GeneralError;
+use crate::execution::planner::redacted_url_display;
 use datafusion_comet_proto::spark_operator::DeltaSparkDvDescriptor;
 
 const NATIVE_MAGIC: i32 = 1681511376;
@@ -630,6 +631,8 @@ async fn attach_access_plan(
     if dv.cardinality == 0 && dv.size_in_bytes == 0 {
         return Ok(file);
     }
+    // Only messages print the file's URL; reads go through `file.object_meta` and `data_store`.
+    let file_path = redacted_url_display(&file_path);
     if dv.size_in_bytes < 0 {
         return Err(GeneralError(format!(
             "Deletion vector for {file_path} has negative size {}",
@@ -666,7 +669,12 @@ async fn attach_access_plan(
         let blob = store
             .get_range(&dv_store_path, offset..offset + framed_len)
             .await
-            .map_err(|e| GeneralError(format!("Failed to read deletion vector {dv_path}: {e}")))?;
+            .map_err(|e| {
+                GeneralError(format!(
+                    "Failed to read deletion vector {}: {e}",
+                    redacted_url_display(dv_path)
+                ))
+            })?;
         unframe_dv_blob(&blob, dv.size_in_bytes as usize)?.to_vec()
     } else {
         return Err(GeneralError(
@@ -2749,6 +2757,86 @@ mod tests {
             checked,
             data.len() * 8,
             "every single-bit flip of the inline payload must have been exercised"
+        );
+    }
+
+    /// Userinfo and query markers the test URLs carry, none of which may be shown.
+    const URL_MARKERS: [&str; 3] = ["alice", "SECRET", "SAS-MARKER"];
+
+    /// A file whose deletion vector fails before any parquet footer is read.
+    fn failing_dv_file(file_path: &str, dv: DeltaSparkDvDescriptor) -> DvScanFile {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        DvScanFile {
+            file: PartitionedFile::new("t/f0.parquet", 100),
+            file_path: file_path.to_string(),
+            dv: Some(dv),
+            data_store: Arc::clone(&store),
+            dv_store: Some((store, Path::from("t/deletion_vector_x.bin"))),
+        }
+    }
+
+    async fn attach_error(file: DvScanFile) -> String {
+        match attach_access_plans(Arc::new(RuntimeEnv::default()), vec![file]).await {
+            Ok(_) => panic!("the deletion vector must be rejected"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn dv_errors_do_not_echo_the_file_url() {
+        let file_path = "s3://alice:SECRET@bucket/t/f0.parquet?sig=SAS-MARKER";
+        let negative_size = DeltaSparkDvDescriptor {
+            storage_type: "i".to_string(),
+            absolute_path: None,
+            inline_data: Some(vec![0; 4]),
+            offset: None,
+            size_in_bytes: -1,
+            cardinality: 1,
+        };
+        let wrong_inline_size = DeltaSparkDvDescriptor {
+            size_in_bytes: 8,
+            ..negative_size.clone()
+        };
+        for (dv, expected) in [
+            (
+                negative_size,
+                "Deletion vector for s3://***@bucket/t/f0.parquet has negative size -1",
+            ),
+            (
+                wrong_inline_size,
+                "Inline deletion vector for s3://***@bucket/t/f0.parquet has 4 bytes",
+            ),
+        ] {
+            let msg = attach_error(failing_dv_file(file_path, dv)).await;
+            for marker in URL_MARKERS {
+                assert!(!msg.contains(marker), "{marker} echoed: {msg}");
+            }
+            assert!(
+                msg.contains(expected),
+                "expected the file without its credentials or query: {msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dv_read_error_does_not_echo_the_dv_url() {
+        let dv = DeltaSparkDvDescriptor {
+            storage_type: "p".to_string(),
+            absolute_path: Some(
+                "s3://alice:SECRET@bucket/t/deletion_vector_x.bin?sig=SAS-MARKER".to_string(),
+            ),
+            inline_data: None,
+            offset: Some(1),
+            size_in_bytes: 8,
+            cardinality: 1,
+        };
+        let msg = attach_error(failing_dv_file("s3://bucket/t/f0.parquet", dv)).await;
+        for marker in URL_MARKERS {
+            assert!(!msg.contains(marker), "{marker} echoed: {msg}");
+        }
+        assert!(
+            msg.contains("Failed to read deletion vector s3://***@bucket/t/deletion_vector_x.bin"),
+            "expected the deletion vector without its credentials or query: {msg}"
         );
     }
 }
