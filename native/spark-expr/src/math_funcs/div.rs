@@ -131,7 +131,7 @@ fn spark_decimal_div_internal(
                 return Err(ArrowError::ExternalError(Box::new(divide_by_zero_error())));
             }
             // Non-ANSI: zero divisors have already been replaced with null by the
-            // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
+            // `spark_null_if_zero` guard applied by the planner, so
             // `try_binary` will never invoke this closure for a zero `r` in legacy/try mode.
             // The fallback `zero.clone()` is therefore unreachable in practice.
             let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
@@ -158,7 +158,7 @@ fn spark_decimal_div_internal(
                 return Err(ArrowError::ExternalError(Box::new(divide_by_zero_error())));
             }
             // Non-ANSI: zero divisors have already been replaced with null by the
-            // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
+            // `spark_null_if_zero` guard applied by the planner, so
             // `try_binary` will never invoke this closure for a zero `r` in legacy/try mode.
             // The fallback `0` is therefore unreachable in practice.
             let div = if r == 0 { 0 } else { l / r };

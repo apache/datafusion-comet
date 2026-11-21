@@ -24,6 +24,7 @@ use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
+use crate::math_funcs::numeric_guard::NumericGuard;
 use crate::math_funcs::pow::spark_pow;
 use crate::math_funcs::signum::spark_signum;
 use crate::math_funcs::sqrt::spark_sqrt;
@@ -222,6 +223,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_modulo);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
         }
+        "spark_null_if_non_positive" => Ok(Arc::new(ScalarUDF::new_from_impl(
+            NumericGuard::NullIfNonPositive,
+        ))),
         "abs" => {
             let func = Arc::new(abs);
             make_comet_scalar_udf!("abs", func, without data_type)

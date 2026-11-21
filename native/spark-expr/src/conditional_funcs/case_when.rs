@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::math_funcs::numeric_guard::NumericGuard;
 use crate::{
     Cast, EvalMode, GetStructField, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison,
 };
@@ -38,7 +39,7 @@ use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{
     BinaryExpr, CaseExpr, Column, IsNotNullExpr, IsNullExpr, LambdaVariable, Literal, NotExpr,
 };
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::sync::{Arc, OnceLock};
@@ -436,7 +437,7 @@ impl PhysicalExpr for CaseWhenExpr {
 ///
 /// That holds when it can neither fail nor return something different for seeing more rows, and is
 /// cheap: a column, a literal, and struct fields, comparisons, boolean logic, null checks, widening
-/// casts and wrapping arithmetic over them. Anything else, including every function and a cast that
+/// casts and wrapping arithmetic over them. Anything else, including general functions and a cast that
 /// parses a string, is treated as able to fail. `CASE` uses this to decide whether to evaluate
 /// every branch over the whole batch, which pays off only when that costs little more than
 /// selecting rows.
@@ -469,6 +470,8 @@ fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool
         }
     } else if let Some(normalize) = expr.downcast_ref::<NormalizeNaNAndZero>() {
         normalize.is_infallible()
+    } else if let Some(func) = expr.downcast_ref::<ScalarFunctionExpr>() {
+        func.fun().inner().is::<NumericGuard>()
     } else if let Some(not) = expr.downcast_ref::<NotExpr>() {
         not.arg()
             .data_type(input_schema)
@@ -1354,6 +1357,11 @@ mod tests {
         assert!(infallible(binary(c("s"), Operator::Eq, lit("x"))));
         assert!(infallible(binary(c("i"), Operator::Plus, c("i"))));
         assert!(infallible(binary(c("d"), Operator::Divide, c("d"))));
+        assert!(infallible(binary(
+            c("d"),
+            Operator::Divide,
+            crate::create_null_if_zero_expr(c("d"), &schema).unwrap()
+        )));
         assert!(infallible(binary(c("d"), Operator::Modulo, c("d"))));
         assert!(infallible(Arc::new(NotExpr::new(binary(
             c("i"),

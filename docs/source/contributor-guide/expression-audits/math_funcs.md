@@ -39,7 +39,7 @@
 
 ## `/`
 
-- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Divide(left, right, evalMode)`. Non-ANSI mode wraps the divisor in `If(EqualTo(right, 0), null, right)` so DataFusion never throws. Decimal output is wrapped in `CheckOverflow(failOnError = ANSI)`; ANSI surfaces `NUMERIC_VALUE_OUT_OF_RANGE`, non-ANSI returns NULL.
+- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Divide(left, right, evalMode)`. In non-ANSI mode, Comet evaluates the divisor once and replaces zero with NULL before division. For decimal results, `CheckOverflow(failOnError = ANSI)` raises `NUMERIC_VALUE_OUT_OF_RANGE` on overflow in ANSI mode and returns NULL otherwise.
 
 ## CheckOverflow (internal)
 
@@ -162,7 +162,7 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 
 ## ln
 
-- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for `Log`. Comet wires through `CometLog` to DataFusion `ln` with a `nullIfNegative` rewrite to match Spark's NULL behaviour for `x <= 0`.
+- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for `Log`. For `ln`, `log10` and `log2`, Comet evaluates the argument once and replaces non-positive values with NULL before calling the corresponding DataFusion function.
 
 ## log
 
@@ -264,7 +264,7 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 
 ## try_divide
 
-- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `TryDivide` rewrites to `Divide(.., EvalMode.TRY)`. The `nullIfWhenPrimitive` wrapper swaps zero divisors to NULL; integer / float divide uses `checked_div`; decimal uses `decimal_div` + `CheckOverflow(failOnError = false)` returning NULL.
+- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `TryDivide` rewrites to `Divide(.., EvalMode.TRY)`. Comet evaluates the divisor once and returns NULL when it is zero. Integer and floating-point division use `checked_div`. Decimal division uses `decimal_div` and `CheckOverflow(failOnError = false)` to return NULL on overflow.
 
 ## try_multiply
 
