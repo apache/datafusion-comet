@@ -1129,6 +1129,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn binary_as_string_reads_schema_hints_and_json_without_casts() {
+        use arrow::array::StringArray;
+        use datafusion::datasource::physical_plan::FileScanConfig;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::arrow::arrow_writer::ArrowWriterOptions;
+        use parquet::arrow::ARROW_SCHEMA_META_KEY;
+        use parquet::basic::ConvertedType;
+        use parquet::schema::parser::parse_message_type;
+        use parquet::schema::types::SchemaDescriptor;
+
+        let schema = binary_as_string_required_schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec![Some(r#"{"value":"one"}"#), None])),
+            ],
+        )
+        .unwrap();
+        for (annotation, embedded_schema, converted_type) in [
+            ("", true, ConvertedType::NONE),
+            ("(JSON)", false, ConvertedType::JSON),
+        ] {
+            let parquet_schema = SchemaDescriptor::new(Arc::new(
+                parse_message_type(&format!(
+                    "message test {{ required int32 a; optional binary s {annotation}; }}"
+                ))
+                .unwrap(),
+            ));
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let options = ArrowWriterOptions::new()
+                .with_parquet_schema(parquet_schema)
+                .with_skip_arrow_metadata(!embedded_schema);
+            let mut writer = ArrowWriter::try_new_with_options(
+                file.reopen().unwrap(),
+                Arc::clone(&schema),
+                options,
+            )
+            .unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file.reopen().unwrap()).unwrap();
+            assert_eq!(
+                reader.parquet_schema().column(1).converted_type(),
+                converted_type
+            );
+            let has_schema_hint = reader
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|entry| entry.key == ARROW_SCHEMA_META_KEY)
+                });
+            assert_eq!(has_schema_hint, embedded_schema);
+            assert_eq!(reader.schema().field(1).data_type(), &DataType::Utf8);
+
+            let partitioned_file =
+                PartitionedFile::from_path(file.path().to_str().unwrap().to_string()).unwrap();
+            let session = binary_as_string_session(false);
+            let scan = binary_as_string_scan(&partitioned_file, vec![], &session);
+            let config = scan.data_source().downcast_ref::<FileScanConfig>().unwrap();
+            let projection = config.file_source.projection().unwrap();
+            let decode = Arc::clone(&projection.as_ref()[1].expr);
+            assert!(decode.downcast_ref::<Cast>().is_some());
+            let adapted = config
+                .expr_adapter_factory
+                .as_ref()
+                .unwrap()
+                .create(
+                    Arc::clone(config.file_source.table_schema().table_schema()),
+                    Arc::clone(reader.schema()),
+                )
+                .unwrap()
+                .rewrite(decode)
+                .unwrap();
+            assert!(adapted.downcast_ref::<Column>().is_some(), "{adapted}");
+
+            let actual = datafusion::physical_plan::collect(scan, session.task_ctx())
+                .await
+                .unwrap();
+            assert_eq!(actual, vec![batch.clone()]);
+        }
+    }
+
+    #[tokio::test]
     async fn binary_as_string_rejects_fixed_binary_requested_as_string() {
         use futures::TryStreamExt;
         let fixed = write_binary_as_string_fixture(
