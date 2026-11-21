@@ -33,7 +33,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, max, sum}
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometIcebergTestBase}
 
 /**
  * Runs queries on a Comet Native Executor cluster (see
@@ -58,7 +58,8 @@ import org.apache.comet.CometConf
  */
 class CometNativeExecutorsSuite
     extends CometNativeExecutorsTestBase
-    with AdaptiveSparkPlanHelper {
+    with AdaptiveSparkPlanHelper
+    with CometIcebergTestBase {
 
   private val binDir: Option[File] =
     sys.env.get("COMET_NATIVE_EXECUTORS_BIN_DIR").map(new File(_).getAbsoluteFile)
@@ -150,9 +151,7 @@ class CometNativeExecutorsSuite
 
   private def onCluster(body: => Unit): Unit = withSQLConf(
     CometConf.COMET_NATIVE_EXECUTORS_ENABLED.key -> "true",
-    // Without a cluster, only tests that the planner refuses run, and those never connect.
-    CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key ->
-      Option(schedulerUrl).getOrElse("http://localhost:50060"))(body)
+    CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key -> schedulerUrl)(body)
 
   /**
    * Checks that the cluster runs `query` and returns what Spark returns, in order if `ordered`.
@@ -186,7 +185,6 @@ class CometNativeExecutorsSuite
     assert(collect(plan) { case exec: CometNativeExecutorsExec => exec }.size == 1, plan)
   }
 
-  /** A Parquet table with several files, read as several partitions. */
   nativeExecutorsTest("scan, filter and project") {
     withTable { path =>
       checkOnCluster(spark.read.parquet(path).where("k > 2").selectExpr("id", "v * 2 AS w"))
@@ -370,6 +368,21 @@ class CometNativeExecutorsSuite
     }
   }
 
+  nativeExecutorsTest("an Iceberg scan that plans no tasks returns no rows") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withHadoopCatalog("cne_cat") {
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        spark.sql(
+          "CREATE TABLE cne_cat.db.t (id BIGINT, k BIGINT) USING iceberg PARTITIONED BY (k)")
+        spark.sql("INSERT INTO cne_cat.db.t SELECT id, id % 7 FROM range(100)")
+        // No partition has k = 99, so Iceberg plans no tasks.
+        def table = spark.table("cne_cat.db.t").where("k = 99")
+        checkOnCluster(table.selectExpr("id + 1"))
+        checkOnCluster(table.groupBy("id").count())
+      }
+    }
+  }
+
   nativeExecutorsTest("an empty range returns no rows") {
     withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
       for (slices <- Seq(4, 0)) {
@@ -384,20 +397,6 @@ class CometNativeExecutorsSuite
     withTable { path =>
       spark.read.parquet(path).createOrReplaceTempView("t")
       checkOnCluster(sql("select id, v from t where v > (select avg(v) from t where k = 3)"))
-    }
-  }
-
-  nativeExecutorsTest("a command's plan stays in Spark") {
-    withTable { path =>
-      onCluster {
-        withTempView("t") {
-          spark.read.parquet(path).createOrReplaceTempView("t")
-          // Explaining a command explains its result, which isn't a query to run on the cluster.
-          val df = sql("create or replace temp view v as select * from t")
-          assert(
-            df.queryExecution.explainString(org.apache.spark.sql.execution.SimpleMode).nonEmpty)
-        }
-      }
     }
   }
 }

@@ -412,12 +412,15 @@ object CometNativeExecutors {
     .setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder())
     .build()
 
-  /** The planning data of a partition that reads no files. */
+  /** The planning data of a Parquet scan's partition that reads no files. */
   private val noFiles = OperatorOuterClass.NativeScan
     .newBuilder()
     .setFilePartition(OperatorOuterClass.SparkFilePartition.getDefaultInstance)
     .build()
     .toByteArray
+
+  /** The planning data of an Iceberg scan's partition that reads no files. */
+  private val noTasks = OperatorOuterClass.IcebergScan.getDefaultInstance.toByteArray
 
   private class StageGraphBuilder(query: SparkPlan, withFiles: Boolean) {
     val stages: ArrayBuffer[Stage] = ArrayBuffer.empty
@@ -437,7 +440,7 @@ object CometNativeExecutors {
         case native: CometNativeExec if native.serializedPlanOpt.isDefined => native
         case other => fail(other, "it is not a Comet operator that runs in Rust")
       }
-      val scans = ArrayBuffer.empty[CometNativeScanExec]
+      val scans = ArrayBuffer.empty[CometLeafExec]
       val inputs = inputsOf(block, scans).map {
         case exchange: CometShuffleExchangeExec =>
           stageInput(exchange.child)(_.setPartitioning(partitioningOf(exchange)))
@@ -487,15 +490,24 @@ object CometNativeExecutors {
      * as a table with no data or a partition filter that prunes everything, gets one empty
      * partition for each, as Spark would return no rows from them.
      */
-    private def filesOf(block: CometNativeExec, scans: Seq[CometNativeScanExec])
+    private def filesOf(block: CometNativeExec, scans: Seq[CometLeafExec])
         : (Map[String, Array[Byte]], Map[String, Array[PartitionPlanData]]) = {
       val found @ (_, perPartition) = PlanDataInjector.findAllPlanData(block)
       if (perPartition.nonEmpty || scans.isEmpty) {
         found
       } else {
+        val empty = scans.map {
+          case scan: CometNativeScanExec => (scan.sourceKey, scan.commonData, noFiles)
+          case scan: CometIcebergNativeScanExec =>
+            val key =
+              IcebergPlanDataInjector.getKey(scan.nativeOp).getOrElse(scan.metadataLocation)
+            (key, scan.commonData, noTasks)
+        }
         (
-          scans.map(scan => scan.sourceKey -> scan.commonData).toMap,
-          scans.map(scan => scan.sourceKey -> Array(PartitionPlanData(noFiles))).toMap)
+          empty.map { case (key, common, _) => key -> common }.toMap,
+          empty.map { case (key, _, partition) =>
+            key -> Array(PartitionPlanData(partition))
+          }.toMap)
       }
     }
 
@@ -563,11 +575,11 @@ object CometNativeExecutors {
     /**
      * The exchanges that feed `block`, in the order its native plan's input leaves read them:
      * native shuffles and broadcasts, with a reused exchange resolved to the one it reuses. Adds
-     * the block's native Parquet scans to `scans`.
+     * the block's native Parquet and Iceberg scans to `scans`.
      */
     private def inputsOf(
         block: CometNativeExec,
-        scans: ArrayBuffer[CometNativeScanExec]): Seq[SparkPlan] = {
+        scans: ArrayBuffer[CometLeafExec]): Seq[SparkPlan] = {
       val inputs = ArrayBuffer.empty[SparkPlan]
       def walk(plan: SparkPlan): Unit = plan match {
         case reused: ReusedExchangeExec =>
@@ -582,6 +594,7 @@ object CometNativeExecutors {
           scans += scan
         case scan: CometIcebergNativeScanExec =>
           rejectDynamicPruning(scan, scan.runtimeFilters)
+          scans += scan
         case _: CometRangeExec =>
         // These stand for rows that the JVM feeds to the plan, which a cluster has no way to do.
         case _: CometScanWrapper | _: CometSinkPlaceHolder =>

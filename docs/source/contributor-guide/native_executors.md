@@ -62,11 +62,10 @@ yet, and sketches ways to run part of a query in Spark.
 
 `CometNativeExecutorsSuite` runs queries against a cluster it starts from the binaries in
 `COMET_NATIVE_EXECUTORS_BIN_DIR`. Its header comment gives the commands. It is not part of CI. Its
-tests that need a cluster are skipped when the variable is not set. The tests that check what the
-driver refuses to plan run without a cluster, but they still need a libcomet built with the
-`native-executors` feature. `CometNativeExecutorsPlanSuite` runs in CI. It takes the plan Comet
-would execute and checks the stage graph, the queries the driver refuses, and how a scalar
-subquery's result goes into the plan, with neither a cluster nor the feature.
+tests are skipped when the variable is not set. `CometNativeExecutorsPlanSuite` runs in CI. It takes
+the plan Comet would execute and checks the stage graph, the queries the driver refuses or leaves
+in Spark, and how a scalar subquery's result goes into the plan, with neither a cluster nor the
+feature.
 
 ## Current limitations
 
@@ -101,6 +100,11 @@ Comet Native Executors are a first version. The sub-issues of
   `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` after it ends (five minutes by default), whether or
   not Spark has read them. The scheduler gives each result partition its expiration time, and a
   Spark task that reads a partition after that fails with a message that names the setting.
+- Lost results: [#7738](https://github.com/apache/datafusion-comet/issues/7738). A cluster executor
+  that dies before Spark reads its result partitions takes them with it. Spark retries the task that
+  reads one, but every retry reads from the same executor, so the job fails after
+  `spark.task.maxFailures` attempts. Nothing runs the query again, as Spark reruns a map stage whose
+  shuffle output is lost.
 
 ### Whole queries only
 
