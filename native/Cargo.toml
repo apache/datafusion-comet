@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs", "local"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs", "local"]
 # Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
 # optional path dependencies when their corresponding contrib feature is enabled.
 # native-executors is its own workspace, so that this one never depends on Ballista.
@@ -93,7 +93,7 @@ aws-sdk-sts = { version = "1.114.0", default-features = false }
 # head is behind the main revision Comet builds against. Move back to an
 # upstream main revision once #3257 merges.
 iceberg = { git = "https://github.com/andygrove/iceberg-rust", rev = "62f862468936e6cd66cfb3ac957b8cf567bcfa4f" }
-iceberg-storage-opendal = { git = "https://github.com/andygrove/iceberg-rust", rev = "62f862468936e6cd66cfb3ac957b8cf567bcfa4f", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
+iceberg-storage-opendal = { git = "https://github.com/andygrove/iceberg-rust", rev = "62f862468936e6cd66cfb3ac957b8cf567bcfa4f", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls", "opendal-hdfs-native"] }
 reqsign-core = "3"
 
 [profile.release]

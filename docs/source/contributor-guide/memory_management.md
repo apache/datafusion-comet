@@ -54,7 +54,11 @@ for, so that failure is confined to the task and the executor keeps running. An 
 `OutOfMemoryError` is not exempt: the executor hands it to `SparkUncaughtExceptionHandler`, which
 calls `System.exit(SparkExitCode.OOM)` (exit code 52). Real heap exhaustion therefore usually costs
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
-exceeded; the exit code does.
+exceeded, and neither does the exit code alone. Exit 137 means the process was sent `SIGKILL`, for
+memory or not. On non-Windows YARN executors, Spark adds `-XX:OnOutOfMemoryError='kill %p'` unless
+their Java options already set `-XX:OnOutOfMemoryError`, so a heap OOM there usually ends with
+`SIGTERM` (143) before the handler exits with 52. The cluster manager's diagnostics and the executor
+log say which budget it was.
 
 Comet's difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
@@ -349,7 +353,18 @@ limit      = (task_share - unspillable) / num_spill
 ```
 
 Here `unspillable` is the bytes held by consumers that cannot spill, and `num_spill` is the number
-of registered consumers that can.
+of active consumers that can spill, counting the one asking and, unless it is a sort, the sorts that
+have not started. A consumer is active while it holds more than its low-water mark, the least it has
+held since its first reservation. DataFusion registers each operator's consumer when it builds the
+stream tree, before any batch flows, so the operators above a blocking one, such as a sort, are
+registered while it reads its input. From DataFusion 56 an aggregate also reserves its initial table
+then ([apache/datafusion#25900](https://github.com/apache/datafusion/pull/25900)). Neither shows that
+the operator has started work, so it takes no share until it is active, which leaves its share to
+the operator doing the work
+([issue #7628](https://github.com/apache/datafusion-comet/issues/7628)). An operator that emptied,
+such as an aggregate that emitted early, is active again once it holds memory, and one that only
+gives memory back, such as a sort emitting what it buffered, takes no share. A sort that has not
+started is the exception, for the reason given under the tuning details below.
 
 Like Spark's own divisor, the number of running tasks follows tasks as they start and finish, so a
 task that runs alone has the whole pool. It is still not Spark's number or Spark's pool, and the
@@ -375,17 +390,16 @@ Before it asks Spark for a consumer that can spill, the pool makes two checks, a
 request without calling Spark if either fails:
 
 - **The consumer against its share.** The share is what the consumers that cannot spill leave of
-  the task's share, divided by the number of registered consumers that can spill. What the
-  consumer already holds plus the request must not exceed it. That counts all of the consumer's
-  reservations, including the sibling reservations that `new_empty()`, `split()` and `take()`
-  create, so an operator that holds several reservations still gets one share. A sort's streaming
-  merge, for example, creates one for each batch it reads. The pool keeps a running total for each
-  consumer, because `reservation.size()` covers only one reservation. With eight running tasks, a
-  16 GiB pool and two registered consumers that can spill, the task's share is 2 GiB and each
-  consumer's is 1 GiB, or 768 MiB while a merge holds 512 MiB.
+  the task's share, divided by the number of active consumers that can spill, this one
+  included. What the consumer already holds plus the request must not exceed it. That counts all
+  of the consumer's reservations, including the sibling reservations that `new_empty()`, `split()`
+  and `take()` create, so an operator that holds several reservations still gets one share. A
+  sort's streaming merge, for example, creates one for each batch it reads. The pool keeps a
+  running total for each consumer, because `reservation.size()` covers only one reservation. With
+  eight running tasks, a 16 GiB pool and two active consumers that can spill, the task's share is
+  2 GiB and each consumer's is 1 GiB, or 768 MiB while a merge holds 512 MiB.
 - **The task's total against the task's share.** The shares alone do not bound the total, because
-  a consumer keeps what it reserved while fewer consumers were registered or fewer tasks were
-  running.
+  a consumer keeps what it reserved while fewer consumers were active or fewer tasks were running.
 
 A consumer that cannot spill takes what Spark grants. The pool refuses it only when the task's
 total plus the request would exceed `pool_size`, which Spark's own limit on the task is at least as
@@ -397,21 +411,32 @@ as a workaround for [apache/datafusion#17334](https://github.com/apache/datafusi
 builds a spill path only for partially sorted input. Fully sorted, as in a `CometSortAggregateExec`
 over a native sort, a refusal fails the query, so the pool checks its requests only against the
 pool, as it does those of a consumer that cannot spill (`limited_to_its_share` in `fair_pool.rs`).
-It still counts as a consumer that can spill when the pool divides the task's share, so a sort
-below it stays at half of the share and leaves the aggregate the other half. The partially sorted
-stream still spills when Spark refuses it. The exemption goes by the stream's name, so it also
-covers a `PartialMerge` that the planner runs as a final aggregate because its input is sorted on
-some of its grouping keys. That one is not a `CometSortAggregateExec` and its input is only
-partially sorted, but it is likewise checked only against the pool and Spark's grant. A
-`PartialMerge` over input sorted on every grouping key stays on the hash aggregate, since the final
-aggregate has no spill path there and would only halve the limit of a sort below it.
+It still counts as a consumer that can spill once it is active. A sort below it reads all of its
+input before the aggregate asks for any, so the sort can take the whole share, and it gives part of
+that back before the aggregate's first request: all of it if it spilled, and otherwise its merge
+reservation and what `ExternalSorter` reserves beyond its sorted runs and, if it merges them, their
+sort keys, because it reserves about twice the bytes of each batch it buffers. The partially sorted stream still spills
+when Spark refuses it. The exemption goes by the stream's name, so it also covers a `PartialMerge`
+that the planner runs as a final aggregate because its input is sorted on some of its grouping
+keys. That one is not a `CometSortAggregateExec` and its input is only partially sorted, but it is
+likewise checked only against the pool and Spark's grant. A `PartialMerge` over input sorted on
+every grouping key stays on the hash aggregate, since the final aggregate has no spill path there.
 
 Three details matter for tuning:
 
 - The pool is task-shared (see below), so the consumers that divide the task's share include those
-  of every native plan in the task, not just the plan making the request. Registering a consumer
-  that can spill lowers the share of every other one, but does not take back memory they already
-  hold. Registering one that cannot spill changes no share until it holds memory.
+  of every native plan in the task, not just the plan making the request. A consumer that can
+  spill lowers the share of every other one once it is active, not when it registers, but does not
+  take back memory they already hold, so a consumer that starts after another has filled the task's
+  share is refused until that one gives memory back. Most consumers spill or emit early then, but
+  DataFusion 55.2's `ExternalSorter` fails with "Not enough memory to continue external sort" when
+  its first request is refused, since it has nothing to spill yet. So a sort that has registered
+  but not reserved keeps a share from every consumer but another sort. A hash aggregate below it,
+  which keeps its output reserved until it has emitted all of it and emits slices whose buffers the
+  sort is charged for in full, is held to its share and leaves the sort room. A sort below it gives
+  memory back before it emits and emits compact batches, so it needs to leave none. One that cannot
+  spill changes the shares only
+  through the bytes it holds.
 - A consumer at its share is refused, and spills, even when the rest of the task's share is free.
   That keeps the memory for the task's other consumers, and is why `fair_unified` can spill earlier
   than `greedy_unified`.
@@ -598,6 +623,9 @@ diverge for several structural reasons:
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
+- **Local execution's read-ahead.** The partitions of a local query hold the batches they produce
+  ahead of delivery, up to `spark.driver.maxResultSize` in all, without reserving them (see
+  [Local Execution](local-execution.md)).
 - **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
   `grow` asked for, Comet holds the difference anyway and deliberately does not tell Spark about it
   (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
@@ -732,11 +760,13 @@ much they matter:
 
 A checklist for triaging an executor OOM kill:
 
-1. Confirm which budget was exceeded. Exit code 137 / `OOMKilled` on the pod is the cgroup. Exit
-   code 52 with `java.lang.OutOfMemoryError` in the executor log is JVM heap exhaustion; Spark
-   treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
-   them. A failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed
-   memory pool, which is the only one of the three that is recoverable at task level.
+1. Confirm which budget was exceeded, from the cluster manager's diagnostics and the executor log
+   rather than the exit code alone. `OOMKilled` on the pod, or YARN reporting that the container
+   exceeded its memory limit, is the cgroup. A `java.lang.OutOfMemoryError` with a heap message
+   such as `Java heap space` in the executor log is JVM heap exhaustion. Spark treats it as fatal,
+   so the executor is lost either way, usually with exit code 52, or 143 on non-Windows YARN. A
+   failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed memory pool,
+   which is the only one of the three that is recoverable at task level.
 2. Compare `allocated` against `reserved` in the executor's `Comet native memory usage` log lines
    leading up to the kill, or `nativeAllocated` against `poolsReserved` in its
    `CometExecutorMemoryUsage` events when the event log records them, or `native_allocated`

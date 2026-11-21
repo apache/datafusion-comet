@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_numeric, cast_boolean_to_timestamp, cast_boolean_to_utf8,
+    is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_float32, cast_decimal128_to_float64, cast_decimal128_to_utf8,
@@ -47,7 +48,10 @@ use arrow::array::{
     StringArray, StructArray,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
-use arrow::datatypes::{format_decimal_str, DataType, GenericBinaryType, Schema};
+use arrow::datatypes::{
+    format_decimal_str, DataType, Float32Type, Float64Type, GenericBinaryType, Int16Type,
+    Int32Type, Int64Type, Int8Type, Schema,
+};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
@@ -172,6 +176,13 @@ pub struct SparkCastOptions {
     /// True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
     /// 0 instead of applying the integral-digit limit to it (SPARK-60118).
     pub decimal_zero_any_exponent: bool,
+    /// True when the running Spark casts a string far below the target scale's ulp to decimal as 0
+    /// even when the difference to the target scale does not fit in an int, instead of failing
+    /// in `BigDecimal.setScale` (SPARK-60119).
+    pub decimal_tiny_to_zero: bool,
+    /// True when Spark does not apply the 38 integral-digit limit when it casts a string to
+    /// decimal, as it does not with `spark.sql.legacy.allowNegativeScaleOfDecimal`.
+    pub decimal_skip_integral_digit_limit: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -191,6 +202,8 @@ impl SparkCastOptions {
             timezone: timezone.to_string(),
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
+            decimal_tiny_to_zero: false,
+            decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -204,6 +217,8 @@ impl SparkCastOptions {
             timezone: "".to_string(),
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
+            decimal_tiny_to_zero: false,
+            decimal_skip_integral_digit_limit: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -316,6 +331,8 @@ pub(crate) fn cast_array(
             scale,
             eval_mode,
             cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_tiny_to_zero,
+            cast_options.decimal_skip_integral_digit_limit,
         ),
         (Utf8 | LargeUtf8, Decimal256(precision, scale)) => cast_string_to_decimal(
             &array,
@@ -324,6 +341,8 @@ pub(crate) fn cast_array(
             scale,
             eval_mode,
             cast_options.decimal_zero_any_exponent,
+            cast_options.decimal_tiny_to_zero,
+            cast_options.decimal_skip_integral_digit_limit,
         ),
         (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
             if eval_mode == EvalMode::Ansi =>
@@ -464,6 +483,13 @@ pub(crate) fn cast_array(
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
         (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
+        (Boolean, Int8) => Ok(cast_boolean_to_numeric::<Int8Type>(&array)),
+        (Boolean, Int16) => Ok(cast_boolean_to_numeric::<Int16Type>(&array)),
+        (Boolean, Int32) => Ok(cast_boolean_to_numeric::<Int32Type>(&array)),
+        (Boolean, Int64) => Ok(cast_boolean_to_numeric::<Int64Type>(&array)),
+        (Boolean, Float32) => Ok(cast_boolean_to_numeric::<Float32Type>(&array)),
+        (Boolean, Float64) => Ok(cast_boolean_to_numeric::<Float64Type>(&array)),
+        (Boolean, Utf8) => Ok(cast_boolean_to_utf8(&array)),
         (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
         // NTZ → TIMESTAMP: interpret NTZ local-epoch value as session-TZ local time, convert to UTC.
         // Must come before the is_datafusion_spark_compatible fallthrough which would
@@ -682,7 +708,6 @@ fn cast_array_to_string(
     spark_cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
-    let mut str = String::with_capacity(array.len() * 16);
 
     let casted_values = cast_array(
         Arc::clone(array.values()),
@@ -699,25 +724,26 @@ fn cast_array_to_string(
         if array.is_null(row_index) {
             builder.append_null();
         } else {
-            str.clear();
             let start = offsets[row_index] as usize;
             let end = offsets[row_index + 1] as usize;
 
-            str.push('[');
-            let mut first = true;
-            for idx in start..end {
-                if !first {
-                    str.push_str(", ");
+            // Write the row straight into the builder's value buffer, then end it with an empty
+            // `append_value`, instead of assembling it in a scratch `String` and copying it again.
+            let written = builder.write_char('[').and_then(|()| {
+                for idx in start..end {
+                    if idx > start {
+                        builder.write_str(", ")?;
+                    }
+                    if string_values.is_null(idx) {
+                        builder.write_str(&spark_cast_options.null_string)?;
+                    } else {
+                        builder.write_str(string_values.value(idx))?;
+                    }
                 }
-                if string_values.is_null(idx) {
-                    str.push_str(&spark_cast_options.null_string);
-                } else {
-                    str.push_str(string_values.value(idx));
-                }
-                first = false;
-            }
-            str.push(']');
-            builder.append_value(&str);
+                builder.write_char(']')
+            });
+            written.expect("writing to a string builder cannot fail");
+            builder.append_value("");
         }
     }
     Ok(Arc::new(builder.finish()))
@@ -855,7 +881,25 @@ fn write_upper_hex<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
 /// Writes `byte` reinterpreted as a signed decimal, as Spark does when printing a byte array.
 #[inline]
 fn write_i8<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
-    write!(out, "{}", byte as i8)
+    let value = byte as i8;
+    let mut magnitude = value.unsigned_abs();
+    // At most "-128": a sign and three digits, filled from the end.
+    let mut buf = [0u8; 4];
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        buf[start] = b'0' + magnitude % 10;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if value < 0 {
+        start -= 1;
+        buf[start] = b'-';
+    }
+    // SAFETY: `buf[start..]` holds only ASCII digits and an optional '-', so it is valid UTF-8.
+    out.write_str(unsafe { std::str::from_utf8_unchecked(&buf[start..]) })
 }
 
 /// Writes the bytes of `value` between square brackets, encoded with `encode` and joined by
@@ -1923,6 +1967,39 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_sliced_array_with_null_rows_to_string() {
+        // A null row writes no bytes, so the rows after it must still start at the right offset,
+        // and a sliced list reads its values from a non-zero offset into the child array.
+        let list_array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(0)]),
+            Some(vec![Some(1), None]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![Some(-2), Some(3)]),
+        ]);
+        let sliced = list_array.slice(1, 5);
+        let string_array =
+            cast_array_to_string(&sliced, &SparkCastOptions::new(EvalMode::Legacy, "UTC")).unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(string_array.len(), 5);
+        assert_eq!(string_array.value(0), "[1, null]");
+        assert!(string_array.is_null(1));
+        assert_eq!(string_array.value(2), "[]");
+        assert!(string_array.is_null(3));
+        assert_eq!(string_array.value(4), "[-2, 3]");
+    }
+
+    #[test]
+    fn test_write_i8_matches_signed_display_for_every_byte() {
+        for byte in 0..=u8::MAX {
+            let mut out = String::new();
+            write_i8(&mut out, byte).unwrap();
+            assert_eq!(out, (byte as i8).to_string(), "byte {byte}");
+        }
     }
 
     #[test]

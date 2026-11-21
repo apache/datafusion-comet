@@ -41,8 +41,7 @@ expensive conversions again and again.
 
 ## Experimental: Direct Columnar-to-Row Conversion
 
-When the JVM columnar-to-row operator is in use (`spark.comet.exec.columnarToRow.native.enabled=false`),
-setting `spark.comet.exec.columnarToRow.direct.enabled=true` enables an experimental converter that writes
+Setting `spark.comet.exec.columnarToRow.direct.enabled=true` enables an experimental converter that writes
 values straight from Arrow buffers into Spark's row format without allocating an object per value. This is
 most beneficial for decimal-heavy schemas, where the default conversion allocates a `Decimal` object per
 value (and considerably more for decimals with precision above 18); microbenchmarks show up to 2x faster

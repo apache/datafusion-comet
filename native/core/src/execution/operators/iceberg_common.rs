@@ -45,8 +45,11 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
-/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
+/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`. `hdfs.` and `hadoop.`
+/// carry the HDFS backend's NameNode declarations and Hadoop client settings.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &[
+    "s3.", "gcs.", "adls.", "client.", "opendal.", "hdfs.", "hadoop.",
+];
 
 /// Pick an OpenDAL storage backend for a URI whose scheme `builtin_storage_schemes` lists for
 /// `access_mode`, or that is an opted-in S3-compliant alias written in lowercase; anything else is
@@ -79,6 +82,7 @@ pub(crate) fn storage_factory_for(
         "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
         "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
         "oss" => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
+        "hdfs" => Ok((Arc::new(OpenDalStorageFactory::HdfsNative), true)),
         // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) route to the S3 backend. Listed
         // last so the built-in backends above stay authoritative even if one of their schemes is
         // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
@@ -149,11 +153,55 @@ impl FileIoCacheKey {
             properties: sorted_properties(catalog_properties),
         })
     }
+
+    /// Whether `other` is a `FileIO` for the same table, access mode and catalog, built from
+    /// credentials that this key's `FileIO` replaces. A catalog that re-vends credentials gives a
+    /// table new properties, and a commit moves its metadata file, so the table is compared by
+    /// [`Self::table_location`]. A commit that keeps the properties supersedes nothing, so
+    /// neighboring snapshots share one provider.
+    ///
+    /// Only a later `s3.session-token-expires-at-ms` supersedes, so both entries must carry one.
+    /// Properties can differ for reasons that say nothing about which is newer: two sessions or
+    /// tenants that share a catalog name can hold different tokens, OAuth credentials or tenant
+    /// ids for one table. Evicting on any difference would make them evict each other on every
+    /// task. Without a later expiry both entries stay, and the LRU bound retires the older one.
+    fn supersedes(&self, other: &Self) -> bool {
+        self.access_mode == other.access_mode
+            && self.catalog_name == other.catalog_name
+            && self.table_location() == other.table_location()
+            && self.properties != other.properties
+            && matches!(
+                (self.token_expires_at_ms(), other.token_expires_at_ms()),
+                (Some(new), Some(old)) if new > old
+            )
+    }
+
+    /// What identifies the table across commits. A read's reference path is a metadata file, and
+    /// Iceberg writes all of a table's metadata files into one directory (`write.metadata.path`, or
+    /// `<location>/metadata`), so a read compares that directory. A write's reference path is the
+    /// table's data location, which a commit doesn't move.
+    fn table_location(&self) -> &str {
+        if self.access_mode == AccessMode::Read as u8 {
+            self.reference_path
+                .rfind('/')
+                .map_or(self.reference_path.as_str(), |i| &self.reference_path[..i])
+        } else {
+            &self.reference_path
+        }
+    }
+
+    fn token_expires_at_ms(&self) -> Option<u64> {
+        self.properties
+            .iter()
+            .find(|(k, _)| k == "s3.session-token-expires-at-ms")
+            .and_then(|(_, v)| v.parse().ok())
+    }
 }
 
 const FILE_IO_CACHE_CAPACITY: usize = 64;
 
-/// Least recently used entries are evicted first.
+/// Least recently used entries are evicted first. Inserting a table's `FileIO` also evicts the ones
+/// it supersedes, so their S3 credential providers can be released once no reader holds them.
 struct FileIoCache {
     entries: HashMap<FileIoCacheKey, FileIO>,
     order: VecDeque<FileIoCacheKey>,
@@ -178,17 +226,27 @@ impl FileIoCache {
         Some(file_io)
     }
 
-    /// Returns the replaced or evicted `FileIO` so the caller can drop it outside the lock.
-    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Option<FileIO> {
+    /// Returns the replaced or evicted `FileIO`s so the caller can drop them outside the lock.
+    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Vec<FileIO> {
         if let Some(previous) = self.entries.insert(key.clone(), file_io) {
-            return Some(previous);
+            return vec![previous];
         }
+        let mut evicted = Vec::new();
+        self.order.retain(|k| {
+            if key.supersedes(k) {
+                evicted.extend(self.entries.remove(k));
+                false
+            } else {
+                true
+            }
+        });
         self.order.push_back(key);
         if self.entries.len() > self.capacity {
-            let oldest = self.order.pop_front()?;
-            return self.entries.remove(&oldest);
+            if let Some(oldest) = self.order.pop_front() {
+                evicted.extend(self.entries.remove(&oldest));
+            }
         }
-        None
+        evicted
     }
 }
 
@@ -302,9 +360,10 @@ fn cached_file_io(
 /// mode; the JVM read and write gates load these lists over JNI. `memory` is write-only: an OpenDAL
 /// memory backend is a fresh empty in-process store the write path assembles manifests in, so a
 /// read finds nothing. `oss` is read-only: no `oss.*` property is forwarded and no test covers it.
+/// `hdfs` is read-only: the write path has not been tested against it.
 pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
     match access_mode {
-        AccessMode::Read => &["file", "gs", "oss", "s3", "s3a"],
+        AccessMode::Read => &["file", "gs", "hdfs", "oss", "s3", "s3a"],
         AccessMode::Write => &["file", "memory", "gs", "s3", "s3a"],
     }
 }
@@ -817,15 +876,234 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(cache.insert(key("a"), local_file_io()).is_none());
-        assert!(cache.insert(key("b"), local_file_io()).is_none());
+        assert!(cache.insert(key("a"), local_file_io()).is_empty());
+        assert!(cache.insert(key("b"), local_file_io()).is_empty());
         assert!(cache.get(&key("a")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert!(cache.get(&key("b")).is_none());
         assert!(cache.get(&key("a")).is_some());
         assert!(cache.get(&key("c")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// Properties as a REST catalog vends them: a token and its expiry. `t1` expires before `t2`,
+    /// which expires before `t3`.
+    fn vended(token: &str) -> HashMap<String, String> {
+        let n: u64 = token.trim_start_matches('t').parse().unwrap();
+        HashMap::from([
+            ("s3.session-token".to_string(), token.to_string()),
+            (
+                "s3.session-token-expires-at-ms".to_string(),
+                (n * 1000).to_string(),
+            ),
+        ])
+    }
+
+    /// A catalog that re-vends credentials for a table gives it new properties with a later
+    /// expiry, so the table's new `FileIO` evicts the old one, and the old one's credential provider is released once its
+    /// readers finish. That holds whether the metadata file moved or not. Other tables, catalogs
+    /// and access modes keep theirs.
+    #[test]
+    fn cache_evicts_the_file_io_a_table_supersedes() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str, catalog: &str, mode: AccessMode| {
+            FileIoCacheKey::new(&vended(token), path, catalog, mode).unwrap()
+        };
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        let other_table = "s3://b/db/u/metadata/00001-c.metadata.json";
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Read), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", other_table, "cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", v1, "other_cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Write), local_file_io())
+            .is_empty());
+
+        // Re-vended credentials for the same metadata file.
+        assert_eq!(
+            cache
+                .insert(key("t2", v1, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t1", v1, "cat", AccessMode::Read)).is_none());
+
+        // A commit, with credentials vended alongside it.
+        assert_eq!(
+            cache
+                .insert(key("t3", v2, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t2", v1, "cat", AccessMode::Read)).is_none());
+        assert!(cache.get(&key("t3", v2, "cat", AccessMode::Read)).is_some());
+
+        assert!(cache
+            .get(&key("t1", other_table, "cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "other_cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "cat", AccessMode::Write))
+            .is_some());
+        assert_eq!(cache.entries.len(), 4);
+        assert_eq!(cache.order.len(), 4);
+    }
+
+    /// A commit that keeps the credentials leaves the previous snapshot's `FileIO` cached, so a
+    /// time-travel self-join or reads of neighboring snapshots don't rebuild it on each task.
+    /// With `write.metadata.path` set, a table's metadata files sit in that directory, which need
+    /// not end in `/metadata`. A commit under `s3://b/meta/db/t1` still supersedes the table's
+    /// previous `FileIO`, and two tables under `s3://b/metadata/db/` stay apart.
+    #[test]
+    fn cache_compares_reads_by_metadata_directory() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(&vended(token), path, "cat", AccessMode::Read).unwrap()
+        };
+        let custom_v1 = "s3://b/meta/db/t1/00001-a.metadata.json";
+        let custom_v2 = "s3://b/meta/db/t1/00002-b.metadata.json";
+        assert!(cache
+            .insert(key("t1", custom_v1), local_file_io())
+            .is_empty());
+        assert_eq!(cache.insert(key("t2", custom_v2), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", custom_v1)).is_none());
+
+        let shared_t1 = "s3://b/metadata/db/t1/00001-c.metadata.json";
+        let shared_t2 = "s3://b/metadata/db/t2/00001-d.metadata.json";
+        assert!(cache
+            .insert(key("t1", shared_t1), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("t2", shared_t2), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("t1", shared_t1)).is_some());
+        assert_eq!(cache.entries.len(), 3);
+    }
+
+    #[test]
+    fn cache_keeps_the_file_io_of_a_commit_with_unchanged_properties() {
+        let mut cache = FileIoCache::new(8);
+        let properties = HashMap::from([("s3.session-token".to_string(), "t1".to_string())]);
+        let key =
+            |path: &str| FileIoCacheKey::new(&properties, path, "cat", AccessMode::Read).unwrap();
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        assert!(cache.insert(key(v1), local_file_io()).is_empty());
+        assert!(cache.insert(key(v2), local_file_io()).is_empty());
+        assert!(cache.get(&key(v1)).is_some());
+        assert!(cache.get(&key(v2)).is_some());
+    }
+
+    /// Two sessions reading one table with different vended tokens: only the token that expires
+    /// later evicts, so the sessions don't evict each other on every insert.
+    #[test]
+    fn cache_evicts_only_for_a_token_that_expires_later() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, expires_at_ms: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([
+                    ("s3.session-token".to_string(), token.to_string()),
+                    (
+                        "s3.session-token-expires-at-ms".to_string(),
+                        expires_at_ms.to_string(),
+                    ),
+                ]),
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache
+            .insert(key("later", "2000"), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("earlier", "1000"), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("later", "2000")).is_some());
+        assert!(cache.get(&key("earlier", "1000")).is_some());
+
+        assert_eq!(
+            cache.insert(key("latest", "3000"), local_file_io()).len(),
+            2
+        );
+        assert!(cache.get(&key("latest", "3000")).is_some());
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// A write's reference path is the table's data location, compared whole: new properties for
+    /// it supersede, while a sibling table's location, which shares its parent, stays apart.
+    #[test]
+    fn cache_compares_writes_by_data_location() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(&vended(token), path, "cat", AccessMode::Write).unwrap()
+        };
+        let t = "s3://b/warehouse/db/t";
+        let u = "s3://b/warehouse/db/u";
+        assert!(cache.insert(key("t1", t), local_file_io()).is_empty());
+        assert!(cache.insert(key("t1", u), local_file_io()).is_empty());
+        assert_eq!(cache.insert(key("t2", u), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", t)).is_some());
+        assert!(cache.get(&key("t1", u)).is_none());
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// Properties that differ without a later expiry on both sides don't say which entry is newer,
+    /// for example two tenants sharing a catalog name with different OAuth tokens, or a token
+    /// vended without an expiry. Both entries stay, so neither side evicts the other on each task,
+    /// and the LRU bound retires the least recently used one.
+    #[test]
+    fn cache_keeps_entries_without_a_later_expiry() {
+        let mut cache = FileIoCache::new(3);
+        let key = |properties: &[(&str, &str)]| {
+            FileIoCacheKey::new(
+                &properties
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        let tenant_a = key(&[("token", "oauth-a"), ("header.X-Tenant", "a")]);
+        let tenant_b = key(&[("token", "oauth-b"), ("header.X-Tenant", "b")]);
+        let expiring = key(&[
+            ("s3.session-token", "t1"),
+            ("s3.session-token-expires-at-ms", "1000"),
+        ]);
+        assert!(cache.insert(tenant_a.clone(), local_file_io()).is_empty());
+        assert!(cache.insert(tenant_b.clone(), local_file_io()).is_empty());
+        // An expiry on one side only doesn't order the two either way.
+        assert!(cache.insert(expiring.clone(), local_file_io()).is_empty());
+        assert!(cache.get(&tenant_a).is_some());
+        assert!(cache.get(&tenant_b).is_some());
+        assert!(cache.get(&expiring).is_some());
+
+        // The LRU bound still applies: tenant_a is now the least recently used.
+        let unexpiring = key(&[("s3.session-token", "t2")]);
+        assert_eq!(cache.insert(unexpiring.clone(), local_file_io()).len(), 1);
+        assert!(cache.get(&tenant_a).is_none());
+        assert!(cache.get(&tenant_b).is_some());
+        assert!(cache.get(&unexpiring).is_some());
+        assert_eq!(cache.entries.len(), 3);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
@@ -843,6 +1121,158 @@ mod tests {
         let err = factory_result("oss://bucket/db/table", AccessMode::Write).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme: oss"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn hdfs_scheme_is_readable_but_not_writable() {
+        assert!(factory_result("hdfs://nn:8020/db/table", AccessMode::Read).is_ok());
+        let err = factory_result("hdfs://nn:8020/db/table", AccessMode::Write).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: hdfs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The JVM declares a nameservice as `hdfs.name-node.<ns>`, and a catalog can declare one with
+    /// Hadoop's own keys under `hadoop.`.
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        let props = HashMap::from([
+            ("hdfs.name-node.ns1".to_string(), "nn1:8020".to_string()),
+            ("hadoop.dfs.ha.namenodes.ns2".to_string(), "a".to_string()),
+            (
+                "hadoop.dfs.namenode.rpc-address.ns2.a".to_string(),
+                "nn2:8020".to_string(),
+            ),
+        ]);
+        let (file_io, _) =
+            build_file_io(&props, "hdfs://ns2/warehouse", "", AccessMode::Read).unwrap();
+        for (key, value) in &props {
+            assert_eq!(file_io.config().get(key), Some(value), "{key}");
+        }
+    }
+
+    /// The cache is shared per executor, and an HDFS `FileIO` keeps its NameNode clients for life.
+    /// Two catalogs that differ only in how they reach HDFS must therefore never share a key, or
+    /// the second would be served by the first one's clients. A regression pin on the key, which
+    /// hashes every property.
+    #[test]
+    fn cache_key_separates_hdfs_catalogs() {
+        let table = "hdfs://nameservice1/warehouse/db/t";
+        let props = |name_node: &str, random_order: &str| {
+            HashMap::from([
+                // What the JVM declares for an `hdfs://nameservice1/...` table.
+                (
+                    "hdfs.name-node.nameservice1".to_string(),
+                    name_node.to_string(),
+                ),
+                (
+                    "hadoop.dfs.client.failover.random.order".to_string(),
+                    random_order.to_string(),
+                ),
+            ])
+        };
+        let key = |props: &HashMap<String, String>| {
+            FileIoCacheKey::new(props, table, "cat", AccessMode::Read)
+        };
+        let base = props("nn1:8020,nn2:8020", "true");
+
+        // Control: the same properties always give the same key, so the inequalities below are
+        // down to the one property that changed.
+        assert!(key(&base).is_some());
+        assert_eq!(key(&base), key(&base.clone()));
+
+        // Only the declaration differs: another NameNode, another list, the same list reordered
+        // (which changes the failover order), and no list at all.
+        for other in [
+            props("nn1:8020,nn3:8020", "true"),
+            props("nn1:8020", "true"),
+            props("nn2:8020,nn1:8020", "true"),
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+        let mut without_name_node = base.clone();
+        without_name_node.remove("hdfs.name-node.nameservice1");
+        assert_ne!(key(&base), key(&without_name_node));
+
+        // Only the `hadoop.dfs.client.failover.*` overrides differ: a changed value, an added
+        // override and a removed one.
+        let mut other_failover = base.clone();
+        other_failover.insert(
+            "hadoop.dfs.client.failover.proxy.provider.nameservice1".to_string(),
+            "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider".to_string(),
+        );
+        let mut without_failover = base.clone();
+        without_failover.remove("hadoop.dfs.client.failover.random.order");
+        for other in [
+            props("nn1:8020,nn2:8020", "false"),
+            other_failover,
+            without_failover,
+        ] {
+            assert_ne!(key(&base), key(&other), "{other:?}");
+        }
+    }
+
+    /// Builds the real HDFS storage from one property the way a `FileIO` does on first use.
+    /// Parsing is all it does: an operator, and with it a NameNode connection, is only made by
+    /// the first storage call, so this needs neither a NameNode nor a runtime. The storage is
+    /// inspected through its serde form, so this is a contract test on the pinned iceberg-rust
+    /// revision and its config field names.
+    fn build_hdfs_storage(key: &str, value: &str) -> Result<serde_json::Value, String> {
+        let config =
+            StorageConfig::from_props(HashMap::from([(key.to_string(), value.to_string())]));
+        let storage = OpenDalStorageFactory::HdfsNative
+            .build(&config)
+            .map_err(|e| e.to_string())?;
+        Ok(serde_json::to_value(&*storage).expect("the storage serializes"))
+    }
+
+    /// One Hadoop option of the parsed storage config.
+    fn parsed_option<'a>(storage: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        storage
+            .pointer("/HdfsNative/config/options")
+            .and_then(|options| options.get(key))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// The contract `CometIcebergNativeScan.hadoopToIcebergHdfsProperties` relies on: it declares
+    /// an HA nameservice as `hdfs.name-node.<nameservice>`, and iceberg-rust expands that into
+    /// Hadoop's own `dfs.ha.namenodes.<ns>` / `dfs.namenode.rpc-address.<ns>.<nn>`, the keys its
+    /// resolver reads for a portless path authority. A portless entry is refused when the
+    /// storage is built, naming the key and the entry.
+    #[test]
+    fn hdfs_nameservice_declaration_is_parsed_by_the_real_storage() {
+        for input in [
+            "nn1:8020,nn2:8020",
+            // Whitespace around entries, a trailing slash and the `hdfs://` prefix are tolerated.
+            " hdfs://nn1:8020/ , nn2:8020 ",
+        ] {
+            let storage = build_hdfs_storage("hdfs.name-node.ns1", input)
+                .unwrap_or_else(|e| panic!("`{input}` should be accepted: {e}"));
+            assert_eq!(
+                parsed_option(&storage, "dfs.ha.namenodes.ns1"),
+                Some("nn0,nn1"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn0"),
+                Some("nn1:8020"),
+                "input `{input}`: {storage}"
+            );
+            assert_eq!(
+                parsed_option(&storage, "dfs.namenode.rpc-address.ns1.nn1"),
+                Some("nn2:8020"),
+                "input `{input}`: {storage}"
+            );
+        }
+
+        // A portless entry would only fail at the first I/O, so it is refused here, and the
+        // error names the offending key and entry rather than the whole list.
+        let err = build_hdfs_storage("hdfs.name-node.ns1", "nn1:8020,nn2").unwrap_err();
+        assert!(
+            err.contains("hdfs.name-node.ns1") && err.contains("nn2") && !err.contains("nn1:8020"),
             "unexpected error: {err}"
         );
     }
@@ -948,7 +1378,7 @@ mod tests {
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        let err = factory_result("viewfs://cluster/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
@@ -997,7 +1427,7 @@ mod tests {
     #[test]
     fn unlisted_schemes_are_rejected_for_both_modes() {
         let unlisted = [
-            "hdfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
+            "viewfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
         ];
         for mode in [AccessMode::Read, AccessMode::Write] {
             for scheme in unlisted {

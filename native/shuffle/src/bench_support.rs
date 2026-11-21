@@ -26,6 +26,7 @@
 //!
 //! Not an API, and not used outside `benches/`.
 
+pub use crate::comet_partitioning::hash_partition_ids;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{MultiPartitionShuffleRepartitioner, ShufflePartitioner};
 use crate::writers::PartitionWriter;
