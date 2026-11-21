@@ -28,6 +28,7 @@
 use std::fmt::Display;
 use std::str::FromStr;
 
+pub mod adaptive;
 pub mod assembly;
 pub mod codec;
 pub mod frontend;

@@ -209,7 +209,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .write
         .parquet(path)
       // Sorting on g, the first grouping key, makes DataFusion run the final aggregate as an
-      // OrderedFinalAggregateStream, which spills and reads its spill files back the same way.
+      // ClusteredFinalAggregateStream, which spills and reads its spill files back the same way.
       // Spark drops a sort under an aggregate unless EliminateSorts is excluded. With a 2.5 MiB
       // pool, merging the runs takes nearly all of the aggregate's share. The sort's merge
       // reservation is lowered so that the sort fits in the pool too.

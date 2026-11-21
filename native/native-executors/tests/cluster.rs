@@ -31,9 +31,9 @@ use std::time::{Duration, Instant, SystemTime};
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightClient, FlightDescriptor, FlightEndpoint, FlightInfo};
 use common::*;
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{AsArray, RecordBatch};
 use datafusion::arrow::datatypes::Int64Type;
-use datafusion_comet_proto::spark_native_executors::QueryRequest;
+use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage};
 use futures::TryStreamExt;
 use prost::Message;
 use tonic::transport::Endpoint;
@@ -44,6 +44,8 @@ struct Cluster {
     processes: Vec<Child>,
     work_dir: PathBuf,
     flight_url: String,
+    /// The scheduler's log, with this crate's messages at info level.
+    scheduler_log: PathBuf,
     /// The port of Ballista's gRPC service, for executors.
     scheduler_port: u16,
 }
@@ -70,6 +72,10 @@ impl Cluster {
                 std::process::id()
             )),
             flight_url: format!("http://127.0.0.1:{flight_port}"),
+            scheduler_log: std::env::temp_dir().join(format!(
+                "comet-scheduler-{}-{flight_port}.log",
+                std::process::id()
+            )),
             scheduler_port,
         };
         let mut env = vec![
@@ -78,7 +84,13 @@ impl Cluster {
             ("COMET_SCHEDULER_FLIGHT_PORT", flight_port.to_string()),
         ];
         env.extend_from_slice(scheduler_env);
-        cluster.spawn(env!("CARGO_BIN_EXE_comet-scheduler"), &env);
+        let log = std::fs::File::create(&cluster.scheduler_log).unwrap();
+        cluster.spawn_logging(
+            env!("CARGO_BIN_EXE_comet-scheduler"),
+            &env,
+            "warn,comet_native_executors=info",
+            Stdio::from(log),
+        );
         wait_for(scheduler_port);
         wait_for(flight_port);
         let work_dir = cluster.work_dir.to_string_lossy().into_owned();
@@ -99,10 +111,15 @@ impl Cluster {
     }
 
     fn spawn(&mut self, binary: &str, env: &[(&str, String)]) {
+        self.spawn_logging(binary, env, "warn", Stdio::inherit());
+    }
+
+    fn spawn_logging(&mut self, binary: &str, env: &[(&str, String)], log: &str, stderr: Stdio) {
         let child = Command::new(binary)
             .envs(env.iter().map(|(key, value)| (*key, value.as_str())))
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", log)
             .stdout(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .unwrap_or_else(|e| panic!("Cannot start {binary}: {e}"));
         self.processes.push(child);
@@ -121,17 +138,33 @@ impl Cluster {
         let info = self.get_flight_info(request).await.unwrap();
         let mut partitions = vec![];
         for endpoint in &info.endpoint {
-            partitions.push(read(endpoint).await.unwrap());
+            partitions.push(self.read(endpoint).await.unwrap());
         }
         partitions
+    }
+
+    /// Reads a result partition from where its endpoint says, or from the scheduler if the
+    /// endpoint names no location, as for the results of a pipelined query.
+    async fn read(&self, endpoint: &FlightEndpoint) -> Result<Vec<RecordBatch>, FlightError> {
+        match endpoint.location.first() {
+            Some(location) => read_from(&location.uri, endpoint).await,
+            None => read_from(&self.flight_url, endpoint).await,
+        }
     }
 }
 
 /// Reads a result partition from the executor that holds it.
 async fn read(endpoint: &FlightEndpoint) -> Result<Vec<RecordBatch>, FlightError> {
-    let mut executor = connect(&endpoint.location[0].uri).await;
+    read_from(&endpoint.location[0].uri, endpoint).await
+}
+
+async fn read_from(
+    location: &str,
+    endpoint: &FlightEndpoint,
+) -> Result<Vec<RecordBatch>, FlightError> {
+    let mut server = connect(location).await;
     let ticket = endpoint.ticket.clone().unwrap();
-    within_time_limit(async { executor.do_get(ticket).await?.try_collect().await }).await
+    within_time_limit(async { server.do_get(ticket).await?.try_collect().await }).await
 }
 
 impl Drop for Cluster {
@@ -142,6 +175,7 @@ impl Drop for Cluster {
             let _ = process.wait();
         }
         let _ = std::fs::remove_dir_all(&self.work_dir);
+        let _ = std::fs::remove_file(&self.scheduler_log);
     }
 }
 
@@ -222,7 +256,7 @@ async fn runs_a_query_across_a_range_exchange() {
     let cluster = Cluster::start();
     let request = query(vec![
         range_stage(1000, 4),
-        reading_stage(0, range_partitioning(4), 4),
+        reading_stage(0, range_partitioning(4, vec![]), 4),
     ]);
     let partitions = cluster.run(&request).await;
     assert_eq!(partitions.len(), 1);
@@ -230,6 +264,267 @@ async fn runs_a_query_across_a_range_exchange() {
         sorted_values::<Int64Type>(&partitions.concat()),
         (0..1000).collect::<Vec<_>>()
     );
+}
+
+/// A global sort runs as a sort of each partition and a merge, so its result comes back as one
+/// partition, in order.
+#[tokio::test(flavor = "multi_thread")]
+async fn sorts_across_a_range_exchange_by_merging_sorted_partitions() {
+    let cluster = Cluster::start();
+    let order = first_column_descending(long_type());
+    let request = query(vec![
+        range_stage(1000, 4),
+        sorting_stage(0, range_partitioning(4, vec![]), order, long_type()),
+    ]);
+    let partitions = cluster.run(&request).await;
+    assert_eq!(partitions.len(), 1);
+    let values: Vec<i64> = partitions[0]
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(0)
+                .as_primitive::<Int64Type>()
+                .values()
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(values, (0..1000).rev().collect::<Vec<_>>());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_a_build_side_that_measures_small_into_the_probe_side_stage() {
+    // Spark's estimates make the build side worth measuring before the probe side is shuffled:
+    // under Ballista's maximum estimate multiple, and the probe side many times larger. It
+    // measures far under the broadcast threshold, so the join runs in the probe side's stage.
+    let cluster = Cluster::start();
+    let mut probe = range_stage(10_000, 4);
+    probe.estimated_output_bytes = Some(1 << 40);
+    let mut build = range_stage(100, 2);
+    build.estimated_output_bytes = Some(1 << 30);
+    let request = query(vec![probe, build, joining_stage(0, 1, 3)]);
+
+    let partitions = cluster.run(&request).await;
+
+    let rows = partitions.concat();
+    assert_eq!(
+        sorted_values::<Int64Type>(&rows),
+        (0..100).collect::<Vec<_>>()
+    );
+    for batch in &rows {
+        assert_eq!(batch.column(0), batch.column(1));
+    }
+    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
+    assert!(log.contains("Holding back a join's probe side"), "{log}");
+    assert!(
+        log.contains("broadcasting it to the probe side's stage"),
+        "{log}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shuffles_the_probe_side_when_the_build_side_measures_large() {
+    // With a broadcast threshold of one byte, a held join's build side always measures too
+    // large, so the probe side's stage is released as it was and the join is shuffled.
+    let cluster = Cluster::start_with(&[(
+        "COMET_SCHEDULER_BALLISTA_CONFIG",
+        "ballista.optimizer.broadcast_join_threshold_bytes=1".to_string(),
+    )]);
+    let mut probe = range_stage(10_000, 4);
+    probe.estimated_output_bytes = Some(1 << 40);
+    let mut build = range_stage(100, 2);
+    build.estimated_output_bytes = Some(16);
+    let request = query(vec![probe, build, joining_stage(0, 1, 3)]);
+
+    let partitions = cluster.run(&request).await;
+
+    let rows = partitions.concat();
+    assert_eq!(
+        sorted_values::<Int64Type>(&rows),
+        (0..100).collect::<Vec<_>>()
+    );
+    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
+    assert!(log.contains("Holding back a join's probe side"), "{log}");
+    assert!(log.contains("shuffling the probe side"), "{log}");
+}
+
+/// The stages of `broadcasts_a_build_side_that_measures_small_into_the_probe_side_stage`, with
+/// `build` for the build side and `join` for the stage that joins. Spark's estimates make the
+/// build side worth measuring before the probe side is shuffled.
+fn held_join_query(build: Stage, join: Stage) -> QueryRequest {
+    let mut probe = range_stage(10_000, 4);
+    probe.estimated_output_bytes = Some(1 << 40);
+    let mut build = build;
+    build.estimated_output_bytes = Some(1 << 30);
+    query(vec![probe, build, join])
+}
+
+/// `id % 10` of `range(0, 100)`: a build side whose join keys repeat ten times each.
+fn duplicate_keys_build_side() -> Stage {
+    let key = remainder(bound(0, long_type()), long_literal(10));
+    projecting_stage(range_stage(100, 2), vec![key], vec![long_type()])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcast_join_keeps_every_match_of_duplicate_build_keys() {
+    let cluster = Cluster::start();
+    let request = held_join_query(duplicate_keys_build_side(), joining_stage(0, 1, 3));
+
+    let rows = cluster.run(&request).await.concat();
+
+    // Probe ids 0..10 each meet ten build rows.
+    assert_eq!(
+        rows.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        100
+    );
+    let keys = sorted_values::<Int64Type>(&rows);
+    assert_eq!(keys, (0..10).flat_map(|key| [key; 10]).collect::<Vec<_>>());
+    for batch in &rows {
+        assert_eq!(batch.column(0), batch.column(1));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcast_join_that_is_not_the_root_of_its_block() {
+    // The join's consumer then holds the join's output in a leaf and runs a projection over it.
+    let cluster = Cluster::start();
+    let mut join = joining_stage(0, 1, 3);
+    join = projecting_stage(
+        join,
+        vec![bound(0, long_type()), bound(1, long_type())],
+        vec![long_type(), long_type()],
+    );
+    let request = held_join_query(range_stage(100, 2), join);
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        sorted_values::<Int64Type>(&rows),
+        (0..100).collect::<Vec<_>>()
+    );
+    for batch in &rows {
+        assert_eq!(batch.column(0), batch.column(1));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_with_a_build_side_that_measures_empty_returns_no_rows() {
+    let cluster = Cluster::start();
+    let request = held_join_query(range_stage(0, 2), joining_stage(0, 1, 3));
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(rows.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+}
+
+/// Settings that run queries in Ballista's pipelined mode.
+fn pipelined() -> (&'static str, String) {
+    (
+        "COMET_SCHEDULER_BALLISTA_CONFIG",
+        "ballista.execution.mode=pipelined".to_string(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pipelined_results_are_served_by_the_scheduler_as_often_as_they_are_read() {
+    let cluster = Cluster::start_with(&[pipelined()]);
+    let request = query(vec![
+        range_stage(1000, 4),
+        reading_stage(0, hash_on_first_column(3), 3),
+    ]);
+    let info = cluster.get_flight_info(&request).await.unwrap();
+    assert!(!info.endpoint.is_empty());
+    assert!(info
+        .endpoint
+        .iter()
+        .all(|endpoint| endpoint.location.is_empty()));
+
+    // Spark can compute an RDD partition again, so a partition can be read more than once.
+    for _ in 0..2 {
+        let mut batches = vec![];
+        for endpoint in &info.endpoint {
+            batches.extend(cluster.read(endpoint).await.unwrap());
+        }
+        assert_eq!(
+            sorted_values::<Int64Type>(&batches),
+            (0..1000).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pipelined_result_over_the_buffer_limit_fails_the_query() {
+    let cluster = Cluster::start_with(&[
+        pipelined(),
+        (
+            "COMET_SCHEDULER_PIPELINED_RESULT_MAX_BYTES",
+            (64 << 10).to_string(),
+        ),
+    ]);
+    // 800,000 bytes of longs.
+    match cluster
+        .get_flight_info(&query(vec![range_stage(100_000, 4)]))
+        .await
+    {
+        Err(FlightError::Tonic(status)) => {
+            assert_eq!(status.code(), Code::ResourceExhausted, "{status}");
+            assert!(
+                status
+                    .message()
+                    .contains("COMET_SCHEDULER_PIPELINED_RESULT_MAX_BYTES"),
+                "{status}"
+            );
+        }
+        other => panic!("Expected the query to fail, got {other:?}"),
+    }
+    // The cluster still runs queries that fit: the failed query's job was cancelled.
+    let partitions = cluster.run(&query(vec![range_stage(100, 2)])).await;
+    assert_eq!(
+        sorted_values::<Int64Type>(&partitions.concat()),
+        (0..100).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pipelined_results_without_retention_are_dropped_oldest_first_at_the_limit() {
+    // Retention 0 never expires a result, so only the limit on the stored results drops one. Each
+    // result is about 16 KB, so two don't fit.
+    let cluster = Cluster::start_with(&[
+        pipelined(),
+        ("COMET_SCHEDULER_RESULT_RETENTION_SECONDS", "0".to_string()),
+        (
+            "COMET_SCHEDULER_PIPELINED_STORE_MAX_BYTES",
+            (24 << 10).to_string(),
+        ),
+    ]);
+    let request = query(vec![range_stage(2000, 2)]);
+    let first = cluster.get_flight_info(&request).await.unwrap();
+    let second = cluster.get_flight_info(&request).await.unwrap();
+
+    for endpoint in &second.endpoint {
+        cluster.read(endpoint).await.unwrap();
+    }
+    match cluster.read(&first.endpoint[0]).await {
+        Err(FlightError::Tonic(status)) => assert_eq!(status.code(), Code::NotFound, "{status}"),
+        other => panic!("Expected the first result to be dropped, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_a_query_larger_than_the_request_limit() {
+    let cluster = Cluster::start_with(&[(
+        "COMET_SCHEDULER_FLIGHT_MAX_REQUEST_BYTES",
+        "4096".to_string(),
+    )]);
+    cluster.run(&query(vec![range_stage(10, 1)])).await;
+    let mut large = query(vec![range_stage(10, 1)]);
+    large.conf.insert("padding".to_string(), "x".repeat(8192));
+    match cluster.get_flight_info(&large).await {
+        Err(FlightError::Tonic(status)) => assert!(
+            matches!(status.code(), Code::OutOfRange | Code::ResourceExhausted),
+            "{status}"
+        ),
+        other => panic!("Expected the query to be refused, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

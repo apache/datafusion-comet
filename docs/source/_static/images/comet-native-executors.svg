@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="700" viewBox="0 0 880 700" role="img" aria-labelledby="title desc">
+  <title id="title">How Comet Native Executors run a Spark query</title>
+  <desc id="desc">A Spark driver plans the query with Catalyst and Comet, then sends it as a stage graph of Comet native blocks over Arrow Flight to a cluster with no JVM. The comet-scheduler checks each block with Comet's planner and schedules the stages on Apache DataFusion Ballista. Each comet-executor runs its tasks with Comet's operators on Apache DataFusion, reads Parquet directly, and passes data to the other executors between stages. The results return to the driver as Arrow over Flight.</desc>
+  <style>
+    .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+  </style>
+  <defs>
+    <marker id="arrowHead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+  </defs>
+
+  <rect width="880" height="700" fill="#ffffff"/>
+
+  <!-- Spark driver -->
+  <rect x="20" y="20" width="840" height="100" rx="14" fill="#FDE7A7" stroke="#D9AE2E" stroke-width="1.5"/>
+  <text class="sans" x="44" y="60" font-size="21" font-weight="700" fill="#222">Spark driver with Comet</text>
+  <text class="sans" x="44" y="92" font-size="15" fill="#444">Plans each query with Catalyst and Comet, then hands all of it to the cluster</text>
+  <rect x="784" y="40" width="56" height="26" rx="13" fill="#ffffff" stroke="#D9AE2E" stroke-width="1.5"/>
+  <text class="sans" x="812" y="58" font-size="13" font-weight="700" fill="#555" text-anchor="middle">JVM</text>
+
+  <!-- Cluster -->
+  <rect x="20" y="200" width="840" height="370" rx="14" fill="#EEF8E8" stroke="#6BAF4E" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text class="sans" x="44" y="234" font-size="19" font-weight="700" fill="#2F5E1E">Comet Native Executors cluster</text>
+  <rect x="740" y="216" width="100" height="26" rx="13" fill="#ffffff" stroke="#6BAF4E" stroke-width="1.5"/>
+  <text class="sans" x="790" y="234" font-size="13" font-weight="700" fill="#555" text-anchor="middle">No JVM</text>
+
+  <!-- comet-scheduler -->
+  <rect x="44" y="254" width="596" height="96" rx="12" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+  <text class="sans" x="68" y="288" font-size="19" font-weight="700" fill="#222">comet-scheduler</text>
+  <text class="sans" font-size="15" fill="#444">
+    <tspan x="68" y="314">Checks each block with Comet's planner and schedules</tspan>
+    <tspan x="68" y="334">the stages with Apache DataFusion Ballista</tspan>
+  </text>
+
+  <!-- comet-executors -->
+  <g class="sans">
+    <rect x="44" y="420" width="208" height="92" rx="12" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+    <text x="148" y="452" font-size="17" font-weight="700" fill="#222" text-anchor="middle">comet-executor</text>
+    <text font-size="14" fill="#444" text-anchor="middle">
+      <tspan x="148" y="476">Comet operators on</tspan>
+      <tspan x="148" y="496">Apache DataFusion</tspan>
+    </text>
+
+    <rect x="308" y="420" width="208" height="92" rx="12" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+    <text x="412" y="452" font-size="17" font-weight="700" fill="#222" text-anchor="middle">comet-executor</text>
+    <text font-size="14" fill="#444" text-anchor="middle">
+      <tspan x="412" y="476">Comet operators on</tspan>
+      <tspan x="412" y="496">Apache DataFusion</tspan>
+    </text>
+
+    <rect x="572" y="420" width="208" height="92" rx="12" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
+    <text x="676" y="452" font-size="17" font-weight="700" fill="#222" text-anchor="middle">comet-executor</text>
+    <text font-size="14" fill="#444" text-anchor="middle">
+      <tspan x="676" y="476">Comet operators on</tspan>
+      <tspan x="676" y="496">Apache DataFusion</tspan>
+    </text>
+
+    <text x="820" y="472" font-size="26" font-weight="700" fill="#6BAF4E" text-anchor="middle">···</text>
+  </g>
+
+  <!-- Data moves between executors -->
+  <line x1="258" y1="466" x2="302" y2="466" stroke="#444" stroke-width="2.5" marker-start="url(#arrowHead)" marker-end="url(#arrowHead)"/>
+  <line x1="522" y1="466" x2="566" y2="466" stroke="#444" stroke-width="2.5" marker-start="url(#arrowHead)" marker-end="url(#arrowHead)"/>
+  <text class="sans" x="478" y="546" font-size="15" fill="#444" text-anchor="middle">Shuffle files or streamed batches between stages</text>
+
+  <!-- Plan goes down on the left -->
+  <line x1="480" y1="122" x2="480" y2="250" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
+  <text class="sans" font-size="15" fill="#222" text-anchor="end">
+    <tspan x="464" y="156" font-weight="700">Stage graph of native blocks</tspan>
+    <tspan x="464" y="178" fill="#444">Comet protobuf over Arrow Flight</tspan>
+  </text>
+  <line x1="180" y1="352" x2="180" y2="416" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
+  <text class="sans" x="196" y="390" font-size="15" font-weight="700" fill="#222">Tasks</text>
+
+  <!-- Results come back up on the right -->
+  <line x1="690" y1="418" x2="690" y2="124" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
+  <text class="sans" font-size="15" fill="#222">
+    <tspan x="706" y="156" font-weight="700">Results as Arrow</tspan>
+    <tspan x="706" y="178" fill="#444">over Arrow Flight</tspan>
+  </text>
+
+  <!-- Data -->
+  <line x1="148" y1="614" x2="148" y2="516" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
+  <path d="M114,626 a34,10 0 0,1 68,0 v38 a34,10 0 0,1 -68,0 z" fill="#D5EAF7" stroke="#5B8DB8" stroke-width="1.5"/>
+  <path d="M114,626 a34,10 0 0,0 68,0" fill="none" stroke="#5B8DB8" stroke-width="1.5"/>
+  <text class="sans" font-size="15" fill="#444">
+    <tspan x="200" y="642" font-weight="700" fill="#222">Parquet files, such as on Amazon S3</tspan>
+    <tspan x="200" y="664">Read directly by every executor</tspan>
+  </text>
+</svg>

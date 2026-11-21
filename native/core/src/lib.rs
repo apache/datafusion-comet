@@ -242,6 +242,7 @@ pub fn is_feature_enabled(feature: &str) -> bool {
     match feature {
         "jemalloc" => cfg!(feature = "jemalloc"),
         "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+        "native-executors" => cfg!(feature = "native-executors"),
         _ => false, // Unknown features return false
     }
 }
@@ -420,6 +421,10 @@ mod tests {
         assert_eq!(
             is_feature_enabled("hdfs-opendal"),
             cfg!(feature = "hdfs-opendal")
+        );
+        assert_eq!(
+            is_feature_enabled("native-executors"),
+            cfg!(feature = "native-executors")
         );
         assert!(!is_feature_enabled("no-such-feature"));
     }

@@ -54,6 +54,9 @@ async-trait = { workspace = true }
 log = "0.4"
 log4rs = "1.4.0"
 prost = "0.14.3"
+# The driver's client of a Comet Native Executor cluster; see the native-executors feature.
+arrow-flight = { version = "60.1.0", optional = true }
+tonic = { version = "0.14", optional = true }
 jni = { workspace = true }
 rand = { workspace = true }
 num = { workspace = true }
@@ -79,14 +82,14 @@ aws-credential-types = { workspace = true }
 aws-sdk-sts = { workspace = true }
 # Only for the `SharedHttpClient` type in `build_provider`'s test seam; already in the graph.
 aws-smithy-runtime-api = "1.16.0"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 # Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
 # under `contrib/delta/native/` so non-Delta committers can ignore it.
 comet-contrib-delta = { path = "../../contrib/delta/native", optional = true }
 # Optional Lance contrib. The native scan implementation lives outside core.
 comet-contrib-lance = { path = "../../contrib/lance/native", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
-object_store_opendal = { version = "0.58.0", optional = true }
+object_store_opendal = { version = "0.59.0", optional = true }
 hdfs-sys = {version = "0.3.1", optional = true, features = ["hdfs_3_3"]}
 # Not optional: the location-scoped Iceberg storage recognizes opendal's permission errors, and
 # iceberg-storage-opendal builds the crate anyway. `hdfs-opendal` adds its HDFS service.
@@ -117,7 +120,7 @@ jni = { workspace = true, features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "55.2.0" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
 comet-test-udfs = { path = "../comet-test-udfs" }
 # Test-only helpers for a hand-rolled in-memory HTTP client that exercises the web-identity STS
 # retry path without a socket, plus reqsign's SigV4 signer for the signing round-trip test. Already
@@ -134,6 +137,9 @@ python-udf = ["dep:pyo3", "dep:libc"]
 contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal/services-hdfs", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+# The JNI client a Spark driver uses to run queries on Comet Native Executors (issue #7288). Off
+# by default while the feature is experimental, so the standard build links no gRPC client.
+native-executors = ["dep:arrow-flight", "dep:tonic"]
 # Native Delta Lake scan support for the JVM-planned path (contrib/delta-spark).
 # In the default set so trying the contrib needs only the jar and the config,
 # not a custom native build. It is inert at runtime unless the contrib jar is
