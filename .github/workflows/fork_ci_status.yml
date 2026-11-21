@@ -88,8 +88,7 @@ jobs:
             const UPDATE_NOTE =
               'This check is informational: the contributor controls the fork workflow. ' +
               'The upstream merge queue runs the required CI checks on the proposed merge result. ' +
-              'Active or missing runs on recently updated PRs are polled every 15 minutes; ' +
-              'a rotating sweep also discovers reruns on older PRs. Scheduled updates may be delayed.';
+              'Scheduled updates can lag behind a rerun in the fork.';
 
             // An absent workflow/run is expected on a fork with Actions disabled. Other
             // API errors must fail the bridge rather than falsely reporting missing CI.
@@ -100,6 +99,62 @@ jobs:
                 if (error.status === 404) return null;
                 throw error;
               }
+            }
+
+            function runPayload(pr, sha, run) {
+              const status = run.status === 'completed' ? 'completed' :
+                run.status === 'in_progress' ? 'in_progress' : 'queued';
+              return {
+                status,
+                ...(status === 'completed' ? {
+                  conclusion: conclusions.has(run.conclusion) ? run.conclusion : 'failure',
+                } : {}),
+                details_url: run.html_url,
+                output: {
+                  title: 'Fork CI: ' + (status === 'completed' ? run.conclusion : status),
+                  summary: [
+                    '[CI run on ' + pr.head.repo.full_name + '](' + run.html_url + ') for ' + sha + '.',
+                    'Rerun failed checks in the fork. A green fork run tests the branch head, not its merge with main.',
+                    UPDATE_NOTE,
+                  ].join('\n\n'),
+                  text: JSON.stringify({ head_sha: sha, run_id: run.id }),
+                },
+              };
+            }
+
+            function missingPayload(pr, sha, workflow) {
+              const disabled = !workflow || workflow.state.startsWith('disabled');
+              return {
+                status: 'completed',
+                conclusion: disabled ? 'action_required' : 'neutral',
+                details_url: 'https://github.com/' + pr.head.repo.full_name + '/actions',
+                output: {
+                  title: disabled ? 'Enable CI on your fork' : 'No fork CI run for this commit',
+                  summary: [
+                    'No CI run was found for ' + sha + ' on ' + pr.head.repo.full_name + '.',
+                    'Enable workflows in the fork’s Actions tab, sync/rebase to include the fork CI workflow, ' +
+                    'then push your branch. A newly pushed run may take a moment to appear.',
+                    UPDATE_NOTE,
+                    '[Fork CI setup](' + GUIDE + ')',
+                  ].join('\n\n'),
+                  text: JSON.stringify({ head_sha: sha, run_id: null }),
+                },
+              };
+            }
+
+            async function writeCheck(pr, sha, check, payload) {
+              if (check && check.status === payload.status &&
+                  check.conclusion === (payload.conclusion || null) &&
+                  check.output?.text === payload.output.text &&
+                  check.output?.summary === payload.output.summary) return;
+              if (check) {
+                await github.rest.checks.update({ ...upstream, check_run_id: check.id, ...payload });
+              } else {
+                await github.rest.checks.create({
+                  ...upstream, name: CHECK, head_sha: sha, external_id: externalId(pr), ...payload,
+                });
+              }
+              core.info('#' + pr.number + ': ' + (payload.conclusion || payload.status));
             }
 
             async function syncCheck(pr, includeCompleted = true) {
@@ -125,60 +180,11 @@ jobs:
                 item.head_sha === sha && item.head_branch === pr.head.ref &&
                 item.event === 'push'
               ).sort((a, b) => b.id - a.id)[0];
-              let payload;
-              if (run) {
-                const status = run.status === 'completed' ? 'completed' :
-                  run.status === 'in_progress' ? 'in_progress' : 'queued';
-                payload = {
-                  status,
-                  ...(status === 'completed' ? {
-                    conclusion: conclusions.has(run.conclusion) ? run.conclusion : 'failure',
-                  } : {}),
-                  details_url: run.html_url,
-                  output: {
-                    title: 'Fork CI: ' + (status === 'completed' ? run.conclusion : status),
-                    summary: [
-                      '[CI run on ' + pr.head.repo.full_name + '](' + run.html_url + ') for ' + sha + '.',
-                      'Rerun failed checks in the fork. A green fork run tests the branch head, not its merge with main.',
-                      UPDATE_NOTE,
-                    ].join('\n\n'),
-                    text: JSON.stringify({ head_sha: sha, run_id: run.id, run_attempt: run.run_attempt }),
-                  },
-                };
-              } else {
-                const workflow = await optional(() => github.rest.actions.getWorkflow({
-                  ...fork, workflow_id: WORKFLOW,
-                }));
-                const disabled = !workflow || workflow.state.startsWith('disabled');
-                payload = {
-                  status: 'completed',
-                  conclusion: disabled ? 'action_required' : 'neutral',
-                  details_url: 'https://github.com/' + pr.head.repo.full_name + '/actions',
-                  output: {
-                    title: disabled ? 'Enable CI on your fork' : 'No fork CI run for this commit',
-                    summary: [
-                      'No CI run was found for ' + sha + ' on ' + pr.head.repo.full_name + '.',
-                      'Enable workflows in the fork’s Actions tab, sync/rebase to include the fork CI workflow, ' +
-                      'then push your branch. A newly pushed run may take a moment to appear.',
-                      UPDATE_NOTE,
-                      '[Fork CI setup](' + GUIDE + ')',
-                    ].join('\n\n'),
-                    text: JSON.stringify({ head_sha: sha, run_id: null }),
-                  },
-                };
-              }
-              if (check && check.status === payload.status &&
-                  check.conclusion === (payload.conclusion || null) &&
-                  check.output?.text === payload.output.text &&
-                  check.output?.summary === payload.output.summary) return;
-              if (check) {
-                await github.rest.checks.update({ ...upstream, check_run_id: check.id, ...payload });
-              } else {
-                await github.rest.checks.create({
-                  ...upstream, name: CHECK, head_sha: sha, external_id: externalId(pr), ...payload,
-                });
-              }
-              core.info('#' + pr.number + ': ' + (payload.conclusion || payload.status));
+              const workflow = run ? null : await optional(() => github.rest.actions.getWorkflow({
+                ...fork, workflow_id: WORKFLOW,
+              }));
+              const payload = run ? runPayload(pr, sha, run) : missingPayload(pr, sha, workflow);
+              await writeCheck(pr, sha, check, payload);
             }
 
             async function notify() {

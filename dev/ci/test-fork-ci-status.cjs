@@ -95,7 +95,8 @@ async function execute({
     if (runError) throw Object.assign(new Error('API failure'), { status: runError });
     return { data: { workflow_runs: runs } };
   };
-  github.rest.actions.getWorkflow = async () => {
+  github.rest.actions.getWorkflow = async (params) => {
+    calls.push(['workflow', params]);
     if (workflowState === null) throw Object.assign(new Error('Not Found'), { status: 404 });
     return { data: { state: workflowState } };
   };
@@ -174,6 +175,11 @@ for (const [state, expected] of [
     assert.equal(JSON.parse(writes[0].output.text).run_id, null);
   });
 }
+test('the fork workflow is looked up only when no run is found', async () => {
+  const lookups = ({ calls }) => calls.filter(([kind]) => kind === 'workflow').length;
+  assert.equal(lookups(await execute()), 0);
+  assert.equal(lookups(await execute({ runs: [] })), 1);
+});
 test('a missing workflow endpoint is handled as missing CI', async () => {
   const { writes } = await execute({ runError: 404, workflowState: null });
   assert.equal(writes[0].conclusion, 'action_required');
@@ -223,8 +229,14 @@ test('a rerun of the same workflow run updates the existing check', async () => 
   const { writes } = await execute({ checks: [check], runs: [run(1, { run_attempt: 2 })] });
   assert.equal(writes[0].method, 'update');
   assert.equal(writes[0].check_run_id, 100);
+  assert.equal(check.conclusion, 'failure');
   assert.equal(writes[0].conclusion, 'success');
-  assert.equal(JSON.parse(writes[0].output.text).run_attempt, 2);
+  assert.deepEqual(JSON.parse(writes[0].output.text), { head_sha: sha, run_id: 1 });
+});
+test('a rerun attempt with the same result does not rewrite the check', async () => {
+  const check = await existing(run(1));
+  const { writes } = await execute({ checks: [check], runs: [run(1, { run_attempt: 2 })] });
+  assert.deepEqual(writes, []);
 });
 test('a deleted run clears its stale success result', async () => {
   const { writes } = await execute({ checks: [await existing()], runs: [] });
