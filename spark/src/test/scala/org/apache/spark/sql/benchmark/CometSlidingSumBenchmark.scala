@@ -55,8 +55,7 @@ object CometSlidingSumBenchmark extends CometBenchmarkBase {
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-      "spark.comet.operator.WindowExec.allowIncompatible" -> "true") {
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       for ((shape, value) <- Seq(
           "cancelling" -> "id % 17 - 8",
           "positive" -> "id % 17",
