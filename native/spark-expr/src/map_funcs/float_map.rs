@@ -44,14 +44,16 @@ use crate::SparkError;
 /// Spark map construction for a top-level FLOAT or DOUBLE key.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkFloatMap {
+    name: &'static str,
     signature: Signature,
     normalize: bool,
     last_win: bool,
 }
 
 impl SparkFloatMap {
-    pub fn new(normalize: bool, policy: MapKeyDedupPolicy) -> Self {
+    pub fn new(name: &'static str, normalize: bool, policy: MapKeyDedupPolicy) -> Self {
         Self {
+            name,
             signature: Signature::one_of(
                 vec![TypeSignature::Any(1), TypeSignature::Any(2)],
                 Volatility::Immutable,
@@ -242,7 +244,7 @@ fn to_list(array: &ArrayRef) -> Result<ListArray> {
 
 impl ScalarUDFImpl for SparkFloatMap {
     fn name(&self) -> &str {
-        "spark_float_map"
+        self.name
     }
 
     fn signature(&self) -> &Signature {
@@ -299,7 +301,7 @@ mod tests {
             Some([Some(4.0), Some(4.0)]),
         ]);
         let invoke = |start| {
-            SparkFloatMap::new(true, MapKeyDedupPolicy::LastWin)
+            SparkFloatMap::new("spark_float_map", true, MapKeyDedupPolicy::LastWin)
                 .invoke_with_args(ScalarFunctionArgs {
                     args: vec![
                         ColumnarValue::Array(Arc::new(keys.slice(start, 2))),
@@ -345,9 +347,10 @@ mod tests {
             sliced_rows(Arc::new(values), [0, 2, 4, 2]),
         ];
         for normalize in [true, false] {
-            let result = SparkFloatMap::new(normalize, MapKeyDedupPolicy::LastWin)
-                .build(&args)
-                .unwrap();
+            let result =
+                SparkFloatMap::new("spark_float_map", normalize, MapKeyDedupPolicy::LastWin)
+                    .build(&args)
+                    .unwrap();
             let map = result.as_map();
             assert_eq!(map.value_offsets(), &[0, 2, 5, 7]);
             let (zero, stored_nan) = if normalize {
@@ -409,9 +412,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         for normalize in [true, false] {
-            let result = SparkFloatMap::new(normalize, MapKeyDedupPolicy::LastWin)
-                .build(&args)
-                .unwrap();
+            let result =
+                SparkFloatMap::new("spark_float_map", normalize, MapKeyDedupPolicy::LastWin)
+                    .build(&args)
+                    .unwrap();
             let map = result.as_map();
             assert_eq!(map.value_offsets(), &[0, 1, 1, 3]);
             assert!(map.is_null(1));

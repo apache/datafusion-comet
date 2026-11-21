@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.comet.CapturedSQLConf
 import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.DataType
@@ -81,6 +82,8 @@ case class CometLocalExec private[local] (
 
 private[local] class LocalQueryRDD(sc: SparkContext, spec: LocalQuerySpec)
     extends RDD[ColumnarBatch](sc, Nil) {
+  private val driverMapKeyDedupPolicy = CapturedSQLConf.currentMapKeyDedupPolicy
+
   override protected def getPartitions: Array[Partition] = Array(new Partition {
     override def index: Int = 0
   })
@@ -88,6 +91,6 @@ private[local] class LocalQueryRDD(sc: SparkContext, spec: LocalQuerySpec)
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     // A retried result task creates an entirely fresh native graph. No partition of an
     // existing graph is replayed. Creation stays lazy, so explain alone allocates nothing.
-    new LocalQueryIterator(spec, context)
+    new LocalQueryIterator(spec, context, driverMapKeyDedupPolicy)
   }
 }

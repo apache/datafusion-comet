@@ -20,7 +20,6 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.internal.{ReadOnlySQLConf, SQLConf}
 
@@ -32,10 +31,11 @@ import org.apache.comet.CometConf
  * `QueryExecution.toRdd` read Comet defaults in every stage before the last, which
  * `SQLExecutionRDD` covers. [[withConf]] fills that gap the same way.
  */
-class CapturedSQLConf private (
-    configs: Map[String, String],
-    val mapKeyDedupPolicy: Option[String])
-    extends Serializable {
+class CapturedSQLConf private (configs: Map[String, String]) extends Serializable {
+
+  // Whole-stage codegen constructs ArrayBasedMapBuilder on the driver when building the RDD.
+  // The builder eagerly reads this policy, retaining it across actions that reuse the RDD.
+  val mapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy
 
   @transient private lazy val executorSideConf: SQLConf = {
     val conf = new SQLConf()
@@ -62,15 +62,9 @@ class CapturedSQLConf private (
 object CapturedSQLConf {
 
   /** Captures the active session's Comet configs. Call it on the driver. */
-  def capture(): CapturedSQLConf = {
-    val conf = SQLConf.get
-    // Whole-stage codegen creates ArrayBasedMapBuilder on the driver while building the RDD.
-    // It reads the dedup policy eagerly. Without whole-stage codegen, projections create
-    // their builders on the task.
-    val wholeStage = conf.wholeStageEnabled &&
-      conf.codegenFactoryMode.toString != CodegenObjectFactoryMode.NO_CODEGEN.toString
-    new CapturedSQLConf(
-      conf.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX)),
-      if (wholeStage) Some(conf.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString) else None)
-  }
+  def capture(): CapturedSQLConf =
+    new CapturedSQLConf(SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX)))
+
+  def currentMapKeyDedupPolicy: String =
+    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
 }

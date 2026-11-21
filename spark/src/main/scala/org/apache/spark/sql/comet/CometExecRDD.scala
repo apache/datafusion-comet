@@ -154,7 +154,7 @@ private[spark] class CometExecRDD(
       shuffleBlockIters,
       taskFilePaths = partition.filePaths,
       outputTypes = outputTypes,
-      mapKeyDedupPolicy = sqlConf.mapKeyDedupPolicy)
+      driverMapKeyDedupPolicy = sqlConf.mapKeyDedupPolicy)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))

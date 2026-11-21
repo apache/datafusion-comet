@@ -41,6 +41,7 @@ pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 pub(crate) const SPARK_DISABLE_MAP_KEY_NORMALIZATION: &str =
     "spark.sql.legacy.disableMapKeyNormalization";
 pub(crate) const SPARK_MAP_KEY_DEDUP_POLICY: &str = "spark.sql.mapKeyDedupPolicy";
+pub(crate) const DRIVER_MAP_KEY_DEDUP_POLICY: &str = "comet.driverMapKeyDedupPolicy";
 
 /// Comet configs read through this trait must be resolved by the JVM first:
 /// `CometExecIterator.serializeCometSQLConfs` sends booleans as `true` or `false` and sizes as a

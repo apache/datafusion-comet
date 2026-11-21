@@ -301,16 +301,18 @@ class CometMapExpressionSuite extends CometTestBase {
       sql("INSERT INTO map_normalization VALUES (array(0.0D, double('-0.0')), array(1, 2))")
       for {
         comet <- Seq(false, true)
-        wholeStage <- Seq(false, true)
+        (wholeStage, maxFields) <- Seq((false, 2), (true, 1), (true, 2))
       } {
-        // Whole-stage codegen captures the policy on the driver. Without it, the projection
-        // creates a builder per task. Both initialize the normalizer on the first insertion.
+        // Spark captures the policy on the driver when this two-column projection runs in
+        // a whole-stage subtree. Otherwise each task creates its own builder.
         val (firstPolicy, secondPolicy) =
-          if (wholeStage) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
+          if (wholeStage && maxFields >= 2) ("LAST_WIN", "EXCEPTION")
+          else ("EXCEPTION", "LAST_WIN")
         withSQLConf(
           CometConf.COMET_ENABLED.key -> comet.toString,
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage.toString,
+          SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> maxFields.toString,
           SQLConf.MAP_KEY_DEDUP_POLICY.key -> firstPolicy,
           disableNormalization -> "true") {
           val df = sql(

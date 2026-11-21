@@ -19,8 +19,12 @@
 
 package org.apache.comet.serde
 
+import scala.util.DynamicVariable
+
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.execution.{CodegenSupport, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -134,16 +138,42 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-private object MapBuilderKeySupport {
+private[apache] object MapBuilderKeySupport {
   private val floatMap = CometScalarFunction[Expression]("spark_float_map")
+  private val driverFloatMap = CometScalarFunction[Expression]("spark_float_map_driver")
+
+  private val buildsOnDriver = new DynamicVariable[() => Boolean](() => false)
+
+  def withDriverPolicy[T](onDriver: => Boolean)(f: => T): T = {
+    lazy val useDriver = onDriver
+    buildsOnDriver.withValue(() => useDriver)(f)
+  }
+
+  // CollapseCodegenStages decides whether Spark generates the expression (and initializes
+  // ArrayBasedMapBuilder) on the driver. SortExec creates its sorter in the task either way.
+  def generatesBuilderOnDriver(op: SparkPlan): Boolean = op match {
+    case _: SortExec => false
+    case plan: CodegenSupport =>
+      val conf = SQLConf.get
+      conf.wholeStageEnabled && conf
+        .getConf(SQLConf.CODEGEN_FACTORY_MODE)
+        .toString != "NO_CODEGEN" &&
+      plan.supportCodegen && !WholeStageCodegenExec.isTooManyFields(conf, plan.schema) &&
+      !plan.children.exists(c => WholeStageCodegenExec.isTooManyFields(conf, c.schema)) &&
+      !plan.expressions.exists(_.exists(e =>
+        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
+    case _ => false
+  }
 
   def convertFloatMap(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] =
-    withNullShortCircuit(expr, floatMap.convert(expr, inputs, binding)).orElse {
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val function = if (buildsOnDriver.value()) driverFloatMap else floatMap
+    withNullShortCircuit(expr, function.convert(expr, inputs, binding)).orElse {
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
+  }
 
   val nestedFloatingPointReason: String =
     "Spark compares a `FLOAT` or `DOUBLE` inside a struct or array key using SQL ordering, " +
