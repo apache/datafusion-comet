@@ -102,7 +102,7 @@ pub(crate) fn normalize_object_store_url(
 }
 
 /// The text before `://` in a URL that failed to parse, if it is a valid scheme.
-fn scheme_of_unparsed(url_str: &str) -> Option<&str> {
+pub(crate) fn scheme_of_unparsed(url_str: &str) -> Option<&str> {
     let (scheme, _) = url_str.split_once("://")?;
     let mut chars = scheme.chars();
     let is_scheme = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
