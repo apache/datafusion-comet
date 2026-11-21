@@ -33,9 +33,11 @@ use std::io::Cursor;
 
 use crate::jvm_bridge::OutputStreamSink;
 use crate::parquet::datetime_rebase::SPARK_VERSION_METADATA_KEY;
-use crate::parquet::parquet_support::is_hdfs_scheme;
+use crate::parquet::objectstore::s3_blob_fs_support::scheme_of_unparsed;
+use crate::parquet::objectstore::url_redaction::{without_credentials, without_secrets};
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
+use crate::parquet::parquet_support::{is_azure_scheme, is_hdfs_scheme};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
@@ -100,6 +102,7 @@ enum ParquetWriter {
         arrow_writer: Box<ArrowWriter<Cursor<Vec<u8>>>>,
         hdfs_writer: Option<opendal::Writer>,
         op: Box<Operator>,
+        /// The path inside the store, without the URL's scheme, host, userinfo or query.
         output_path: String,
     },
     /// Writer for a file the JVM created through Hadoop's FileSystem API (`HadoopFileOutput`),
@@ -254,6 +257,37 @@ impl ParquetWriter {
             }
         }
     }
+}
+
+/// `output_path` for a message, the plan or the log. A path with no password, query, fragment or
+/// username (outside ABFS, where the username is the container) is shown exactly as given; one
+/// with any of them shows only its scheme, host and path. A string that does not parse is shown
+/// as given when it has no `://`, a local path with no userinfo, and as its scheme otherwise.
+fn display_output_path(output_path: &str) -> String {
+    let url = match Url::parse(output_path) {
+        Ok(url) => url,
+        Err(_) if !output_path.contains("://") => return output_path.to_string(),
+        Err(_) => {
+            return match scheme_of_unparsed(output_path) {
+                Some(scheme) => format!("{scheme}://<unparseable>"),
+                None => "<unparseable>".to_string(),
+            }
+        }
+    };
+    let keeps_username = is_azure_scheme(url.scheme());
+    let has_secret = url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (!url.username().is_empty() && !keeps_username);
+    if !has_secret {
+        return output_path.to_string();
+    }
+    let shown = if keeps_username {
+        without_secrets(&url)
+    } else {
+        without_credentials(&url)
+    };
+    shown.to_string()
 }
 
 /// The task's error for `e`, a Parquet write that failed. A failed write to the JVM output stream
@@ -470,7 +504,11 @@ impl ParquetWriterExec {
 
         // Parse URL and match on storage scheme directly
         let url = Url::parse(output_file_path).map_err(|e| {
-            DataFusionError::Execution(format!("Failed to parse URL '{}': {}", output_file_path, e))
+            DataFusionError::Execution(format!(
+                "Failed to parse URL '{}': {}",
+                display_output_path(output_file_path),
+                e
+            ))
         })?;
 
         if is_hdfs_scheme(&url, object_store_options) {
@@ -485,7 +523,8 @@ impl ParquetWriterExec {
                 .map_err(|e| {
                     DataFusionError::Execution(format!(
                         "Failed to prepare object store for '{}': {}",
-                        output_file_path, e
+                        display_output_path(output_file_path),
+                        e
                     ))
                 })?;
 
@@ -501,7 +540,8 @@ impl ParquetWriterExec {
                 let op = create_hdfs_operator(&url).map_err(|e| {
                     DataFusionError::Execution(format!(
                         "Failed to create HDFS operator for '{}': {}",
-                        output_file_path, e
+                        display_output_path(output_file_path),
+                        e
                     ))
                 })?;
 
@@ -566,7 +606,7 @@ impl ParquetWriterExec {
             // Unsupported storage scheme
             Err(DataFusionError::Execution(format!(
                 "Unsupported storage scheme in path: {}",
-                output_file_path
+                display_output_path(output_file_path)
             )))
         }
     }
@@ -579,7 +619,8 @@ impl DisplayAs for ParquetWriterExec {
                 write!(
                     f,
                     "ParquetWriterExec: path={}, compression={:?}",
-                    self.output_path, self.compression
+                    display_output_path(&self.output_path),
+                    self.compression
                 )
             }
             DisplayFormatType::TreeRender => unimplemented!(),
@@ -772,7 +813,7 @@ impl ExecutionPlan for ParquetWriterExec {
 
             log::debug!(
                 "Wrote Parquet file: path={}, size={}, rows={}",
-                part_file,
+                display_output_path(&part_file),
                 file_size,
                 total_rows
             );
@@ -1416,6 +1457,175 @@ mod tests {
             1,
             "the writer wrote to a failed stream"
         );
+    }
+
+    /// Userinfo, query and fragment markers the test paths carry, none of which may be shown.
+    const MARKERS: [&str; 4] = ["alice", "SECRET", "SAS-MARKER", "FRAG-MARKER"];
+
+    fn assert_no_marker(shown: &str) {
+        for marker in MARKERS {
+            assert!(!shown.contains(marker), "{marker} echoed: {shown}");
+        }
+    }
+
+    #[test]
+    fn display_output_path_keeps_scheme_host_and_path() {
+        let cases = [
+            (
+                "hdfs://alice:SECRET@nn:8020/t/p.parquet?sig=SAS-MARKER#FRAG-MARKER",
+                "hdfs://nn:8020/t/p.parquet",
+            ),
+            // Each part that can carry a credential, alone.
+            (
+                "hdfs://:SECRET@nn:8020/t/p.parquet",
+                "hdfs://nn:8020/t/p.parquet",
+            ),
+            (
+                "hdfs://nn:8020/t/p.parquet?sig=SAS-MARKER",
+                "hdfs://nn:8020/t/p.parquet",
+            ),
+            (
+                "hdfs://nn:8020/t/p.parquet#FRAG-MARKER",
+                "hdfs://nn:8020/t/p.parquet",
+            ),
+            (
+                "hdfs://alice@nn:8020/t/p.parquet",
+                "hdfs://nn:8020/t/p.parquet",
+            ),
+            (
+                "s3a://alice:SECRET@bucket/t/p.parquet?sig=SAS-MARKER",
+                "s3a://bucket/t/p.parquet",
+            ),
+            // An ABFS username is the container, so only the password goes.
+            (
+                "abfss://data:SECRET@acct.dfs.core.windows.net/t/p.parquet?sig=SAS-MARKER",
+                "abfss://data@acct.dfs.core.windows.net/t/p.parquet",
+            ),
+            (
+                "hdfs://alice:SECRET@nn:notaport/t/p.parquet?sig=SAS-MARKER",
+                "hdfs://<unparseable>",
+            ),
+            (
+                "1x://alice:SECRET@nn/t/p.parquet?sig=SAS-MARKER",
+                "<unparseable>",
+            ),
+            // Nothing to hide: shown as Spark gave it, not re-serialized.
+            ("hdfs://nn:8020/t/p.parquet", "hdfs://nn:8020/t/p.parquet"),
+            (
+                "abfss://data@acct.dfs.core.windows.net/my dir/p.parquet",
+                "abfss://data@acct.dfs.core.windows.net/my dir/p.parquet",
+            ),
+            ("file:///tmp/t/p.parquet", "file:///tmp/t/p.parquet"),
+            ("file:/tmp/t/p.parquet", "file:/tmp/t/p.parquet"),
+            ("file:/tmp/my dir/p.parquet", "file:/tmp/my dir/p.parquet"),
+            ("/tmp/t/p.parquet", "/tmp/t/p.parquet"),
+        ];
+        for (output_path, expected) in cases {
+            let shown = display_output_path(output_path);
+            assert_no_marker(&shown);
+            assert_eq!(shown, expected);
+        }
+    }
+
+    #[test]
+    fn create_arrow_writer_errors_do_not_echo_credentials() -> Result<()> {
+        let cases = [
+            (
+                "s3a://alice:SECRET@bucket/t/part-0.parquet?sig=SAS-MARKER#FRAG-MARKER",
+                "Unsupported storage scheme in path: s3a://bucket/t/part-0.parquet",
+            ),
+            // `Url::parse` fails before the scheme is looked at, so no HDFS is needed.
+            (
+                "hdfs://alice:SECRET@nn:notaport/t/part-0.parquet?sig=SAS-MARKER",
+                "Failed to parse URL 'hdfs://<unparseable>': invalid port number",
+            ),
+        ];
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        for (output_path, expected) in cases {
+            let error = match ParquetWriterExec::create_arrow_writer(
+                output_path,
+                Arc::clone(&schema),
+                WriterProperties::default(),
+                RuntimeEnvBuilder::new().build_arc()?,
+                &HashMap::new(),
+                None,
+            ) {
+                Ok(_) => panic!("no writer expected for {output_path}"),
+                Err(e) => e.to_string(),
+            };
+            assert_no_marker(&error);
+            assert!(error.contains(expected), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn plan_display_does_not_echo_credentials() -> Result<()> {
+        let writer = writer_of(
+            vec![create_test_record_batch(1)?],
+            "hdfs://alice:SECRET@nn:8020/t/p.parquet?sig=SAS-MARKER#FRAG-MARKER".to_string(),
+            ParquetCompression::Snappy,
+        )?;
+        let shown = datafusion::physical_plan::displayable(&writer)
+            .one_line()
+            .to_string();
+        assert_no_marker(&shown);
+        assert!(
+            shown.contains("ParquetWriterExec: path=hdfs://nn:8020/t/p.parquet,"),
+            "{shown}"
+        );
+        Ok(())
+    }
+
+    /// Keeps the lines this module logs, for checking what the writer logs.
+    struct WriterLog(std::sync::Mutex<Vec<String>>);
+
+    impl log::Log for WriterLog {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.target() == module_path!().trim_end_matches("::tests")
+        }
+
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                self.0.lock().unwrap().push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    // `log::set_logger` succeeds once per process, so this must stay the only logger the test
+    // binary installs.
+    static WRITER_LOG: WriterLog = WriterLog(std::sync::Mutex::new(Vec::new()));
+
+    #[tokio::test]
+    async fn test_parquet_writer_log_does_not_echo_credentials() -> Result<()> {
+        log::set_logger(&WRITER_LOG).expect("no other logger is installed in tests");
+        log::set_max_level(log::LevelFilter::Debug);
+        let sink = Arc::new(RecordingSink::new(4096));
+        write_batches(
+            vec![create_test_record_batch(1)?],
+            "s3a://alice:SECRET@log-bucket/t/part-0.parquet?sig=SAS-MARKER#FRAG-MARKER".to_string(),
+            Some(sink as Arc<dyn OutputStreamSink>),
+        )
+        .await?;
+
+        let lines: Vec<String> = WRITER_LOG
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains("log-bucket"))
+            .cloned()
+            .collect();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_no_marker(&lines[0]);
+        assert!(
+            lines[0].starts_with("Wrote Parquet file: path=s3a://log-bucket/t/part-0.parquet,"),
+            "{}",
+            lines[0]
+        );
+        Ok(())
     }
 
     #[tokio::test]
