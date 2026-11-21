@@ -35,11 +35,9 @@ INSERT INTO test_pow VALUES
   (1.0, cast('NaN' as double)), (-1.0, cast('NaN' as double)),
   (cast('4.9E-324' as double), 2.0), (2.0, cast('4.9E-324' as double))
 
--- Every pair above yields an exact double, so use exact comparison (no tolerance) to assert the
--- NaN and signed-Infinity edge cases rather than silently skipping them: a tolerance comparison
--- makes no assertion at all for NaN and ignores the sign of Infinity. Exact comparison is
--- payload-insensitive for NaN (the test framework canonicalizes it) but not for signed zero, so
--- the -0.0 results are asserted exactly.
+-- Every pair above yields an exact double, so use exact comparison (no tolerance). Unlike a
+-- tolerance comparison it distinguishes signed zero, so the -0.0 results are asserted exactly.
+-- It is payload-insensitive for NaN (the test framework canonicalizes it).
 query
 SELECT pow(base, exp) FROM test_pow
 
