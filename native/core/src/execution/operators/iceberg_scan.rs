@@ -48,6 +48,7 @@ use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::iceberg_common::load_file_io;
 use crate::execution::operators::ExecutionError;
+use crate::parquet::objectstore::url_redaction::redacted_url_display;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
@@ -308,7 +309,10 @@ impl IcebergScanExec {
                     .map_err(|e| {
                         Error::new(
                             ErrorKind::Unexpected,
-                            format!("Failed to stat delete file '{path}'"),
+                            format!(
+                                "Failed to stat delete file '{}'",
+                                redacted_url_display(&path)
+                            ),
                         )
                         .with_source(e)
                     })?
@@ -317,10 +321,11 @@ impl IcebergScanExec {
                     return Err(Error::new(
                         ErrorKind::Unexpected,
                         format!(
-                            "Delete file '{path}' statted to {size} bytes, below the \
+                            "Delete file '{}' statted to {size} bytes, below the \
                              {MIN_PARQUET_FILE_SIZE}-byte Parquet minimum. The object is empty or \
                              truncated, or the stat returned no Content-Length (check the object \
-                             store endpoint, TLS, and path-style config)."
+                             store endpoint, TLS, and path-style config).",
+                            redacted_url_display(&path)
                         ),
                     ));
                 }
@@ -538,7 +543,7 @@ impl DisplayAs for IcebergScanExec {
         write!(
             f,
             "IcebergScanExec: metadata_location={}, num_tasks={}",
-            self.metadata_location,
+            redacted_url_display(&self.metadata_location),
             self.tasks.len()
         )
     }
@@ -547,7 +552,10 @@ impl DisplayAs for IcebergScanExec {
 impl fmt::Debug for IcebergScanExec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IcebergScanExec")
-            .field("metadata_location", &self.metadata_location)
+            .field(
+                "metadata_location",
+                &redacted_url_display(&self.metadata_location),
+            )
             .field("catalog_name", &self.catalog_name)
             .field(
                 "catalog_properties",
@@ -642,6 +650,7 @@ mod tests {
     use iceberg_storage_opendal::OpenDalStorageFactory;
 
     use super::IcebergScanExec;
+    use crate::parquet::objectstore::url_redaction::tests::assert_no_url_marker;
 
     fn fs_file_io() -> FileIO {
         FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
@@ -812,6 +821,76 @@ mod tests {
             "expected an error when a delete file is below the Parquet footer minimum"
         );
         assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn fill_delete_file_sizes_subfooter_error_does_not_echo_a_signed_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty-delete.parquet?sig=SAS-MARKER");
+        std::fs::File::create(&empty).unwrap();
+        let mut tasks = vec![task_with_deletes(vec![delete_file(
+            empty.to_str().unwrap(),
+        )])];
+
+        let err = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
+            .await
+            .expect_err("an empty delete file must fail the scan")
+            .to_string();
+
+        assert_no_url_marker(&err);
+        assert!(
+            err.contains("Delete file '<unparseable>' statted to 0 bytes"),
+            "{err}"
+        );
+    }
+
+    // The source error, kept for its cause, comes from the storage and is not checked here.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_stat_error_does_not_echo_a_signed_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-delete.parquet?sig=SAS-MARKER");
+        let mut tasks = vec![task_with_deletes(vec![delete_file(
+            missing.to_str().unwrap(),
+        )])];
+
+        let err = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
+            .await
+            .expect_err("a missing delete file must fail the scan");
+
+        assert_no_url_marker(err.message());
+        assert_eq!(err.message(), "Failed to stat delete file '<unparseable>'");
+    }
+
+    #[test]
+    fn plan_display_does_not_echo_credentials() {
+        let exec = IcebergScanExec::new(
+            "s3://alice:SECRET@bucket/t/metadata/v1.json?sig=SAS-MARKER#FRAG-MARKER".to_string(),
+            Arc::new(arrow::datatypes::Schema::empty()),
+            std::collections::HashMap::new(),
+            String::new(),
+            vec![],
+            4,
+        )
+        .unwrap();
+
+        let shown = datafusion::physical_plan::displayable(&exec)
+            .one_line()
+            .to_string();
+        let debug = format!("{exec:?}");
+
+        for (text, expected) in [
+            (
+                shown,
+                "IcebergScanExec: metadata_location=s3://***@bucket/t/metadata/v1.json,",
+            ),
+            (
+                debug,
+                "metadata_location: \"s3://***@bucket/t/metadata/v1.json\"",
+            ),
+        ] {
+            assert_no_url_marker(&text);
+            assert!(text.contains(expected), "expected '{expected}' in: {text}");
+        }
     }
 
     // No deletes means no stats and no error.

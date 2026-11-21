@@ -94,6 +94,7 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
+use crate::parquet::objectstore::url_redaction::redacted_url_display;
 use crate::parquet::parquet_support::{
     object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
 };
@@ -2604,7 +2605,10 @@ fn parse_file_scan_tasks_from_common(
             // here, where the proto's `int64` becomes iceberg-rust's type.
             let non_negative = |value: Option<i64>, what: &str| {
                 value.map(u64::try_from).transpose().map_err(|_| {
-                    GeneralError(format!("Delete file '{file_path}' has a negative {what}"))
+                    GeneralError(format!(
+                        "Delete file '{}' has a negative {what}",
+                        redacted_url_display(&file_path)
+                    ))
                 })
             };
             // Required for deletion vectors: iceberg-rust checks it against the number of
@@ -3287,6 +3291,7 @@ mod tests {
         parse_file_scan_tasks_from_common,
     };
     use crate::execution::shuffle::CometPartitioning;
+    use crate::parquet::objectstore::url_redaction::tests::assert_no_url_marker;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
@@ -7353,6 +7358,62 @@ mod tests {
             let error = parse(delete).expect_err(expected).to_string();
             assert!(
                 error.contains(expected),
+                "expected '{expected}' in: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_negative_delete_file_count_does_not_echo_credentials() {
+        let deletion_vector = spark_operator::IcebergDeleteFile {
+            file_path_idx: 0,
+            content_type: "POSITION_DELETES".to_string(),
+            file_format: "PUFFIN".to_string(),
+            referenced_data_file: Some("s3://bucket/t/data.parquet".to_string()),
+            content_offset: Some(4),
+            content_size_in_bytes: Some(40),
+            record_count: Some(2),
+            ..Default::default()
+        };
+        for (delete, what) in [
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_offset: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "content offset",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_size_in_bytes: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "content size",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "record count",
+            ),
+        ] {
+            let proto_common = spark_operator::IcebergScanCommon {
+                delete_file_path_pool: vec![
+                    "s3://alice:SECRET@bucket/t/dv.puffin?sig=SAS-MARKER#FRAG-MARKER".to_string(),
+                ],
+                delete_file_pool: vec![delete],
+                ..Default::default()
+            };
+            let error = parse_file_scan_tasks_from_common(&proto_common, &[])
+                .map(|_| ())
+                .expect_err(what)
+                .to_string();
+            let expected =
+                format!("Delete file 's3://***@bucket/t/dv.puffin' has a negative {what}");
+            assert_no_url_marker(&error);
+            assert!(
+                error.contains(&expected),
                 "expected '{expected}' in: {error}"
             );
         }
