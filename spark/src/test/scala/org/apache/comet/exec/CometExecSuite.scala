@@ -35,6 +35,7 @@ import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, Cat
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate, Final}
 import org.apache.spark.sql.catalyst.plans.logical.Expand
+import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
@@ -2418,6 +2419,35 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("AQE broadcasts a mixed distinct aggregate after its second shuffle") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "16384",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      // Each (group, distinct value) is shuffled before the 16 final groups fall below 16 KiB.
+      val df = sql("""
+          |WITH counts AS (
+          |  SELECT id % 16 AS k, count(*) AS n, count(DISTINCT id % 127) AS u
+          |  FROM range(0, 8192, 1, 4) GROUP BY id % 16
+          |)
+          |SELECT p.id, d.n, d.u
+          |FROM range(0, 16, 1, 4) p LEFT JOIN counts d ON p.id = d.k
+          |""".stripMargin)
+      val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+      assert(collect(adaptive.executedPlan) { case b: CometBroadcastHashJoinExec => b }.isEmpty)
+
+      checkAnswer(df, (0L until 16).map(k => Row(k, 512L, 127L)))
+
+      val finalPlan = adaptive.executedPlan
+      assert(
+        collect(finalPlan) { case b: CometBroadcastHashJoinExec => b }.size == 1,
+        finalPlan.treeString)
+    }
+  }
+
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
@@ -2439,6 +2469,24 @@ class CometExecSuite extends CometTestBase {
           assert(shuffle.logicalLink.isEmpty)
         }
       }
+    }
+  }
+
+  test("Comet shuffle inherits the logical sort below a nested ordered limit") {
+    assume(isSpark40Plus, "InsertSortForLimitAndOffset requires Spark 4.0+")
+    withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "0") {
+      val df =
+        sql("SELECT SUM(id) FROM (SELECT id FROM range(0, 10, 1, 2) ORDER BY id DESC LIMIT 2)")
+      val plan = df.queryExecution.executedPlan
+      val shuffle = collectFirst(plan) {
+        case s: CometShuffleExchangeExec if s.outputPartitioning == SinglePartition => s
+      }.getOrElse(fail(s"Expected a single-partition Comet shuffle:\n${plan.treeString}"))
+      val inheritedTag = SparkPlan.LOGICAL_PLAN_INHERITED_TAG
+      val logicalSort = shuffle.originalPlan
+        .getTagValue(inheritedTag)
+        .getOrElse(fail(s"Expected the shuffle to inherit the local sort:\n${plan.treeString}"))
+      assert(shuffle.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isEmpty)
+      assert(shuffle.getTagValue(inheritedTag).exists(_ eq logicalSort))
     }
   }
 
