@@ -141,10 +141,15 @@ Some things to know:
   controls the workflow that produced it. A green fork run is a good sign, not a merge gate. The
   queue is the gate, and it tests your change merged with `main` and everything queued ahead of it,
   where the fork run tests your branch head alone.
-- **Caches are cold unless `main` builds.** A branch restores caches saved on its own ref or on your
-  fork's default branch, and a run on your fork's `main` saves them only when it builds. A push to
-  `main` that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
-  nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
+- **Sync your fork's `main` to warm its caches.** A branch restores caches saved on its own ref or
+  on your fork's default branch, and only a run on your fork's `main` saves the Maven and cargo
+  caches. A push to `main` that adds nothing to upstream, such as syncing your fork, runs the Linux
+  build in cache-refresh-only mode, which saves both and runs no tests. Each sync spends about 40
+  runner-minutes of your fork's time (the lint, the native build and the two TPC jobs) once warm,
+  more on the first sync. A `main` that carries commits of its own runs the PR tier instead,
+  which saves them only when it builds, so one with only docs commits stays cold. When your fork's
+  `main` is cold, every branch run downloads its Maven dependencies from Maven Central, which can
+  throttle it, and rebuilds the native library. A run of the PR tier on a fork with cold
   caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
   23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run that also
   routes to the Spark SQL and Iceberg suites took 89 minutes and about 650 runner-minutes. Their

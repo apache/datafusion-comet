@@ -29,7 +29,8 @@ name: PR Build (Linux)
 #          enough to populate it. This is the push-to-main tier, where the
 #          queue has already tested the exact tree that landed and the sole
 #          remaining purpose of the run is to leave main's caches warm for the
-#          next pull request. See the `build_linux` / `build_linux_full`
+#          next pull request. A sync of a fork's main runs it too, for the
+#          fork's caches. See the `build_linux` / `build_linux_full`
 #          comments in dev/ci/compute-changes.py for why that tier exists.
 #
 # Within the full pipeline, `profiles` picks which Spark profiles the
@@ -59,7 +60,7 @@ on:
       cache-refresh-only:
         description: >-
           Populate main's actions/cache entries without running any lint or
-          test. Set by ci.yml on push to main.
+          test. Set by ci.yml on push to main and on a sync of a fork's main.
         type: boolean
         default: false
       profiles:

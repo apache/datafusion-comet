@@ -616,10 +616,11 @@ def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
     `event` is {"name", "action", "label", "labels", "base", "repository",
-    "head_repository"}: the workflow event name, the pull_request action, the
-    label just added on a `labeled` event, the labels currently on the pull
-    request, the branch it targets, the repository the workflow runs in, and
-    the repository the pull request's branch lives in.
+    "head_repository", "ref"}: the workflow event name, the pull_request action,
+    the label just added on a `labeled` event, the labels currently on the pull
+    request, the branch it targets, the repository the workflow runs in, the
+    repository the pull request's branch lives in, and the pushed or triggering
+    git ref.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -674,6 +675,12 @@ def release_branch_allows(job, event):
 
 def compute(files, event):
     """Return {job: bool}, folding the path filter and the event policy."""
+    # A sync of a fork's main adds nothing to upstream, so it has nothing to
+    # test, but only caches written on the fork's main reach its branches. Run
+    # the Linux build's cache refresh, as a push to main does upstream, or every
+    # fork branch run downloads each Maven dependency from Central.
+    if not files and is_fork_push(event) and event.get("ref") == "refs/heads/main":
+        return {name: name == "build_linux" for name in FILTERS}
     return {
         name: event_allows(name, event) and matches(patterns, files)
         for name, patterns in FILTERS.items()
@@ -690,6 +697,7 @@ def event_from_env():
         "base": os.environ.get("PR_BASE_REF", ""),
         "repository": os.environ.get("REPOSITORY", ""),
         "head_repository": os.environ.get("PR_HEAD_REPO", ""),
+        "ref": os.environ.get("REF", ""),
     }
 
 
