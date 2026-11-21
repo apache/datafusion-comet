@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{
+    DataType, TimeUnit, MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION,
+};
 use arrow::{
     array::{
         cast::as_primitive_array,
@@ -322,6 +324,34 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, Arr
     }
 }
 
+/// The values that `Decimal128Type::is_valid_decimal_precision` accepts for one precision, looked
+/// up once so that a per-row check is two comparisons, with no precision guard or table lookup.
+/// Arrow does not mark that method `#[inline]`, so release builds also call it out of line on
+/// every row. See <https://github.com/apache/arrow-rs/issues/12326>.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Decimal128Bounds {
+    min: i128,
+    max: i128,
+}
+
+impl Decimal128Bounds {
+    pub(crate) fn new(precision: u8) -> Self {
+        match (
+            MIN_DECIMAL128_FOR_EACH_PRECISION.get(precision as usize),
+            MAX_DECIMAL128_FOR_EACH_PRECISION.get(precision as usize),
+        ) {
+            (Some(&min), Some(&max)) => Self { min, max },
+            // No value fits a precision past Decimal128's maximum.
+            _ => Self { min: 1, max: 0 },
+        }
+    }
+
+    #[inline]
+    pub(crate) fn contains(self, value: i128) -> bool {
+        self.min <= value && value <= self.max
+    }
+}
+
 /// Build a boolean buffer from the state and reset the state, based on the emit_to
 /// strategy.
 pub fn build_bool_state(state: &mut BooleanBufferBuilder, emit_to: &EmitTo) -> BooleanBuffer {
@@ -487,5 +517,25 @@ mod tests {
             .and_utc()
             .timestamp_micros();
         assert_eq!(out.value(0), expected);
+    }
+
+    #[test]
+    fn decimal128_bounds_match_arrow() {
+        use arrow::datatypes::{Decimal128Type, DecimalType};
+        for precision in [0_u8, 1, 18, 25, 38, 39] {
+            let bounds = Decimal128Bounds::new(precision);
+            let mut values = vec![0, 1, -1, i128::MAX, i128::MIN];
+            // 10^39 does not fit an i128, so precision 39 only has the values above.
+            if let Some(edge) = 10_i128.checked_pow(precision as u32) {
+                values.extend([edge - 1, edge, -(edge - 1), -edge]);
+            }
+            for value in values {
+                assert_eq!(
+                    bounds.contains(value),
+                    Decimal128Type::is_valid_decimal_precision(value, precision),
+                    "precision {precision}, value {value}"
+                );
+            }
+        }
     }
 }
