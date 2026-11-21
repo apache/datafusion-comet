@@ -37,10 +37,10 @@ import org.apache.comet.iceberg.IcebergRefreshCacheShim
  * Iceberg's `rewrite_data_files` with Comet's rewrite in front of it.
  *
  * Every call is first checked against what [[CometRewriteDataFiles]] reproduces. A call that is
- * not covered, such as the `sort` or `zorder` strategies, an option Comet does not know, a
- * `where` that does not convert, or a table Comet cannot load, runs `delegate` instead. The check
- * changes nothing, so the fallback is safe. Once the rewrite has started, a failure is the call's
- * failure, the same as with Iceberg.
+ * not covered, such as the `sort` or `zorder` strategies, a branch, an option Comet does not
+ * know, a `where` that does not convert, or a table Comet cannot load, runs `delegate` instead.
+ * The check changes nothing, so the fallback is safe. Once the rewrite has started, a failure is
+ * the call's failure, the same as with Iceberg.
  *
  * @param delegate
  *   Iceberg's procedure. Its parameters, name and description are this procedure's.
@@ -98,6 +98,10 @@ class CometRewriteDataFilesProcedure(
     if (string("sort_order").isDefined || strategy.exists(!_.equalsIgnoreCase("binpack"))) {
       return decline("only the binpack strategy without a sort order is supported")
     }
+    // Iceberg 1.11 added the `branch` argument. Comet rewrites the main branch only.
+    if (string("branch").isDefined) {
+      return decline("the call names a branch")
+    }
 
     val tableArgument = string("table").filter(_.nonEmpty)
     val identifier = tableArgument.flatMap { name =>
@@ -111,6 +115,11 @@ class CometRewriteDataFilesProcedure(
     val sparkTable = catalog.loadTable(ident)
     if (!IcebergRewriteReflection.isSparkTable(sparkTable)) {
       return decline("the table is not an Iceberg table")
+    }
+    // A table identifier can name a branch too, such as `db.events.branch_audit`, which Iceberg
+    // 1.11 and later rewrite.
+    if (IcebergRewriteReflection.sparkTableBranch(sparkTable).exists(_ != "main")) {
+      return decline("the table identifier names a branch")
     }
     val icebergTable = IcebergRewriteReflection.icebergTable(sparkTable)
 

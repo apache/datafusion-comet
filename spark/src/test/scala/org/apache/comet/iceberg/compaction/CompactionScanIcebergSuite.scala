@@ -62,11 +62,12 @@ class CompactionScanIcebergSuite extends CometTestBase with CometIcebergTestBase
 
   /** The batch that reads the table's files in bins of `filesPerBin` files each. */
   private def batchOf(icebergTable: AnyRef, filesPerBin: Int): CompactionBatch = {
-    val snapshotId = IcebergRewriteReflection.currentSnapshotId(icebergTable).get
-    val specId = IcebergRewriteReflection.currentSpecId(icebergTable)
-    val files = IcebergRewriteReflection.planFiles(spark, icebergTable, snapshotId, None, specId)
-    val bins = files.grouped(filesPerBin).toSeq.map { bin =>
-      new BinTasks(new java.util.ArrayList[AnyRef](bin.map(_.task).asJava))
+    val planned = icebergTable.asInstanceOf[org.apache.iceberg.Table].newScan().planFiles()
+    val tasks =
+      try planned.asScala.toVector.map(task => task: AnyRef)
+      finally planned.close()
+    val bins = tasks.grouped(filesPerBin).toSeq.map { bin =>
+      new BinTasks(new java.util.ArrayList[AnyRef](bin.asJava))
     }
     val schema = IcebergReflection.getSchema(icebergTable).get.asInstanceOf[AnyRef]
     new CompactionBatch(icebergTable, schema, IcebergReflection.toSparkSchema(schema), bins)

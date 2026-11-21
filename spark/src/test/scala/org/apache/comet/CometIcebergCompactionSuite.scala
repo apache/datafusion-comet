@@ -351,34 +351,7 @@ class CometIcebergCompactionSuite extends CometTestBase with CometIcebergTestBas
     }
   }
 
-  test("each file group has a job of its own when the single job rewrite is off") {
-    withCompaction() {
-      withSQLConf(CometConf.COMET_ICEBERG_COMPACTION_SINGLE_JOB_ENABLED.key -> "false") {
-        val table = s"$catalog.db.compact_job_per_group"
-        try {
-          createThreePartitions(table)
-          val before = rows(table)
-
-          var result: Row = null
-          val groups = jobGroups {
-            result = call("db.compact_job_per_group", SmallFileOptions)
-          }
-
-          assert(
-            cometJobs(groups).distinct.size == 3,
-            s"Expected three rewrite jobs, got $groups")
-          assert(result.getInt(0) == 9 && result.getInt(1) == 3)
-          assert(dataFileCount(table) == 3)
-          assert(replaceSnapshotCount(table) == 1)
-          assert(rows(table) == before)
-        } finally {
-          sql(s"DROP TABLE IF EXISTS $table")
-        }
-      }
-    }
-  }
-
-  test("file groups are rewritten one job each when Comet's native scan is off") {
+  test("a call Comet's native scan cannot read runs Iceberg's procedure") {
     withCompaction() {
       withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "false") {
         val table = s"$catalog.db.compact_no_native_scan"
@@ -390,15 +363,77 @@ class CometIcebergCompactionSuite extends CometTestBase with CometIcebergTestBas
             assert(call("db.compact_no_native_scan", SmallFileOptions).getInt(0) == 9)
           }
 
-          // Spark cannot read a bin without the native scan, so each group is read as Iceberg does.
-          assert(
-            cometJobs(groups).distinct.size == 3,
-            s"Expected three rewrite jobs, got $groups")
+          // Spark cannot read a bin, so Iceberg's procedure rewrites each group in a job.
+          assert(cometJobs(groups).isEmpty, s"Comet ran the rewrite, jobs: $groups")
+          assert(icebergJobs(groups).distinct.size == 3, s"Expected three Iceberg jobs: $groups")
           assert(dataFileCount(table) == 3)
           assert(rows(table) == before)
         } finally {
           sql(s"DROP TABLE IF EXISTS $table")
         }
+      }
+    }
+  }
+
+  test("files outside the output partition spec run Iceberg's procedure") {
+    withCompaction() {
+      val table = s"$catalog.db.compact_spec_change"
+      try {
+        createTable(table, files = 3)
+        // The files were written unpartitioned, and the output spec partitions by `part`.
+        loadIcebergTable(spark, catalog, "db", "compact_spec_change")
+          .asInstanceOf[org.apache.iceberg.Table]
+          .updateSpec()
+          .addField("part")
+          .commit()
+        sql(s"REFRESH TABLE $table")
+        val before = rows(table)
+
+        val groups = jobGroups {
+          assert(call("db.compact_spec_change", SmallFileOptions).getInt(0) == 3)
+        }
+
+        // Iceberg's write repartitions the group into the new spec, which a bin cannot be.
+        assert(cometJobs(groups).isEmpty, s"Comet ran the rewrite, jobs: $groups")
+        assert(icebergJobs(groups).nonEmpty)
+        assert(rows(table) == before)
+      } finally {
+        sql(s"DROP TABLE IF EXISTS $table")
+      }
+    }
+  }
+
+  test("a call that names a branch runs Iceberg's procedure") {
+    withCompaction() {
+      // Iceberg 1.11 added the `branch` argument, and the rewrite of a table identifier's branch.
+      assume(icebergVersionAtLeast(1, 11), "rewrite_data_files has no branches before 1.11")
+      val table = s"$catalog.db.compact_branch"
+      try {
+        createTable(table, files = 4)
+        val icebergTable = loadIcebergTable(spark, catalog, "db", "compact_branch")
+          .asInstanceOf[org.apache.iceberg.Table]
+        val mainSnapshot = icebergTable.currentSnapshot().snapshotId()
+        icebergTable.manageSnapshots().createBranch("audit", mainSnapshot).commit()
+        icebergTable.manageSnapshots().createBranch("qa", mainSnapshot).commit()
+
+        Seq(
+          "db.compact_branch" -> s"branch => 'audit', $SmallFileOptions",
+          "db.compact_branch.branch_qa" -> SmallFileOptions).foreach { case (target, arguments) =>
+          val groups = jobGroups {
+            assert(call(target, arguments).getInt(0) == 4)
+          }
+          assert(cometJobs(groups).isEmpty, s"Comet ran the rewrite of $target: $groups")
+          assert(icebergJobs(groups).nonEmpty)
+        }
+
+        // Iceberg rewrote both branches and left main alone.
+        icebergTable.refresh()
+        assert(icebergTable.currentSnapshot().snapshotId() == mainSnapshot)
+        Seq("audit", "qa").foreach { branch =>
+          assert(icebergTable.refs().get(branch).snapshotId() != mainSnapshot, branch)
+        }
+      } finally {
+        sql(s"DROP TABLE IF EXISTS $table")
       }
     }
   }
@@ -620,6 +655,146 @@ class CometIcebergCompactionSuite extends CometTestBase with CometIcebergTestBas
         assert(
           sql(s"SELECT SUM(record_count) FROM $table.data_files").collect().head.getLong(0) ==
             199L)
+      } finally {
+        sql(s"DROP TABLE IF EXISTS $table")
+      }
+    }
+  }
+
+  // -- Delete files -------------------------------------------------------------------------
+
+  private val MergeOnRead =
+    "'write.delete.mode' = 'merge-on-read', 'write.update.mode' = 'merge-on-read', " +
+      "'write.merge.mode' = 'merge-on-read'"
+
+  private def deleteFileCount(table: String): Long =
+    sql(s"SELECT COUNT(*) FROM $table.delete_files").collect().head.getLong(0)
+
+  test("delete files stay unless remove-dangling-deletes is set, as in Iceberg") {
+    withCompaction() {
+      val table = s"$catalog.db.compact_keep_deletes"
+      try {
+        sql(s"""
+          CREATE TABLE $table (id INT, part STRING, value DOUBLE) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '2', $MergeOnRead, 'write.delete.granularity' = 'file')""")
+        (0 until 3).foreach(appendFile(table, _, "a"))
+        // A position delete file for each of the first two files.
+        sql(s"DELETE FROM $table WHERE id IN (5, 105)")
+        assert(deleteFileCount(table) == 2)
+        val before = rows(table)
+
+        var result: Row = null
+        val groups = jobGroups {
+          result = call("db.compact_keep_deletes", SmallFileOptions)
+        }
+
+        assert(cometJobs(groups).nonEmpty, s"Comet did not run the rewrite, jobs: $groups")
+        assert(result.getInt(0) == 3)
+        assert(result.getInt(4) == 0, "removed_delete_files_count")
+        assert(deleteFileCount(table) == 2)
+        assert(rows(table) == before)
+      } finally {
+        sql(s"DROP TABLE IF EXISTS $table")
+      }
+    }
+  }
+
+  test("remove-dangling-deletes runs Iceberg's removal of the deletes the rewrite leaves") {
+    withCompaction() {
+      val table = s"$catalog.db.compact_dangling_deletes"
+      try {
+        sql(s"""
+          CREATE TABLE $table (id INT, part STRING, value DOUBLE) USING iceberg
+          PARTITIONED BY (part)
+          TBLPROPERTIES (
+            'format-version' = '2', $MergeOnRead, 'write.delete.granularity' = 'file')""")
+        (0 until 3).foreach(appendFile(table, _, "a"))
+        // A file of its own keeps partition `b` out of the rewrite, so the commit itself does not
+        // drop the deletes of `a` as older than every data file of the table.
+        appendFile(table, 3, "b")
+        sql(s"DELETE FROM $table WHERE id IN (5, 105)")
+        assert(deleteFileCount(table) == 2)
+        val before = rows(table)
+
+        // A new data sequence number puts the new file of `a` after both deletes, which is what
+        // makes them dangling for every Iceberg release.
+        var result: Row = null
+        val groups = jobGroups {
+          result = call(
+            "db.compact_dangling_deletes",
+            "options => map('min-input-files', '2', 'remove-dangling-deletes', 'true', " +
+              "'use-starting-sequence-number', 'false')")
+        }
+
+        assert(cometJobs(groups).nonEmpty, s"Comet did not run the rewrite, jobs: $groups")
+        assert(icebergJobs(groups).isEmpty, s"Iceberg ran a rewrite job too, jobs: $groups")
+        assert(result.getInt(0) == 3)
+        assert(result.getInt(4) == 2, "removed_delete_files_count")
+        assert(deleteFileCount(table) == 0)
+        assert(rows(table) == before)
+      } finally {
+        sql(s"DROP TABLE IF EXISTS $table")
+      }
+    }
+  }
+
+  test("a table with row lineage runs Iceberg's procedure") {
+    withCompaction() {
+      val table = s"$catalog.db.compact_v3"
+      try {
+        sql(s"""
+          CREATE TABLE $table (id INT, part STRING, value DOUBLE) USING iceberg
+          TBLPROPERTIES ('format-version' = '3', $MergeOnRead)""")
+        (0 until 3).foreach(appendFile(table, _, "a"))
+        // A deletion vector for each of the first two files.
+        sql(s"DELETE FROM $table WHERE id IN (5, 105)")
+        assert(deleteFileCount(table) == 2)
+        val before = rows(table)
+
+        var result: Row = null
+        val groups = jobGroups {
+          result = call("db.compact_v3", SmallFileOptions)
+        }
+
+        // Format version 3 keeps row lineage, which only Iceberg's staged scan reads.
+        assert(cometJobs(groups).isEmpty, s"Comet ran the rewrite, jobs: $groups")
+        assert(icebergJobs(groups).nonEmpty)
+        assert(result.getInt(0) == 3)
+        // Iceberg's commit removes the deletion vectors of the files it rewrites.
+        assert(result.getInt(4) == 2, "removed_delete_files_count")
+        assert(deleteFileCount(table) == 0)
+        assert(rows(table) == before)
+      } finally {
+        sql(s"DROP TABLE IF EXISTS $table")
+      }
+    }
+  }
+
+  test("files of a NaN partition are rewritten together") {
+    withCompaction() {
+      val table = s"$catalog.db.compact_nan_partition"
+      try {
+        sql(s"CREATE TABLE $table (id INT, f DOUBLE) USING iceberg PARTITIONED BY (f)")
+        (0 until 4).foreach { i =>
+          spark
+            .range(i * 10L, (i + 1) * 10L)
+            .selectExpr("CAST(id AS INT) AS id", "CAST('NaN' AS DOUBLE) AS f")
+            .coalesce(1)
+            .write
+            .format("iceberg")
+            .mode("append")
+            .saveAsTable(table)
+        }
+        assert(dataFileCount(table) == 4)
+        val before = rows(table)
+
+        val result = call("db.compact_nan_partition", SmallFileOptions)
+
+        // A boxed NaN is not == to itself, so each file used to land in a group of its own.
+        assert(result.getInt(0) == 4)
+        assert(dataFileCount(table) == 1)
+        assert(rows(table) == before)
       } finally {
         sql(s"DROP TABLE IF EXISTS $table")
       }

@@ -23,6 +23,7 @@ import java.util.UUID
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ExecutorService, ThreadFactory}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
@@ -33,28 +34,27 @@ import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.compaction.IcebergRewriteReflection.{RewriteGroup, RewritePlan}
 
 /**
- * Comet's bin-pack `rewrite_data_files`. It follows iceberg-java's `RewriteDataFilesSparkAction`
- * step for step, so that a call plans the same groups either way:
+ * Comet's bin-pack `rewrite_data_files`. Iceberg plans and commits the rewrite, with the classes
+ * of its own `RewriteDataFilesSparkAction`, and Comet runs the Spark jobs in between:
  *
- *   1. Plan the data files of the current snapshot into file groups ([[BinPackPlanner]]).
- *   1. Rewrite the groups in Spark jobs, which read the files with Comet's native Iceberg scan
- *      and write them back with Iceberg's rewrite write, which Comet runs with its native Iceberg
- *      writer when `spark.comet.write.iceberg.enabled` is set. Up to
- *      `max-concurrent-file-group-rewrites` jobs run at once.
- *   1. Commit the rewritten groups as one `RewriteFiles` snapshot, or in several snapshots with
- *      `partial-progress.enabled`.
+ *   - Iceberg's `BinPackRewriteFilePlanner` plans the file groups of the current snapshot.
+ *   - Comet rewrites all the groups of a commit in one Spark job. Each Spark task reads one bin
+ *     of a group with Comet's native Iceberg scan and writes it back with Iceberg's rewrite
+ *     write, which Comet runs with its native Iceberg writer when that is enabled. The bins of a
+ *     group are the task groups `TableScanUtil.planTaskGroups` makes of it, which is the call
+ *     Iceberg's staged scan makes, so a bin is a Spark partition of Iceberg's own job for the
+ *     group.
+ *   - Iceberg's `RewriteDataFilesCommitManager` commits the groups, in one snapshot or, with
+ *     `partial-progress.enabled`, in several.
  *
- * Iceberg runs a job per group. Each job reads the group's files through Iceberg's staged scan,
- * which packs them into Spark partitions of about the target file size. A table with many
- * partitions has many small groups, so only a few Spark tasks run at once. A job here covers
- * every group of a commit, with one Spark partition per bin the planner chose, so all of the
- * commit's bins run together. A group that cannot be read this way is rewritten as Iceberg does.
- *
- * The data movement stays in Iceberg's write path on purpose. It carries everything that must
- * match iceberg-java (metrics, partition values, sort order ids, file naming), and the
- * eligibility gates that fall back to Iceberg's own writer when Comet cannot match it.
+ * Iceberg's action runs a Spark job per group, and Comet's native scan already reads those jobs
+ * through Iceberg's staged scan. What a table with many small groups loses there is the jobs
+ * themselves: `max-concurrent-file-group-rewrites` small jobs at a time leave most of the cluster
+ * idle. A call that Comet cannot run as one job per commit is therefore left to Iceberg's
+ * procedure, and [[prepare]] decides that before anything is written.
  */
 object CometRewriteDataFiles extends Logging {
 
@@ -79,6 +79,23 @@ object CometRewriteDataFiles extends Logging {
   }
 
   /**
+   * The most Spark partitions one job reads. Every task returns its commit message to the driver,
+   * which holds them all until the job ends, and `spark.driver.maxResultSize` limits what they
+   * add up to. A table with wide statistics has messages of tens of kilobytes, so this keeps a
+   * job well under the default limit of 1 GiB.
+   */
+  private[compaction] val MaxBinsPerJob = 10000
+
+  /** The table property of the lookback Iceberg's staged scan plans its read with. */
+  private val SplitLookback = "read.split.planning-lookback"
+  private val SplitLookbackDefault = 10
+
+  /** The Spark job group id prefix of the jobs that rewrite file groups. */
+  val JobGroupPrefix = "COMET-REWRITE-DATA-FILES"
+
+  private val jobCounter = new AtomicInteger(0)
+
+  /**
    * Plans a rewrite without changing anything. Returns the reason when Comet leaves the call to
    * Iceberg, which the caller must then run instead.
    */
@@ -87,70 +104,181 @@ object CometRewriteDataFiles extends Logging {
     IcebergRewriteReflection.currentSnapshotId(table) match {
       case None =>
         // An empty table has nothing to rewrite, and Iceberg does not look at the options.
-        Right(new PreparedRewrite(request, 0L, None, CompactionPlan(Nil, 0)))
-      case Some(startingSnapshotId) =>
-        val specId = IcebergRewriteReflection.currentSpecId(table)
-        CompactionOptions.parse(
-          request.options,
-          IcebergRewriteReflection.tableProperties(table),
-          specId) match {
-          case Left(reason) => Left(reason)
-          case Right(options) =>
-            val files = IcebergRewriteReflection.planFiles(
-              request.session,
-              table,
-              startingSnapshotId,
-              request.filter,
-              specId)
-            val plan = BinPackPlanner.plan(files, options)
-            Right(new PreparedRewrite(request, startingSnapshotId, Some(options), plan))
-        }
+        Right(new PreparedRewrite(request, None))
+      case Some(snapshotId) =>
+        val caseSensitive = request.session.sessionState.conf.caseSensitiveAnalysis
+        val planner =
+          IcebergRewriteReflection.newPlanner(table, request.filter, snapshotId, caseSensitive)
+        for {
+          options <- CompactionOptions.parse(
+            request.options,
+            IcebergRewriteReflection.plannerOptions(planner))
+          plan <- planGroups(planner, request.options)
+          rewrite <- planRewrite(request, snapshotId, options, plan)
+        } yield new PreparedRewrite(request, rewrite)
     }
   }
 
-  /** Groups whose files have been rewritten and not yet committed. */
-  private[compaction] final case class RewrittenGroups(
-      groups: Seq[FileGroup],
-      addedFiles: Seq[AnyRef],
-      danglingDeletionVectors: Seq[AnyRef])
+  /** Iceberg's plan, or the reason Iceberg's planner rejected one of its options. */
+  private def planGroups(
+      planner: AnyRef,
+      options: Map[String, String]): Either[String, RewritePlan] =
+    try Right(IcebergRewriteReflection.plan(planner, options))
+    catch {
+      case e: IllegalArgumentException => Left(s"Iceberg rejects the options: ${e.getMessage}")
+    }
 
-  /** One Spark job of a rewrite. */
-  private sealed trait RewriteJob {
-    def groups: Seq[FileGroup]
+  /**
+   * The jobs that rewrite `plan`, or the reason Comet leaves the call to Iceberg. Every job's
+   * read is planned here, which writes nothing, so that a read Comet's native scan does not take
+   * over sends the whole call to Iceberg.
+   */
+  private def planRewrite(
+      request: Request,
+      snapshotId: Long,
+      options: CompactionOptions,
+      plan: RewritePlan): Either[String, Option[Rewrite]] = {
+    val table = request.table
+    val conf = request.session.sessionState.conf
+    lazy val schema = IcebergReflection.getSchema(table).map(_.asInstanceOf[AnyRef])
+    lazy val lookback = IcebergRewriteReflection
+      .tableProperties(table)
+      .get(SplitLookback)
+      .map(_.toInt)
+      .getOrElse(SplitLookbackDefault)
+
+    if (plan.groups.isEmpty) {
+      Right(None)
+    } else if (!CometConf.COMET_EXEC_ENABLED.get(conf) ||
+      !CometConf.COMET_ICEBERG_NATIVE_ENABLED.get(conf)) {
+      Left("Comet's native Iceberg scan is disabled")
+    } else if (IcebergReflection.getFormatVersion(table).forall(_ >= 3)) {
+      // Iceberg's rewrite of a table with row lineage reads and writes the lineage columns,
+      // which only Iceberg's own staged scan provides.
+      Left("the table has row lineage, which only Iceberg's staged scan reads")
+    } else if (schema.isEmpty) {
+      Left("Comet cannot read the table's schema")
+    } else if (lookback <= 0) {
+      Left(s"'$SplitLookback' is $lookback")
+    } else if (!plan.groups.forall(IcebergRewriteReflection.inOutputSpec)) {
+      // Iceberg's write repartitions such a group, and a bin is written as it is read.
+      Left("a file group has files outside the output partition spec")
+    } else {
+      val work = configuredSession(request.session)
+      planJobs(work, table, schema.get, lookback, options, plan).map { jobs =>
+        logInfo(
+          s"Comet rewrites ${plan.groups.size} file groups of ${tableName(table)} in " +
+            s"${jobs.size} jobs")
+        Some(new Rewrite(table, work, snapshotId, options, plan, jobs))
+      }
+    }
   }
 
-  /** A single group, read through Iceberg's staged scan the way Iceberg's action reads it. */
-  private final case class StagedJob(group: FileGroup) extends RewriteJob {
-    override def groups: Seq[FileGroup] = Seq(group)
+  /** The jobs of `plan`, or the reason Comet's native scan does not read all of them. */
+  private def planJobs(
+      work: SparkSession,
+      table: AnyRef,
+      icebergSchema: AnyRef,
+      lookback: Int,
+      options: CompactionOptions,
+      plan: RewritePlan): Either[String, Seq[BinsJob]] = {
+    val bins = plan.groups.map { group =>
+      group -> IcebergRewriteReflection
+        .planTaskGroups(group.tasks, group.inputSplitSize, lookback, openFileCost = 0L)
+        .map(new BinTasks(_))
+    }
+    // With partial progress a job covers the groups of one commit, so that a failed job fails
+    // one commit.
+    val groupsPerJob =
+      if (options.partialProgress) {
+        RewriteJobs.groupsPerCommit(plan.totalGroupCount, options.maxCommits)
+      } else {
+        Int.MaxValue
+      }
+    val sparkSchema = IcebergReflection.toSparkSchema(icebergSchema)
+    val jobs = mutable.ArrayBuffer.empty[BinsJob]
+    try {
+      RewriteJobs.chunk(bins, groupsPerJob, MaxBinsPerJob)(_._2.size).foreach { chunk =>
+        jobs += binsJob(work, table, icebergSchema, sparkSchema, chunk)
+      }
+    } catch {
+      case NonFatal(e) =>
+        jobs.foreach(job => CompactionBatches.remove(job.batchId))
+        throw e
+    }
+    if (jobs.forall(_.readByNativeScan)) {
+      Right(jobs.toVector)
+    } else {
+      jobs.foreach(job => CompactionBatches.remove(job.batchId))
+      Left("Comet's native Iceberg scan does not read every file group")
+    }
   }
 
   /**
-   * Several groups, read through [[CompactionSource]] with one Spark partition per bin.
-   *
-   * @param scan
-   *   the DataFrame that reads the bins. It is planned already, and Comet's native scan has taken
-   *   it over.
+   * A job that reads the bins of `chunk` through [[CompactionSource]]. Spark cannot read a
+   * [[CompactionScan]], so the read is planned here to see whether Comet's native scan takes it
+   * over.
    */
-  private final case class BinsJob(
-      groups: Seq[FileGroup],
-      batchId: String,
-      scan: DataFrame,
-      binCount: Int)
-      extends RewriteJob
-
-  /** What a bins job needs from the table, which does not change between jobs. */
-  private final case class BinsSupport(
+  private def binsJob(
+      work: SparkSession,
+      table: AnyRef,
       icebergSchema: AnyRef,
       sparkSchema: StructType,
-      lookback: Int)
+      chunk: Seq[(RewriteGroup, Seq[BinTasks])]): BinsJob = {
+    val batchId = UUID.randomUUID().toString
+    val bins = chunk.flatMap(_._2)
+    val batch = new CompactionBatch(table, icebergSchema, sparkSchema, bins)
+    CompactionBatches.register(batchId, batch)
+    try {
+      val scan = work.read
+        .format(classOf[CompactionSource].getName)
+        .option(CompactionSource.BatchIdOption, batchId)
+        .load()
+      val native =
+        scan.queryExecution.executedPlan.exists(_.isInstanceOf[CometIcebergNativeScanExec])
+      BinsJob(chunk.map(_._1), batchId, scan, bins.size, native)
+    } catch {
+      case NonFatal(e) =>
+        CompactionBatches.remove(batchId)
+        throw e
+    }
+  }
 
   /**
-   * The most Spark partitions one bins job reads. Every task returns its commit message to the
-   * driver, which holds them all until the job ends, and `spark.driver.maxResultSize` limits what
-   * they add up to. A table with wide statistics has messages of tens of kilobytes, so this keeps
-   * a job well under the default limit of 1 GiB.
+   * A copy of the session for the rewrite's own jobs. Adaptive execution is off because it can
+   * change the output partitioning of the write, and delete files are not cached on executors
+   * because every partition is rewritten once. Iceberg's action does the same.
    */
-  private[compaction] val MaxBinsPerJob = 10000
+  private def configuredSession(session: SparkSession): SparkSession = {
+    val work = session.getClass
+      .getMethod("cloneSession")
+      .invoke(session)
+      .asInstanceOf[SparkSession]
+    work.conf.set("spark.sql.adaptive.enabled", "false")
+    work.conf.set("spark.sql.iceberg.executor-cache.delete-files.enabled", "false")
+    work
+  }
+
+  private def tableName(table: AnyRef): String = IcebergRewriteReflection.tableName(table)
+
+  /**
+   * One Spark job of a rewrite: several file groups, read through [[CompactionSource]] with one
+   * Spark partition per bin.
+   *
+   * @param scan
+   *   the DataFrame that reads the bins, planned already
+   * @param readByNativeScan
+   *   whether Comet's native Iceberg scan took the read over
+   */
+  private[compaction] final case class BinsJob(
+      groups: Seq[RewriteGroup],
+      batchId: String,
+      scan: DataFrame,
+      binCount: Int,
+      readByNativeScan: Boolean) {
+
+    def inputFiles: Int = groups.map(_.inputFileNum).sum
+  }
 
   /** The default executor, daemon threads so a stuck job never keeps the JVM alive. */
   private def newPool(size: Int): ExecutorService =
@@ -165,111 +293,88 @@ object CometRewriteDataFiles extends Logging {
         }
       })
 
-  /** The Spark job group id prefix of the jobs that rewrite file groups. */
-  val JobGroupPrefix = "COMET-REWRITE-DATA-FILES"
-
-  private val jobCounter = new AtomicInteger(0)
-
-  /**
-   * A rewrite that has been planned and is ready to run.
-   *
-   * @param snapshotId
-   *   the snapshot the plan was read from, which commits validate against. Unused when the table
-   *   has no snapshot.
-   * @param options
-   *   None only when the table has no snapshot
-   */
-  final class PreparedRewrite private[compaction] (
-      request: Request,
-      snapshotId: Long,
-      options: Option[CompactionOptions],
-      plan: CompactionPlan) {
-
-    private val table = request.table
-
-    /** The batches registered for bins jobs, which are released when the rewrite ends. */
-    private val registeredBatches = new ConcurrentLinkedQueue[String]()
-
-    def groupCount: Int = plan.groups.size
+  /** A rewrite that has been planned and is ready to run, or None when there is nothing to do. */
+  final class PreparedRewrite private[compaction] (request: Request, rewrite: Option[Rewrite]) {
 
     def execute(): Result = {
-      val result = options match {
-        case Some(opts) if plan.groups.nonEmpty =>
-          val work = configuredSession()
-          try {
-            if (opts.partialProgress) {
-              executeWithPartialProgress(work, opts)
-            } else {
-              executeAtomic(work, opts)
-            }
-          } finally {
-            releaseBatches()
-          }
-        case _ =>
-          logInfo(s"Nothing found to rewrite in ${IcebergRewriteReflection.tableName(table)}")
+      val result = rewrite match {
+        case Some(r) =>
+          try r.run()
+          finally r.release()
+        case None =>
+          logInfo(s"Nothing found to rewrite in ${tableName(request.table)}")
           Result.Empty
       }
       request.refreshCache()
       result
     }
+  }
 
-    /**
-     * A copy of the session for the rewrite's own jobs. Adaptive execution is off because it can
-     * change the output partitioning of the write, and delete files are not cached on executors
-     * because every partition is rewritten once. Iceberg's action does the same.
-     */
-    private def configuredSession(): SparkSession = {
-      val work = request.session.getClass
-        .getMethod("cloneSession")
-        .invoke(request.session)
-        .asInstanceOf[SparkSession]
-      work.conf.set("spark.sql.adaptive.enabled", "false")
-      work.conf.set("spark.sql.iceberg.executor-cache.delete-files.enabled", "false")
-      work
+  /**
+   * The jobs of a rewrite, and their commits.
+   *
+   * @param snapshotId
+   *   the snapshot the plan was read from, which the commits validate against
+   */
+  private[compaction] final class Rewrite(
+      table: AnyRef,
+      work: SparkSession,
+      snapshotId: Long,
+      options: CompactionOptions,
+      plan: RewritePlan,
+      jobs: Seq[BinsJob]) {
+
+    def run(): Result = {
+      val commitManager = IcebergRewriteReflection.commitManager(
+        table,
+        snapshotId,
+        options.useStartingSequenceNumber)
+      val result =
+        if (options.partialProgress) runWithPartialProgress(commitManager)
+        else runAtomic(commitManager)
+      if (options.removeDanglingDeletes) {
+        val removed = IcebergRewriteReflection.removeDanglingDeletes(work, table)
+        result.copy(removedDeleteFilesCount = result.removedDeleteFilesCount + removed)
+      } else {
+        result
+      }
     }
+
+    /** Drops the batches of the jobs. A job that ran has dropped its own already. */
+    def release(): Unit = jobs.foreach(job => CompactionBatches.remove(job.batchId))
 
     // -- Atomic ----------------------------------------------------------------------------
 
-    private def executeAtomic(work: SparkSession, opts: CompactionOptions): Result = {
-      val jobs = planJobs(work, plan.groups, groupsPerJob = Int.MaxValue)
-      val pool = newPool(math.min(opts.maxConcurrentGroupRewrites, jobs.size))
-      val rewritten = new ConcurrentLinkedQueue[RewrittenGroups]()
+    private def runAtomic(commitManager: AnyRef): Result = {
+      val rewritten = new ConcurrentLinkedQueue[BinsJob]()
       val failure = new AtomicReference[Throwable](null)
-      try {
-        val futures = jobs.map { job =>
-          pool.submit(new Runnable {
-            override def run(): Unit = {
-              // Once a job has failed, jobs that have not started are skipped.
-              if (failure.get() == null) {
-                try {
-                  val _ = rewritten.add(runJob(work, job))
-                } catch {
-                  case e: Throwable =>
-                    logWarning(s"Failure during rewrite process for ${describe(job)}", e)
-                    val _ = failure.compareAndSet(null, e)
-                }
-              }
-            }
-          })
+      runJobs { job =>
+        // Once a job has failed, jobs that have not started are skipped.
+        if (failure.get() == null) {
+          try {
+            rewrite(job)
+            val _ = rewritten.add(job)
+          } catch {
+            case e: Throwable =>
+              logWarning(s"Failure during rewrite process for ${describe(job)}", e)
+              val _ = failure.compareAndSet(null, e)
+          }
         }
-        futures.foreach(_.get())
-      } finally {
-        pool.shutdown()
       }
 
-      val completed = rewritten.asScala.toSeq
+      val groups = rewritten.asScala.toSeq.flatMap(_.groups)
       if (failure.get() != null) {
         logError(
           s"Cannot complete rewrite, ${CompactionOptions.PartialProgressEnabled} is not " +
             "enabled and one of the file groups failed to be rewritten. This error occurred " +
             "during the writing of new files, not during the commit process. Cleaning up " +
-            s"${completed.map(_.groups.size).sum} groups which finished being written.")
-        completed.foreach(abort)
+            s"${groups.size} groups which finished being written.")
+        groups.foreach(IcebergRewriteReflection.abortFileGroup(commitManager, _))
         throw failure.get()
       }
 
       try {
-        commitOrClean(completed, opts)
+        IcebergRewriteReflection.commitOrClean(commitManager, groups)
       } catch {
         case e: Exception if IcebergRewriteReflection.isCommitConflict(e) =>
           throw new RuntimeException(
@@ -284,267 +389,76 @@ object CometRewriteDataFiles extends Logging {
               "snapshots in the table history, one for each commit.",
             e)
       }
-      resultOf(completed, failedFiles = 0)
+      resultOf(groups, failedFiles = 0)
     }
 
     // -- Partial progress ------------------------------------------------------------------
 
-    private def executeWithPartialProgress(
-        work: SparkSession,
-        opts: CompactionOptions): Result = {
-      val groupsPerCommit = math.max(1, ceilDiv(plan.totalGroupCount, opts.maxCommits))
-      // A job covers at most the groups of one commit, so that a failed job fails one commit.
-      val jobs = planJobs(work, plan.groups, groupsPerJob = groupsPerCommit)
-      val pool = newPool(math.min(opts.maxConcurrentGroupRewrites, jobs.size))
-      val committer = new BatchCommitter(groupsPerCommit, batch => commitOrClean(batch, opts))
+    private def runWithPartialProgress(commitManager: AnyRef): Result = {
+      val committer = new BatchCommitter(
+        RewriteJobs.groupsPerCommit(plan.totalGroupCount, options.maxCommits),
+        batch => IcebergRewriteReflection.commitOrClean(commitManager, batch.flatMap(_.groups)))
       val failedFiles = new AtomicInteger(0)
-      try {
-        val futures = jobs.map { job =>
-          pool.submit(new Runnable {
-            override def run(): Unit = {
-              try {
-                committer.offer(runJob(work, job))
-              } catch {
-                case e: Exception =>
-                  logError(s"Failure during rewrite of ${describe(job)}", e)
-                  val _ = failedFiles.addAndGet(job.groups.map(_.numFiles).sum)
-              }
-            }
-          })
+      runJobs { job =>
+        try {
+          rewrite(job)
+          committer.offer(job)
+        } catch {
+          case e: Exception =>
+            logError(s"Failure during rewrite of ${describe(job)}", e)
+            val _ = failedFiles.addAndGet(job.inputFiles)
         }
-        futures.foreach(_.get())
-      } finally {
-        pool.shutdown()
       }
       committer.finish()
 
-      val totalCommits = math.min(plan.totalGroupCount, opts.maxCommits)
+      val totalCommits = math.min(plan.totalGroupCount, options.maxCommits)
       val failedCommits = totalCommits - committer.succeededCommits
-      if (failedCommits > 0 && failedCommits <= opts.maxFailedCommits) {
+      if (failedCommits > 0 && failedCommits <= options.maxFailedCommits) {
         logWarning(
           s"${CompactionOptions.PartialProgressEnabled} is true but $failedCommits rewrite " +
             "commits failed. Check the logs to determine why the individual commits failed. " +
             s"If this is persistent it may help to increase " +
             s"${CompactionOptions.PartialProgressMaxCommits} which will split the rewrite " +
             "operation into smaller commits.")
-      } else if (failedCommits > opts.maxFailedCommits) {
+      } else if (failedCommits > options.maxFailedCommits) {
         throw new RuntimeException(
           s"${CompactionOptions.PartialProgressEnabled} is true but $failedCommits rewrite " +
             "commits failed. This is more than the maximum allowed failures of " +
-            s"${opts.maxFailedCommits}. Check the logs to determine why the individual " +
+            s"${options.maxFailedCommits}. Check the logs to determine why the individual " +
             "commits failed. If this is persistent it may help to increase " +
             s"${CompactionOptions.PartialProgressMaxCommits} which will split the rewrite " +
             "operation into smaller commits.")
       }
-      resultOf(committer.committedGroups, failedFiles.get())
+      resultOf(committer.committedJobs.flatMap(_.groups), failedFiles.get())
     }
-
-    // -- Planning the jobs -----------------------------------------------------------------
-
-    /**
-     * Decides how the groups are rewritten. Groups that can be read as bins are collected into
-     * jobs of at most `groupsPerJob` groups and [[MaxBinsPerJob]] bins, and each other group gets
-     * a job of its own. Nothing is written here, so a bins job that cannot run is replaced by its
-     * groups' own jobs.
-     */
-    private def planJobs(
-        work: SparkSession,
-        groups: Seq[FileGroup],
-        groupsPerJob: Int): Seq[RewriteJob] = {
-      binsSupport(work) match {
-        case None => groups.map(StagedJob)
-        case Some(support) =>
-          // A group whose files are not in the output spec is repartitioned by the write, which
-          // the bins job does not do.
-          val (direct, repartitioned) =
-            groups.partition(group => group.files.head.specId == group.outputSpecId)
-          // A group whose tasks cannot be split and packed here is left to Iceberg's staged scan.
-          val (planned, unplanned) =
-            direct.foldLeft((Vector.empty[(FileGroup, Seq[BinTasks])], Vector.empty[FileGroup])) {
-              case ((ok, failed), group) =>
-                try {
-                  (ok :+ (group -> binsOf(group, support.lookback)), failed)
-                } catch {
-                  case NonFatal(e) =>
-                    logInfo(s"Comet cannot plan the read of ${describe(group)}: ${e.getMessage}")
-                    (ok, failed :+ group)
-                }
-            }
-          val jobs =
-            BinPackPlanner.chunk(planned, groupsPerJob, MaxBinsPerJob)(_._2.size).flatMap {
-              chunked =>
-                binsJob(work, support, chunked) match {
-                  case Some(job) => Seq(job)
-                  case None => chunked.map { case (group, _) => StagedJob(group) }
-                }
-            }
-          jobs ++ (unplanned ++ repartitioned).map(StagedJob)
-      }
-    }
-
-    /**
-     * What a bins job needs, or None when the table or the session cannot use one. A table with
-     * row lineage reads and writes the lineage columns in a rewrite, which only Iceberg's own
-     * staged scan provides.
-     */
-    private def binsSupport(work: SparkSession): Option[BinsSupport] = {
-      val conf = work.sessionState.conf
-      if (!CometConf.COMET_ICEBERG_COMPACTION_SINGLE_JOB_ENABLED.get(conf) ||
-        !CometConf.COMET_ICEBERG_NATIVE_ENABLED.get(conf) ||
-        !CometConf.COMET_EXEC_ENABLED.get(conf)) {
-        None
-      } else {
-        try {
-          if (IcebergReflection.getFormatVersion(table).exists(_ < 3)) {
-            val lookback = IcebergRewriteReflection
-              .tableProperties(table)
-              .get("read.split.planning-lookback")
-              .map(_.toInt)
-              .getOrElse(BinPackPlanner.DefaultSplitLookback)
-            val schema = IcebergReflection.getSchema(table).map(_.asInstanceOf[AnyRef])
-            if (lookback > 0 && schema.isDefined) {
-              Some(BinsSupport(schema.get, IcebergReflection.toSparkSchema(schema.get), lookback))
-            } else {
-              None
-            }
-          } else {
-            None
-          }
-        } catch {
-          case NonFatal(e) =>
-            logInfo(s"Comet rewrites each file group in its own job: ${e.getMessage}")
-            None
-        }
-      }
-    }
-
-    /**
-     * The bins of a group: its large files split into read tasks, packed into Spark partitions of
-     * about `inputSplitSize`, which is how Iceberg's staged scan plans the read.
-     */
-    private def binsOf(group: FileGroup, lookback: Int): Seq[BinTasks] = {
-      val readTasks =
-        IcebergRewriteReflection.splitTasks(group.files.map(_.task), group.inputSplitSize)
-      BinPackPlanner
-        .planReadTasks(readTasks, group.inputSplitSize, lookback, openFileCost = 0L)(
-          _.sizeBytes,
-          _.filesCount)
-        .map { bin =>
-          val merged = IcebergRewriteReflection.mergeTasks(bin.map(_.task))
-          new BinTasks(new java.util.ArrayList[AnyRef](merged.asJava))
-        }
-    }
-
-    /**
-     * A job that reads the bins of `chunked`, or None when Comet's native scan does not take over
-     * the read. Spark cannot read a [[CompactionScan]], so the plan is checked before the job is
-     * committed to. The scan is planned here, which changes nothing.
-     */
-    private def binsJob(
-        work: SparkSession,
-        support: BinsSupport,
-        chunked: Seq[(FileGroup, Seq[BinTasks])]): Option[BinsJob] = {
-      val batchId = UUID.randomUUID().toString
-      val batch = new CompactionBatch(
-        table,
-        support.icebergSchema,
-        support.sparkSchema,
-        chunked.flatMap(_._2))
-      CompactionBatches.register(batchId, batch)
-      registeredBatches.add(batchId)
-      val scan =
-        try {
-          val df = work.read
-            .format(classOf[CompactionSource].getName)
-            .option(CompactionSource.BatchIdOption, batchId)
-            .load()
-          if (df.queryExecution.executedPlan.exists(_.isInstanceOf[CometIcebergNativeScanExec])) {
-            Some(df)
-          } else {
-            logInfo(
-              "Comet's native Iceberg scan does not read these file groups, so each is " +
-                "rewritten in its own job")
-            None
-          }
-        } catch {
-          case NonFatal(e) =>
-            logInfo(s"Comet cannot plan one job for these file groups: ${e.getMessage}")
-            None
-        }
-      scan match {
-        case Some(df) => Some(BinsJob(chunked.map(_._1), batchId, df, batch.bins.size))
-        case None =>
-          CompactionBatches.remove(batchId)
-          None
-      }
-    }
-
-    private def releaseBatches(): Unit =
-      registeredBatches.asScala.foreach { batchId =>
-        CompactionBatches.remove(batchId)
-        IcebergRewriteReflection.release(table, batchId)
-      }
 
     // -- Running a job ---------------------------------------------------------------------
 
-    private def runJob(work: SparkSession, job: RewriteJob): RewrittenGroups = job match {
-      case StagedJob(group) => rewriteStaged(work, group)
-      case bins: BinsJob => rewriteBins(work, bins)
-    }
-
-    /**
-     * Rewrites one group, which is what iceberg-java's bin-pack runner does: read the group's
-     * files in splits of `inputSplitSize`, and write them back so that each split becomes a new
-     * file. A shuffle is added only when the files are not in the output spec.
-     */
-    private def rewriteStaged(work: SparkSession, group: FileGroup): RewrittenGroups = {
-      val groupId = UUID.randomUUID().toString
-      val description = s"Rewriting ${group.numFiles} files (BIN-PACK, Comet, file group " +
-        s"${group.globalIndex}/${plan.totalGroupCount}) in " +
-        IcebergRewriteReflection.tableName(table)
-      withJobGroup(work, description) {
-        try {
-          val tasks = new java.util.ArrayList[AnyRef](group.numFiles)
-          group.files.foreach(f => tasks.add(f.task))
-          IcebergRewriteReflection.stage(table, groupId, tasks)
-
-          val repartition = group.files.head.specId != group.outputSpecId
-          work.read
-            .format("iceberg")
-            .option("scan-task-set-id", groupId)
-            .option("split-size", group.inputSplitSize.toString)
-            .option("file-open-cost", "0")
-            .load(groupId)
-            .write
-            .format("iceberg")
-            .option("rewritten-file-scan-task-set-id", groupId)
-            .option("target-file-size-bytes", group.maxOutputFileSize.toString)
-            .option("distribution-mode", if (repartition) "range" else "none")
-            .option("output-spec-id", group.outputSpecId.toString)
-            .mode("append")
-            .save(groupId)
-
-          val added = IcebergRewriteReflection.newFiles(table, groupId)
-          val dvs = IcebergRewriteReflection.deletionVectors(group.files.map(_.task))
-          logInfo(s"Rewrite files ready to be committed - $description")
-          RewrittenGroups(Seq(group), added, dvs)
-        } finally {
-          IcebergRewriteReflection.release(table, groupId)
+    /** Runs `body` for every job, `max-concurrent-file-group-rewrites` of them at a time. */
+    private def runJobs(body: BinsJob => Unit): Unit = {
+      val pool = newPool(math.min(options.maxConcurrentGroupRewrites, jobs.size))
+      try {
+        val futures = jobs.map { job =>
+          pool.submit(new Runnable {
+            override def run(): Unit = body(job)
+          })
         }
+        futures.foreach(_.get())
+      } finally {
+        pool.shutdown()
       }
     }
 
     /**
-     * Rewrites the groups of a bins job in one Spark job. Every Spark task reads one bin and
-     * writes it back, so a bin of about the target file size becomes about one file. The groups
-     * share the output settings, because those come from the options and not from the group.
+     * Rewrites the groups of a job in one Spark job. Every Spark task reads one bin and writes it
+     * back, so a bin of about the target file size becomes about one file. The groups share the
+     * output settings, which Iceberg's planner takes from the options and not from the group.
      */
-    private def rewriteBins(work: SparkSession, job: BinsJob): RewrittenGroups = {
+    private def rewrite(job: BinsJob): Unit = {
       val first = job.groups.head
-      val description = s"Rewriting ${job.groups.map(_.numFiles).sum} files (BIN-PACK, Comet, " +
-        s"${job.groups.size} file groups, ${job.binCount} read tasks) in " +
-        IcebergRewriteReflection.tableName(table)
-      withJobGroup(work, description) {
+      val description = s"Rewriting ${job.inputFiles} files (BIN-PACK, Comet, " +
+        s"${job.groups.size} file groups, ${job.binCount} read tasks) in ${tableName(table)}"
+      withJobGroup(description) {
         try {
           IcebergRewriteReflection.cacheTable(table, job.batchId)
           job.scan.write
@@ -555,12 +469,12 @@ object CometRewriteDataFiles extends Logging {
             .option("output-spec-id", first.outputSpecId.toString)
             .mode("append")
             .save(job.batchId)
-
-          val added = IcebergRewriteReflection.newFiles(table, job.batchId)
-          val dvs =
-            IcebergRewriteReflection.deletionVectors(job.groups.flatMap(_.files.map(_.task)))
+          // The groups of a job are always committed together, so the files the job wrote go to
+          // its first group and the commit adds them with the files of every group.
+          IcebergRewriteReflection.setOutputFiles(
+            first,
+            IcebergRewriteReflection.newFiles(table, job.batchId))
           logInfo(s"Rewrite files ready to be committed - $description")
-          RewrittenGroups(job.groups, added, dvs)
         } finally {
           IcebergRewriteReflection.release(table, job.batchId)
           CompactionBatches.remove(job.batchId)
@@ -569,7 +483,7 @@ object CometRewriteDataFiles extends Logging {
     }
 
     /** Runs `body` under a job group of its own, so that the Spark UI shows what it rewrites. */
-    private def withJobGroup[T](work: SparkSession, description: String)(body: => T): T = {
+    private def withJobGroup[T](description: String)(body: => T): T = {
       val sparkContext = work.sparkContext
       // Iceberg names its jobs REWRITE-DATA-FILES, so the prefix shows who ran the rewrite.
       sparkContext.setJobGroup(
@@ -583,84 +497,43 @@ object CometRewriteDataFiles extends Logging {
       }
     }
 
-    // -- Committing ------------------------------------------------------------------------
+    private def resultOf(groups: Seq[RewriteGroup], failedFiles: Int): Result = {
+      val results = groups.map(IcebergRewriteReflection.groupResult)
+      Result(
+        rewrittenDataFilesCount = results.map(_.rewrittenDataFiles).sum,
+        addedDataFilesCount = results.map(_.addedDataFiles).sum,
+        rewrittenBytesCount = results.map(_.rewrittenBytes).sum,
+        failedDataFilesCount = failedFiles,
+        removedDeleteFilesCount = results.map(_.removedDeleteFiles).sum)
+    }
+
+    private def describe(job: BinsJob): String =
+      s"the ${job.groups.size} file groups of job ${job.batchId}"
+  }
+
+  /**
+   * Commits finished jobs in batches of at least `groupsPerCommit` groups while the others are
+   * still running, the way iceberg-java's commit service does for `partial-progress.enabled`. A
+   * batch takes whole jobs, because the groups of a job share its files. A failed batch is logged
+   * and dropped, and Iceberg's commit manager deletes its files.
+   */
+  private final class BatchCommitter(groupsPerCommit: Int, commit: Seq[BinsJob] => Unit) {
+    private val pending = new java.util.ArrayDeque[BinsJob]()
+    private var pendingGroups = 0
+    private val committed = new ConcurrentLinkedQueue[BinsJob]()
+    private val succeeded = new AtomicInteger(0)
 
     /** Serializes commits, which iceberg-java's partial-progress service does not guarantee. */
     private val commitLock = new Object
 
-    private def commitOrClean(rewritten: Seq[RewrittenGroups], opts: CompactionOptions): Unit = {
-      try {
-        commitLock.synchronized {
-          IcebergRewriteReflection.commitRewrite(
-            table,
-            snapshotId,
-            opts.useStartingSequenceNumber,
-            rewrittenDataFiles = rewritten.flatMap(
-              _.groups.flatMap(_.files.map(f => IcebergRewriteReflection.dataFileOf(f.task)))),
-            addedDataFiles = rewritten.flatMap(_.addedFiles),
-            danglingDeletionVectors = rewritten.flatMap(_.danglingDeletionVectors))
-        }
-      } catch {
-        case e: Exception if IcebergRewriteReflection.isCommitStateUnknown(e) =>
-          logError(
-            "Commit state unknown, cannot clean up files because they may have been " +
-              "committed successfully.",
-            e)
-          throw e
-        case e: Exception =>
-          if (IcebergRewriteReflection.isCleanableFailure(e)) {
-            logError("Cannot commit groups, attempting to clean up written files", e)
-            rewritten.foreach(abort)
-          }
-          throw e
-      }
-    }
-
-    private def abort(rewritten: RewrittenGroups): Unit =
-      IcebergRewriteReflection.deleteFiles(table, rewritten.addedFiles)
-
-    private def resultOf(rewritten: Seq[RewrittenGroups], failedFiles: Int): Result = {
-      val groups = rewritten.flatMap(_.groups)
-      Result(
-        rewrittenDataFilesCount = groups.map(_.numFiles).sum,
-        addedDataFilesCount =
-          rewritten.map(r => IcebergRewriteReflection.distinctDataFiles(r.addedFiles)).sum,
-        rewrittenBytesCount = groups.map(_.inputBytes).sum,
-        failedDataFilesCount = failedFiles,
-        removedDeleteFilesCount = rewritten
-          .map(r => IcebergRewriteReflection.distinctDeleteFiles(r.danglingDeletionVectors))
-          .sum)
-    }
-
-    private def describe(job: RewriteJob): String =
-      job.groups.map(describe).mkString("file groups ", ", ", "")
-
-    private def describe(group: FileGroup): String =
-      s"{globalIndex=${group.globalIndex}, partitionIndex=${group.partitionIndex}, " +
-        s"partition=${group.partition.mkString("[", ", ", "]")}}"
-
-    private def ceilDiv(a: Int, b: Int): Int = (a + b - 1) / b
-  }
-
-  /**
-   * Commits finished jobs in batches of `groupsPerCommit` groups while the others are still
-   * running, the way iceberg-java's commit service does for `partial-progress.enabled`. A failed
-   * batch is logged and dropped, and its files are cleaned up by the commit.
-   */
-  private final class BatchCommitter(groupsPerCommit: Int, commit: Seq[RewrittenGroups] => Unit) {
-    private val pending = new java.util.ArrayDeque[RewrittenGroups]()
-    private var pendingGroups = 0
-    private val committed = new ConcurrentLinkedQueue[RewrittenGroups]()
-    private val succeeded = new AtomicInteger(0)
-
     def succeededCommits: Int = succeeded.get()
 
-    def committedGroups: Seq[RewrittenGroups] = committed.asScala.toSeq
+    def committedJobs: Seq[BinsJob] = committed.asScala.toSeq
 
-    def offer(rewritten: RewrittenGroups): Unit = {
+    def offer(job: BinsJob): Unit = {
       pending.synchronized {
-        pending.add(rewritten)
-        pendingGroups += rewritten.groups.size
+        pending.add(job)
+        pendingGroups += job.groups.size
       }
       commitReadyBatches(finalPass = false)
     }
@@ -668,7 +541,7 @@ object CometRewriteDataFiles extends Logging {
     /** Commits what is left once every job has finished. */
     def finish(): Unit = commitReadyBatches(finalPass = true)
 
-    private def commitReadyBatches(finalPass: Boolean): Unit = {
+    private def commitReadyBatches(finalPass: Boolean): Unit = commitLock.synchronized {
       var batch = nextBatch(finalPass)
       while (batch.nonEmpty) {
         try {
@@ -685,9 +558,9 @@ object CometRewriteDataFiles extends Logging {
       }
     }
 
-    private def nextBatch(finalPass: Boolean): Seq[RewrittenGroups] = pending.synchronized {
+    private def nextBatch(finalPass: Boolean): Seq[BinsJob] = pending.synchronized {
       if (pendingGroups >= groupsPerCommit || (finalPass && !pending.isEmpty)) {
-        val batch = Seq.newBuilder[RewrittenGroups]
+        val batch = Seq.newBuilder[BinsJob]
         var taken = 0
         while (taken < groupsPerCommit && !pending.isEmpty) {
           val next = pending.poll()
