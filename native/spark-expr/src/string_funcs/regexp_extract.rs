@@ -356,6 +356,35 @@ mod tests {
         assert!(err.to_string().contains("`regexp`"));
     }
 
+    #[test]
+    fn invalid_regex_without_a_non_null_subject_returns_null() {
+        let large_nulls =
+            ColumnarValue::Array(Arc::new(LargeStringArray::from(vec![None::<&str>, None])));
+        let null = ColumnarValue::Scalar(ScalarValue::Utf8(None));
+        for (subject, expected) in [
+            (array(vec![None, None]), vec![None, None]),
+            (large_nulls, vec![None, None]),
+            (null, vec![None]),
+            (array(vec![]), vec![]),
+        ] {
+            let result = run(vec![subject, pattern(r"(unclosed"), idx(1)]).unwrap();
+            assert_eq!(result, expected);
+        }
+
+        let err = call_raw(&[
+            array(vec![None, Some("abc"), None]),
+            pattern(r"(unclosed"),
+            idx(1),
+        ])
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("`regexp`"), "{err}");
+
+        let ints =
+            ColumnarValue::Array(Arc::new(arrow::array::Int32Array::from(vec![None::<i32>])));
+        assert!(call_raw(&[ints, pattern(r"\d+"), idx(0)]).is_err());
+    }
+
     /// One expression evaluates many batches; the pattern must compile once and results
     /// must stay correct on every batch.
     #[test]
