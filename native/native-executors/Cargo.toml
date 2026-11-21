@@ -34,19 +34,21 @@ edition = "2021"
 publish = false
 
 [dependencies]
-# Ballista and DataFusion are pinned to git revisions because no Ballista release is on DataFusion
-# 56 yet: the revisions are apache/datafusion-ballista#2718 (DataFusion 56 at the commit the main
-# workspace uses, Arrow 60). Move back to a release once Ballista ships one.
+# Ballista and DataFusion are pinned to git refs because neither has released 56.0.0 yet: Ballista
+# at a commit of its main branch, which is on DataFusion's 56.0.0-rc1 tag, the same tag as
+# native/Cargo.toml. Move back to releases once both ship.
 arrow-flight = "60.0.0"
-ballista-core = { git = "https://github.com/andygrove/datafusion-ballista", rev = "0acbe596270031031c8d1feed15989ed5fd7224a" }
-ballista-executor = { git = "https://github.com/andygrove/datafusion-ballista", rev = "0acbe596270031031c8d1feed15989ed5fd7224a", default-features = false, features = ["arrow-ipc-optimizations"] }
-ballista-scheduler = { git = "https://github.com/andygrove/datafusion-ballista", rev = "0acbe596270031031c8d1feed15989ed5fd7224a", default-features = false }
-datafusion = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false }
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e", default-features = false, features = ["arrow-ipc-optimizations"] }
+# `rest-api` compiles the scheduler's event-log writer (COMET_SCHEDULER_EVENT_LOG_DIR) and its REST
+# API.
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e", default-features = false, features = ["rest-api"] }
+datafusion = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1", default-features = false }
 # Comet's core crate, under the name of its library. Without the default hdfs-opendal feature,
 # which links libjvm through libhdfs.
 comet = { package = "datafusion-comet", path = "../core", default-features = false }
 datafusion-comet-proto = { path = "../proto" }
-datafusion-proto = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b" }
+datafusion-proto = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
 env_logger = "0.11"
 futures = "0.3"
 log = "0.4"
