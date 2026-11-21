@@ -38,9 +38,9 @@ pub(super) enum ParsedArgs<'a> {
         group_idx: usize,
         subject: &'a ColumnarValue,
     },
-    /// A scalar pattern or idx was null; the result is null for every input row. `len` is
-    /// `Some(n)` when the subject is an array (one null per row) and `None` for a scalar
-    /// subject.
+    /// A scalar pattern or idx was null, or no subject row is non-null; the result is null for
+    /// every input row. `len` is `Some(n)` when the subject is an array (one null per row) and
+    /// `None` for a scalar subject.
     NullResult { len: Option<usize> },
     /// `idx` is out of range but no non-null row matches, so the caller returns an empty
     /// result for every non-null row and null for every null row. `subject` is a `Utf8` or
@@ -92,6 +92,14 @@ pub(super) fn parse_args<'a>(
         }
     };
 
+    // Spark compiles the pattern only for a row whose subject is not null, so an invalid pattern
+    // is not an error for a batch without one.
+    if !has_non_null_subject(&args[0]) {
+        return Ok(ParsedArgs::NullResult {
+            len: subject_len(&args[0]),
+        });
+    }
+
     // The pattern is a plan-time literal, so the cache makes this compile a one-time cost
     // for the expression instead of a per-batch cost.
     let regex = regex_cache.get_or_compile(pattern).map_err(|e| {
@@ -103,6 +111,7 @@ pub(super) fn parse_args<'a>(
     // Spark checks `idx` only on a row where the pattern matches, so an out-of-range index is
     // an error only when some row matches. Checking per batch fails the same query: Spark
     // fails the task on the first matching row and this fails the batch that contains it.
+    // A non-null scalar subject is still evaluated in a batch with no rows (#7725).
     let group_count = regex.captures_len() as i32 - 1;
     if !(0..=group_count).contains(&idx) {
         if any_row_matches(fn_name, &regex, &args[0])? {
@@ -143,6 +152,19 @@ fn any_row_matches(
             Ok(s.as_deref().is_some_and(|s| regex.is_match(s)))
         }
         ColumnarValue::Scalar(_) => exec_err!("{fn_name} subject must be a string"),
+    }
+}
+
+/// Whether `subject` has a non-null row. A subject that is not `Utf8` or `LargeUtf8` counts as
+/// having one, so that it reaches the type check instead of becoming null.
+fn has_non_null_subject(subject: &ColumnarValue) -> bool {
+    match subject {
+        ColumnarValue::Array(array) => {
+            !matches!(array.data_type(), DataType::Utf8 | DataType::LargeUtf8)
+                || array.null_count() < array.len()
+        }
+        ColumnarValue::Scalar(ScalarValue::Utf8(s) | ScalarValue::LargeUtf8(s)) => s.is_some(),
+        ColumnarValue::Scalar(_) => true,
     }
 }
 
