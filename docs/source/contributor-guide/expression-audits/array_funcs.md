@@ -127,7 +127,8 @@
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Current status: `CometArrayRemove` sends arrays whose elements hold a `FLOAT` or `DOUBLE` at any depth to the native `spark_array_remove`, which compares as Spark's `genEqual` does (`-0.0` equals `0.0`, all NaNs are equal, nested elements through `spark_equality`) and keeps the bits of the elements it keeps. Other element types use DataFusion's `array_remove_all`. Null elements stay, and a null array or value gives null.
-- Performance (tuned 2026-10-01, PR [#6518](https://github.com/apache/datafusion-comet/pull/6518)): with a constant value, `FLOAT` and `DOUBLE` elements get one keep mask over all the values from `BooleanBuffer::collect_bool`, with the inverted validity ORed in, one running popcount over the mask's words for each row's kept count, and one `filter`. 41-76% less time than DataFusion's `array_remove_all` with a constant value, and 47-95% less with a value per row. Benchmark: `benches/float_arrays.rs`.
+- For a non-null constant `FLOAT` or `DOUBLE`, `compare_float_array_scalar` builds a keep mask using `IS DISTINCT FROM`, which retains null elements. A running popcount gives the output offsets, and one `filter` copies the survivors.
+- Performance (tuned 2026-10-01, PR [#6518](https://github.com/apache/datafusion-comet/pull/6518)): the implementation measured in `benches/float_arrays.rs` used `BooleanBuffer::collect_bool` for the constant case. It took 41-76% less time than DataFusion's `array_remove_all` with a constant value and 47-95% less with a value per row.
 
 ## array_repeat
 

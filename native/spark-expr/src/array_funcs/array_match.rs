@@ -20,9 +20,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::float_semantics::{
-    compare_float_array_scalar, compare_floats, spark_equality_ignoring_nulls,
-};
+use crate::float_semantics::{compare_float_array_scalar, compare_floats, spark_equality};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, GenericListArray, ListArray, OffsetSizeTrait,
     PrimitiveArray,
@@ -85,7 +83,7 @@ pub(super) fn invoke_with_mask<M: ScalarUDFImpl + MatchOperation<i32>>(
                 return from_mask(list, &elements, mask.into_parts().0);
             }
         }
-        MatchRows::new(list, needle)?.evaluate::<M>(spark_equality_ignoring_nulls)
+        MatchRows::new(list, needle)?.evaluate::<M>(spark_equality)
     })
 }
 
