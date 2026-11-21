@@ -1367,7 +1367,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
     // Promotion wraps decimal arithmetic in CheckOverflow, so check whether it can raise
     // after promotion.
-    lazy val raising: Seq[Expression] = original.map(DecimalPrecision.promote).filterNot(cannotRaise)
+    lazy val raising: Seq[Expression] =
+      original.map(DecimalPrecision.promote).filterNot(cannotRaise)
   }
 
   private[apache] def sharedExpressionsBeforePromotion: Seq[Expression] =

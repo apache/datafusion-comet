@@ -3827,9 +3827,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .parquet(dir.getCanonicalPath)
       withParquetTable(dir.getCanonicalPath, "divisors") {
         withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-          val filtered = sql("SELECT x FROM divisors WHERE p IS NOT NULL AND abs(10 DIV x) > 0")
+          val query = "SELECT x FROM divisors WHERE p IS NOT NULL AND abs(10 DIV x) > 0"
+          val filtered = sql(query)
           assert(!filtered.isEmpty)
           assert(filtered.rdd.take(1).toSeq == Seq(Row(1L)))
+
+          withTable("division_result") {
+            sql("CREATE TABLE division_result (x BIGINT) USING parquet")
+            for (enabled <- Seq("false", "true")) {
+              withSQLConf(CometConf.COMET_ENABLED.key -> enabled) {
+                val error = intercept[Exception] {
+                  sql(s"INSERT INTO division_result $query").collect()
+                }
+                assert(arithmeticError(error).getErrorClass == "DIVIDE_BY_ZERO")
+              }
+            }
+          }
 
           // Spark 4.2 evaluates the shared division before testing p and q.
           val shared =
