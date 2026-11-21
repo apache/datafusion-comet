@@ -22,13 +22,13 @@ package org.apache.comet.serde
 import scala.util.DynamicVariable
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.execution.{CodegenSupport, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.rules.CometRule
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.CometTypeShim
@@ -139,38 +139,39 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 }
 
 private[apache] object MapBuilderKeySupport {
-  private val floatMap = CometScalarFunction[Expression]("spark_float_map")
-  private val driverFloatMap = CometScalarFunction[Expression]("spark_float_map_driver")
+  private type Builder = Option[CometScalarFunction[Expression]]
+  private val taskPolicy = Some(CometScalarFunction[Expression]("spark_float_map"))
+  private val driverPolicy = Some(CometScalarFunction[Expression]("spark_float_map_driver"))
+  private val builder = new DynamicVariable[() => Builder](() => taskPolicy)
 
-  private val buildsOnDriver = new DynamicVariable[() => Boolean](() => false)
-
-  def withDriverPolicy[T](onDriver: => Boolean)(f: => T): T = {
-    lazy val useDriver = onDriver
-    buildsOnDriver.withValue(() => useDriver)(f)
-  }
-
-  // CollapseCodegenStages decides whether Spark generates the expression (and initializes
-  // ArrayBasedMapBuilder) on the driver. SortExec creates its sorter in the task either way.
-  def generatesBuilderOnDriver(op: SparkPlan): Boolean = op match {
-    case _: SortExec => false
-    case plan: CodegenSupport =>
+  def withOperator[T](op: SparkPlan)(f: => T): T = {
+    lazy val selected = {
       val conf = SQLConf.get
-      conf.wholeStageEnabled && conf
-        .getConf(SQLConf.CODEGEN_FACTORY_MODE)
-        .toString != "NO_CODEGEN" &&
-      plan.supportCodegen && !WholeStageCodegenExec.isTooManyFields(conf, plan.schema) &&
-      !plan.children.exists(c => WholeStageCodegenExec.isTooManyFields(conf, c.schema)) &&
-      !plan.expressions.exists(_.exists(e =>
-        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
-    case _ => false
+      // SortExec creates the sorter in the task even under whole-stage codegen.
+      if (!conf.wholeStageEnabled || op.isInstanceOf[SortExec] ||
+        !CometRule.supportsWholeStageCodegen(op, conf)) {
+        taskPolicy
+      } else if (conf.hugeMethodLimit < SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get) {
+        // Spark can switch to a task projection after compiling the stage.
+        None
+      } else {
+        driverPolicy
+      }
+    }
+    builder.withValue(() => selected)(f)
   }
+
+  // Spark populates and retains broadcast hash tables on the driver, including normalized keys.
+  def withHashBuildKeys[T](broadcast: Boolean)(f: => T): T =
+    builder.withValue(() => if (broadcast) None else taskPolicy)(f)
 
   def convertFloatMap(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val function = if (buildsOnDriver.value()) driverFloatMap else floatMap
-    withNullShortCircuit(expr, function.convert(expr, inputs, binding)).orElse {
+    val interpreted = SQLConf.get.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN"
+    val native = if (interpreted) None else builder.value()
+    native.flatMap(fn => withNullShortCircuit(expr, fn.convert(expr, inputs, binding))).orElse {
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }

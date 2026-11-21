@@ -2974,10 +2974,9 @@ trait CometHashJoin {
       }
     }
 
-    // Spark builds a broadcast hash table on the driver and a shuffled one in the task.
     def withKeyPolicy[T](side: BuildSide)(f: => T): T =
       if (join.buildSide == side) {
-        MapBuilderKeySupport.withDriverPolicy(join.isInstanceOf[BroadcastHashJoinExec])(f)
+        MapBuilderKeySupport.withHashBuildKeys(join.isInstanceOf[BroadcastHashJoinExec])(f)
       } else f
     val leftKeys = withKeyPolicy(BuildLeft)(join.leftKeys.map(exprToProto(_, join.left.output)))
     val rightKeys =

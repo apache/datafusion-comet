@@ -299,31 +299,41 @@ class CometMapExpressionSuite extends CometTestBase {
     withTable("map_normalization") {
       sql("CREATE TABLE map_normalization(k ARRAY<DOUBLE>, v ARRAY<INT>) USING parquet")
       sql("INSERT INTO map_normalization VALUES (array(0.0D, double('-0.0')), array(1, 2))")
+      val generated = SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "2"
+      val dispatchModes = Seq(
+        SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.key -> "1",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN")
+      val nativeModes = Seq(
+        generated,
+        SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "1",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")
       for {
         comet <- Seq(false, true)
-        (wholeStage, maxFields) <- Seq((false, 2), (true, 1), (true, 2))
+        mode <- nativeModes ++ dispatchModes
       } {
         // Spark captures the policy on the driver when this two-column projection runs in
         // a whole-stage subtree. Otherwise each task creates its own builder.
         val (firstPolicy, secondPolicy) =
-          if (wholeStage && maxFields >= 2) ("LAST_WIN", "EXCEPTION")
-          else ("EXCEPTION", "LAST_WIN")
+          if (mode == generated) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
         withSQLConf(
           CometConf.COMET_ENABLED.key -> comet.toString,
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage.toString,
-          SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> maxFields.toString,
+          mode,
           SQLConf.MAP_KEY_DEDUP_POLICY.key -> firstPolicy,
           disableNormalization -> "true") {
           val df = sql(
             "SELECT map_values(map_from_arrays(k, v)), " +
               "map_values(map_from_entries(arrays_zip(k, v))) FROM map_normalization")
           assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
+          if (firstPolicy == "LAST_WIN") {
+            // The RDD action reads the task's default normalization when it consumes the row.
+            assert(df.rdd.collect().toSeq == Seq(Row(Seq(2), Seq(2))))
+          }
           if (comet) {
-            assertExpressionImpl(
-              df.queryExecution.executedPlan,
-              native = Seq("map_from_arrays", "map_from_entries"),
-              dispatched = Seq.empty)
+            val builders = Seq("map_from_arrays", "map_from_entries")
+            val plan = df.queryExecution.executedPlan
+            if (dispatchModes.contains(mode)) assertExpressionImpl(plan, Seq.empty, builders)
+            else assertExpressionImpl(plan, builders, Seq.empty)
           }
           withSQLConf(
             SQLConf.MAP_KEY_DEDUP_POLICY.key -> secondPolicy,

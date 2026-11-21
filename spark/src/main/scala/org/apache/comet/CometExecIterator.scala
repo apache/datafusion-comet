@@ -36,7 +36,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{ReadOnlySQLConf, SQLConf}
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
@@ -911,10 +911,12 @@ object CometExecIterator extends Logging {
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
-    // Spark initializes ArrayBasedMapBuilder.keyNormalizer on the task's first put.
+    // In a lazy projection the first put initializes Spark's normalizer after
+    // SQLExecutionRDD.compute has restored the task-local properties as the active SQLConf.
     val normalizationKey = "spark.sql.legacy.disableMapKeyNormalization"
+    val taskConf = Option(TaskContext.get()).map(new ReadOnlySQLConf(_)).getOrElse(SQLConf.get)
     val disableNormalization = !CometSparkSessionExtensions.isSpark40Plus ||
-      SQLConf.get.getConfString(normalizationKey, "false").trim.toBoolean
+      taskConf.getConfString(normalizationKey, "false").trim.toBoolean
     builder.putEntries(normalizationKey, disableNormalization.toString)
     builder.putEntries(SQLConf.MAP_KEY_DEDUP_POLICY.key, CapturedSQLConf.currentMapKeyDedupPolicy)
     builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy)
