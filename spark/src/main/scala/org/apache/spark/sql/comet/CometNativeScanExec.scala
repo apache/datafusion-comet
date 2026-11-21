@@ -69,11 +69,24 @@ case class CometNativeScanExec(
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan,
     @transient scan: CometScanExec, // Lazy access to file partitions without serializing with plan
-    sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
+    sourceKey: String, // Key for PlanDataInjector to match common+partition data at runtime
+    allowFilteredTimestampCheck: Boolean = false)
     extends CometLeafExec
     with DataSourceScanExec
     with ShimStreamSourceAwareSparkPlan
     with CometScanWithPlanData {
+
+  def withFullRead(fullyRead: Boolean): CometNativeScanExec = {
+    val allowCheck = fullyRead && dataFilters.nonEmpty &&
+      requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType)
+    if (allowCheck == allowFilteredTimestampCheck) {
+      this
+    } else {
+      val updated = copy(allowFilteredTimestampCheck = allowCheck)
+      updated.copyTagsFrom(this)
+      updated
+    }
+  }
 
   override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
     // AQE rewrites DPP placeholders in the live scan before transition reversion.
@@ -182,29 +195,29 @@ case class CometNativeScanExec(
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
       val base = nativeOp.getNativeScan.getCommon
-      val filters = if (conf.parquetFilterPushDown) dataFilters else Nil
-      val scalarSubqueryFilters = filters
+      val scalarSubqueryFilters = dataFilters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
-      scalarSubqueryFilters.foreach { f =>
+      val pushedSubqueries = if (conf.parquetFilterPushDown) scalarSubqueryFilters else Nil
+      pushedSubqueries.foreach { f =>
         f.foreach {
           case s: ExecScalarSubquery =>
             s.updateResult()
           case _ =>
         }
       }
-      val resolvedFilters = scalarSubqueryFilters
+      val resolvedFilters = pushedSubqueries
         .map(_.transform { case s: ExecScalarSubquery =>
           Literal.create(s.eval(null), s.dataType)
         })
       // Translate the live Catalyst filters after subquery resolution, including predicates
       // Comet skipped or could not serialize. Spark may still pass those to parquet-mr.
-      val sparkFiltersAfterTimestampConversion =
-        (base.getHasDataFilters || resolvedFilters.nonEmpty) &&
-          requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
-          !scan.hasSparkSourceFilters(filters)
-      if (resolvedFilters.nonEmpty || sparkFiltersAfterTimestampConversion) {
+      val filtered = base.getHasDataFilters || scalarSubqueryFilters.nonEmpty
+      val checkFilteredTimestamps = filtered && allowFilteredTimestampCheck &&
+        (!conf.parquetFilterPushDown || !scan.hasSparkSourceFilters(dataFilters))
+      if (scalarSubqueryFilters.nonEmpty || checkFilteredTimestamps) {
         val commonBuilder = base.toBuilder
-        commonBuilder.setHasDataFilters(!sparkFiltersAfterTimestampConversion)
+        commonBuilder.setHasDataFilters(filtered)
+        commonBuilder.setCheckFilteredTimestampOverflow(checkFilteredTimestamps)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
@@ -308,8 +321,8 @@ case class CometNativeScanExec(
       CometScanUtils.canonicalizeOriginalPlan(originalPlan),
       SerializedPlan(None),
       null, // Transient scan not needed for canonicalization
-      ""
-    ) // sourceKey not needed for canonicalization
+      "", // sourceKey not needed for canonicalization
+      allowFilteredTimestampCheck)
   }
 
   override def stringArgs: Iterator[Any] = Iterator(output)
@@ -320,14 +333,20 @@ case class CometNativeScanExec(
         this.originalPlan == other.originalPlan &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
         this.partitionFilters == other.partitionFilters &&
-        this.dataFilters == other.dataFilters
+        this.dataFilters == other.dataFilters &&
+        this.allowFilteredTimestampCheck == other.allowFilteredTimestampCheck
       case _ =>
         false
     }
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(originalPlan, serializedPlanOpt, partitionFilters, dataFilters)
+    Objects.hashCode(
+      originalPlan,
+      serializedPlanOpt,
+      partitionFilters,
+      dataFilters,
+      Boolean.box(allowFilteredTimestampCheck))
 
   private val driverMetricKeys =
     Set(

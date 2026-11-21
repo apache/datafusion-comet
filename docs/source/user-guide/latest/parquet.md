@@ -302,11 +302,15 @@ for production, so do not turn it off to avoid an entry on this page.
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
   level. Inside a struct, it returns the values of the field matched by id. Spark's own readers
   disagree here ([#6994](https://github.com/apache/datafusion-comet/issues/6994)).
-- **`TIMESTAMP_MILLIS` values that overflow when converted to microseconds.** In nested fields, and
-  in every column of a scan that has data filters, Comet returns NULL where Spark fails with
-  `ArithmeticException: long overflow`
-  ([#5553](https://github.com/apache/datafusion-comet/issues/5553),
-  [#5739](https://github.com/apache/datafusion-comet/issues/5739)).
+- **`TIMESTAMP_MILLIS` values that overflow when converted to microseconds.** Spark raises
+  `ArithmeticException: long overflow` when its reader decodes such a value. Comet checks the
+  conversion in a V1 Parquet query such as `SELECT s.ts FROM t WHERE id <=> match_id` when
+  collecting the full result. Spark evaluates that comparison after decoding the timestamps.
+  Comet can still return NULL when Spark can push a predicate into Parquet, as in
+  `WHERE s.k >= 0` with nested filter pushdown enabled, or when a `LIMIT` can stop the
+  filtered scan early ([#5739](https://github.com/apache/datafusion-comet/issues/5739)).
+  A nested timestamp stored as an Arrow dictionary can also return NULL on overflow
+  ([#5553](https://github.com/apache/datafusion-comet/issues/5553)).
 - **Reads that Spark rejects.** Comet returns rows where Spark fails the read for `INT` columns
   read as `INTERVAL DAY TO SECOND` ([#5188](https://github.com/apache/datafusion-comet/issues/5188))
   and Variant-annotated fields read as a plain struct

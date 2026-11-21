@@ -1107,6 +1107,32 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
+   * A larger native Parquet batch may contain an overflowing timestamp beyond the last row Spark
+   * decodes under a limit. Extend overflow checks to filtered scans only through operators that
+   * drain their input when the SQL result is collected or an exchange materializes.
+   */
+  private def markFullyReadScans(plan: SparkPlan): SparkPlan = {
+    def visit(node: SparkPlan, fullyRead: Boolean): SparkPlan = node match {
+      case scan: CometNativeScanExec => scan.withFullRead(fullyRead)
+      case _ =>
+        val original = node match {
+          case comet: CometExec => comet.originalPlan
+          case other => other
+        }
+        val fullChild = original match {
+          case _: ShuffleExchangeLike | _: BroadcastExchangeLike => true
+          case _: FilterExec | _: ProjectExec | _: SortExec | _: HashAggregateExec |
+              _: ObjectHashAggregateExec =>
+            fullyRead
+          case _ => false
+        }
+        node.mapChildren(visit(_, fullChild))
+    }
+    // Spark 3.5 implements Dataset.isEmpty as executeTake(1) on a zero-column projection.
+    visit(plan, fullyRead = plan.output.nonEmpty)
+  }
+
+  /**
    * Sorts the input of a window that runs in Spark, a Python one included, when its order may be
    * false. Spark plans no sort below a window whose child reports the order it needs, and its
    * window trusts that order. A Comet operator that may not keep the order it reports, such as a
@@ -1256,7 +1282,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
       // Convert native execution block by linking consecutive native operators.
       var firstNativeOp = true
-      newPlan.transformDown {
+      markFullyReadScans(newPlan).transformDown {
         case op: CometNativeExec =>
           val newPlan = if (firstNativeOp) {
             firstNativeOp = false

@@ -184,10 +184,12 @@ message NativeScanCommon {
   // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
   // from Comet's per-Spark-version constant in ShimCometConf.
   bool allow_timestamp_ltz_to_ntz = 18;
-  // Whether Spark may pass a filter to its Parquet reader, independent of the
-  // predicates Comet serialized into data_filters. Older producers omitted
-  // this flag when false, so a populated data_filters then implies true.
-  optional bool has_data_filters = 19;
+  // True when Spark supplied a Parquet data filter, including when Comet could
+  // not serialize any of those filters into data_filters.
+  bool has_data_filters = 19;
+  // Set when Spark evaluates all filters after decoding and the plan consumes
+  // the full scan. Native predicates must not hide timestamp overflow.
+  bool check_filtered_timestamp_overflow = 20;
 }
 
 message NativeScan {

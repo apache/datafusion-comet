@@ -682,9 +682,21 @@ abstract class ParquetReadSuite extends CometTestBase {
               assert(error.getCause.getMessage == "long overflow")
             }
 
+            def checkWithAndWithoutLimit(predicate: String): Unit = {
+              checkOverflow(predicate)
+              // Spark stops after the valid first batch. Comet can decode both rows together.
+              withSQLConf(
+                SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "1",
+                CometConf.COMET_BATCH_SIZE.key -> "2") {
+                checkSparkAnswerAndOperator(
+                  df.where(predicate).select("s.ts").limit(1),
+                  Seq(classOf[CometNativeScanExec]))
+              }
+            }
+
             // A column-to-column comparison has no V1 filter. Comet's row filter could
             // otherwise discard the second row before converting its timestamp.
-            checkOverflow("id <=> match_id")
+            checkWithAndWithoutLimit("id <=> match_id")
             withSQLConf(SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key -> "") {
               checkOverflow("s.k >= 0")
               checkOverflow("s.k < 0")
@@ -695,7 +707,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
             if (isSpark40Plus) {
               withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
-                checkOverflow("id <=> (SELECT min(id) FROM range(2))")
+                checkWithAndWithoutLimit("id <=> (SELECT min(id) FROM range(2))")
               }
             }
           }

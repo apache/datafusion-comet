@@ -626,12 +626,11 @@ impl PhysicalPlanner {
             };
 
         let predicates = data_filters?;
-        let scan_filters = if common.has_data_filters.unwrap_or(!predicates.is_empty()) {
-            Some(predicates)
-        } else if predicates.is_empty() {
-            None
+        let scan_filters = if common.check_filtered_timestamp_overflow {
+            (!predicates.is_empty())
+                .then(|| protect_timestamp_overflow(predicates, &required_schema))
         } else {
-            Some(protect_timestamp_overflow(predicates, &required_schema))
+            (common.has_data_filters || !predicates.is_empty()).then_some(predicates)
         };
         let default_values = self.parse_default_values(common, &required_schema)?;
 
