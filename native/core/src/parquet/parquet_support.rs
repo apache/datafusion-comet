@@ -63,7 +63,9 @@ use super::objectstore;
 use super::objectstore::s3_blob_fs_support::{
     normalize_object_store_url, NormalizedObjectStoreUrl,
 };
-use super::objectstore::url_redaction::{authority_without_password, without_credentials};
+use super::objectstore::url_redaction::{
+    authority_without_password, without_credentials, without_secrets,
+};
 
 pub(crate) fn duplicate_parquet_field_error(name: &str) -> DataFusionError {
     DataFusionError::Execution(format!("Found duplicate Parquet field name '{name}'"))
@@ -855,10 +857,13 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
         }
         Ok(uri_builder)
     } else {
-        Err(object_store::Error::InvalidPath {
-            source: object_store::path::Error::InvalidPath {
-                path: std::path::PathBuf::from(url.as_str()),
-            },
+        Err(object_store::Error::Generic {
+            store: "hdfs-opendal",
+            source: format!(
+                "{}:// URL has no host, so no name node can be derived",
+                url.scheme()
+            )
+            .into(),
         })
     }
 }
@@ -1078,7 +1083,14 @@ pub(crate) fn prepare_object_store_with_config_hash(
             } else if is_azure_scheme(url.scheme()) {
                 objectstore::azure::create_store(url, &backend_configs)
             } else {
-                parse_url(url)
+                // The builders and the HTTP store quote the URL in their errors. None of them
+                // reads the password or query; an `az` URL's username is read as its container.
+                let url = if url.scheme() == "az" {
+                    without_secrets(url)
+                } else {
+                    without_credentials(url)
+                };
+                parse_url(&url)
             }
             .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
 
@@ -2170,6 +2182,104 @@ mod tests {
             })
             .collect();
         assert!(leaks.is_empty(), "credentials echoed: {leaks:#?}");
+    }
+
+    /// object_store sends these hosts to the S3 and Azure builders by suffix, and the builders
+    /// reject the ones they cannot split, quoting the URL.
+    #[test]
+    fn store_builder_errors_do_not_echo_userinfo_or_query() {
+        let runtime = Arc::new(RuntimeEnv::default());
+        for (url, kept) in [
+            (
+                "https://alice:SECRET@x.foo.amazonaws.com/p?sig=SAS-MARKER",
+                "https://x.foo.amazonaws.com/p",
+            ),
+            (
+                "https://alice:SECRET@a.b.dfs.core.windows.net/p?sig=SAS-MARKER",
+                "https://a.b.dfs.core.windows.net/p",
+            ),
+            (
+                "az://alice:SECRET@acct.dfs.core.chinacloudapi.cn/p?sig=SAS-MARKER",
+                "az://alice@acct.dfs.core.chinacloudapi.cn/p",
+            ),
+        ] {
+            let err = prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                url.into(),
+                &HashMap::new(),
+            )
+            .expect_err("the builder rejects the host")
+            .to_string();
+            for leaked in ["SECRET", "SAS-MARKER"] {
+                assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+            }
+            if !url.starts_with("az:") {
+                assert!(!err.contains("alice"), "alice echoed: {err}");
+            }
+            assert!(err.contains("URL did not match any known pattern"), "{err}");
+            assert!(err.contains(kept), "{err}");
+        }
+    }
+
+    /// The HTTP store quotes its URL in request errors. Plain http is refused before any request
+    /// is sent, so this needs no server.
+    #[tokio::test]
+    async fn http_store_errors_do_not_echo_userinfo_or_query() {
+        use object_store::ObjectStoreExt;
+
+        let host = "127.0.0.1:9";
+        let runtime = Arc::new(RuntimeEnv::default());
+        let (url, path, _) = prepare_object_store_with_configs(
+            Arc::clone(&runtime),
+            format!("http://alice:SECRET@{host}/f.parquet?sig=SAS-MARKER"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let err = runtime
+            .object_store(&url)
+            .unwrap()
+            .head(&path)
+            .await
+            .expect_err("plain http is not allowed")
+            .to_string();
+        object_store_cache()
+            .write()
+            .unwrap()
+            .retain(|(key, _, _), _| !key.contains(host));
+        for leaked in ["alice", "SECRET", "SAS-MARKER"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
+        assert!(err.contains("127.0.0.1"), "{err}");
+    }
+
+    /// The Azure builder reads the container of an `az` URL from its username.
+    #[test]
+    fn az_url_keeps_its_container() {
+        let host = "comet-az-container.dfs.core.windows.net";
+        let result = prepare_object_store_with_configs(
+            Arc::new(RuntimeEnv::default()),
+            format!("az://data:SECRET@{host}/p/f.parquet?sig=SAS-MARKER"),
+            &HashMap::new(),
+        );
+        object_store_cache()
+            .write()
+            .unwrap()
+            .retain(|(key, _, _), _| !key.contains(host));
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[cfg(feature = "hdfs-opendal")]
+    #[test]
+    fn hostless_hdfs_url_error_names_only_the_scheme() {
+        let url = url::Url::parse("hdfs:///tmp/x?sig=SAS-MARKER").unwrap();
+        assert_eq!(url.host(), None);
+        let err = super::get_name_node_uri(&url).unwrap_err().to_string();
+        for leaked in ["SAS-MARKER", "/tmp/x"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
+        assert!(err.contains("hdfs://"), "{err}");
+        let url = url::Url::parse("hdfs://nn:8020/t").unwrap();
+        assert_eq!(super::get_name_node_uri(&url).unwrap(), "hdfs://nn:8020");
     }
 
     /// Credentials come from the configuration, so the key keeps the container but no password.
