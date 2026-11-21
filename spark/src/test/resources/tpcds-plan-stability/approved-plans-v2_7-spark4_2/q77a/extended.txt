@@ -65,7 +65,7 @@ CometColumnarToRow
                :           :     :                       +- CometProject
                :           :     :                          +- CometFilter
                :           :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
-               :           :     +-  Project [COMET: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
+               :           :     +-  Project [COMET: scalarsubquery: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
                :           :        :  :- Subquery
                :           :        :  :  +- CometColumnarToRow
                :           :        :  :     +- CometProject
@@ -184,7 +184,7 @@ CometColumnarToRow
                :                    :     :                       +- CometProject
                :                    :     :                          +- CometFilter
                :                    :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
-               :                    :     +-  Project [COMET: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
+               :                    :     +-  Project [COMET: scalarsubquery: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
                :                    :        :  :- Subquery
                :                    :        :  :  +- CometColumnarToRow
                :                    :        :  :     +- CometProject
@@ -303,7 +303,7 @@ CometColumnarToRow
                                     :     :                       +- CometProject
                                     :     :                          +- CometFilter
                                     :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
-                                    :     +-  Project [COMET: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
+                                    :     +-  Project [COMET: scalarsubquery: Unsupported data type: StructType(StructField(returns,DecimalType(17,2),true),StructField(profit_loss,DecimalType(17,2),true))]
                                     :        :  :- Subquery
                                     :        :  :  +- CometColumnarToRow
                                     :        :  :     +- CometProject
