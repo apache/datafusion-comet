@@ -28,6 +28,10 @@
 //! handed: a filter coalesces its output back up to the session's batch size, a window emits
 //! its whole partition and a broadcast arrives as a few wide batches. No width can be assumed,
 //! so the split is installed whenever the operator expands a string or binary scalar at all.
+//! It splits only at the scalar's own cap: a batch at or under it passes through unsliced, so a
+//! scalar of ordinary size never hands the operator zero-copy slices of a shared buffer, which
+//! DataFusion's `ExternalSorter` would reserve one by one
+//! (<https://github.com/apache/datafusion/issues/25804>).
 
 use std::sync::Arc;
 
@@ -64,8 +68,8 @@ fn scalar_rows_cap(scalar_bytes: usize) -> usize {
 
 impl PhysicalPlanner {
     /// Wraps `input` so that the batches it emits keep the string and binary scalars in `exprs`,
-    /// expanded to a batch's length, within `SCALAR_EXPANSION_BYTES` and the session's batch
-    /// size. Returns `input` as is when `exprs` expand no scalar.
+    /// expanded to a batch's length, within `SCALAR_EXPANSION_BYTES`. Returns `input` as is when
+    /// `exprs` expand no scalar.
     pub(crate) fn bound_scalar_expansion<'a>(
         &self,
         input: Arc<dyn ExecutionPlan>,
@@ -79,11 +83,7 @@ impl PhysicalPlanner {
         if bytes == 0 {
             return input;
         }
-        let batch_size = self.session_ctx.copied_config().batch_size();
-        Arc::new(BatchSplitExec::new(
-            input,
-            scalar_rows_cap(bytes).min(batch_size),
-        ))
+        Arc::new(BatchSplitExec::new(input, scalar_rows_cap(bytes)))
     }
 
     /// The bytes of the string and binary scalars that evaluating `expr` expands to the batch's
@@ -282,21 +282,21 @@ mod tests {
     }
 
     #[test]
-    fn wraps_the_input_at_a_session_batch_size_the_scalar_fits() {
+    fn splits_at_the_scalar_cap_whatever_the_session_batch_size() {
         use datafusion::execution::context::SessionContext;
         use datafusion::physical_plan::empty::EmptyExec;
         use datafusion::prelude::SessionConfig;
         let session = SessionContext::new_with_config(SessionConfig::new().with_batch_size(256));
         let planner = PhysicalPlanner::new(Arc::new(session), 0);
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
-        // A 256 KiB scalar allows 4096 rows, more than the session's 256, which the operators
-        // below do not keep to.
+        // The operators below do not keep to the session's 256 rows, so the split is still
+        // installed, at the 4096 rows a 256 KiB scalar allows.
         let wide = lit("x".repeat(256 * 1024));
         let bounded = planner.bound_scalar_expansion(input, [&wide]);
         let split = bounded
             .downcast_ref::<BatchSplitExec>()
             .expect("a split under the expanding operator");
-        assert_eq!(256, split.batch_size());
+        assert_eq!(4096, split.batch_size());
     }
 
     #[test]
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn wraps_the_input_at_the_session_batch_size_or_the_scalar_cap() {
+    fn wraps_the_input_at_the_scalar_cap() {
         use datafusion::physical_plan::empty::EmptyExec;
         let planner = PhysicalPlanner::default();
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
@@ -374,8 +374,8 @@ mod tests {
                 .expect("a split under the expanding operator")
                 .batch_size()
         };
-        // A small scalar is bounded by the session's batch size, whatever arrives from below.
-        assert_eq!(8192, split_at(&[lit("abcd")]));
+        // A small scalar allows more rows than any batch holds, so the split slices nothing.
+        assert_eq!(256 * 1024 * 1024, split_at(&[lit("abcd")]));
         let wide = lit("x".repeat(256 * 1024));
         assert_eq!(2048, split_at(&[Arc::clone(&wide), wide]));
     }
