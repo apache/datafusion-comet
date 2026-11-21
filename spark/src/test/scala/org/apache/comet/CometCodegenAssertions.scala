@@ -33,13 +33,23 @@ import org.apache.comet.vector.CometVector
 trait CometCodegenAssertions {
 
   /** Asserts the dispatcher actually ran during `f`, guarding against silent serde fallback. */
-  protected def assertCodegenRan(f: => Unit): Unit = {
+  protected def assertCodegenRan[T](f: => T): T = {
     CometScalaUDFCodegen.resetStats()
-    f
+    val result = f
     val after = CometScalaUDFCodegen.stats()
     assert(
       after.compileCount + after.cacheHitCount >= 1,
       s"expected codegen dispatcher activity, got $after")
+    result
+  }
+
+  /** Asserts the dispatcher did not run during `f`, guarding a native-path control case. */
+  protected def assertCodegenDidNotRun[T](f: => T): T = {
+    CometScalaUDFCodegen.resetStats()
+    val result = f
+    val after = CometScalaUDFCodegen.stats()
+    assert(after.totalLookups == 0, s"expected no codegen dispatcher activity, got $after")
+    result
   }
 
   /**
