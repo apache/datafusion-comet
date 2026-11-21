@@ -92,6 +92,7 @@ For applicable cases that are not selected for native execution automatically, `
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Not all input data types are supported; falls back to Spark for unsupported types
+- Comet has no native path for a nondeterministic operand such as `rand()` or `monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice.
 
 ## Sequence
 
@@ -109,5 +110,11 @@ The following cases have no native implementation and always run in the JVM usin
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - shuffle requires a resolved random seed
+
+## Size
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Comet has no native path for a nondeterministic operand such as `rand()` or `monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice.
 
 <!--END:EXPR_COMPAT-->
