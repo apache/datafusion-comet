@@ -420,9 +420,11 @@ mod tests {
     use datafusion::physical_expr::aggregate::AggregateExprBuilder;
     use datafusion::physical_expr::expressions::col;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-    use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
+    use datafusion::physical_plan::aggregates::{
+        AggregateExec, AggregateMode, GroupClusteringMode, PhysicalGroupBy,
+    };
     use datafusion::physical_plan::sorts::sort::SortExec;
-    use datafusion::physical_plan::{collect, ExecutionPlan, InputOrderMode};
+    use datafusion::physical_plan::{collect, ExecutionPlan};
     use datafusion::prelude::SessionConfig;
     use std::sync::Arc;
 
@@ -893,8 +895,10 @@ mod tests {
 
     /// In a `CometSortAggregateExec` over a native sort, the final aggregate's input is sorted on
     /// every grouping key, so DataFusion runs it as a `ClusteredFinalAggregateStream` with no spill
-    /// path, and a refused request fails the query. The aggregate holds nothing while the sort
-    /// reads its input, so the sort can fill the task's share. It must give part of it back before
+    /// path, and a refused request fails the query. While the sort reads its input, the aggregate
+    /// holds only the table that DataFusion 56 reserves when the plan starts
+    /// (apache/datafusion#25900), so the sort can fill the rest of the task's share. It must give
+    /// part of it back before
     /// the aggregate's first request, which it does whether it emits from one sorted batch or
     /// merges sorted runs, with or without its merge reservation, and with 256 or 1024 groups in
     /// each batch.
@@ -943,22 +947,41 @@ mod tests {
                     let sort = sort_on("b", Arc::clone(&input));
                     collect_with(sort, Arc::clone(&alone) as _, config.clone()).await;
 
-                    // A task share of exactly that.
+                    let final_over = |sort: Arc<SortExec>| {
+                        AggregateExec::try_new(
+                            AggregateMode::Final,
+                            group_by.clone(),
+                            vec![Arc::new(count.clone())],
+                            vec![None],
+                            sort as _,
+                            Arc::clone(&partial_input),
+                        )
+                        .unwrap()
+                    };
+                    // What the aggregate reserves when the plan starts, before any input.
+                    let initial = Arc::new(PeakMemoryPool::new(usize::MAX));
+                    let empty: Arc<dyn ExecutionPlan> =
+                        MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None)
+                            .unwrap();
+                    let aggregate = final_over(sort_on("b", empty));
+                    collect_with(
+                        Arc::new(aggregate),
+                        Arc::clone(&initial) as _,
+                        config.clone(),
+                    )
+                    .await;
+
+                    // A task share of exactly the two.
                     let fake = FakeSpark::with(usize::MAX);
                     let sort = sort_on("b", Arc::clone(&input));
-                    let aggregate = AggregateExec::try_new(
-                        AggregateMode::Final,
-                        group_by.clone(),
-                        vec![Arc::new(count.clone())],
-                        vec![None],
-                        Arc::clone(&sort) as _,
-                        Arc::clone(&partial_input),
-                    )
-                    .unwrap();
+                    let aggregate = final_over(Arc::clone(&sort));
                     // Sorted on every grouping key, so a `ClusteredFinalAggregateStream` with no
                     // spill path.
-                    assert_eq!(aggregate.input_order_mode(), &InputOrderMode::Sorted);
-                    let pool = pool(&fake, alone.peak());
+                    assert_eq!(
+                        aggregate.group_clustering_mode(),
+                        &GroupClusteringMode::Full
+                    );
+                    let pool = pool(&fake, alone.peak() + initial.peak());
                     let output = collect_with(Arc::new(aggregate), pool, config).await;
                     let groups: usize = output.iter().map(RecordBatch::num_rows).sum();
                     let case = format!(
@@ -1020,8 +1043,9 @@ mod tests {
         [distinct, partial, Arc::new(final_agg.unwrap())]
     }
 
-    /// The aggregates above the first one in `distinct_count` hold nothing while it reads its
-    /// input, so it can fill the task's share, and it holds all of its output until it has emitted
+    /// The aggregates above the first one in `distinct_count` hold only the tables that
+    /// DataFusion 56 reserves when the plan starts (apache/datafusion#25900) while it reads its
+    /// input, so it can fill the rest of the task's share, and it holds all of its output until it has emitted
     /// it. With wide values that leaves the `Partial` aggregate too little room, so it emits early,
     /// and the `Final` aggregate starts while the first one still holds nearly all of the share.
     /// DataFusion 55.2's `FinalHashAggregateStream` then spills and completes rather than failing
@@ -1048,10 +1072,26 @@ mod tests {
         let [distinct, _, _] = distinct_count(Arc::clone(&input));
         collect_with(distinct, Arc::clone(&alone) as _, session_config()).await;
 
-        // A task share of exactly that, in a pool built the way `createPlan` builds it, so that
+        // What the aggregates above it reserve when the plan starts, before any input.
+        let empty: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None).unwrap();
+        let [first_alone, _, all] = distinct_count(Arc::clone(&empty));
+        let first_initial = Arc::new(PeakMemoryPool::new(usize::MAX));
+        collect_with(
+            first_alone,
+            Arc::clone(&first_initial) as _,
+            session_config(),
+        )
+        .await;
+        let all_initial = Arc::new(PeakMemoryPool::new(usize::MAX));
+        collect_with(all, Arc::clone(&all_initial) as _, session_config()).await;
+        let above_initial = all_initial.peak() - first_initial.peak();
+
+        // A task share of exactly the two, in a pool built the way `createPlan` builds it, so that
         // the final aggregate reads its spill files back as it would in a task.
         let fake = FakeSpark::with(usize::MAX);
-        let config = MemoryPoolConfig::new(MemoryPoolType::FairUnified, alone.peak());
+        let config =
+            MemoryPoolConfig::new(MemoryPoolType::FairUnified, alone.peak() + above_initial);
         let pool = create_pool(&config, -3020, &RunningTasks::default(), || fake.memory());
         let [distinct, _, final_agg] = distinct_count(input);
         let output = collect_with(Arc::clone(&final_agg) as _, pool, session_config()).await;

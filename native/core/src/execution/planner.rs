@@ -5493,9 +5493,9 @@ mod tests {
             .slice(1, 4);
             let fields: Fields = vec![
                 Field::new("key", DataType::Int32, false)
-                    .with_metadata([("PARQUET:field_id".to_string(), "10".to_string())].into()),
+                    .with_metadata([("PARQUET:field_id".to_string(), "10".to_string())]),
                 Field::new("value", DataType::Int32, true)
-                    .with_metadata([("PARQUET:field_id".to_string(), "11".to_string())].into()),
+                    .with_metadata([("PARQUET:field_id".to_string(), "11".to_string())]),
             ]
             .into();
             let entries = StructArray::new(
