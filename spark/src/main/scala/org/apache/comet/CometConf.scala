@@ -705,11 +705,30 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether the tasks of an executor that read a Comet broadcast at the same time share " +
           "one decoded copy of it. The first of them decodes the broadcast, and the others " +
-          "wait for it instead of decoding it themselves. The copy is freed when the last of " +
-          "them completes. When disabled, every task decodes the whole broadcast for itself. " +
-          s"$TUNING_GUIDE.")
+          "wait for it instead of decoding it themselves. When the last of them completes, the " +
+          "executor keeps the copy for later tasks until Spark removes the broadcast from it, " +
+          s"within $COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.maxIdleSize. When " +
+          s"disabled, every task decodes the whole broadcast for itself. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_EXEC_BROADCAST_SHARE_DECODED_MAX_IDLE_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.maxIdleSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "The most bytes of shared decoded copies of Comet broadcasts that an executor keeps " +
+          "for later tasks once no task holds them, over all broadcasts, when " +
+          s"${COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.key} is true. A kept copy is freed " +
+          "when Spark removes its broadcast from the executor, as when the broadcast is " +
+          "unpersisted or destroyed, or when the driver cleans up a broadcast that nothing " +
+          "references any more. A copy larger than this is freed as soon as no task holds it, " +
+          "and keeping a copy frees the copies kept longest until the rest fit. The kept " +
+          "copies are JVM-side Arrow memory that neither Spark nor Comet's memory pools " +
+          "account for. Set to 0 to free every copy as soon as no task holds it. " +
+          s"$TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(_ >= 0, "The idle size of shared broadcast decodes must not be negative")
+      .createWithDefault(128L * 1024 * 1024)
 
   val COMET_BROADCAST_PRODUCER_COALESCE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.broadcastExchange.producerCoalesce.enabled")
