@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, BinaryArithmetic, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, BinaryArithmetic, Cast, Divide, EmptyRow, EvalMode, Expression, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -61,15 +61,6 @@ trait MathBase {
           inner).build())
     } else {
       None
-    }
-  }
-
-  def nullIfWhenPrimitive(expression: Expression): Expression = {
-    val zero = Literal.default(expression.dataType)
-    expression match {
-      case _: Literal if expression != zero => expression
-      case _ =>
-        If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
     }
   }
 
@@ -290,14 +281,9 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       expr: Divide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion now throws an exception for dividing by zero
-    // See https://github.com/apache/arrow-datafusion/pull/6792
-    // For now, use NullIf to swap zeros with nulls.
-    val rightExpr =
-      if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
     createMathExpression(
       expr.left,
-      rightExpr,
+      expr.right,
       inputs,
       binding,
       expr.dataType,
@@ -328,9 +314,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
       else Cast(expr.right, DecimalType(19, 0))
 
-    val rightExpr = if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(right) else right
-
-    val dataType = (left.dataType, rightExpr.dataType) match {
+    val dataType = (left.dataType, right.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
         // copy from IntegralDivide.resultDecimalType
         val intDig = l.precision - l.scale + r.scale
@@ -340,7 +324,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
     val divideExpr = createMathExpression(
       left,
-      rightExpr,
+      right,
       inputs,
       binding,
       dataType,
