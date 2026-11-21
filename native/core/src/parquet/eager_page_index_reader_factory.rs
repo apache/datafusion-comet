@@ -272,9 +272,9 @@ impl EagerPageIndexReaderFactory {
         }
     }
 
-    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation. When row
-    /// filters are enabled, or the file has a `TIMESTAMP(NANOS)` leaf, enforce deferred failures
-    /// at the first data-page read, after format pruning.
+    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation.
+    /// Row filters, binary-as-string checks and `TIMESTAMP(NANOS)` defer failures until
+    /// the first data-page read, after format pruning.
     pub(crate) fn with_conversion_check(
         mut self,
         required: SchemaRef,
@@ -778,6 +778,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 // `TIMESTAMP(NANOS)` rejection is deferred from here even without row filters.
                 let has_nanos = columns.iter().any(is_nanos_timestamp);
                 let needs_check = *row_filters
+                    || conversion_options.reject_fixed_binary_as_string
                     || has_nanos
                     || columns.iter().any(|column| {
                         column.self_type().get_basic_info().repetition()
@@ -800,7 +801,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     DataFusionError::External(source) => ParquetError::External(source),
                     other => ParquetError::External(Box::new(other)),
                 })?;
-                if *row_filters || has_nanos {
+                if *row_filters || conversion_options.reject_fixed_binary_as_string || has_nanos {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
                             object_meta.location.clone(),
