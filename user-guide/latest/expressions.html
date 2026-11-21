@@ -1834,7 +1834,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_date</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions or a parent could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. Operator-level safeguards and their opt-out are described in <a class="reference internal" href="#make-date-evaluation">make_date evaluation</a>.</p></td>
+<td><p>Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions that can raise, or a parent, could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. Operator-level safeguards and their opt-out are described in <a class="reference internal" href="#make-date-evaluation">make_date evaluation</a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_dt_interval</span></code></p></td>
 <td><p>✅</p></td>
