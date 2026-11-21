@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde.operator
 
-import java.math.BigDecimal
+import java.math.{BigDecimal, RoundingMode}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.{Base64, UUID}
@@ -915,7 +915,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
-      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+    icebergExprToProto(icebergExpr, output, pageIndexUnsupportedColumns, allowPartialAnd = true)
+
+  private def icebergExprToProto(
+      icebergExpr: Any,
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String],
+      allowPartialAnd: Boolean): Option[OperatorOuterClass.IcebergPredicate] = {
     val exprClass = icebergExpr.getClass
     val attributeMap = output.map(attr => attr.name -> attr).toMap
 
@@ -965,28 +972,32 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val left = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartialAnd)
       val right = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartialAnd)
       (left, right) match {
-        // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
-        // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
-        // prune, and tracking polarity across arbitrary nesting is error prone. So an
-        // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+        // Removing a positive conjunct only weakens the predicate. Inside a NOT subtree we
+        // require complete conversion instead, since negating a weaker child strengthens it.
+        case (Some(l), None) if allowPartialAnd => Some(l)
+        case (None, Some(r)) if allowPartialAnd => Some(r)
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
       val left = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartialAnd)
       val right = icebergExprToProto(
         IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
         output,
-        pageIndexUnsupportedColumns)
+        pageIndexUnsupportedColumns,
+        allowPartialAnd)
       // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
       (left, right) match {
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
@@ -994,7 +1005,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
       val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
-      icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
+      // Keep this restriction throughout the subtree, including under another NOT. Scala has
+      // not normalized negations, and Rust's rewrite_not runs only after this conversion.
+      icebergExprToProto(child, output, pageIndexUnsupportedColumns, allowPartialAnd = false)
+        .map(notPredicate)
     } else {
       // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
       // Iceberg introduces, carries no pushdown this serde can express.
@@ -1110,8 +1124,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
    * for null (IS NULL is a separate op) and for Spark types this serde does not map to an
    * IcebergLiteral, so the predicate degrades to no pushdown rather than an incorrect one.
-   * Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) or BYTE_ARRAY (binary)
-   * are dropped earlier by the column gate in icebergExprToProto and never reach here.
+   * Decimal literals must fit the column's precision and scale exactly. UUID, fixed and binary
+   * columns are dropped earlier by the column gate in icebergExprToProto.
    */
   private def predicateLiteralToProto(
       sparkType: DataType,
@@ -1130,6 +1144,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       case _: FloatType => builder.setFloatVal(value.asInstanceOf[java.lang.Number].floatValue())
       case _: DoubleType =>
         builder.setDoubleVal(value.asInstanceOf[java.lang.Number].doubleValue())
+      case decimalType: DecimalType =>
+        val decimal =
+          try {
+            value.asInstanceOf[BigDecimal].setScale(decimalType.scale, RoundingMode.UNNECESSARY)
+          } catch {
+            case _: ArithmeticException => return None
+          }
+        if (decimal.precision() > decimalType.precision) {
+          return None
+        }
+        builder.setDecimalVal(
+          OperatorOuterClass.IcebergDecimal
+            .newBuilder()
+            .setUnscaled(ByteString.copyFrom(decimal.unscaledValue().toByteArray))
+            .setPrecision(decimalType.precision)
+            .setScale(decimalType.scale))
       case _: DateType => builder.setDateVal(value.asInstanceOf[java.lang.Number].intValue())
       case _: StringType => builder.setStringVal(value.toString)
       case _: TimestampType =>
