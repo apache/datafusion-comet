@@ -21,7 +21,11 @@
 //! its own per-row loop.
 
 use super::pattern_cache::PatternCache;
-use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
+use arrow::datatypes::DataType;
+use datafusion::common::{
+    cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
+    ScalarValue,
+};
 use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 
@@ -38,6 +42,10 @@ pub(super) enum ParsedArgs<'a> {
     /// `Some(n)` when the subject is an array (one null per row) and `None` for a scalar
     /// subject.
     NullResult { len: Option<usize> },
+    /// `idx` is out of range but no non-null row matches, so the caller returns an empty
+    /// result for every non-null row and null for every null row. `subject` is a `Utf8` or
+    /// `LargeUtf8` array or scalar.
+    NoMatch { subject: &'a ColumnarValue },
 }
 
 /// Validate `(subject, pattern, [idx])` and return either a compiled `Regex` and group index
@@ -92,12 +100,18 @@ pub(super) fn parse_args<'a>(
         ))
     })?;
 
+    // Spark checks `idx` only on a row where the pattern matches, so an out-of-range index is
+    // an error only when some row matches. Checking per batch fails the same query: Spark
+    // fails the task on the first matching row and this fails the batch that contains it.
     let group_count = regex.captures_len() as i32 - 1;
-    if idx < 0 || idx > group_count {
-        return Err(DataFusionError::Execution(format!(
-            "The value of parameter `idx` in `{fn_name}` is invalid: \
-             Expects group index between 0 and {group_count}, but got {idx}."
-        )));
+    if !(0..=group_count).contains(&idx) {
+        if any_row_matches(fn_name, &regex, &args[0])? {
+            return Err(DataFusionError::Execution(format!(
+                "The value of parameter `idx` in `{fn_name}` is invalid: \
+                 Expects group index between 0 and {group_count}, but got {idx}."
+            )));
+        }
+        return Ok(ParsedArgs::NoMatch { subject: &args[0] });
     }
 
     Ok(ParsedArgs::Parsed {
@@ -105,6 +119,31 @@ pub(super) fn parse_args<'a>(
         group_idx: idx as usize,
         subject: &args[0],
     })
+}
+
+fn any_row_matches(
+    fn_name: &'static str,
+    regex: &Regex,
+    subject: &ColumnarValue,
+) -> DataFusionResult<bool> {
+    match subject {
+        ColumnarValue::Array(array) => match array.data_type() {
+            DataType::Utf8 => Ok(as_generic_string_array::<i32>(array.as_ref())?
+                .iter()
+                .flatten()
+                .any(|s| regex.is_match(s))),
+            DataType::LargeUtf8 => Ok(as_generic_string_array::<i64>(array.as_ref())?
+                .iter()
+                .flatten()
+                .any(|s| regex.is_match(s))),
+            other => exec_err!("{fn_name} expects Utf8 or LargeUtf8 subject, got {other:?}"),
+        },
+        ColumnarValue::Scalar(ScalarValue::Utf8(s))
+        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(s)) => {
+            Ok(s.as_deref().is_some_and(|s| regex.is_match(s)))
+        }
+        ColumnarValue::Scalar(_) => exec_err!("{fn_name} subject must be a string"),
+    }
 }
 
 /// Returns `Some(row_count)` for an array subject and `None` for a scalar.
