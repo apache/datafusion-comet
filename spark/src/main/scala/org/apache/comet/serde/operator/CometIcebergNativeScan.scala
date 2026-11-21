@@ -686,8 +686,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       providerAvailable: Boolean): Map[String, String] = {
     val hasEndpoint = properties.get(RefreshCredentialsEndpointKey).exists(_.trim.nonEmpty)
     val hasCatalogUri = properties.get(CatalogUriKey).exists(_.trim.nonEmpty)
-    val vendsRefreshEndpoint = hasEndpoint && hasCatalogUri &&
-      !properties.get(RefreshCredentialsEnabledKey).exists(_.trim.equalsIgnoreCase("false"))
+    // Iceberg's AwsClientProperties reads the flag with PropertyUtil.propertyAsBoolean, which is
+    // Boolean.parseBoolean on the raw value: only an absent key or a case-insensitive "true"
+    // enables refresh, so " true " and "yes" disable it. Parse it the same way, or Comet would
+    // select the provider for a catalog whose delegate never refreshes.
+    val refreshEnabled =
+      properties.get(RefreshCredentialsEnabledKey).forall(java.lang.Boolean.parseBoolean)
+    val vendsRefreshEndpoint = hasEndpoint && hasCatalogUri && refreshEnabled
     if (vendsRefreshEndpoint && providerAvailable &&
       !properties.contains(IcebergCredentialProviderClassKey)) {
       properties + (IcebergCredentialProviderClassKey -> VendedCredentialProviderClass)

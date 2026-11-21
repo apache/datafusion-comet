@@ -51,6 +51,16 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
   }
 
+  test("refresh-credentials-enabled set to true in any case selects the provider") {
+    for (enabled <- Seq("true", "TRUE", "True")) {
+      CometIcebergNativeScan
+        .withVendedCredentialProvider(
+          refreshEndpoint + ("client.refresh-credentials-enabled" -> enabled),
+          providerAvailable = true)
+        .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
+    }
+  }
+
   test("an explicit credential provider, even an empty one, is kept") {
     for (explicit <- Seq("com.example.MyProvider", "")) {
       CometIcebergNativeScan
@@ -65,7 +75,11 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     for (props <- Seq(
         Map.empty[String, String],
         Map("client.refresh-credentials-endpoint" -> " "),
-        refreshEndpoint + ("client.refresh-credentials-enabled" -> "FALSE"))) {
+        refreshEndpoint + ("client.refresh-credentials-enabled" -> "FALSE"),
+        // Iceberg parses the flag with Boolean.parseBoolean, untrimmed, so these disable refresh.
+        refreshEndpoint + ("client.refresh-credentials-enabled" -> " true "),
+        refreshEndpoint + ("client.refresh-credentials-enabled" -> "yes"),
+        refreshEndpoint + ("client.refresh-credentials-enabled" -> ""))) {
       withClue(props) {
         CometIcebergNativeScan
           .withVendedCredentialProvider(props, providerAvailable = true) shouldBe props
