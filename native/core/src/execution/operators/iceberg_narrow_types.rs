@@ -115,7 +115,7 @@ impl SharedFooters {
     /// A `FileIO` that reads through `file_io` and serves the shared footer bytes.
     pub(crate) fn file_io(self: &Arc<Self>, file_io: FileIO) -> FileIO {
         let storage = SharedFooterStorage {
-            state: Some((file_io, Arc::clone(self))),
+            state: Some(Arc::new((file_io, Arc::clone(self)))),
         };
         FileIOBuilder::new(Arc::new(SharedFooterStorageFactory {
             storage: Some(storage),
@@ -271,26 +271,32 @@ struct RecordingRead {
 impl FileRead for RecordingRead {
     async fn read(&self, range: Range<u64>) -> iceberg::Result<Bytes> {
         let bytes = self.inner.read(range.clone()).await?;
-        self.ranges.lock().push((range, bytes.clone()));
+        let read = range.start..range.start + bytes.len() as u64;
+        self.ranges.lock().push((read, bytes.clone()));
         Ok(bytes)
     }
 }
 
-/// Serves a read that falls inside a shared footer range from memory.
+/// Serves a read that falls inside a shared footer range from memory. The first read outside them
+/// means the reader is done with the footer, so the bytes are dropped then.
 struct SharedFooterRead {
-    footer: Arc<ReadRanges>,
+    footer: Mutex<Option<Arc<ReadRanges>>>,
     inner: Box<dyn FileRead>,
 }
 
 #[async_trait]
 impl FileRead for SharedFooterRead {
     async fn read(&self, range: Range<u64>) -> iceberg::Result<Bytes> {
-        for (cached, bytes) in self.footer.iter() {
-            if cached.start <= range.start && range.end <= cached.end {
-                let start = (range.start - cached.start) as usize;
-                let end = (range.end - cached.start) as usize;
-                return Ok(bytes.slice(start..end));
+        let footer = self.footer.lock().clone();
+        if let Some(footer) = footer {
+            for (cached, bytes) in footer.iter() {
+                if cached.start <= range.start && range.end <= cached.end {
+                    let start = (range.start - cached.start) as usize;
+                    let end = (range.end - cached.start) as usize;
+                    return Ok(bytes.slice(start..end));
+                }
             }
+            *self.footer.lock() = None;
         }
         self.inner.read(range).await
     }
@@ -324,7 +330,7 @@ impl StorageFactory for SharedFooterStorageFactory {
 #[derive(Clone, Serialize, Deserialize)]
 struct SharedFooterStorage {
     #[serde(skip)]
-    state: Option<(FileIO, Arc<SharedFooters>)>,
+    state: Option<Arc<(FileIO, Arc<SharedFooters>)>>,
 }
 
 impl SharedFooterStorage {
@@ -356,10 +362,13 @@ impl Storage for SharedFooterStorage {
     }
 
     async fn reader(&self, path: &str) -> iceberg::Result<Box<dyn FileRead>> {
-        let (file_io, footers) = self.state.as_ref().ok_or_else(deserialized)?;
+        let (file_io, footers) = self.state.as_deref().ok_or_else(deserialized)?;
         let inner = file_io.new_input(path)?.reader().await?;
         Ok(match footers.take(path) {
-            Some(footer) => Box::new(SharedFooterRead { footer, inner }),
+            Some(footer) => Box::new(SharedFooterRead {
+                footer: Mutex::new(Some(footer)),
+                inner,
+            }),
             None => inner,
         })
     }
@@ -480,8 +489,9 @@ mod tests {
         UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+    use bytes::Bytes;
     use iceberg::expr::{Bind, BoundPredicate, Predicate, Reference};
-    use iceberg::io::{FileIO, FileIOBuilder};
+    use iceberg::io::{FileIO, FileIOBuilder, FileRead};
     use iceberg::scan::FileScanTask;
     use iceberg::spec::{
         DataFileFormat, Datum, MappedField, NameMapping, NestedField, PrimitiveType, Schema, Type,
@@ -489,9 +499,11 @@ mod tests {
     use iceberg_storage_opendal::OpenDalStorageFactory;
     use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
 
+    use parking_lot::Mutex;
+
     use super::{
         at_risk_field_ids, narrow_field_ids, stores_narrow_filter_column, FileSchemas,
-        SharedFooters,
+        SharedFooterRead, SharedFooters,
     };
 
     /// `id BIGINT` (1), `t INT` (2), `d DOUBLE` (3), `s STRING` (4).
@@ -896,5 +908,30 @@ mod tests {
         }
         // Every split has opened the file, so the shared bytes are gone.
         assert_eq!(read_tail().await, vec![0_u8; 8]);
+    }
+
+    /// Storage that holds only zeros.
+    struct Zeros;
+
+    #[async_trait::async_trait]
+    impl FileRead for Zeros {
+        async fn read(&self, range: std::ops::Range<u64>) -> iceberg::Result<Bytes> {
+            Ok(Bytes::from(vec![0_u8; (range.end - range.start) as usize]))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shared_footer_is_dropped_at_the_first_read_outside_it() {
+        let footer = vec![(10..14, Bytes::from_static(b"PAR1"))];
+        let read = SharedFooterRead {
+            footer: Mutex::new(Some(Arc::new(footer))),
+            inner: Box::new(Zeros),
+        };
+        assert_eq!(read.read(11..13).await.unwrap(), Bytes::from_static(b"AR"));
+        assert_eq!(read.read(0..2).await.unwrap(), Bytes::from_static(&[0, 0]));
+        assert_eq!(
+            read.read(11..13).await.unwrap(),
+            Bytes::from_static(&[0, 0])
+        );
     }
 }
