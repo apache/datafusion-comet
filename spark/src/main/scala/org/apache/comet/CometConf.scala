@@ -171,6 +171,21 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithEnvVarOrDefault("COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT", 2)
 
+  val COMET_ICEBERG_NARROW_TYPE_CHECK_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.narrowTypeCheck.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan checks a data file's column types before it pushes a " +
+          "range, `IN`, or `!=` filter on an `int`, `long`, or `double` column into the file " +
+          "read. A file can store such a column with a narrower type, for example when it was " +
+          "written before a type promotion or added by `add_files`. For such a file, the scan " +
+          "applies the filter only after reading, because pushing it can drop matching rows. " +
+          "The check decodes the file's Parquet footer one extra time, which takes longer for " +
+          "files with many columns. Disable it only for tables whose data files all store each " +
+          "column with the table's type.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.nestedSchemaPruning.enabled")
       .category(CATEGORY_SCAN)

@@ -2098,6 +2098,7 @@ impl PhysicalPlanner {
                     catalog_name,
                     tasks,
                     data_file_concurrency_limit,
+                    common.narrow_type_check,
                 )?;
 
                 Ok((
