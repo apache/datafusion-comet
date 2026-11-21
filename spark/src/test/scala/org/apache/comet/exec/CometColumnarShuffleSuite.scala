@@ -87,8 +87,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
             df.queryExecution.toRdd.count()
           }
           assert(error.toString.contains("spark.comet.shuffle.compression.codec"), error)
+          // A fresh plan, because Spark 3.4 AQE hangs re-running a plan whose stage failed.
           val sqlError = intercept[Exception] {
-            df.collect()
+            spark.table("writer_conf").repartition(2, col("_1")).collect()
           }
           assert(sqlError.toString.contains("spark.comet.shuffle.compression.codec"), sqlError)
         }
