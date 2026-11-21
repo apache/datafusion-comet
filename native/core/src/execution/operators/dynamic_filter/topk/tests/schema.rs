@@ -17,7 +17,7 @@
 
 use super::*;
 use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::expressions::BinaryExpr;
+use datafusion::physical_expr::expressions::{lit, BinaryExpr};
 
 fn write_file(payload_type: &DataType, start: i32) -> tempfile::NamedTempFile {
     let schema = Arc::new(Schema::new(vec![
@@ -91,7 +91,7 @@ async fn mixed_file_schema_rejection_survives_topk_pruning() {
 async fn static_range_with_unknown_null_count_skips_reader_attachment() {
     let clean = write_file(&DataType::Int64, 0);
     let incompatible = write_file(&DataType::Int32, 100);
-    super::statistics::omit_last_null_count(&incompatible, 0);
+    omit_null_counts(&incompatible, 0, &[0]);
     for filtering in [false, true] {
         let session = session(100);
         let schema = Arc::new(Schema::new(vec![

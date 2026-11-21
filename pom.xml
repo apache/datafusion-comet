@@ -676,6 +676,14 @@ under the License.
       </properties>
     </profile>
 
+    <!-- Builds Comet with the jemalloc allocator instead of the system one, which is glibc malloc
+         on Linux. Maven does not build the native library, so the profile has no settings of its
+         own: make builds the native library with the jemalloc Cargo feature whenever PROFILES
+         names it, for example `make release PROFILES="-Pspark-4.1 -Pjemalloc"`. -->
+    <profile>
+      <id>jemalloc</id>
+    </profile>
+
     <profile>
       <id>Win-x86</id>
       <activation>
@@ -993,6 +1001,7 @@ under the License.
                     <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
                     <!-- JNI declarations and cross-version shims must retain their signatures. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native(ExecutorsClient)?\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.local\.NativeLocal\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;src=.*/src/[a-z]+/spark-[^/]+/.*:s</arg>
                     <!-- Default extension hooks intentionally leave parameters for overrides. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
@@ -1007,8 +1016,9 @@ under the License.
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.evaluate\.(partitionIndex|planId):s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.releasePlan\.planId:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometBaseAggregate\.operatorSupportLevel\.op:s</arg>
-                    <!-- These annotations suppress Scala 2.13 private-type warnings only. -->
-                    <arg>-Wconf:cat=unused-nowarn&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.Comet(Celeborn)?ShuffleManager\.get(Reader|Writer):s</arg>
+                    <!-- Scala 2.12 reports no site for unused @nowarn annotations. Scope the
+                         exception for Scala 2.13 private-type warnings to these two files. -->
+                    <arg>-Wconf:cat=unused-nowarn&amp;src=.*/org/apache/spark/sql/comet/execution/shuffle/Comet(Celeborn)?ShuffleManager\.scala:s</arg>
                     <!-- Scan factories keep the common session-taking API used across versions. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometIcebergNativeScanExec\.apply\.session:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometNativeScanExec\.apply\.session:s</arg>
@@ -1038,6 +1048,7 @@ under the License.
                     <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
                     <!-- JNI declarations and cross-version shims must retain their signatures. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native(ExecutorsClient)?\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.local\.NativeLocal\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;src=.*/src/[a-z]+/spark-[^/]+/.*:s</arg>
                     <!-- Default extension hooks intentionally leave parameters for overrides. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
@@ -1052,8 +1063,9 @@ under the License.
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.evaluate\.(partitionIndex|planId):s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.releasePlan\.planId:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometBaseAggregate\.operatorSupportLevel\.op:s</arg>
-                    <!-- These annotations suppress Scala 2.13 private-type warnings only. -->
-                    <arg>-Wconf:cat=unused-nowarn&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.Comet(Celeborn)?ShuffleManager\.get(Reader|Writer):s</arg>
+                    <!-- Scala 2.12 reports no site for unused @nowarn annotations. Scope the
+                         exception for Scala 2.13 private-type warnings to these two files. -->
+                    <arg>-Wconf:cat=unused-nowarn&amp;src=.*/org/apache/spark/sql/comet/execution/shuffle/Comet(Celeborn)?ShuffleManager\.scala:s</arg>
                     <!-- Scan factories keep the common session-taking API used across versions. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometIcebergNativeScanExec\.apply\.session:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometNativeScanExec\.apply\.session:s</arg>

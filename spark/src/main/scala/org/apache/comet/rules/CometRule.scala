@@ -34,6 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
+import org.apache.comet.local.CometLocalRule
 import org.apache.comet.shims.ShimCometStreaming
 
 object CometRule {
@@ -164,12 +165,18 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     if (CometRule.planOnlyApplies(conf, plan)) {
       reportPlanOnlyCoverage(plan)
       plan
+    } else if (CometLocalRule.isLocal(plan)) {
+      plan
     } else if (CometNativeExecutors.applies(conf, plan, queryStagePrep)) {
       // The whole query runs on a Comet Native Executor cluster. The conversion alone leaves
       // every native block serialized, and nothing reverts a stage to Spark.
       CometNativeExecutors.offload(plan, convert(plan))
-    } else {
+    } else if (queryStagePrep) {
       convert(plan)
+    } else {
+      // Local execution admits only exchange-free plans, which AQE does not wrap, so this
+      // instance sees them whether or not AQE is enabled.
+      CometLocalRule(session, plan, convert)
     }
   }
 

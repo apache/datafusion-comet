@@ -44,7 +44,7 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -209,7 +209,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .write
         .parquet(path)
       // Sorting on g, the first grouping key, makes DataFusion run the final aggregate as an
-      // OrderedFinalAggregateStream, which spills and reads its spill files back the same way.
+      // ClusteredFinalAggregateStream, which spills and reads its spill files back the same way.
       // Spark drops a sort under an aggregate unless EliminateSorts is excluded. With a 2.5 MiB
       // pool, merging the runs takes nearly all of the aggregate's share. The sort's merge
       // reservation is lowered so that the sort fits in the pool too.
@@ -360,8 +360,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("PartialMerge over a sort-merge join on a prefix of its keys spills (issue #6880)") {
-    // The sorts under the join need more than a 2 or 8 MiB pool's fair share, so this uses 16 MiB.
-    withPartialMergeOverSortedPrefix(Seq(16)) { path =>
+    withPartialMergeOverSortedPrefix(Seq(2, 8)) { path =>
       // With the default rules, the join's hash partitioning on g satisfies the PartialMerge keyed
       // by (g, k), so the join, the partial aggregate and the PartialMerge run in one native plan,
       // and the PartialMerge sees its input sorted on g. The suite lets AQE broadcast up to 1g at
@@ -2602,17 +2601,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
           withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
             val df = sql("SELECT SUM(v) FROM dec_no_codegen")
-            if (isSpark35Plus) {
-              assertDecimalSumFallsBackLikeSpark(df, reason, ansiEnabled, Row(null))
-            } else {
-              // Before SPARK-44236 (3.5) the factory mode leaves whole-stage codegen on, so
-              // Spark recovers the sum and the aggregate stays native.
-              checkSparkAnswerAndOperator(df)
-              val answer = df.collect().toSeq
-              assert(
-                answer == Seq(Row(recoveredSum.bigDecimal.setScale(38))),
-                s"NO_CODEGEN on Spark 3.4 returned $answer, expected $recoveredSum")
-            }
+            assertDecimalSumFallsBackLikeSpark(df, reason, ansiEnabled, Row(null))
           }
         }
       }
