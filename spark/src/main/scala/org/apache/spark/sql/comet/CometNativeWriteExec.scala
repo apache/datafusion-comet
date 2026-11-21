@@ -25,6 +25,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
@@ -225,6 +226,7 @@ case class CometNativeWriteExec(
 
             val writer = capturedNativeOp.getParquetWriter.toBuilder
               .setCompression(protoCodec)
+              .setBlockSize(ParquetOutputFormat.getLongBlockSize(taskContext.getConfiguration))
 
             // Register before the iterator so this listener runs after its cleanup.
             nativeMetrics.reportNativeWriteOutputMetrics(context)

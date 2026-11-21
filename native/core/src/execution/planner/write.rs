@@ -117,6 +117,13 @@ impl OperatorBuilder for ParquetWriterBuilder {
                 object_store_options,
             )?
             .with_spark_version(writer.spark_version.clone())
+            // `set_max_row_group_bytes` panics on zero, and a panic must not escape to the JVM.
+            .with_max_row_group_bytes(
+                writer
+                    .block_size
+                    .and_then(|bytes| usize::try_from(bytes).ok())
+                    .filter(|&bytes| bytes > 0),
+            )
             .with_output_stream(jvm_output_stream(
                 writer.jvm_output_stream,
                 planner.output_stream.as_ref(),

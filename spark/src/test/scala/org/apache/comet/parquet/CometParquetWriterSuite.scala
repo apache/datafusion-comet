@@ -682,6 +682,29 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("parquet write honors parquet.block.size") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 200000, 1, 1).selectExpr("id", "cast(id as string) as name")
+
+      withNativeWriter {
+        val plan = captureWritePlan(
+          path => df.write.option("parquet.block.size", 64 * 1024).parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df)
+      val partFile = new File(outputPath).listFiles().filter(_.getName.startsWith("part-")).head
+      val inputFile = HadoopInputFile.fromPath(
+        new Path(partFile.getAbsolutePath),
+        spark.sparkContext.hadoopConfiguration)
+      Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+        assert(reader.getRowGroups.size > 1)
+      }
+    }
+  }
+
   test("parquet write of a pre-1582 date reads back unchanged under LEGACY read rebase") {
     // The version footer key is what makes readers treat the file as written by Spark 3.0+. Without
     // it, LEGACY read rebase shifts these dates. This also pins down that the native writer writes

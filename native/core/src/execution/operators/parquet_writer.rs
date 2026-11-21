@@ -371,6 +371,8 @@ pub struct ParquetWriterExec {
     output_schema: Option<SchemaRef>,
     /// Spark version recorded in the footer as `org.apache.spark.version`, if any.
     spark_version: Option<String>,
+    /// `parquet.block.size`, if any.
+    max_row_group_bytes: Option<usize>,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
     /// The output stream of the file at `output_path`, when the JVM created that file. The writer
@@ -412,6 +414,7 @@ impl ParquetWriterExec {
             column_names,
             output_schema,
             spark_version: None,
+            max_row_group_bytes: None,
             object_store_options,
             output_stream: None,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -423,6 +426,12 @@ impl ParquetWriterExec {
     /// `ParquetWriteSupport` does.
     pub fn with_spark_version(mut self, spark_version: Option<String>) -> Self {
         self.spark_version = spark_version;
+        self
+    }
+
+    /// Bound each row group's estimated encoded size, as parquet-mr does for `parquet.block.size`.
+    pub fn with_max_row_group_bytes(mut self, max_row_group_bytes: Option<usize>) -> Self {
+        self.max_row_group_bytes = max_row_group_bytes;
         self
     }
 
@@ -632,6 +641,7 @@ impl ExecutionPlan for ParquetWriterExec {
                     self.object_store_options.clone(),
                 )?
                 .with_spark_version(self.spark_version.clone())
+                .with_max_row_group_bytes(self.max_row_group_bytes)
                 .with_output_stream(self.output_stream.clone()),
             )),
             _ => Err(DataFusionError::Internal(
@@ -700,6 +710,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let props = WriterProperties::builder()
             .set_compression(compression)
             .set_key_value_metadata(key_value_metadata)
+            .set_max_row_group_bytes(self.max_row_group_bytes)
             .build();
 
         let object_store_options = self.object_store_options.clone();
@@ -919,6 +930,38 @@ mod tests {
                 .and_then(|kv| kv.value.as_deref());
             assert_eq!(found, expected);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parquet_writer_bounds_row_groups_by_max_row_group_bytes() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from_iter_values(0..100_000))],
+        )?;
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
+
+        let writer = ParquetWriterExec::try_new(
+            input,
+            output_path,
+            ParquetCompression::None,
+            0,
+            vec!["id".to_string()],
+            None,
+            HashMap::new(),
+        )?
+        .with_max_row_group_bytes(Some(16 * 1024));
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        let reader =
+            SerializedFileReader::new(File::open(temp_dir.path().join("part-00000.parquet"))?)?;
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 100_000);
+        assert!(reader.metadata().num_row_groups() > 1);
         Ok(())
     }
 
