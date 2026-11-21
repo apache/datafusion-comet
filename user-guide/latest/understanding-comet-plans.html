@@ -1141,6 +1141,11 @@ it works on any Spark version because it does not rely on the Spark 4.0
 
 <span class="c1">// Sorted, deduplicated list of fallback reasons across the whole plan.</span>
 <span class="kd">val</span><span class="w"> </span><span class="n">reasons</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">info</span><span class="p">.</span><span class="n">getFallbackReasons</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span>
+<span class="c1">// The same for a DataFrame's executed plan. It does not run the query, so for</span>
+<span class="c1">// an adaptive query, run it first to get the reasons for the final plan.</span>
+<span class="kd">val</span><span class="w"> </span><span class="n">dfReasons</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">info</span><span class="p">.</span><span class="n">getFallbackReasons</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+<span class="c1">// True when Comet is enabled for the session and the plan has no fallback reasons.</span>
+<span class="kd">val</span><span class="w"> </span><span class="n">fullyAccelerated</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">info</span><span class="p">.</span><span class="n">isFullyAccelerated</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
 
 <span class="c1">// Sorted, deduplicated names of the expressions Comet accelerated, split by how</span>
 <span class="c1">// they run. Structural nodes (attribute references, literals, aliases) are not</span>
@@ -1173,6 +1178,28 @@ the same plan.</p>
 <span class="n">Comet</span> <span class="n">accelerated</span> <span class="mi">1</span> <span class="n">out</span> <span class="n">of</span> <span class="mi">2</span> <span class="n">eligible</span> <span class="n">operators</span> <span class="p">(</span><span class="mi">50</span><span class="o">%</span><span class="p">)</span><span class="o">.</span> <span class="n">Final</span> <span class="n">plan</span> <span class="n">contains</span> <span class="mi">1</span> <span class="n">transitions</span> <span class="n">between</span> <span class="n">Spark</span> <span class="ow">and</span> <span class="n">Comet</span><span class="o">.</span> <span class="n">Accelerated</span> <span class="n">expressions</span><span class="p">:</span> <span class="mi">0</span> <span class="n">native</span><span class="p">,</span> <span class="mi">0</span> <span class="n">codegen</span> <span class="n">dispatch</span><span class="o">.</span>
 </pre></div>
 </div>
+<section id="checking-that-a-query-is-fully-accelerated">
+<h3>Checking That a Query Is Fully Accelerated<a class="headerlink" href="#checking-that-a-query-is-fully-accelerated" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">isFullyAccelerated(df)</span></code> returns <code class="docutils literal notranslate"><span class="pre">true</span></code> when both of the following hold:</p>
+<ul class="simple">
+<li><p>Comet is enabled for the DataFrame’s session. This is the same check Comet’s
+planner rules make, so it is <code class="docutils literal notranslate"><span class="pre">false</span></code> when Comet disables itself, for example
+because Spark is not in off-heap mode or the Comet shuffle manager is not set,
+even if <code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getFallbackReasons(df)</span></code> is empty.</p></li>
+</ul>
+<p>The check is a plan-wide yes or no. A plan with partial fallback, where some
+operators run in Comet and others fall back to Spark, is not fully accelerated.
+Use <code class="docutils literal notranslate"><span class="pre">getFallbackReasons(df)</span></code> to see what fell back. Codegen dispatch is not a
+fallback, so a plan whose expressions use it can still be fully accelerated.</p>
+<p>Like <code class="docutils literal notranslate"><span class="pre">getFallbackReasons(df)</span></code>, it reads the executed plan and does not run the
+query. With AQE, run the query first so the check covers the final plan:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SELECT ..."</span><span class="p">)</span>
+<span class="n">df</span><span class="p">.</span><span class="n">collect</span><span class="p">()</span>
+<span class="n">assert</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="nc">ExtendedExplainInfo</span><span class="p">().</span><span class="n">isFullyAccelerated</span><span class="p">(</span><span class="n">df</span><span class="p">),</span><span class="w"> </span><span class="s">"query fell back to Spark"</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="comet-operator-reference">
 <h2>Comet Operator Reference<a class="headerlink" href="#comet-operator-reference" title="Link to this heading">#</a></h2>
@@ -1462,7 +1489,10 @@ columnar.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-planonly-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.planOnly.enabled</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#programmatic-access-to-fallback-reasons">Programmatic Access to Fallback Reasons</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#programmatic-access-to-fallback-reasons">Programmatic Access to Fallback Reasons</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-that-a-query-is-fully-accelerated">Checking That a Query Is Fully Accelerated</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-operator-reference">Comet Operator Reference</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#scans">Scans</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-rust-operators">Native Rust Operators</a></li>
