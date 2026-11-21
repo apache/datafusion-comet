@@ -27,8 +27,9 @@ import org.apache.spark.sql.execution.{InputAdapter, ScalarSubquery, SparkPlan, 
 import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, CometRuntimeException}
+import org.apache.comet.{CometConf, CometIcebergTestBase, CometRuntimeException}
 import org.apache.comet.serde.NativeExecutors.{QueryRequest, Stage}
+import org.apache.comet.serde.OperatorOuterClass.{IcebergScan, Operator}
 
 /**
  * Plans queries for Comet Native Executors (see
@@ -37,7 +38,9 @@ import org.apache.comet.serde.NativeExecutors.{QueryRequest, Stage}
  * a libcomet built with the `native-executors` feature nor the cluster binaries.
  * `CometNativeExecutorsSuite` runs the queries on a cluster.
  */
-class CometNativeExecutorsPlanSuite extends CometNativeExecutorsTestBase {
+class CometNativeExecutorsPlanSuite
+    extends CometNativeExecutorsTestBase
+    with CometIcebergTestBase {
 
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
@@ -127,6 +130,30 @@ class CometNativeExecutorsPlanSuite extends CometNativeExecutorsTestBase {
     }
   }
 
+  test("an Iceberg scan that plans no tasks gets one empty partition") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withHadoopCatalog("cne_cat") {
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        spark.sql(
+          "CREATE TABLE cne_cat.db.t (id BIGINT, k BIGINT) USING iceberg PARTITIONED BY (k)")
+        spark.sql("INSERT INTO cne_cat.db.t SELECT id, id % 7 FROM range(100)")
+        // No partition has k = 99, so Iceberg plans no tasks.
+        // A projection, since Iceberg answers a count from the table's metadata.
+        val df = spark.table("cne_cat.db.t").where("k = 99").selectExpr("id + 1")
+        assert(cometPlan(df).exists(_.isInstanceOf[CometIcebergNativeScanExec]), cometPlan(df))
+        val scan = stagesOf(df).head
+        assert(scan.getPartitionPlansCount == 1)
+        assert(scan.getNumPartitions == 1)
+        def icebergScans(op: Operator): Seq[IcebergScan] =
+          (if (op.hasIcebergScan) Seq(op.getIcebergScan) else Nil) ++
+            op.getChildrenList.asScala.flatMap(icebergScans)
+        val Seq(icebergScan) = icebergScans(Operator.parseFrom(scan.getPartitionPlans(0)))
+        assert(icebergScan.getFileScanTasksCount == 0)
+        assert(icebergScan.getCommon.getRequiredSchemaCount > 0, icebergScan.getCommon)
+      }
+    }
+  }
+
   test("an empty range gets one partition") {
     withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
       for (slices <- Seq(4, 0)) {
@@ -170,6 +197,25 @@ class CometNativeExecutorsPlanSuite extends CometNativeExecutorsTestBase {
       assert(df.queryExecution.executedPlan.collect { case e: CometNativeExecutorsExec =>
         e
       }.isEmpty)
+    }
+  }
+
+  test("a command's plan stays in Spark") {
+    withTable { path =>
+      withSQLConf(
+        CometConf.COMET_NATIVE_EXECUTORS_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key -> "http://localhost:1") {
+        withTempView("t", "v") {
+          spark.read.parquet(path).createOrReplaceTempView("t")
+          val df = sql("create or replace temp view v as select * from t")
+          // Explaining a command explains its result, which isn't a query to run on the cluster.
+          assert(
+            df.queryExecution.explainString(org.apache.spark.sql.execution.SimpleMode).nonEmpty)
+          assert(df.queryExecution.executedPlan.collect { case e: CometNativeExecutorsExec =>
+            e
+          }.isEmpty)
+        }
+      }
     }
   }
 
