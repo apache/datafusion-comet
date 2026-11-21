@@ -24,6 +24,7 @@ import java.util.IdentityHashMap
 import scala.util.DynamicVariable
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.execution.{CollectLimitExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
@@ -174,12 +175,17 @@ private[comet] object MapBuilderKeySupport {
           Some(driverPolicy)
         case _ => None
       }
-      node.expressions.foreach(_.foreach {
-        case expr @ (_: MapFromArrays | _: MapFromEntries) =>
-          if (policies.getOrDefault(expr, policy) == policy) policies.put(expr, policy)
-          else policies.put(expr, None)
-        case _ =>
-      })
+      def record(expr: Expression, interpreted: Boolean): Unit = {
+        expr match {
+          case _: MapFromArrays | _: MapFromEntries =>
+            val selected = if (interpreted) None else policy
+            val previous = policies.getOrDefault(expr, selected)
+            val _ = policies.put(expr, if (previous == selected) selected else None)
+          case _ =>
+        }
+        expr.children.foreach(record(_, interpreted || expr.isInstanceOf[CodegenFallback]))
+      }
+      node.expressions.foreach(record(_, interpreted = false))
       val lazyInput = node match {
         case _: Exchange => true
         case _: ProjectExec | _: FilterExec | _: DeserializeToObjectExec | _: LocalLimitExec |
