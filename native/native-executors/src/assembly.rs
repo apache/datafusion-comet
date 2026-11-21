@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use comet::execution::native_executors::{
-    block_schema, partition_descriptor, CometFragmentExec, COMET_VERSION,
+    block_schema, partition_descriptor, CometFragmentExec, COMET_VERSION, MAX_PARTITIONS,
 };
 use datafusion::common::{plan_datafusion_err, plan_err, Result};
 use datafusion::physical_expr::expressions::Column;
@@ -32,6 +32,8 @@ use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_comet_proto::spark_expression::expr::ExprStruct;
 use datafusion_comet_proto::spark_native_executors::{Fragment, QueryRequest, Stage, StageInput};
+use datafusion_comet_proto::spark_operator::operator::OpStruct;
+use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_comet_proto::spark_partitioning::partitioning::PartitioningStruct;
 use datafusion_comet_proto::PROTO_FINGERPRINT;
 use prost::Message;
@@ -74,11 +76,20 @@ fn build_stage(
     producers: &[Arc<dyn ExecutionPlan>],
     conf: &HashMap<String, String>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let block = stage
+    let plan = stage
         .plan
         .as_ref()
-        .ok_or_else(|| plan_datafusion_err!("The stage has no plan"))?
-        .encode_to_vec();
+        .ok_or_else(|| plan_datafusion_err!("The stage has no plan"))?;
+    // The block's input leaves are fed from the stage's inputs, in order, so the two must agree.
+    check_block(plan, stage.inputs.len())?;
+    for (index, partition_plan) in stage.partition_plans.iter().enumerate() {
+        let partition_plan = Operator::decode(partition_plan.as_slice()).map_err(|e| {
+            plan_datafusion_err!("Cannot decode the plan of partition {index}: {e}")
+        })?;
+        check_block(&partition_plan, stage.inputs.len())
+            .map_err(|e| e.context(format!("Plan of partition {index}")))?;
+    }
+    let block = plan.encode_to_vec();
     // Spark places the rows of a bucketed scan by Murmur3 and shuffles only the other side of a
     // join to match. The hash exchange below would place the other side by DataFusion's hash, so
     // partition `p` of one side would no longer meet the rows of bucket `p` of the other, and the
@@ -122,6 +133,11 @@ fn build_stage(
     if num_partitions == 0 {
         return plan_err!("The stage has no partitions");
     }
+    if num_partitions > MAX_PARTITIONS {
+        return plan_err!(
+            "The stage has {num_partitions} partitions, more than the {MAX_PARTITIONS} allowed"
+        );
+    }
     if !stage.partition_plans.is_empty() && stage.partition_plans.len() != num_partitions {
         return plan_err!(
             "The stage has {num_partitions} partitions but {} partition plans",
@@ -161,6 +177,40 @@ fn build_stage(
     )?))
 }
 
+/// Checks a stage's block, `block`, before it is planned: it must read as many inputs as the
+/// stage declares, and it must not write files. Like a native UDF library or a call into the JVM,
+/// writing is something a driver's stage never does on the cluster, so a request that asks for it
+/// is refused rather than run by processes that serve every client.
+fn check_block(block: &Operator, inputs: usize) -> Result<()> {
+    let mut leaves = 0;
+    let mut pending = vec![block];
+    while let Some(op) = pending.pop() {
+        let writer = match op.op_struct {
+            Some(OpStruct::ParquetWriter(_)) => Some("ParquetWriter"),
+            Some(OpStruct::IcebergWrite(_)) => Some("IcebergWrite"),
+            Some(OpStruct::ShuffleWriter(_)) => Some("ShuffleWriter"),
+            Some(OpStruct::Scan(_)) | Some(OpStruct::ShuffleScan(_)) => {
+                leaves += 1;
+                None
+            }
+            _ => None,
+        };
+        if let Some(writer) = writer {
+            return plan_err!(
+                "A stage can't contain a {writer} operator: Comet Native Executors don't write \
+                 files, and the cluster moves data between stages itself"
+            );
+        }
+        pending.extend(&op.children);
+    }
+    if leaves != inputs {
+        return plan_err!(
+            "The stage's block reads {leaves} inputs but the stage declares {inputs}"
+        );
+    }
+    Ok(())
+}
+
 /// The exchange that carries `producer`'s output to a stage, as a node Ballista's planner turns
 /// into a stage boundary.
 ///
@@ -181,6 +231,16 @@ fn exchange(
         .and_then(|p| p.partitioning_struct.as_ref());
     match partitioning {
         Some(PartitioningStruct::HashPartition(hash)) => {
+            let num_partitions = usize::try_from(hash.num_partitions)
+                .ok()
+                .filter(|count| (1..=MAX_PARTITIONS).contains(count))
+                .ok_or_else(|| {
+                    plan_datafusion_err!(
+                        "A hash exchange must have between 1 and {MAX_PARTITIONS} partitions, \
+                         not {}",
+                        hash.num_partitions
+                    )
+                })?;
             let schema = producer.schema();
             let keys = hash
                 .hash_expression
@@ -198,7 +258,7 @@ fn exchange(
                 .collect::<Result<Vec<_>>>()?;
             Ok(Arc::new(RepartitionExec::try_new(
                 producer,
-                Partitioning::Hash(keys, hash.num_partitions as usize),
+                Partitioning::Hash(keys, num_partitions),
             )?))
         }
         // Ballista can't plan a range shuffle for a physical plan yet

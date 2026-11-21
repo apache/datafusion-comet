@@ -28,7 +28,8 @@ use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
 use datafusion_comet_proto::spark_expression::{self, expr::ExprStruct, BoundReference, Expr};
 use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::{
-    operator::OpStruct, Operator, RangeScan, Scan, SparkStructField,
+    operator::OpStruct, BuildSide, HashJoin, JoinType, Operator, RangeScan, Scan, ShuffleScan,
+    SparkStructField,
 };
 use datafusion_comet_proto::spark_partitioning::{
     partitioning::PartitioningStruct, HashPartition, Partitioning, RangePartition, SinglePartition,
@@ -161,4 +162,39 @@ where
         .collect();
     values.sort_unstable();
     values
+}
+
+/// A stage that joins what stages `probe` and `build` send it through hash exchanges of
+/// `num_partitions` partitions on their first column, as an inner hash join built on the build
+/// side, and returns both sides' columns.
+pub fn joining_stage(probe: u32, build: u32, num_partitions: i32) -> Stage {
+    let leaf = || Operator {
+        op_struct: Some(OpStruct::ShuffleScan(ShuffleScan {
+            fields: vec![long_type()],
+            source: "test".to_string(),
+        })),
+        ..Default::default()
+    };
+    let input = |producer| StageInput {
+        producer,
+        partitioning: Some(hash_on_first_column(num_partitions)),
+        broadcast: false,
+    };
+    Stage {
+        plan: Some(Operator {
+            children: vec![leaf(), leaf()],
+            op_struct: Some(OpStruct::HashJoin(HashJoin {
+                left_join_keys: vec![bound(0, long_type())],
+                right_join_keys: vec![bound(0, long_type())],
+                join_type: JoinType::Inner as i32,
+                build_side: BuildSide::BuildRight as i32,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }),
+        inputs: vec![input(probe), input(build)],
+        num_partitions: num_partitions as u32,
+        output_schema: vec![field(long_type()), field(long_type())],
+        ..Default::default()
+    }
 }

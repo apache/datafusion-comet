@@ -20,6 +20,7 @@
 
 mod common;
 
+use comet::execution::native_executors::MAX_PARTITIONS;
 use comet_native_executors::assembly::build_plan;
 use common::*;
 use datafusion::arrow::datatypes::{DataType, Int32Type, Int64Type};
@@ -28,10 +29,10 @@ use datafusion::prelude::SessionContext;
 use datafusion_comet_proto::spark_expression::{
     expr::ExprStruct, literal::Value, Expr, IfExpr, Literal, Subquery,
 };
-use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage};
+use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::{
-    operator::OpStruct, NativeScan, NativeScanCommon, Operator, Projection, SparkFilePartition,
-    SparkPartitionedFile,
+    operator::OpStruct, IcebergWrite, NativeScan, NativeScanCommon, Operator, ParquetWriter,
+    Projection, Scan, ShuffleWriter, SparkFilePartition, SparkPartitionedFile,
 };
 use prost::Message;
 use std::sync::Arc;
@@ -277,4 +278,179 @@ async fn file_stage_is_checked_without_its_object_store() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("no-such-store"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hash_exchange_partition_counts_are_bounded() {
+    for count in [i32::MIN, -1, 0, MAX_PARTITIONS as i32 + 1, i32::MAX] {
+        let request = query(vec![
+            range_stage(100, 4),
+            reading_stage(0, hash_on_first_column(count), 3),
+        ]);
+        let error = assemble(request).await.unwrap_err().to_string();
+        assert!(
+            error.contains(&format!(
+                "between 1 and {MAX_PARTITIONS} partitions, not {count}"
+            )),
+            "{error}"
+        );
+    }
+    let request = query(vec![
+        range_stage(100, 4),
+        reading_stage(0, hash_on_first_column(MAX_PARTITIONS as i32), 3),
+    ]);
+    let plan = assemble(request).await.unwrap();
+    assert_eq!(plan.output_partitioning().partition_count(), MAX_PARTITIONS);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_partition_counts_are_bounded() {
+    for count in [MAX_PARTITIONS as u32 + 1, 1 << 31, u32::MAX] {
+        let mut stage = range_stage(100, 4);
+        stage.num_partitions = count;
+        let error = assemble(query(vec![stage])).await.unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("more than the {MAX_PARTITIONS} allowed")),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_size_is_bounded() {
+    for batch_size in ["0", "2000000", "18446744073709551615"] {
+        let mut request = query(vec![range_stage(100, 4)]);
+        request
+            .conf
+            .insert("spark.comet.batchSize".to_string(), batch_size.to_string());
+        let error = assemble(request).await.unwrap_err().to_string();
+        assert!(
+            error.contains("spark.comet.batchSize must be between 1 and"),
+            "{error}"
+        );
+    }
+    let mut request = query(vec![range_stage(100, 4)]);
+    request
+        .conf
+        .insert("spark.comet.batchSize".to_string(), "4096".to_string());
+    assemble(request).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn block_must_read_as_many_inputs_as_the_stage_declares() {
+    let leaf_less_input = StageInput {
+        producer: 0,
+        partitioning: Some(single_partition()),
+        broadcast: false,
+    };
+    // A block with no input leaves, and an input.
+    let mut stage = range_stage(100, 4);
+    stage.inputs = vec![leaf_less_input.clone()];
+    let error = assemble(query(vec![range_stage(100, 4), stage]))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reads 0 inputs but the stage declares 1"),
+        "{error}"
+    );
+    // A block with one input leaf, and two inputs.
+    let mut stage = reading_stage(0, single_partition(), 1);
+    stage.inputs.push(leaf_less_input);
+    let error = assemble(query(vec![range_stage(100, 4), stage]))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reads 1 inputs but the stage declares 2"),
+        "{error}"
+    );
+    // A join's two input leaves, and one input.
+    let mut stage = joining_stage(0, 1, 3);
+    stage.inputs.pop();
+    let error = assemble(query(vec![range_stage(100, 4), range_stage(100, 2), stage]))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reads 2 inputs but the stage declares 1"),
+        "{error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_partition_plan_must_read_as_many_inputs_as_the_stage_declares() {
+    let range = range_stage(100, 2);
+    let block = range.plan.as_ref().unwrap().encode_to_vec();
+    let with_leaf = Operator {
+        op_struct: Some(OpStruct::Scan(Scan {
+            fields: vec![long_type()],
+            source: "test".to_string(),
+        })),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let mut stage = range;
+    stage.partition_plans = vec![block, with_leaf];
+    let error = assemble(query(vec![stage])).await.unwrap_err();
+    assert!(
+        error.to_string().contains("Plan of partition 1")
+            && error
+                .to_string()
+                .contains("reads 1 inputs but the stage declares 0"),
+        "{error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn writer_operators_are_refused() {
+    let writers = [
+        (
+            "ParquetWriter",
+            OpStruct::ParquetWriter(ParquetWriter::default()),
+        ),
+        (
+            "IcebergWrite",
+            OpStruct::IcebergWrite(IcebergWrite::default()),
+        ),
+        (
+            "ShuffleWriter",
+            OpStruct::ShuffleWriter(ShuffleWriter::default()),
+        ),
+    ];
+    for (name, writer) in writers {
+        let writing = |child: Operator| Operator {
+            op_struct: Some(writer.clone()),
+            children: vec![child],
+            ..Default::default()
+        };
+        let expected = format!("can't contain a {name} operator");
+        let range = range_stage(100, 1);
+        let block = range.plan.clone().unwrap();
+
+        // At the root of the block.
+        let mut stage = range.clone();
+        stage.plan = Some(writing(block.clone()));
+        let error = assemble(query(vec![stage])).await.unwrap_err();
+        assert!(error.to_string().contains(&expected), "{error}");
+
+        // Below other operators.
+        let mut stage = range.clone();
+        stage.plan = Some(Operator {
+            op_struct: Some(OpStruct::Projection(Projection::default())),
+            children: vec![writing(block.clone())],
+            ..Default::default()
+        });
+        let error = assemble(query(vec![stage])).await.unwrap_err();
+        assert!(error.to_string().contains(&expected), "{error}");
+
+        // In a partition's own copy of the block.
+        let mut stage = range;
+        stage.partition_plans = vec![writing(block).encode_to_vec()];
+        let error = assemble(query(vec![stage])).await.unwrap_err();
+        assert!(error.to_string().contains(&expected), "{error}");
+    }
 }
