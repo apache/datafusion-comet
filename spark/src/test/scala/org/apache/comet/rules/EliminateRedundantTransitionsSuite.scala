@@ -101,16 +101,22 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       val rowChild = sparkPlanFor("SELECT id, CAST(id AS STRING) AS s FROM range(10)")
       assert(!rowChild.supportsColumnar)
-      val partitioning = HashPartitioning(rowChild.ouput.take(1), 4)
+      val partitioning = HashPartitioning(rowChild.output.take(1), 4)
       val shuffle = CometShuffleExchangeExec(
         partitioning,
         RowToColumnarExec(rowChild),
         ShuffleExchangeExec(partitioning, rowChild),
-        shuffle = CometNativeShuffle)
+        shuffleType = CometNativeShuffle)
       val result = EliminateRedundantTransitions(spark).apply(shuffle)
 
       result match {
-        case CometShuffleExchangeExec(_, child, _, _, CometColumnarShuffle, _) =>
+        case CometShuffleExchangeExec(
+              _,
+              CometSparkToColumnarExec(child, _),
+              _,
+              _,
+              CometNativeShuffle,
+              _) =>
           assert(child == rowChild, s"RowToColumnar should be replaced:\n${result.treeString}")
         case _ =>
           fail(s"Expected native shuffle over CometSparkToColumnar:\n${result.treeString}")
