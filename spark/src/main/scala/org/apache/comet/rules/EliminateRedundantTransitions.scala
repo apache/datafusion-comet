@@ -182,7 +182,9 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Switch to row and drop the transition.
       case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
           if CometShuffleExchangeExec.isColumnarShuffleSupported(s, child) =>
-        val columnar = s.copy(child = child, shuffleType = CometColumnarShuffle)
+        val columnar = withInfo(
+          s.copy(child = child, shuffleType = CometColumnarShuffle),
+          "Native shuffle switched to JVM columnar shuffle: its child became row-based after " + " native shuffle was chosen")
         columnar.copyTagsFrom(s)
         columnar
 
@@ -190,7 +192,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // with Comet's `CometSparkToColumnarExec` instead of fallback to Spark's `RowToColumnar`
       case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
           if CometShuffleExchangeExec.isNativeConversionSupported(s, child) =>
-        val columnar = s.copy(child = CometSparkToColumnarExec(child))
+        val columnar = withInfo(
+          s.copy(child = CometSparkToColumnarExec(child)),
+          "Native shuffle kept, child converted to Arrow with CometSparkToColumnarExec: its child became row-based after " +
+            "native shuffle was chosen and JVM columnar shuffle is not available")
         columnar.copyTagsFrom(s)
         columnar
     }
