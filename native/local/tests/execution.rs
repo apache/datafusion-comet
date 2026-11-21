@@ -543,6 +543,74 @@ async fn partitions_from_a_start_function_are_planned_as_they_start() {
     assert_eq!(all, (0..6).collect::<Vec<_>>());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partition_start_may_block_on_the_runtime() {
+    // Creating a file scan's object store can block on a runtime, which panics on a worker.
+    let source = ordered_input(3, 1);
+    let start: PartitionStart = Arc::new(move |partition, context| {
+        tokio::runtime::Handle::current().block_on(tokio::task::yield_now());
+        source.execute(partition, context)
+    });
+    let batches: Vec<RecordBatch> = timeout(
+        DEADLINE,
+        LocalQuery::from_partitions(schema(), 3, start, context(), 2, usize::MAX)
+            .execute()
+            .unwrap()
+            .try_collect(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(batches.len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partition_start_that_panics_fails_in_its_turn() {
+    let start: PartitionStart = Arc::new(|_, _| panic!("start panicked"));
+    let error = timeout(
+        DEADLINE,
+        LocalQuery::from_partitions(schema(), 2, start, context(), 2, usize::MAX)
+            .execute()
+            .unwrap()
+            .next(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap_err();
+    assert!(error.to_string().contains("panicked"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stream_reports_the_partition_whose_turn_it_is() {
+    let source = ordered_input(3, 1);
+    let start: PartitionStart = Arc::new(move |partition, context| {
+        if partition == 2 {
+            Err(DataFusionError::Execution("partition 2 failed".into()))
+        } else {
+            source.execute(partition, context)
+        }
+    });
+    let mut stream = LocalQuery::from_partitions(schema(), 3, start, context(), 3, usize::MAX)
+        .execute()
+        .unwrap();
+    for partition in 0..2 {
+        timeout(DEADLINE, stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(stream.partition(), partition);
+    }
+    let error = timeout(DEADLINE, stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("partition 2 failed"));
+    assert_eq!(stream.partition(), 2);
+}
+
 /// A first partition that never delivers, and a second one of ten batches.
 fn behind_a_blocked_partition() -> (Arc<dyn ExecutionPlan>, Arc<Observations>) {
     let blocking = Arc::new(BlockingExec::new(schema(), 1));

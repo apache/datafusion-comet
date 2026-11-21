@@ -19,6 +19,10 @@
 
 package org.apache.comet.local
 
+import java.io.File
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.{Files, StandardOpenOption}
+import java.util.Base64
 import java.util.concurrent.{Callable, Executors, TimeUnit}
 
 import scala.jdk.CollectionConverters._
@@ -27,9 +31,14 @@ import scala.reflect.ClassTag
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.commons.io.FileUtils
+import org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory
+import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.{SparkEnv, SparkException, TaskContext}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RangeExec, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 import org.apache.spark.sql.execution.columnar.InMemoryRelation
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.expressions.Window
@@ -108,6 +117,34 @@ class CometLocalExecutionSuite
     assert(localNodes(actual).size == 1, actual.queryExecution.executedPlan.toString)
     assert(actual.collect().toSeq == expected(query))
   }
+
+  /** Writes `data` as Parquet, with Spark, into a temporary directory and passes its path. */
+  private def withParquet[T](data: => DataFrame, partitionBy: String*)(f: String => T): T = {
+    val dir = Files.createTempDirectory("comet-local").toFile
+    val path = new File(dir, "table").getCanonicalPath
+    try {
+      withConf("spark.comet.enabled", "false") {
+        data.write.partitionBy(partitionBy: _*).parquet(path)
+      }
+      f(path)
+    } finally FileUtils.deleteDirectory(dir)
+  }
+
+  /** Six files of 2000 rows in all, and a partition column `p` when partitioned. */
+  private def table: DataFrame =
+    spark
+      .range(0, 2000, 1, 6)
+      .selectExpr("id", "CAST(id % 7 AS STRING) AS name", "id * 1.5 AS v", "id % 3 AS p")
+
+  /** Splits files into many small partitions, as a large table would be. */
+  private def withSmallSplits[T](f: => T): T =
+    withConf("spark.sql.files.maxPartitionBytes", "2k") {
+      withConf("spark.sql.files.openCostInBytes", "1")(f)
+    }
+
+  /** The partitions of the graph that ran `df`'s last collect, if it ran locally. */
+  private def localPartitions(df: DataFrame): Option[Int] =
+    localNodes(df).head.spec.map(_.partitions)
 
   /** Runs `f` in a Spark task, as the local query iterator does. */
   private def inTask[T: ClassTag](f: TaskContext => T): T =
@@ -482,15 +519,212 @@ class CometLocalExecutionSuite
     }
   }
 
+  test("native Parquet scans run locally, each partition reading its own files") {
+    withParquet(table) { path =>
+      withSmallSplits {
+        // Each query is planned afresh, with Comet and without.
+        def scan = spark.read.parquet(path)
+        for (query <- Seq(
+            () => scan,
+            () => scan.filter("id % 3 = 1").selectExpr("id + 1 AS x", "name", "v * 2 AS w"),
+            () => scan.filter("name = '3' AND v > 100").select("v", "id"))) {
+          checkLocal(query())
+          assert(localNodes(query()).head.block.exists(_.isInstanceOf[CometNativeScanExec]))
+          // Ordinary execution reads the same partitions, so Spark's row order is kept.
+          assert(localPartitions(query()) == Some(scan.rdd.getNumPartitions))
+          assert(localPartitions(query()).get > 6)
+        }
+      }
+      // The default splits pack the six small files into fewer partitions.
+      checkLocal(spark.read.parquet(path).selectExpr("id", "v"))
+    }
+  }
+
+  test("partitioned tables are pruned as ordinary execution prunes them") {
+    withParquet(table, "p") { path =>
+      withSmallSplits {
+        def scan = spark.read.parquet(path)
+        checkLocal(scan)
+        checkLocal(scan.filter("p = 1 AND id > 100").select("p", "id", "name"))
+        checkLocal(scan.filter("p <> 2").selectExpr("id + p AS q"))
+      }
+    }
+  }
+
+  test("a scan of no files and one of more partitions than run locally collect as ordinary") {
+    withParquet(table, "p") { path =>
+      // Every partition directory is pruned, so the scan has no partitions.
+      val none = spark.read.parquet(path).filter("p = 7")
+      assert(localNodes(none).size == 1)
+      assert(none.collect().isEmpty)
+      assert(localPartitions(none).isEmpty)
+    }
+    // One file of about 2 MiB, split into 1 KiB partitions.
+    withParquet(spark.range(0, 60000, 1, 1).selectExpr("id", "uuid() AS u")) { path =>
+      withConf("spark.sql.files.maxPartitionBytes", "1k") {
+        withConf("spark.sql.files.openCostInBytes", "1") {
+          val query = spark.read.parquet(path).select("id")
+          assert(localNodes(query).size == 1)
+          assert(query.collect().toSeq == expected(spark.read.parquet(path).select("id")))
+          assert(localPartitions(query).isEmpty)
+          assert(spark.read.parquet(path).rdd.getNumPartitions > 1024)
+        }
+      }
+    }
+  }
+
+  test("bucketed scans and scan subqueries keep ordinary execution") {
+    withConf("spark.sql.sources.bucketing.autoBucketedScan.enabled", "false") {
+      try {
+        withConf("spark.comet.enabled", "false") {
+          table.write.bucketBy(4, "id").saveAsTable("comet_local_bucketed")
+        }
+        val bucketed = () => spark.table("comet_local_bucketed").select("id", "name")
+        assert(localNodes(bucketed()).isEmpty, bucketed().queryExecution.executedPlan.toString)
+        assert(
+          bucketed().collect().toSeq.sortBy(_.getLong(0)) ==
+            expected(bucketed()).sortBy(_.getLong(0)))
+      } finally spark.sql("DROP TABLE IF EXISTS comet_local_bucketed")
+    }
+    withParquet(table) { path =>
+      spark.read.parquet(path).createOrReplaceTempView("comet_local_scan")
+      try {
+        val subquery = () =>
+          spark.sql(
+            "SELECT id FROM comet_local_scan WHERE id > (SELECT max(id) - 5 FROM range(2000))")
+        assert(localNodes(subquery()).isEmpty, subquery().queryExecution.executedPlan.toString)
+        assert(subquery().collect().toSeq == expected(subquery()))
+        for (query <- Seq(
+            () => spark.read.parquet(path).selectExpr("id", "spark_partition_id() AS s"),
+            () => spark.read.parquet(path).selectExpr("id", "rand(7) AS r"),
+            () =>
+              spark.read.parquet(path).selectExpr("id", "monotonically_increasing_id() AS m"))) {
+          assert(localNodes(query()).isEmpty, query().queryExecution.executedPlan.toString)
+          assert(query().collect().toSeq == expected(query()))
+        }
+      } finally spark.catalog.dropTempView("comet_local_scan")
+    }
+  }
+
+  test("encrypted files keep ordinary execution, which reads them through the JVM") {
+    val key = Base64.getEncoder.encodeToString("1234567890123450".getBytes(UTF_8))
+    withConf("parquet.crypto.factory.class", classOf[PropertiesDrivenCryptoFactory].getName) {
+      withConf("parquet.encryption.kms.client.class", classOf[InMemoryKMS].getName) {
+        withConf("parquet.encryption.key.list", s"key1: $key") {
+          val dir = Files.createTempDirectory("comet-local").toFile
+          val path = new File(dir, "encrypted").getCanonicalPath
+          try {
+            withConf("spark.comet.enabled", "false") {
+              table.write.option("parquet.encryption.uniform.key", "key1").parquet(path)
+            }
+            val query = () => spark.read.parquet(path).select("id", "name")
+            assert(
+              query().queryExecution.executedPlan.exists(_.isInstanceOf[CometNativeScanExec]))
+            assert(localNodes(query()).isEmpty, query().queryExecution.executedPlan.toString)
+            assert(query().collect().toSeq == expected(query()))
+          } finally FileUtils.deleteDirectory(dir)
+        }
+      }
+    }
+  }
+
+  test("scans run locally whether AQE is enabled, disabled or forced") {
+    withParquet(table) { path =>
+      withSmallSplits {
+        for (adaptive <- Seq("true", "false")) {
+          withConf("spark.sql.adaptive.enabled", adaptive) {
+            checkLocal(spark.read.parquet(path).filter("id % 5 = 0").select("id", "v"))
+          }
+        }
+        withConf("spark.sql.adaptive.forceApply", "true") {
+          for (query <- Seq(
+              () => spark.read.parquet(path).filter("id % 5 = 0").select("id", "v"),
+              () => spark.range(0, 500, 1, 5).selectExpr("id * 3 AS v"))) {
+            val df = query()
+            assert(df.collect().toSeq == expected(query()))
+            val plan = df.queryExecution.executedPlan
+            assert(plan.isInstanceOf[AdaptiveSparkPlanExec], plan.toString)
+            def local(plan: SparkPlan): Seq[CometLocalExec] = plan match {
+              case p: CometLocalExec => Seq(p)
+              case p: AdaptiveSparkPlanExec => local(p.executedPlan)
+              case p: QueryStageExec => local(p.plan)
+              case p => p.children.flatMap(local)
+            }
+            assert(local(plan).size == 1, plan.toString)
+          }
+        }
+      }
+    }
+  }
+
+  test("a cached scan and its RDD keep the partitions of ordinary execution") {
+    withParquet(table) { path =>
+      withSmallSplits {
+        val ordinaryPartitions =
+          withConf(enabled, "false")(spark.read.parquet(path).rdd.getNumPartitions)
+        val query = spark.read.parquet(path).select("id", "p")
+        assert(localNodes(query).size == 1)
+        assert(query.rdd.getNumPartitions == ordinaryPartitions)
+        query.cache()
+        try {
+          val relations = query.groupBy("p").count().queryExecution.withCachedData.collect {
+            case relation: InMemoryRelation => relation
+          }
+          assert(
+            relations.head.cacheBuilder.cachedColumnBuffers.getNumPartitions ==
+              ordinaryPartitions)
+          assert(query.groupBy("p").count().collect().map(_.getLong(1)).sum == 2000L)
+        } finally query.unpersist(blocking = true)
+        val limited = spark.read.parquet(path).select("id")
+        assert(localNodes(limited.limit(5)).isEmpty)
+        assert(
+          limited.take(5).toSeq == withConf("spark.comet.enabled", "false")(
+            spark.read.parquet(path).select("id").take(5).toSeq))
+      }
+    }
+  }
+
+  test("a file a partition fails to read is named, as ordinary execution names it") {
+    withParquet(table) { path =>
+      val files =
+        new File(path).listFiles().filter(_.getName.endsWith(".parquet")).sortBy(_.getName)
+      val corrupt = files.last
+      Files.write(corrupt.toPath, Array.fill[Byte](4096)(7), StandardOpenOption.TRUNCATE_EXISTING)
+      withSmallSplits {
+        // The schema is given, so that inferring it does not read the corrupt file.
+        val query = () => spark.read.schema(table.schema).parquet(path).select("id")
+        assert(localNodes(query()).size == 1)
+        val local = intercept[SparkException](query().collect())
+        val ordinary = intercept[SparkException](withConf(enabled, "false")(query().collect()))
+        for (error <- Seq(local, ordinary)) {
+          assert(error.getMessage.contains(corrupt.getName), error.getMessage)
+        }
+        assert(local.getClass == ordinary.getClass)
+        assert(Option(local.getErrorClass) == Option(ordinary.getErrorClass))
+      }
+    }
+  }
+
+  test("explain shows a scan's block before its files are listed") {
+    withParquet(table) { path =>
+      val query = spark.read.parquet(path).select("id")
+      val local = localNodes(query).head
+      assert(!local.toString.contains("partitions="), local.toString)
+      assert(query.queryExecution.executedPlan.treeString.contains("CometNativeScan"))
+      query.collect()
+      assert(local.metrics("numOutputRows").value == 2000)
+    }
+  }
+
   test("native creation and output errors fail without leaking handles") {
-    val spec = localNodes(spark.range(10, 20, 1, 1).toDF()).head.spec
+    val spec = localNodes(spark.range(10, 20, 1, 1).toDF()).head.spec.get
     val (failures, live) = inTask(CometLocalExecutionSuite.creationAndOutputErrors(spec, _))
-    assert(failures == Seq(true, true, true))
+    assert(failures == Seq(true, true, true, true))
     assert(live == 0)
   }
 
   test("imported Arrow batches outlive native close") {
-    val spec = localNodes(spark.range(10, 20, 1, 1).toDF()).head.spec
+    val spec = localNodes(spark.range(10, 20, 1, 1).toDF()).head.spec.get
     assert(inTask(CometLocalExecutionSuite.readAfterClose(spec, _)) == (10L until 20L))
   }
 
@@ -525,10 +759,12 @@ object CometLocalExecutionSuite {
       spec: LocalQuerySpec,
       context: TaskContext,
       partitions: Int,
-      columns: Int): Long = {
+      columns: Int,
+      scanPartitions: Option[Array[Array[Byte]]] = None): Long = {
     val memory = CometExecIterator.getMemoryConfig(SparkEnv.get.conf)
     native.createQuery(
       spec.plan,
+      scanPartitions.getOrElse(spec.scanPartitions),
       CometExecIterator.serializeCometSQLConfs(),
       partitions,
       columns,
@@ -557,11 +793,20 @@ object CometLocalExecutionSuite {
     val native = new NativeLocal
     val noPartitions = fails(createQuery(native, spec, context, partitions = 0, columns = 1))
     val wrongWidth = fails(createQuery(native, spec, context, partitions = 1, columns = 2))
+    // A range has no file scan to give files to.
+    val strayFiles = fails(
+      createQuery(
+        native,
+        spec,
+        context,
+        partitions = 1,
+        columns = 1,
+        scanPartitions = Some(Array(Array.emptyByteArray))))
     val id = createQuery(native, spec, context, partitions = 1, columns = 1)
     val nullOutput = fails(native.nextBatch(id, Array(0L), Array(0L)))
     native.close(id)
     native.close(id)
-    (Seq(noPartitions, wrongWidth, nullOutput), native.activeQueries())
+    (Seq(noPartitions, wrongWidth, strayFiles, nullOutput), native.activeQueries())
   }
 
   /** The values of the first batch, read after its native query is closed. */

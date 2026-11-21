@@ -74,9 +74,9 @@ impl LocalQuery {
     /// A partition's operators register their memory consumers when it starts, so this also
     /// bounds how many share the memory pool.
     ///
-    /// A partition starts its operators on its own task, so a start that waits, for instance to
-    /// register a memory consumer, does not hold up delivery. A failure to start is reported in
-    /// the partition's turn.
+    /// A partition starts its operators on the runtime's blocking pool, so a start that waits,
+    /// for instance to register a memory consumer, holds up neither delivery nor a worker. A
+    /// failure to start is reported in the partition's turn.
     ///
     /// The running partitions do not wait for their turn: each runs ahead of delivery while the
     /// batches they all hold total less than `read_ahead` bytes, and up to a few batches beyond
@@ -99,7 +99,8 @@ impl LocalQuery {
 
     /// As [`Self::new`], for a graph whose root partitions `start` plans as each one starts, so
     /// that only the running partitions hold their operators. Each stream must have `schema`.
-    /// `start` runs on a Tokio worker of the caller's runtime, so it must not block on it.
+    /// `start` runs on the blocking pool of the caller's runtime, so it may block, including on
+    /// a runtime, as creating a file scan's object store can.
     pub fn from_partitions(
         schema: SchemaRef,
         partitions: usize,
@@ -134,17 +135,20 @@ impl LocalQuery {
             DataFusionError::Execution("LocalQuery requires an active Tokio runtime".into())
         })?;
         let schema = Arc::clone(&self.schema);
-        let stream = in_partition_order(&self);
+        let turn = Arc::new(AtomicUsize::new(0));
+        let stream = in_partition_order(&self, Arc::clone(&turn));
         Ok(LocalQueryStream {
             stream: Some(stream),
             query: Some(self),
             schema,
+            turn,
         })
     }
 }
 
-fn in_partition_order(query: &LocalQuery) -> SendableRecordBatchStream {
+fn in_partition_order(query: &LocalQuery, turn: Arc<AtomicUsize>) -> SendableRecordBatchStream {
     let mut order = PartitionOrder {
+        turn,
         partitions: query.partitions,
         start: Arc::clone(&query.start),
         context: Arc::clone(&query.context),
@@ -213,18 +217,30 @@ impl Partition {
         let (start, context) = (Arc::clone(&order.start), Arc::clone(&order.context));
         let task = order.runtime.spawn(async move {
             let result = AssertUnwindSafe(async {
-                let started = start(partition, context);
-                drop(start);
-                match started {
-                    Ok(started) => {
-                        let mut slot = lock(&polled);
-                        if matches!(*slot, Slot::Closed) {
-                            drop(slot);
-                            drop(started);
-                            return;
-                        }
-                        *slot = Slot::Running(started);
+                // Off the workers: planning a partition can block, and a worker that blocks on
+                // a runtime panics. The started stream goes into the slot on the same thread, so
+                // there is no wait in which dropping the partition could not take it.
+                let starting = Arc::clone(&polled);
+                let started = tokio::task::spawn_blocking(move || {
+                    let started = start(partition, context)?;
+                    let mut slot = lock(&starting);
+                    if matches!(*slot, Slot::Closed) {
+                        drop(slot);
+                        drop(started);
+                        return Ok(false);
                     }
+                    *slot = Slot::Running(started);
+                    Ok(true)
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    Err(DataFusionError::Execution(
+                        "Local query partition panicked while starting".into(),
+                    ))
+                });
+                match started {
+                    Ok(true) => {}
+                    Ok(false) => return,
                     Err(error) => {
                         let _ = sender.send(Err(error));
                         return;
@@ -312,6 +328,8 @@ struct PartitionOrder {
     read_ahead: Arc<ReadAhead>,
     /// Started partitions, the first of which is being delivered.
     running: VecDeque<Partition>,
+    /// The partition whose turn it is, shared with the query's stream.
+    turn: Arc<AtomicUsize>,
 }
 
 impl PartitionOrder {
@@ -344,6 +362,11 @@ impl Stream for PartitionOrder {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             self.start_partitions();
+            if self.running.is_empty() {
+                return Poll::Ready(None);
+            }
+            let turn = self.next - self.running.len();
+            self.turn.store(turn, Ordering::Release);
             let Some(partition) = self.running.front_mut() else {
                 return Poll::Ready(None);
             };
@@ -383,9 +406,16 @@ pub struct LocalQueryStream {
     stream: Option<SendableRecordBatchStream>,
     query: Option<LocalQuery>,
     schema: SchemaRef,
+    turn: Arc<AtomicUsize>,
 }
 
 impl LocalQueryStream {
+    /// The partition whose turn it is: the one the last batch or error came from, or that is
+    /// being waited for.
+    pub fn partition(&self) -> usize {
+        self.turn.load(Ordering::Acquire)
+    }
+
     /// Stops result delivery and requests cancellation of the whole native execution.
     /// Calling this again, or polling afterwards, is harmless.
     pub fn cancel(&mut self) {
