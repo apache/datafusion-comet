@@ -107,6 +107,7 @@ use datafusion::physical_expr::LexOrdering;
 use literal::literal_to_scalar;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::schema_adapter::protect_timestamp_overflow;
 use arrow::array::{
     Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
     Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, IntervalYearMonthArray, ListArray,
@@ -624,6 +625,14 @@ impl PhysicalPlanner {
                     .collect()
             };
 
+        let predicates = data_filters?;
+        let scan_filters = if common.has_data_filters.unwrap_or(!predicates.is_empty()) {
+            Some(predicates)
+        } else if predicates.is_empty() {
+            None
+        } else {
+            Some(protect_timestamp_overflow(predicates, &required_schema))
+        };
         let default_values = self.parse_default_values(common, &required_schema)?;
 
         let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
@@ -636,11 +645,7 @@ impl PhysicalPlanner {
             object_store_backend,
             file_groups,
             Some(projection_vector),
-            if common.has_data_filters || !common.data_filters.is_empty() {
-                Some(data_filters?)
-            } else {
-                None
-            },
+            scan_filters,
             default_values,
             common.session_timezone.as_str(),
             common.case_sensitive,

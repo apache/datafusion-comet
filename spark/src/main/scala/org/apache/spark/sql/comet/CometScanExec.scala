@@ -154,6 +154,9 @@ case class CometScanExec(
       .filterNot(isNullCheckOnArrayColumn)
   }
 
+  private[comet] def hasSparkSourceFilters(filters: Seq[Expression]): Boolean =
+    getPushedDownFilters(relation, filters).nonEmpty
+
   /**
    * Returns true for IsNotNull/IsNull predicates on ArrayType columns.
    *

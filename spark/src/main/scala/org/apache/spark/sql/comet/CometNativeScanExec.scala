@@ -182,7 +182,8 @@ case class CometNativeScanExec(
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
       val base = nativeOp.getNativeScan.getCommon
-      val scalarSubqueryFilters = dataFilters
+      val filters = if (conf.parquetFilterPushDown) dataFilters else Nil
+      val scalarSubqueryFilters = filters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
       scalarSubqueryFilters.foreach { f =>
         f.foreach {
@@ -195,9 +196,15 @@ case class CometNativeScanExec(
         .map(_.transform { case s: ExecScalarSubquery =>
           Literal.create(s.eval(null), s.dataType)
         })
-      if (resolvedFilters.nonEmpty) {
+      // Translate the live Catalyst filters after subquery resolution, including predicates
+      // Comet skipped or could not serialize. Spark may still pass those to parquet-mr.
+      val sparkFiltersAfterTimestampConversion =
+        (base.getHasDataFilters || resolvedFilters.nonEmpty) &&
+          requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
+          !scan.hasSparkSourceFilters(filters)
+      if (resolvedFilters.nonEmpty || sparkFiltersAfterTimestampConversion) {
         val commonBuilder = base.toBuilder
-        commonBuilder.setHasDataFilters(true)
+        commonBuilder.setHasDataFilters(!sparkFiltersAfterTimestampConversion)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
