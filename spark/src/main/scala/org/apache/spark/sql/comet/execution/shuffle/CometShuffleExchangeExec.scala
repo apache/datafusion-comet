@@ -579,7 +579,7 @@ object CometShuffleExchangeExec
    * Whether the JVM columnar shuffle can take `s` with `rowChild`, a row-based plan, as its
    * child. Pure: does not tag the node
    */
-  def isSupportColumnarShuffle(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean =
+  def isColumnarShuffleSupported(s: CometShuffleExchangeExec, rowChild: SparkPlan): Boolean =
     !isCometCelebornShuffleManagerEnabled(s.conf) &&
       columnarShuffleFailureReasons(
         ShuffleExchangeExec(s.outputPartitioning, rowChild, s.shuffleOrigin)).isEmpty
