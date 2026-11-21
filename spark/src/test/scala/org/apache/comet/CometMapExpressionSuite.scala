@@ -345,6 +345,24 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("local sort preserves signed zero map keys in an RDD action") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq((0.0, -0.0)), "zero_keys") {
+      for (comet <- Seq("false", "true")) {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> comet,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+          "spark.sql.legacy.disableMapKeyNormalization" -> "true") {
+          val df = sql(
+            "SELECT size(map_from_arrays(array(_1, _2), array(1, 2))) AS s FROM zero_keys SORT BY s")
+          assert(df.rdd.collect().toSeq == Seq(Row(2)))
+        }
+      }
+    }
+  }
+
   test("float map builder uses the session dedup policy before a shuffle in an RDD action") {
     withParquetTable(Seq((Seq(1.0, 1.0), Seq(7, 8))), "duplicate_keys") {
       withSQLConf(

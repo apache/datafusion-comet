@@ -62,7 +62,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.{CometParquetUtils, HadoopFileOutput}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, MapBuilderKeySupport, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
@@ -836,8 +836,7 @@ object CometExec {
       partitionIdx,
       broadcastedHadoopConfForEncryption = None,
       encryptedFilePaths = Seq.empty,
-      outputTypes = outputTypes,
-      driverMapKeyDedupPolicy = sqlConf.mapKeyDedupPolicy)
+      outputTypes = outputTypes)
   }
 
   def getCometIterator(
@@ -2974,13 +2973,8 @@ trait CometHashJoin {
       }
     }
 
-    def withKeyPolicy[T](side: BuildSide)(f: => T): T =
-      if (join.buildSide == side) {
-        MapBuilderKeySupport.withHashBuildKeys(join.isInstanceOf[BroadcastHashJoinExec])(f)
-      } else f
-    val leftKeys = withKeyPolicy(BuildLeft)(join.leftKeys.map(exprToProto(_, join.left.output)))
-    val rightKeys =
-      withKeyPolicy(BuildRight)(join.rightKeys.map(exprToProto(_, join.right.output)))
+    val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
+    val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
     // Spark reports the streamed side's order as the join's, and drops a sort above the join
     // that it satisfies. DataFusion's hash join keeps the unmatched probe rows of a right outer

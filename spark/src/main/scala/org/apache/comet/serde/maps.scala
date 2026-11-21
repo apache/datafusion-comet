@@ -19,11 +19,15 @@
 
 package org.apache.comet.serde
 
+import java.util.IdentityHashMap
+
 import scala.util.DynamicVariable
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.execution.{SortExec, SparkPlan}
+import org.apache.spark.sql.execution.{CollectLimitExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, SortExec, SparkPlan}
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.exchange.Exchange
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -138,40 +142,64 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-private[apache] object MapBuilderKeySupport {
+private[comet] object MapBuilderKeySupport {
   private type Builder = Option[CometScalarFunction[Expression]]
-  private val taskPolicy = Some(CometScalarFunction[Expression]("spark_float_map"))
-  private val driverPolicy = Some(CometScalarFunction[Expression]("spark_float_map_driver"))
-  private val builder = new DynamicVariable[() => Builder](() => taskPolicy)
+  private val taskPolicy = CometScalarFunction[Expression]("spark_float_map")
+  private val driverPolicy = CometScalarFunction[Expression]("spark_float_map_driver")
+  private val select = new DynamicVariable[Expression => Builder](_ => None)
 
-  def withOperator[T](op: SparkPlan)(f: => T): T = {
-    lazy val selected = {
-      val conf = SQLConf.get
-      // SortExec creates the sorter in the task even under whole-stage codegen.
-      if (!conf.wholeStageEnabled || op.isInstanceOf[SortExec] ||
-        !CometRule.supportsWholeStageCodegen(op, conf)) {
-        taskPolicy
-      } else if (conf.hugeMethodLimit < SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get) {
-        // Spark can switch to a task projection after compiling the stage.
-        None
-      } else {
-        driverPolicy
-      }
-    }
-    builder.withValue(() => selected)(f)
+  def withPlan[T](plan: SparkPlan)(f: => T): T = {
+    lazy val policies = builderPolicies(plan)
+    select.withValue(expr => policies.getOrDefault(expr, None))(f)
   }
 
-  // Spark populates and retains broadcast hash tables on the driver, including normalized keys.
-  def withHashBuildKeys[T](broadcast: Boolean)(f: => T): T =
-    builder.withValue(() => if (broadcast) None else taskPolicy)(f)
+  // The original consumers determine whether a builder inserts its first key under task-local
+  // properties or SQLExecutionRDD's temporary SQLConf. Only model known lazy paths. Index by
+  // identity: a rewritten expression with unknown consumers takes the existing dispatch path.
+  private def builderPolicies(plan: SparkPlan): IdentityHashMap[Expression, Builder] = {
+    val policies = new IdentityHashMap[Expression, Builder]
+    val conf = SQLConf.get
+    if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return policies
+    val defaultLimit =
+      conf.hugeMethodLimit >= SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get
+
+    def visit(node: SparkPlan, lazyConsumers: Boolean): Unit = {
+      lazy val eligible =
+        conf.wholeStageEnabled && CometRule.supportsWholeStageCodegen(node, conf)
+      lazy val generated = eligible && defaultLimit
+      lazy val policy = node match {
+        case _: ProjectExec | _: FilterExec if lazyConsumers && !eligible => Some(taskPolicy)
+        case _: ProjectExec | _: FilterExec | _: HashAggregateExec | _: ExpandExec
+            if lazyConsumers && generated =>
+          Some(driverPolicy)
+        case _ => None
+      }
+      node.expressions.foreach(_.foreach {
+        case expr @ (_: MapFromArrays | _: MapFromEntries) =>
+          if (policies.getOrDefault(expr, policy) == policy) policies.put(expr, policy)
+          else policies.put(expr, None)
+        case _ =>
+      })
+      val lazyInput = node match {
+        case _: Exchange => true
+        case _: ProjectExec | _: FilterExec | _: DeserializeToObjectExec | _: LocalLimitExec |
+            _: GlobalLimitExec | _: CollectLimitExec =>
+          lazyConsumers
+        case _: HashAggregateExec | _: ExpandExec | _: SortExec => lazyConsumers && generated
+        case _ => false
+      }
+      node.children.foreach(visit(_, lazyInput))
+    }
+    visit(plan, lazyConsumers = true)
+    policies
+  }
 
   def convertFloatMap(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val interpreted = SQLConf.get.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN"
-    val native = if (interpreted) None else builder.value()
-    native.flatMap(fn => withNullShortCircuit(expr, fn.convert(expr, inputs, binding))).orElse {
+    val native = select.value(expr).getOrElse(taskPolicy)
+    withNullShortCircuit(expr, native.convert(expr, inputs, binding)).orElse {
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -230,12 +258,17 @@ private[apache] object MapBuilderKeySupport {
   val computedInputReason: String =
     "Floating-point map builders use Spark to preserve evaluation of computed inputs."
 
-  def keySupport(keyType: DataType, children: Seq[Expression]): SupportLevel = {
+  val policyReason: String =
+    "Floating-point map builders use Spark when the operator can change when map settings are read."
+
+  def keySupport(keyType: DataType, expr: Expression): SupportLevel = {
     if (isFloatingPoint(keyType)) {
-      if (children.forall(safeInput)) {
-        Compatible()
-      } else {
+      if (!expr.children.forall(safeInput)) {
         Incompatible(Some(computedInputReason))
+      } else if (select.value(expr).isEmpty) {
+        Incompatible(Some(policyReason))
+      } else {
+        Compatible()
       }
     } else if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
       Incompatible(Some(nestedFloatingPointReason))
@@ -271,6 +304,7 @@ object CometMapFromArrays
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
       MapBuilderKeySupport.computedInputReason,
+      MapBuilderKeySupport.policyReason,
       MapBuilderKeySupport.nestedFloatingPointReason,
       MapKeyDedupPolicySupport.incompatibleReason)
 
@@ -278,7 +312,7 @@ object CometMapFromArrays
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel =
-    MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr.children)
+    MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr)
 
   override def convert(
       expr: MapFromArrays,
@@ -334,6 +368,7 @@ object CometMapFromEntries
       keyUnsupportedReason,
       valueUnsupportedReason,
       MapBuilderKeySupport.computedInputReason,
+      MapBuilderKeySupport.policyReason,
       MapBuilderKeySupport.nestedFloatingPointReason,
       MapKeyDedupPolicySupport.incompatibleReason)
 
@@ -346,7 +381,7 @@ object CometMapFromEntries
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
     } else {
-      MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr.children)
+      MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr)
     }
   }
 
