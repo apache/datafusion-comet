@@ -69,9 +69,8 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
     }
   }
 
-  // A native shuffle reads Arrow-backed Comet vectors. If its child turns row-based after Comet
-  // chose native shuffle, Spark add its own `RowToColumnar` under it, whose vectors are unable
-  // to be read.
+  // A native shuffle reads only Comet vectors, not Spark's vectors from `RowToColumnar`.
+  // Switched to the JVM columnar shuffle, which reads the child's rows
   test("native shuffle over Spark's RowToColumnar moves to the JVM columnar shuffle") {
     val rowChild = sparkPlanFor("SELECT id, CAST(id AS STRING) AS s FROM range(10)")
     assert(!rowChild.supportsColumnar)
