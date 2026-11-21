@@ -21,10 +21,7 @@ use crate::{divide_by_zero_error, integral_divide_overflow_error, EvalMode};
 use arrow::array::{Array, Decimal128Array};
 use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION};
 use arrow::error::ArrowError;
-use arrow::{
-    array::{ArrayRef, AsArray},
-    datatypes::Decimal128Type,
-};
+use arrow::{array::AsArray, datatypes::Decimal128Type};
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use num::{BigInt, Signed, ToPrimitive, Zero};
@@ -80,20 +77,10 @@ fn spark_decimal_div_internal(
     // Spark captures rather than throws overflow errors in TRY mode, and never checks
     // in legacy mode, so the overflow check only ever throws under ANSI
     let check_divide_overflow = check_divide_overflow && eval_mode == EvalMode::Ansi;
-    let left = &args[0];
-    let right = &args[1];
     let (p3, s3) = get_precision_scale(data_type);
 
-    let (left, right): (ArrayRef, ArrayRef) = match (left, right) {
-        (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
-        (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
-            (l.to_array_of_size(r.len())?, Arc::clone(r))
-        }
-        (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
-            (Arc::clone(l), r.to_array_of_size(l.len())?)
-        }
-        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
-    };
+    let arrays = ColumnarValue::values_to_arrays(args)?;
+    let (left, right) = (&arrays[0], &arrays[1]);
     let left = left.as_primitive::<Decimal128Type>();
     let right = right.as_primitive::<Decimal128Type>();
     let (p1, s1) = get_precision_scale(left.data_type());

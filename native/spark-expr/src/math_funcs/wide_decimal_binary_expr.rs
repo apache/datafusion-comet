@@ -23,7 +23,7 @@
 use crate::error::unwrap_arrow_external_error;
 use crate::math_funcs::utils::get_precision_scale;
 use crate::{EvalMode, SparkError};
-use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array};
+use arrow::array::{Array, AsArray, Decimal128Array};
 use arrow::datatypes::{format_decimal_str, i256, DataType, Decimal128Type, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
@@ -193,19 +193,9 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
             (&left_val, &right_val),
             (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
         );
-        let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (&left_val, &right_val) {
-            (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
-            (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
-                (l.to_array_of_size(r.len())?, Arc::clone(r))
-            }
-            (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
-                (Arc::clone(l), r.to_array_of_size(l.len())?)
-            }
-            (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
-        };
-
-        let left = left_arr.as_primitive::<Decimal128Type>();
-        let right = right_arr.as_primitive::<Decimal128Type>();
+        let arrays = ColumnarValue::values_to_arrays(&[left_val, right_val])?;
+        let left = arrays[0].as_primitive::<Decimal128Type>();
+        let right = arrays[1].as_primitive::<Decimal128Type>();
         let (_p1, s1) = get_precision_scale(left.data_type());
         let (_p2, s2) = get_precision_scale(right.data_type());
 
@@ -446,7 +436,7 @@ fn spark_multiply_overflow_value(unscaled: &str, scale: i8) -> Result<String, Ar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Decimal128Array;
+    use arrow::array::{ArrayRef, Decimal128Array};
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
