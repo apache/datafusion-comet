@@ -24,7 +24,6 @@ import java.util.Properties
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 
-import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{Await, Future, Promise}
 import scala.concurrent.duration._
 import scala.util.Try
@@ -42,13 +41,16 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator}
+import org.apache.comet.{CometArrowAllocator, CometKryoRegistrator}
 import org.apache.comet.vector.CometVector
 
 class CometBroadcastValueSuite extends CometTestBase {
-  import SharedDecode.{NoRetention, Retention}
+  import SharedDecode.Retention
 
   private val Timeout = 30.seconds
+
+  /** Frees a decode as soon as no task holds it. */
+  private val NoRetention = Retention(0)
 
   test("tasks that read a broadcast at the same time decode it once") {
     val value = broadcastValue(rows(1000))
@@ -88,88 +90,52 @@ class CometBroadcastValueSuite extends CometTestBase {
     assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
-  test("a task that comes before the idle timeout passes reads the decode of earlier tasks") {
+  test("a decode outlives its last holder until its broadcast value is closed") {
     val decodes = new AtomicInteger
-    // The test runs each expiry itself, in place of a timer.
-    val expiries = ArrayBuffer.empty[(Long, () => Unit)]
-    val shared = new SharedDecode(
-      broadcastValue(rows(1000)),
-      (chunks, source) => {
-        decodes.incrementAndGet()
-        SharedDecode.decode(chunks, source)
-      },
-      (delayMs, expire) => expiries += ((delayMs, expire)))
+    val shared =
+      new SharedDecode(
+        broadcastValue(rows(1000)),
+        counting(decodes),
+        new SharedDecode.IdleDecodes)
+    val retention = Retention(Long.MaxValue)
     val before = CometArrowAllocator.getAllocatedMemory
 
-    // The last task to complete keeps the decode for the idle timeout of its read.
-    val first = newTask(1)
-    assert(readAll(shared.batches(first, "test", Retention(1000, Long.MaxValue))) == rows(1000))
-    first.markTaskCompleted(None)
-    assert(shared.holders == 0)
-    assert(expiries.map(_._1) == Seq(1000L))
-    assert(CometArrowAllocator.getAllocatedMemory > before)
-
-    // A task that comes in the meantime reads the same decode. The expiry that the first task
-    // scheduled then frees nothing, while the task runs or after it completes.
-    val second = newTask(2)
-    assert(readAll(shared.batches(second, "test", Retention(2000, Long.MaxValue))) == rows(1000))
-    assert(decodes.get == 1)
-    expiries.head._2()
-    assert(shared.holders == 1)
-    second.markTaskCompleted(None)
-    assert(expiries.map(_._1) == Seq(1000L, 2000L))
-    expiries.head._2()
-    assert(CometArrowAllocator.getAllocatedMemory > before)
-
-    // The expiry of the last release frees the decode, and a later task decodes again. With no
-    // idle timeout, its decode is freed as soon as it completes.
-    expiries(1)._2()
-    assert(CometArrowAllocator.getAllocatedMemory == before)
-    val third = newTask(3)
-    assert(readAll(shared.batches(third, "test", NoRetention)) == rows(1000))
-    assert(decodes.get == 2)
-    third.markTaskCompleted(None)
-    assert(expiries.size == 2)
-    assert(CometArrowAllocator.getAllocatedMemory == before)
-  }
-
-  test("a task that comes after another completes reads its decode, which the timer then frees") {
-    val (shared, decodes) = countingDecode(broadcastValue(rows(1000)))
-    val before = CometArrowAllocator.getAllocatedMemory
-    // Long enough for the second task to start while the decode is kept, short enough that the
-    // test waits little for the expiry thread to free it.
-    val retention = Retention(500, Long.MaxValue)
+    // A task that comes after the last holder completes reads the kept decode.
     Seq(1L, 2L).foreach { id =>
       val task = newTask(id)
       assert(readAll(shared.batches(task, "test", retention)) == rows(1000))
       task.markTaskCompleted(None)
+      assert(shared.holders == 0)
+      assert(CometArrowAllocator.getAllocatedMemory > before)
     }
     assert(decodes.get == 1)
-    eventually(timeout(Timeout), interval(10.millis)) {
-      assert(CometArrowAllocator.getAllocatedMemory == before)
-    }
-    assert(shared.holders == 0)
+
+    // Closing the value while a task holds the decode frees it once that task completes.
+    val holder = newTask(3)
+    assert(readAll(shared.batches(holder, "test", retention)) == rows(1000))
+    shared.close()
+    assert(CometArrowAllocator.getAllocatedMemory > before)
+    holder.markTaskCompleted(None)
+    assert(CometArrowAllocator.getAllocatedMemory == before)
+
+    // A task that reads the closed value decodes it again, and frees its decode on completion.
+    val later = newTask(4)
+    assert(readAll(shared.batches(later, "test", retention)) == rows(1000))
+    assert(decodes.get == 2)
+    later.markTaskCompleted(None)
+    assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
-  test("idle decodes over the cap are freed, the longest idle first") {
+  test("kept decodes over the cap are freed, the longest kept first") {
     val decoded = SharedDecode.decode(broadcastValue(rows(1000)), "test").get
     val size = decoded.bytes
     decoded.close()
     // Room for one decode of 1000 rows, but not for two.
-    val retention = Retention(1000, size + size / 2)
+    val retention = Retention(size + size / 2)
     val idle = new SharedDecode.IdleDecodes
     val decodes = new AtomicInteger
-    // The test runs the expiries itself, after the cap has freed some of the decodes.
-    val expiries = ArrayBuffer.empty[() => Unit]
     def sharedDecode(rowCount: Int) =
-      new SharedDecode(
-        broadcastValue(rows(rowCount)),
-        (chunks, source) => {
-          decodes.incrementAndGet()
-          SharedDecode.decode(chunks, source)
-        },
-        (_, expire) => expiries += expire,
-        idle)
+      new SharedDecode(broadcastValue(rows(rowCount)), counting(decodes), idle)
     val a = sharedDecode(1000)
     val b = sharedDecode(1000)
     val large = sharedDecode(4000)
@@ -184,7 +150,7 @@ class CometBroadcastValueSuite extends CometTestBase {
 
     readAndComplete(a)
     assert(idle.bytes == size)
-    // Keeping b's decode frees a's, which has been idle longer.
+    // Keeping b's decode frees a's, which has been kept longer.
     readAndComplete(b)
     assert(decodes.get == 2)
     assert(idle.bytes == size)
@@ -201,7 +167,7 @@ class CometBroadcastValueSuite extends CometTestBase {
     assert(idle.bytes == size)
     assert(CometArrowAllocator.getAllocatedMemory - before == size)
 
-    // A task that takes an idle decode takes it out of the cap until it completes.
+    // A task that takes a kept decode takes it out of the cap until it completes.
     val task = newTask(taskId + 1)
     assert(readAll(a.batches(task, "test", retention)) == rows(1000))
     assert(decodes.get == 4)
@@ -209,8 +175,8 @@ class CometBroadcastValueSuite extends CometTestBase {
     task.markTaskCompleted(None)
     assert(idle.bytes == size)
 
-    // The expiries of the decodes that the cap freed free nothing more.
-    expiries.foreach(_())
+    // Closing the values frees the decode that is still kept.
+    Seq(a, b, large).foreach(_.close())
     assert(idle.bytes == 0)
     assert(Seq(a, b, large).forall(_.holders == 0))
     assert(CometArrowAllocator.getAllocatedMemory == before)
@@ -381,13 +347,13 @@ class CometBroadcastValueSuite extends CometTestBase {
     val broadcast =
       spark.sparkContext.broadcast(new CometBroadcastValue(broadcastValue(rows(100))))
     try {
-      Seq(true, false).foreach { share =>
-        val rdd = new CometBatchRDD(spark.sparkContext, 2, broadcast, share, NoRetention)
+      Seq(Some(NoRetention), None).foreach { shareDecoded =>
+        val rdd = new CometBatchRDD(spark.sparkContext, 2, broadcast, shareDecoded)
         val tasks = (1 to 2).map(i => newTask(i.toLong))
         rdd.partitions.zip(tasks).foreach { case (partition, task) =>
           assert(readAll(rdd.compute(partition, task)) == rows(100))
         }
-        assert(broadcast.value.holders == (if (share) 2 else 0))
+        assert(broadcast.value.holders == (if (shareDecoded.isDefined) 2 else 0))
         tasks.foreach(_.markTaskCompleted(None))
         assert(broadcast.value.holders == 0)
       }
@@ -396,13 +362,31 @@ class CometBroadcastValueSuite extends CometTestBase {
     }
   }
 
+  test("removing a broadcast frees the decode that the executor kept") {
+    val broadcast =
+      spark.sparkContext.broadcast(new CometBroadcastValue(broadcastValue(rows(100))))
+    val before = CometArrowAllocator.getAllocatedMemory
+    try {
+      val rdd =
+        new CometBatchRDD(spark.sparkContext, 1, broadcast, Some(Retention(Long.MaxValue)))
+      val task = newTask(1)
+      assert(readAll(rdd.compute(rdd.partitions.head, task)) == rows(100))
+      task.markTaskCompleted(None)
+      assert(broadcast.value.holders == 0)
+      assert(CometArrowAllocator.getAllocatedMemory > before)
+    } finally {
+      // Removes the broadcast from the memory store of each executor, here the local one, as the
+      // driver's cleanup of a broadcast that nothing references any more does.
+      broadcast.destroy(blocking = true)
+    }
+    assert(CometArrowAllocator.getAllocatedMemory == before)
+  }
+
   test("broadcast joins over nested columns release the shared decode") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      // Short, so that the test waits little for the expiry thread to free the decode.
-      CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_IDLE_TIMEOUT.key -> "100ms") {
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 4000).map(i => (i % 400, s"fact-$i")), "fact") {
         val dim = (0 until 300).map { i =>
           (i, if (i % 9 == 0) null else s"dim-$i", (i, s"s$i"), Seq(i, i + 1))
@@ -421,11 +405,9 @@ class CometBroadcastValueSuite extends CometTestBase {
             checkSparkAnswerAndOperator(
               sql(query),
               Seq(classOf[CometBroadcastExchangeExec], join))
-            eventually(timeout(Timeout), interval(10.millis)) {
-              assert(
-                CometArrowAllocator.getAllocatedMemory == before,
-                "the shared decode outlived its idle timeout")
-            }
+            assert(
+              CometArrowAllocator.getAllocatedMemory == before,
+              "a completed task still holds a broadcast")
           }
         }
       }
@@ -523,14 +505,15 @@ class CometBroadcastValueSuite extends CometTestBase {
 
   private def countingDecode(chunks: Array[ChunkedByteBuffer]): (SharedDecode, AtomicInteger) = {
     val decodes = new AtomicInteger
-    val shared = new SharedDecode(
-      chunks,
-      (chunks, source) => {
-        decodes.incrementAndGet()
-        SharedDecode.decode(chunks, source)
-      })
-    (shared, decodes)
+    (new SharedDecode(chunks, counting(decodes)), decodes)
   }
+
+  /** [[SharedDecode.decode]], counting its calls in `decodes`. */
+  private def counting(decodes: AtomicInteger) =
+    (chunks: Array[ChunkedByteBuffer], source: String) => {
+      decodes.incrementAndGet()
+      SharedDecode.decode(chunks, source)
+    }
 
   private def newTask(taskAttemptId: Long): TaskContextImpl =
     new TaskContextImpl(

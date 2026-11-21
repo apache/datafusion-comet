@@ -230,12 +230,7 @@ case class CometBroadcastExchangeExec(
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val broadcasted = executeBroadcast[CometBroadcastValue]()
 
-    new CometBatchRDD(
-      sparkContext,
-      getNumPartitions(),
-      broadcasted,
-      shareDecoded,
-      shareDecodedRetention)
+    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted, shareDecoded)
   }
 
   // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
@@ -247,21 +242,17 @@ case class CometBroadcastExchangeExec(
     }
 
     val broadcasted = executeBroadcast[CometBroadcastValue]()
-    new CometBatchRDD(
-      sparkContext,
-      numPartitions,
-      broadcasted,
-      shareDecoded,
-      shareDecodedRetention)
+    new CometBatchRDD(sparkContext, numPartitions, broadcasted, shareDecoded)
   }
 
-  private def shareDecoded: Boolean =
-    CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.get(conf)
-
-  private def shareDecodedRetention: SharedDecode.Retention =
-    SharedDecode.Retention(
-      CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_IDLE_TIMEOUT.get(conf),
-      CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_MAX_IDLE_SIZE.get(conf))
+  private def shareDecoded: Option[SharedDecode.Retention] =
+    if (CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.get(conf)) {
+      Some(
+        SharedDecode.Retention(
+          CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_MAX_IDLE_SIZE.get(conf)))
+    } else {
+      None
+    }
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
     try {
@@ -323,18 +314,15 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
  * @param value
  *   the broadcasted batches which are serialized into an array of [[ChunkedByteBuffer]]s
  * @param shareDecoded
- *   whether the tasks of an executor that read the broadcast at the same time share one decoded
- *   copy of it, through [[CometBroadcastValue]]
- * @param retention
- *   how long an executor keeps that copy after the last task reading it completes, and the cap on
- *   the bytes of the idle copies that it keeps
+ *   whether the tasks of an executor that read the broadcast share one decoded copy of it,
+ *   through [[CometBroadcastValue]], and if so how the executor keeps the copy once the last of
+ *   them completes. `None` makes every task decode the broadcast for itself.
  */
 class CometBatchRDD(
     sc: SparkContext,
     val numPartitions: Int,
     value: broadcast.Broadcast[CometBroadcastValue],
-    shareDecoded: Boolean,
-    retention: SharedDecode.Retention)
+    shareDecoded: Option[SharedDecode.Retention])
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override def getPartitions: Array[Partition] = (0 until numPartitions).toArray.map { i =>
@@ -344,10 +332,11 @@ class CometBatchRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
     val source = this.getClass.getSimpleName
-    if (shareDecoded && context != null) {
-      partition.value.value.batches(context, source, retention)
-    } else {
-      partition.value.value.chunks.iterator.flatMap(Utils.decodeBatches(_, source))
+    shareDecoded match {
+      case Some(retention) if context != null =>
+        partition.value.value.batches(context, source, retention)
+      case _ =>
+        partition.value.value.chunks.iterator.flatMap(Utils.decodeBatches(_, source))
     }
   }
 }

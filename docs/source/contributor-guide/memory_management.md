@@ -121,11 +121,11 @@ container RSS that neither Spark's `TaskMemoryManager` nor Comet's native memory
 practice the volume is modest, a batch at a time per stream, but there is no ceiling and no
 backpressure. A broadcast is the largest case: a task that reads one holds all of it decoded, and
 the tasks of an executor that read it at the same time share one such copy. The executor keeps that
-copy for `spark.comet.exec.broadcastExchange.shareDecoded.idleTimeout` after the last of those
-tasks completes, so that the next wave of tasks reads it too, and caps the idle copies of all
-broadcasts at `spark.comet.exec.broadcastExchange.shareDecoded.maxIdleSize`. The executor's memory
-usage log reports the allocator's total, and the part of it charged to the import allocator
-described below, so that the overhead can be sized for it.
+copy after the last of those tasks completes, so that later tasks read it too, until Spark removes
+the broadcast from the executor and its memory store closes the `CometBroadcastValue`. It caps the
+kept copies of all broadcasts at `spark.comet.exec.broadcastExchange.shareDecoded.maxIdleSize`. The
+executor's memory usage log reports the allocator's total, and the part of it charged to the import
+allocator described below, so that the overhead can be sized for it.
 
 The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
 the execution pool. Each group is bounded by `min(spark.comet.batchSize, 65536)` rows, 8 MiB of

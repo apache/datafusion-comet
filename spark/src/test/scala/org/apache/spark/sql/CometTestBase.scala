@@ -153,9 +153,9 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     // Free a shared broadcast decode as soon as no task holds it. Suites that compare the Arrow
-    // allocator's memory before and after a step would otherwise see the idle decode of an
-    // earlier test's broadcast freed in between.
-    conf.set(CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_IDLE_TIMEOUT.key, "0")
+    // allocator's memory before and after a step would otherwise see the kept decode of an
+    // earlier test's broadcast freed in between, whenever Spark cleans up that broadcast.
+    conf.set(CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_MAX_IDLE_SIZE.key, "0")
     // Fail loudly if a serde declines an operator without stating why, rather than letting the
     // generic "<operator> is not supported" message mask the missing reason.
     // See https://github.com/apache/datafusion-comet/issues/5230.
