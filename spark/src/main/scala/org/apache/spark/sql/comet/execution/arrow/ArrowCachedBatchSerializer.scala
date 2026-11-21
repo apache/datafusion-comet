@@ -489,8 +489,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         p.references.forall(a => prunable.contains(a.exprId)) && !prunesOnCollatedPrefix(p)
     }
 
-    // C3 matches the first byte of é (C3 A9), but Spark cuts bounds by character and rejects
-    // a lower bound of é. The byte range [C3, C4) expresses the same match under binary ordering.
+    // C3 matches the first byte of U+00E9 (C3 A9), but Spark cuts bounds by character and rejects
+    // a lower bound of U+00E9. The byte range [C3, C4) expresses the match under binary ordering.
     val filters = prunablePredicates.map(_.transform {
       case StartsWith(a: AttributeReference, Literal(prefix: UTF8String, _))
           if a.dataType == StringType && !Utils.isValidUtf8(prefix) =>
