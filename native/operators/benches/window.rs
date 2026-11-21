@@ -52,6 +52,7 @@ use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::windows::{create_window_expr, BoundedWindowAggExec};
 use datafusion::physical_plan::{ExecutionPlan, InputOrderMode};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_comet_operators::RowNumberExec;
 use futures::StreamExt;
 use tokio::runtime::Runtime;
 
@@ -299,7 +300,9 @@ fn run(runtime: &Runtime, plan: &Arc<dyn ExecutionPlan>, ctx: &Arc<TaskContext>)
         let mut stream = plan.execute(0, Arc::clone(ctx)).unwrap();
         let mut rows = 0;
         while let Some(batch) = stream.next().await {
-            rows += batch.unwrap().num_rows();
+            let batch = batch.unwrap();
+            rows += batch.num_rows();
+            std::hint::black_box(batch);
         }
         rows
     });
@@ -376,6 +379,71 @@ fn criterion_benchmark(c: &mut Criterion) {
             let id = BenchmarkId::new(func.name(), rows_per_partition);
             let s = shape(func, Arg::Int64, rows_per_partition, 0);
             bench_shape(&mut group, id, s, &runtime, &session, &task_ctx);
+        }
+    }
+    group.finish();
+
+    // Compare the same ROW_NUMBER expressions and sorted batches through the generic
+    // window and the batch-at-a-time executor. Validate every rank before measuring.
+    let mut group = c.benchmark_group("row_number_executor");
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
+    group.throughput(Throughput::Elements(ROWS as u64));
+    for rows_per_partition in [1usize, 4, 64, 16384, ROWS] {
+        let s = shape(Func::RowNumber, Arg::Int64, rows_per_partition, 0);
+        let schema = s.schema();
+        let batches = (0..BATCHES)
+            .map(|i| s.batch(&schema, i))
+            .collect::<Vec<_>>();
+        let build_plan = |streaming| -> Arc<dyn ExecutionPlan> {
+            let generic = s.plan(&session, &batches);
+            if streaming {
+                Arc::new(
+                    RowNumberExec::try_new(
+                        generic
+                            .downcast_ref::<BoundedWindowAggExec>()
+                            .unwrap()
+                            .clone(),
+                    )
+                    .unwrap(),
+                )
+            } else {
+                generic
+            }
+        };
+        for (name, streaming) in [("bounded", false), ("streaming", true)] {
+            let plan = build_plan(streaming);
+            runtime.block_on(async {
+                let mut stream = plan.execute(0, Arc::clone(&task_ctx)).unwrap();
+                let mut row = 0;
+                while let Some(batch) = stream.next().await {
+                    let batch = batch.unwrap();
+                    let ranks = batch
+                        .columns()
+                        .last()
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<arrow::array::UInt64Array>()
+                        .unwrap();
+                    for rank in ranks.values() {
+                        assert_eq!(*rank, (row % rows_per_partition + 1) as u64);
+                        row += 1;
+                    }
+                }
+                assert_eq!(row, ROWS);
+            });
+            group.bench_function(BenchmarkId::new(name, rows_per_partition), |b| {
+                // Each execution registers metrics. Keep plan creation and disposal outside timing.
+                b.iter_batched(
+                    || build_plan(streaming),
+                    |plan| {
+                        run(&runtime, &plan, &task_ctx);
+                        plan
+                    },
+                    criterion::BatchSize::PerIteration,
+                );
+            });
         }
     }
     group.finish();
