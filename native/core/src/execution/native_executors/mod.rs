@@ -29,8 +29,8 @@ mod client;
 mod fragment;
 
 pub use fragment::{
-    block_schema, fragment_schema, partition_descriptor, partition_plans, CometFragmentExec,
-    MAX_PARTITIONS,
+    block_schema, bound_column, column, fragment_schema, merge_ordering, partition_descriptor,
+    partition_plans, CometFragmentExec, MAX_PARTITIONS,
 };
 
 /// The version of this Comet build. A Comet Native Executor cluster requires a driver's to match

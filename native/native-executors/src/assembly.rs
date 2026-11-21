@@ -21,27 +21,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use comet::execution::native_executors::{
-    block_schema, fragment_schema, partition_descriptor, CometFragmentExec, COMET_VERSION,
-    MAX_PARTITIONS,
+    block_schema, bound_column, column, fragment_schema, merge_ordering, partition_descriptor,
+    CometFragmentExec, COMET_VERSION, MAX_PARTITIONS,
 };
-use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::{plan_datafusion_err, plan_err, Result};
-use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
-use datafusion_comet_proto::spark_expression::expr::ExprStruct;
-use datafusion_comet_proto::spark_expression::{Expr, NullOrdering, SortDirection};
 use datafusion_comet_proto::spark_native_executors::{Fragment, QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_comet_proto::spark_partitioning::partitioning::PartitioningStruct;
 use datafusion_comet_proto::PROTO_FINGERPRINT;
-use log::warn;
 use prost::Message;
 
 /// Checks that `request` comes from a driver running this Comet build. The plan format is not
@@ -187,6 +180,12 @@ fn build_stage(
         output_schema: stage.output_schema,
         conf: conf.clone(),
         estimated_output_bytes: stage.estimated_output_bytes,
+        // Declared only where the partitions are merged, which requires it.
+        output_ordering: if merge.is_some() && num_partitions > 1 {
+            stage.output_ordering
+        } else {
+            vec![]
+        },
     };
     let fragment: Arc<dyn ExecutionPlan> =
         Arc::new(CometFragmentExec::try_new(Arc::new(fragment), children)?);
@@ -295,73 +294,4 @@ fn exchange(
 /// `producer`'s output gathered into one partition.
 fn one_partition(producer: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(CoalescePartitionsExec::new(producer))
-}
-
-fn column(schema: &SchemaRef, index: usize) -> Arc<dyn PhysicalExpr> {
-    Arc::new(Column::new(schema.field(index).name(), index))
-}
-
-/// The index of the column `expr` reads, if it reads a column of an input with `num_fields`.
-fn bound_column(expr: &Expr, num_fields: usize) -> Option<usize> {
-    match expr.expr_struct.as_ref() {
-        Some(ExprStruct::Bound(bound)) if (bound.index as usize) < num_fields => {
-            Some(bound.index as usize)
-        }
-        _ => None,
-    }
-}
-
-/// Whether Arrow orders values of `data_type` as Spark does, so that a merge, which compares raw
-/// values, keeps the order Comet's sort put each partition in. Comet's sort normalizes floats
-/// first (a NaN of either sign sorts last), so a float key, or a nested one that may hold
-/// floats, can't be merged this way (https://github.com/apache/datafusion-comet/issues/7366).
-fn orders_like_spark(data_type: &DataType) -> bool {
-    data_type.is_integer()
-        || matches!(
-            data_type,
-            DataType::Boolean
-                | DataType::Decimal32(_, _)
-                | DataType::Decimal64(_, _)
-                | DataType::Decimal128(_, _)
-                | DataType::Decimal256(_, _)
-                | DataType::Date32
-                | DataType::Date64
-                | DataType::Timestamp(_, _)
-                | DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Utf8View
-                | DataType::Binary
-                | DataType::LargeBinary
-                | DataType::BinaryView
-        )
-}
-
-/// The order to merge a stage's sorted partitions in: its declared output ordering, when every
-/// key is a column of a type whose order Arrow and Spark agree on. `None` when there's nothing
-/// to merge by, and the stage then reads its range exchange as one partition.
-fn merge_ordering(orders: &[Expr], schema: &SchemaRef) -> Option<LexOrdering> {
-    let sort_exprs = orders
-        .iter()
-        .map(|order| {
-            let Some(ExprStruct::SortOrder(order)) = order.expr_struct.as_ref() else {
-                return None;
-            };
-            let index = bound_column(order.child.as_deref()?, schema.fields().len())?;
-            if !orders_like_spark(schema.field(index).data_type()) {
-                warn!(
-                    "A global sort by a {} column runs in one task",
-                    schema.field(index).data_type()
-                );
-                return None;
-            }
-            Some(PhysicalSortExpr::new(
-                column(schema, index),
-                SortOptions {
-                    descending: order.direction == SortDirection::Descending as i32,
-                    nulls_first: order.null_ordering == NullOrdering::NullsFirst as i32,
-                },
-            ))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    LexOrdering::new(sort_exprs)
 }

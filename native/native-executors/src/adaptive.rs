@@ -449,6 +449,8 @@ impl BroadcastIntoProbe {
             broadcast,
             conf: probe_fragment.conf.clone(),
             estimated_output_bytes: None,
+            // It feeds an exchange, so nothing merges its partitions.
+            output_ordering: vec![],
         };
         let mut children = vec![descriptor];
         children.extend(

@@ -20,6 +20,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use arrow::array::{Array, AsArray, BinaryArray, RecordBatch, RecordBatchOptions, UInt32Array};
+use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, UInt32Type};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{internal_datafusion_err, plan_datafusion_err, DataFusionError, Result};
@@ -28,7 +29,10 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::memory_pool::{MemoryPool, UnboundedMemoryPool};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Distribution, EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{
+    Distribution, EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
@@ -37,10 +41,13 @@ use datafusion::physical_plan::{
     InputDistributionRequirements, Partitioning, PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::prelude::SessionContext;
+use datafusion_comet_proto::spark_expression::expr::ExprStruct;
+use datafusion_comet_proto::spark_expression::{Expr, NullOrdering, SortDirection};
 use datafusion_comet_proto::spark_native_executors::Fragment;
 use datafusion_comet_proto::spark_operator::{Operator, SparkStructField};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
+use log::warn;
 
 use crate::execution::jni_api::{
     comet_runtime_env, comet_session_context, NATIVE_EXECUTORS_FRAGMENT,
@@ -127,6 +134,76 @@ pub fn partition_plans(descriptor: &Arc<dyn ExecutionPlan>) -> Result<Vec<Vec<u8
     Ok(plans)
 }
 
+pub fn column(schema: &SchemaRef, index: usize) -> Arc<dyn PhysicalExpr> {
+    Arc::new(Column::new(schema.field(index).name(), index))
+}
+
+/// The index of the column `expr` reads, if it reads a column of an input with `num_fields`.
+pub fn bound_column(expr: &Expr, num_fields: usize) -> Option<usize> {
+    match expr.expr_struct.as_ref() {
+        Some(ExprStruct::Bound(bound)) if (bound.index as usize) < num_fields => {
+            Some(bound.index as usize)
+        }
+        _ => None,
+    }
+}
+
+/// Whether Arrow orders values of `data_type` as Spark does, so that a merge, which compares raw
+/// values, keeps the order Comet's sort put each partition in. Comet's sort normalizes floats
+/// first (a NaN of either sign sorts last), so a float key, or a nested one that may hold
+/// floats, can't be merged this way (https://github.com/apache/datafusion-comet/issues/7366).
+fn orders_like_spark(data_type: &DataType) -> bool {
+    data_type.is_integer()
+        || matches!(
+            data_type,
+            DataType::Boolean
+                | DataType::Decimal32(_, _)
+                | DataType::Decimal64(_, _)
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _)
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(_, _)
+                | DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::BinaryView
+        )
+}
+
+/// The order to merge a stage's sorted partitions in: its declared output ordering, when every
+/// key is a column of a type whose order Arrow and Spark agree on. `None` when there's nothing
+/// to merge by, and the stage then reads its range exchange as one partition. A fragment whose
+/// partitions are merged declares this ordering, which a merge above it requires.
+pub fn merge_ordering(orders: &[Expr], schema: &SchemaRef) -> Option<LexOrdering> {
+    let sort_exprs = orders
+        .iter()
+        .map(|order| {
+            let Some(ExprStruct::SortOrder(order)) = order.expr_struct.as_ref() else {
+                return None;
+            };
+            let index = bound_column(order.child.as_deref()?, schema.fields().len())?;
+            if !orders_like_spark(schema.field(index).data_type()) {
+                warn!(
+                    "A global sort by a {} column runs in one task",
+                    schema.field(index).data_type()
+                );
+                return None;
+            }
+            Some(PhysicalSortExpr::new(
+                column(schema, index),
+                SortOptions {
+                    descending: order.direction == SortDirection::Descending as i32,
+                    nulls_first: order.null_ordering == NullOrdering::NullsFirst as i32,
+                },
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    LexOrdering::new(sort_exprs)
+}
+
 /// Runs a Comet native block for each partition of a stage.
 ///
 /// The first child is the partition descriptor (see [`partition_descriptor`]), and each other
@@ -165,8 +242,14 @@ impl CometFragmentExec {
             ));
         }
         let partitions = descriptor.output_partitioning().partition_count();
+        let schema = fragment_schema(&fragment.output_schema);
+        // Each partition is sorted in the order its stage's partitions are merged by.
+        let equivalence = match merge_ordering(&fragment.output_ordering, &schema) {
+            Some(ordering) => EquivalenceProperties::new_with_orderings(schema, [ordering]),
+            None => EquivalenceProperties::new(schema),
+        };
         let props = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(fragment_schema(&fragment.output_schema)),
+            equivalence,
             Partitioning::UnknownPartitioning(partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
