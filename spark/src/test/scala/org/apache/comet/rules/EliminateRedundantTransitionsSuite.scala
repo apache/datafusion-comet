@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan, UnionExec}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -94,5 +94,28 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
 
     val e = intercept[SparkException](shuffle.executeColumnar().count())
     assert(e.getMessage.contains("expects CometVector type"), e.getMessage)
+  }
+
+  test(
+    "native shuffle over Spark's RowToColumnar converts to Arrow when columnar shuffle is off") {
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      val rowChild = sparkPlanFor("SELECT id, CAST(id AS STRING) AS s FROM range(10)")
+      assert(!rowChild.supportsColumnar)
+      val partitioning = HashPartitioning(rowChild.ouput.take(1), 4)
+      val shuffle = CometShuffleExchangeExec(
+        partitioning,
+        RowToColumnarExec(rowChild),
+        ShuffleExchangeExec(partitioning, rowChild),
+        shuffle = CometNativeShuffle)
+      val result = EliminateRedundantTransitions(spark).apply(shuffle)
+
+      result match {
+        case CometShuffleExchangeExec(_, child, _, _, CometColumnarShuffle, _) =>
+          assert(child == rowChild, s"RowToColumnar should be replaced:\n${result.treeString}")
+        case _ =>
+          fail(s"Expected native shuffle over CometSparkToColumnar:\n${result.treeString}")
+      }
+      assert(result.executeColumnar().map(_.numRows()).sum() == 10)
+    }
   }
 }
