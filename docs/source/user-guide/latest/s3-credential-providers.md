@@ -83,6 +83,29 @@ spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
 
 Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.5 build, v2 on 4.0+), so you configure one name and get the right implementation.
 
+### `IcebergVendedS3CredentialProvider` (native Iceberg reads, Spark 4.x)
+
+Without a provider, the native Iceberg scan signs every request with the `s3.*` credentials the REST catalog vended when the driver loaded the table. Vended credentials are short-lived, so a scan that runs past their expiry fails with `ExpiredToken`. Iceberg's `S3FileIO`, which Spark's own Iceberg reads use, refreshes them through `client.refresh-credentials-endpoint` when the catalog returns one.
+
+This provider resolves credentials the way `S3FileIO` does, through Iceberg's `AwsClientProperties`. It refreshes through the catalog's endpoint when one is returned, and otherwise uses the static vended keys and reports their vended expiry. Iceberg is loaded by reflection from the thread context class loader, so `iceberg-aws` can sit on the user-jar loader. The AWS SDK v2 must be visible from Comet's loader, as for the adapters above.
+
+Comet selects this provider automatically for native Iceberg scans when all of these hold:
+
+- The FileIO properties carry `client.refresh-credentials-endpoint`, and `client.refresh-credentials-enabled` is absent or `true`. Comet reads the flag as Iceberg does, with `Boolean.parseBoolean` on the raw value, so any other value, such as `" true "` or `yes`, turns refresh off.
+- The properties carry the catalog `uri`, whether the endpoint is relative or absolute.
+- No provider is configured for the catalog.
+- On the driver, Comet's class loader and the thread context class loader see the same AWS SDK v2. Comet logs at `INFO` when they don't.
+
+An explicit setting takes precedence. An empty value turns the provider off for that catalog:
+
+```
+spark.sql.catalog.<catalog>.s3.comet.credential.provider.class=
+```
+
+Each instance of the provider holds its own HTTP client for the refresh endpoint. Comet closes an instance once the table's cached `FileIO` is replaced, which happens only when the catalog vends credentials whose `s3.session-token-expires-at-ms` is later than the cached ones (see [Lifecycle](#lifecycle)). Catalogs that vend S3 credentials, such as Apache Polaris and Unity Catalog, send that expiry. A catalog that rotates the `s3.*` keys without it gives each table reload another instance, and its HTTP client, until the executor's cache of 64 `FileIO`s evicts the older entries.
+
+Spark 3.x builds do not include this provider. On Spark 3.x, a native Iceberg scan that outlives its vended credentials fails with `ExpiredToken` unless you configure a provider of your own. The native Iceberg writer does not select it automatically: a catalog that returns `client.refresh-credentials-endpoint` makes the write fall back to Spark.
+
 ## Enabling a bridge
 
 A bridge is activated by naming the vendor's class in a Spark config. Putting a JAR on the classpath alone has no effect; the config key must be set.
@@ -360,36 +383,9 @@ public final class MyMultiTenantProvider implements CometS3CredentialProvider {
 }
 ```
 
-### Reference implementation: Iceberg REST vended credentials
+### Iceberg REST vended credentials
 
-For Iceberg REST catalogs that vend AWS credentials (`LoadTableResponse.credentials`), the canonical implementation wraps Iceberg's existing `VendedCredentialsProvider`:
-
-```java
-public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvider {
-    private volatile VendedCredentialsProvider provider;
-
-    @Override
-    public void initialize(Map<String, String> catalogProperties) {
-        this.provider = VendedCredentialsProvider.create(catalogProperties);
-    }
-
-    @Override
-    public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) {
-        AwsCredentials c = provider.resolveCredentials();
-        String token = null;
-        long expiresAt = 0L;
-        if (c instanceof AwsSessionCredentials) {
-            AwsSessionCredentials session = (AwsSessionCredentials) c;
-            token = session.sessionToken();
-            // Report the vended expiry, so Comet reuses the credential until shortly before it.
-            expiresAt = session.expirationTime().map(Instant::toEpochMilli).orElse(0L);
-        }
-        return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, expiresAt);
-    }
-}
-```
-
-`VendedCredentialsProvider` reads `credentials.uri`, the catalog endpoint, and OAuth tokens from the supplied map (Comet forwards the unfiltered FileIO bag to `initialize`), and refreshes through its own `CachedSupplier`. Refresh-near-expiry and the REST round-trip live in Iceberg. Comet only reuses the credential this returns until five minutes before the expiry it reports, so report the expiry: returning `0` turns that reuse off. Comet ships a copy of this class under `spark/src/test` as a reference; copy it into your runtime jar alongside `iceberg-aws` and AWS SDK v2.
+For Iceberg REST catalogs that vend AWS credentials, use the provider Comet ships, `IcebergVendedS3CredentialProvider` (see the section on it above). Comet selects it automatically when the catalog returns a refresh endpoint. To write your own, build Iceberg's credentials provider through `AwsClientProperties.credentialsProvider`, not `VendedCredentialsProvider.create`. A REST catalog returns its refresh endpoint as `client.refresh-credentials-endpoint`, often relative to `uri`, and `AwsClientProperties` resolves it into the `credentials.uri` that `VendedCredentialsProvider` reads. Report the credential's expiry: Comet reuses a credential until five minutes before the expiry you report, and returning `0` turns that reuse off.
 
 ### Access mode
 
