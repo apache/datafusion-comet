@@ -17,7 +17,7 @@
 
 -- Queries without a FROM clause run over a OneRowRelation, which Comet converts by default.
 
--- A folded array literal is an UnsafeArrayData, not a GenericArrayData.
+-- Array expressions over OneRowRelation, with the harness's default constant folding exclusion.
 query
 SELECT sequence(1, 5)
 
