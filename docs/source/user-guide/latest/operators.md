@@ -125,12 +125,12 @@ combined with `OR`, which Spark plans as an existence `BroadcastNestedLoopJoinEx
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                                                                                                                                                                      |
-| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Operator       | Status | Notes                                                                                                                                                                                                                                             |
+| -------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays and maps, `inline`, `inline_outer`, and `stack`. `inline` over structs with no fields and `stack` with more than 50 rows fall back. Other generators fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                                                                                                                                                            |
-| `UnionExec`    | ✅     |                                                                                                                                                                                                                                                            |
-| `CoalesceExec` | ✅     |                                                                                                                                                                                                                                                            |
+| `ExpandExec`   | ✅     |                                                                                                                                                                                                                                                   |
+| `UnionExec`    | ✅     |                                                                                                                                                                                                                                                   |
+| `CoalesceExec` | ✅     |                                                                                                                                                                                                                                                   |
 
 Chained array and map generators run natively. They materialize carried columns between generators,
 so their latency can exceed Spark's fused generators on a single task with idle cores.
