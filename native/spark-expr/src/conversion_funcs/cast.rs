@@ -183,8 +183,8 @@ pub struct SparkCastOptions {
     /// True when Spark does not apply the 38 integral-digit limit when it casts a string to
     /// decimal, as it does not with `spark.sql.legacy.allowNegativeScaleOfDecimal`.
     pub decimal_skip_integral_digit_limit: bool,
-    /// Java feature version of the planning JVM. Zero selects the pre-JDK 25 power-of-ten limit.
-    pub java_feature_version: i32,
+    /// True when `BigInteger.TEN.pow` accepts every power of ten representable by `BigInteger`.
+    pub decimal_full_divisor_range: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -206,7 +206,7 @@ impl SparkCastOptions {
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
             decimal_skip_integral_digit_limit: false,
-            java_feature_version: 0,
+            decimal_full_divisor_range: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -222,7 +222,7 @@ impl SparkCastOptions {
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
             decimal_skip_integral_digit_limit: false,
-            java_feature_version: 0,
+            decimal_full_divisor_range: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),

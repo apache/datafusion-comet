@@ -798,8 +798,8 @@ fn counted_digits_exceed_integral_digit_limit(
     }
 }
 
-fn max_power_of_ten(java_feature_version: i32) -> i64 {
-    if java_feature_version >= 25 {
+fn max_power_of_ten(full_divisor_range: bool) -> i64 {
+    if full_divisor_range {
         // 10^n fits in BigInteger up to floor(i32::MAX * log10(2)).
         646_456_992
     } else {
@@ -922,7 +922,7 @@ fn parse_decimal_str(
     if adjustment > 38 {
         return Ok((digits() == 0).then_some(0));
     }
-    if -adjustment > max_power_of_ten(options.java_feature_version) {
+    if -adjustment > max_power_of_ten(options.decimal_full_divisor_range) {
         let digits = digits();
         // SPARK-60119 avoids the divisor for values below 0.01 ulp or above
         // the target precision. Otherwise setScale needs it for a nonzero value.
@@ -3030,10 +3030,9 @@ mod tests {
     }
 
     #[test]
-    fn test_decimal_scale_drop_on_jdk_25() {
+    fn test_decimal_scale_drop_with_full_divisor_range() {
         let mut options = SparkCastOptions::new_without_timezone(EvalMode::Ansi);
-        options.java_feature_version = 25;
-        options.decimal_tiny_to_zero = false;
+        options.decimal_full_divisor_range = true;
         for input in ["1e-536870922", "1e-646456994"] {
             assert_eq!(
                 super::parse_string_to_decimal(input, 10, 2, &options).unwrap(),

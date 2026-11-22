@@ -481,8 +481,8 @@ message Cast {
   // True when Spark does not apply the 38 integral-digit limit when it casts a string to
   // decimal, as it does not with spark.sql.legacy.allowNegativeScaleOfDecimal.
   bool decimal_skip_integral_digit_limit = 9;
-  // Java feature version of the planning JVM. The BigInteger.pow limit changed in JDK 25.
-  int32 java_feature_version = 10;
+  // True when BigInteger.TEN.pow accepts every power of ten representable by BigInteger.
+  bool decimal_full_divisor_range = 10;
 }
 
 // Spark's internal PreciseTimestampConversion, used by time-window grouping to convert

@@ -853,7 +853,7 @@ impl PhysicalPlanner {
                 cast_options.decimal_tiny_to_zero = expr.decimal_tiny_to_zero;
                 cast_options.decimal_skip_integral_digit_limit =
                     expr.decimal_skip_integral_digit_limit;
-                cast_options.java_feature_version = expr.java_feature_version;
+                cast_options.decimal_full_divisor_range = expr.decimal_full_divisor_range;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,

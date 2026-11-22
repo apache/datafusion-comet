@@ -1557,7 +1557,7 @@ class CometNativeCastSuite
         Some(SparkFixes.castsZeroWithAnyExponentToDecimal(version)))
     assert(
       cast.map(_.getDecimalTinyToZero) == Some(SparkFixes.castsTinyStringToDecimalZero(version)))
-    assert(cast.map(_.getJavaFeatureVersion) == Some(Runtime.version().feature()))
+    assert(cast.map(_.getDecimalFullDivisorRange) == Some(Runtime.version().feature() >= 25))
   }
 
   test(
