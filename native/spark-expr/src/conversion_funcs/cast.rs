@@ -556,7 +556,7 @@ fn cast_child(
     if !(to_type.is_primitive() || to_type == &DataType::Boolean)
         || result
             .as_ref()
-            .is_ok_and(|values| field.is_nullable() || values.null_count() == 0)
+            .is_ok_and(|values| field.is_nullable() || values.null_count() <= array.null_count())
     {
         return result;
     }
@@ -2091,6 +2091,17 @@ mod tests {
     }
     fn legacy_opts() -> SparkCastOptions {
         SparkCastOptions::new(EvalMode::Legacy, "UTC")
+    }
+
+    #[test]
+    fn widening_a_required_child_preserves_masked_nulls() {
+        let input: ArrayRef = Arc::new(Int32Array::from(vec![None, Some(42)]));
+        let field = Field::new("value", DataType::Int64, false);
+        let mask = || -> Option<NullBuffer> {
+            panic!("widening should not materialize ancestor visibility")
+        };
+        let output = cast_child(&input, &field, &legacy_opts(), &Visibility::new(&mask)).unwrap();
+        assert_eq!(output.as_ref(), &Int64Array::from(vec![None, Some(42)]));
     }
 
     #[test]

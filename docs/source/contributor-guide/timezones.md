@@ -192,7 +192,7 @@ value by a timezone:
 | `TIMESTAMP`, `isAdjustedToUTC=false` | `TimestampType`    | Relabelled without shifting, as Spark does                                                    |
 | `TIMESTAMP`, `isAdjustedToUTC=false` | `TimestampNTZType` | Read as is                                                                                    |
 | `TIMESTAMP`, `isAdjustedToUTC=true`  | `TimestampNTZType` | Rejected on Spark 3.x (SPARK-36182). Relabelled without shifting on Spark 4.0+ (SPARK-47447). |
-| `DATE`                               | `TimestampNTZType` | Rejected on Spark 3.5. Scaled from days to microseconds with an overflow check on Spark 4.0+. |
+| `DATE` decoded as Arrow `Date32`     | `TimestampNTZType` | Rejected on Spark 3.5. Scaled from days to microseconds with an overflow check on Spark 4.0+. |
 | `INT96`                              | `TimestampType`    | Coerced to microseconds and labelled `"UTC"`                                                  |
 
 The `INT96` coercion is configured by `coerce_int96` and `coerce_int96_tz` in `parquet_exec.rs`. An

@@ -111,10 +111,10 @@ reads that fail where Spark succeeds are listed in
   TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
   behavior.
-- Reading a Parquet `DATE` as `TIMESTAMP_NTZ` on Spark 3.5. Spark 3.5 rejects this type
-  promotion. On Spark 4.0 and later, the reader converts epoch days to microseconds at midnight.
-  If a decoded date overflows during projection, the reader raises a file-read error caused
-  by `ArithmeticException("long overflow")`.
+- Reading a Parquet `DATE` as `TIMESTAMP_NTZ` on Spark 3.5. When Arrow decodes the column as
+  `Date32`, Comet follows Spark 3.5 and rejects the promotion. On Spark 4.0 and later, the
+  reader converts `Date32` epoch days to microseconds at midnight. If a date overflows during
+  projection, the reader raises a file-read error caused by `ArithmeticException("long overflow")`.
 
 ### Missing Nested Fields
 
