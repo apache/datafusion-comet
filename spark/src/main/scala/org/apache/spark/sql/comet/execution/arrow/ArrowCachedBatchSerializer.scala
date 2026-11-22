@@ -530,16 +530,25 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Columnar Comet output is stored as one Arrow IPC record batch message per cached batch. Spark
   // only calls this when supportsColumnarInput returned true, so the schema is known to be
   // Comet-writable here.
+  //
+  // Small input batches are combined first, up to spark.sql.inMemoryColumnarStorage.batchSize
+  // rows, the size the row path cuts at. A batch is small when it holds less than half of that
+  // or of spark.comet.batchSize, whichever is fewer; see CacheBatchCoalescer.
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
       conf: SQLConf): RDD[CachedBatch] = {
 
+    val batchSize = conf.columnBatchSize
+    val nativeBatchSize = CometConf.COMET_BATCH_SIZE.get(conf)
     val settings = writeSettings(conf)
 
     input.mapPartitions { batches =>
-      encodeBatches(batches, schema, settings)
+      encodeBatches(
+        new CacheBatchCoalescer(batches, schema, batchSize, nativeBatchSize, CometArrowAllocator),
+        schema,
+        settings)
     }
   }
 
