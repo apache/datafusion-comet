@@ -39,7 +39,12 @@ pub(crate) fn update_comet_metric(
     let native_metric = to_native_metric_node(spark_plan);
     let jbytes = env.byte_array_from_slice(&native_metric?.encode_to_vec())?;
 
-    unsafe { jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ()) }
+    let published =
+        unsafe { jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ()) };
+    // A local reference lives until the native method returns, and a plan can publish many times
+    // inside one, as a native shuffle write does for its whole task inside one `executePlan`.
+    env.delete_local_ref(jbytes);
+    published
 }
 
 pub(crate) fn to_native_metric_node(

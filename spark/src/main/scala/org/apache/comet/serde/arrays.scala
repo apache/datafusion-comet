@@ -23,13 +23,16 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BinaryExpression, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GetStructField, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -282,7 +285,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else {
       expr.ascendingOrder match {
-        // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
+        // Spark 3.5 requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
         // foldable boolean. Accept both; convert evaluates the foldable expression.
         case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
         case other =>
@@ -825,7 +828,14 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding)
+    // Spark narrows any integral ordinal to an int; ListExtract reads an Int32 ordinal.
+    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding).flatMap { ordinal =>
+      if (expr.ordinal.dataType == IntegerType) {
+        Some(ordinal)
+      } else {
+        CometCast.castToProto(expr, None, IntegerType, ordinal, CometEvalMode.LEGACY)
+      }
+    }
 
     if (childExpr.isDefined && ordinalExpr.isDefined) {
       val listExtractBuilder = ExprOuterClass.ListExtract
@@ -1018,7 +1028,181 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+/**
+ * What a serde needs to run the lambda of a higher-order function natively, under a DataFusion
+ * higher-order function: the gate on the lambda and its body, and the serialization.
+ */
+trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
+
+  // The native lambda has the same semantics as Spark's `filter` for a one-parameter lambda whose
+  // body is deterministic, contains no nested lambda, and whose parameter is a type the native
+  // side can type-check against the list's element field. `exists` adds a condition of its own,
+  // since Spark stops at the first match. It needs bound references: the native side re-indexes
+  // the columns the body captures, which it cannot do for unbound ones.
+  protected def nativeLambdaSupported(argument: Expression, body: Expression): Boolean =
+    CometConf.COMET_NATIVE_LAMBDA_ENABLED.get() &&
+      body.deterministic &&
+      !body.exists(_.isInstanceOf[HigherOrderFunction]) &&
+      capturesOnlyFixedWidthColumns(body) &&
+      shortCircuitSafe(body) &&
+      !canProduceNullMapKey(argument) &&
+      !canProduceNullMapKey(body) &&
+      !appliesFunctionToDateTime(body) &&
+      (argument.dataType match {
+        case ArrayType(elementType, _) => isLambdaElementType(elementType)
+        case _ => false
+      })
+
+  /**
+   * Whether `e` has a TRY cast whose map key cast can fail, which makes a null key that Arrow
+   * cannot hold (#6172). The native side would have to build that map, so an argument or a body
+   * with one stays on the dispatcher, which runs it in Spark's own code, where the map never
+   * reaches Arrow.
+   */
+  private def canProduceNullMapKey(e: Expression): Boolean =
+    e.exists {
+      case c: Cast => CometCast.canProduceNullMapKey(c)
+      case _ => false
+    }
+
+  /**
+   * Whether `body` applies a function to a date or timestamp, other than comparing it, testing it
+   * for NULL, choosing it with `IF`, `CASE WHEN` or `COALESCE`, or casting it to a number. Native
+   * date and timestamp functions go through chrono, whose range ends at about the year 262,143,
+   * while Spark's goes to 294,247. Outside it, `year` and the other fields return NULL natively
+   * and `last_day` fails (#6843), and a cast between a date or timestamp and a string, date or
+   * timestamp fails (#7471). Such a body stays on the dispatcher.
+   */
+  private def appliesFunctionToDateTime(body: Expression): Boolean = {
+    def isDateTime(dt: DataType): Boolean = dt match {
+      case DateType | TimestampType | TimestampNTZType => true
+      case _ => false
+    }
+    def isTextOrDateTime(dt: DataType): Boolean = dt.isInstanceOf[StringType] || isDateTime(dt)
+    body.exists {
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: In | _: InSet | _: If |
+          _: CaseWhen | _: Coalesce =>
+        false
+      case c: Cast if c.child.dataType == c.dataType => false
+      case c: Cast if isDateTime(c.child.dataType) => isTextOrDateTime(c.dataType)
+      case e => e.children.exists(c => isDateTime(c.dataType))
+    }
+  }
+
+  /**
+   * DataFusion copies each column the body captures once per element of its row's array before it
+   * evaluates the body, so a captured string, binary or nested value is copied as many times as
+   * the array has elements, and those copies are not reserved with the memory pool.
+   */
+  private def capturesOnlyFixedWidthColumns(body: Expression): Boolean =
+    body
+      .collect {
+        case a: AttributeReference => a.dataType
+        case b: BoundReference => b.dataType
+      }
+      .forall(isFixedWidth)
+
+  /**
+   * Spark evaluates `x IN (a, b)` lazily: it stops at the first candidate that matches, and
+   * evaluates no candidate when `x` is NULL. The native `IN` evaluates every candidate when one
+   * can fail, so the same lambda raises on a candidate Spark skips. A body with `IN` stays on the
+   * dispatcher unless none of its expressions can raise. `AND`, `OR`, `CASE WHEN`, `IF` and
+   * `COALESCE` are lazy natively too (`LazyLogical` and `CaseWhenExpr`), so they need no check.
+   */
+  private def shortCircuitSafe(body: Expression): Boolean =
+    !body.exists {
+      case _: In | _: InSet => true
+      case _ => false
+    } || !body.exists(mayRaise)
+
+  /**
+   * Whether `e` can raise on an input value. This fails closed: an expression is assumed to raise
+   * unless it is listed here. Numeric arithmetic and casts between the types `plainCastType`
+   * lists raise only in the ANSI eval mode they carry, but some expressions raise in any mode,
+   * such as `element_at` with the index 0, the arithmetic of intervals and a date cast to a
+   * timestamp, so those count as raising. `infallible` in `case_when.rs` is the native
+   * counterpart. #7529 keeps the same list for shared subexpressions, and the two are to become
+   * one classifier.
+   */
+  protected def mayRaise(e: Expression): Boolean = {
+    def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    !(e match {
+      case _: Literal | _: NamedLambdaVariable | _: AttributeReference | _: BoundReference |
+          _: GetStructField =>
+        true
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+          _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
+        true
+      case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
+          _: Contains =>
+        true
+      case c: Cast =>
+        evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
+        plainCastType(c.dataType)
+      case a: Add => plainArithmetic(a, a.evalMode)
+      case a: Subtract => plainArithmetic(a, a.evalMode)
+      case a: Multiply => plainArithmetic(a, a.evalMode)
+      case a: Divide => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
+      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case _ => false
+    })
+  }
+
+  /**
+   * Whether a cast to or from `dataType` outside the ANSI eval mode cannot raise. This fails
+   * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
+   * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
+   * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
+   * too, since a cast key can become NULL.
+   */
+  private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
+    case ArrayType(elementType, _) => plainCastType(elementType)
+    case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
+    case _ => false
+  }
+
+  protected def isFixedWidth(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        DateType | TimestampType | TimestampNTZType | _: DecimalType =>
+      true
+    case _ => false
+  }
+
+  private def isLambdaElementType(dt: DataType): Boolean = dt match {
+    case BinaryType => true
+    case _: StringType => !hasNonDefaultStringCollation(dt)
+    case _ => isFixedWidth(dt)
+  }
+
+  /** `func` is the DataFusion higher-order function the lambda runs under. */
+  protected def convertLambda(
+      func: String,
+      argument: Expression,
+      lambdaVar: NamedLambdaVariable,
+      body: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    for {
+      arrayProto <- exprToProtoInternal(argument, inputs, binding)
+      // A subexpression that needs the JVM codegen dispatcher cannot be part of the lambda: the
+      // dispatcher declines a tree that reads the lambda parameter, so the body fails to convert.
+      bodyProto <- exprToProtoInternal(body, inputs, binding)
+    } yield {
+      val hof = ExprOuterClass.HigherOrderFunc
+        .newBuilder()
+        .setFunc(func)
+        .setArray(arrayProto)
+        .setParamName(CometNamedLambdaVariable.uniqueName(lambdaVar))
+        .setBody(bodyProto)
+      ExprOuterClass.Expr.newBuilder().setHigherOrderFunc(hof).build()
+    }
+  }
+}
+
+object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with NativeLambdaSerde {
 
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
 
@@ -1033,12 +1217,78 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
         // restore the native serde here (avoids per-batch JNI). Guard requires the IsNotNull
         // operand to be the lambda variable itself, not a captured column (#4830).
         CometArrayCompact.convert(expr, inputs, binding)
-      case _ =>
-        // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
-        // matches Spark exactly, like the other higher-order functions (`transform`, `exists`).
-        // Falls back to Spark when the dispatcher is disabled.
-        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
+          if isNotNullInDisguise(body, lambdaVar) =>
+        // `nvl(x, '') != ''` on a numeric array: same native serde, and no cast of every element
+        // to a string.
+        CometArrayCompact.convert(expr, inputs, binding)
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
+          if binding && nativeLambdaSupported(expr.argument, body) =>
+        // The body is made of expressions Comet evaluates natively, so run the lambda over the
+        // flattened elements of the whole batch instead of once per element in the JVM.
+        convertLambda("array_filter", expr.argument, lambdaVar, body, inputs, binding).orElse(
+          dispatch(expr, inputs, binding))
+      case _ => dispatch(expr, inputs, binding)
     }
+  }
+
+  /**
+   * Whether `body` is `x IS NOT NULL` written the way a rule on a numeric array writes it,
+   * `nvl(x, '') != ''`. Spark plans that on an int, double, decimal, date or timestamp element as
+   * `NOT (coalesce(CAST(x AS STRING), '') = '')`, in either operand order. Such a cast is empty
+   * for no value, so the predicate holds exactly when `x` is not NULL. Evaluating it as written
+   * casts every element to a string. A string element has no cast and is left to the lambda.
+   */
+  private def isNotNullInDisguise(body: Expression, lambdaVar: NamedLambdaVariable): Boolean = {
+    def isEmptyString(e: Expression): Boolean = e match {
+      case Literal(s: UTF8String, _: StringType) => s.numBytes() == 0
+      case _ => false
+    }
+    def isCoalescedCast(e: Expression): Boolean = e match {
+      case Coalesce(Seq(c: Cast, empty)) if isEmptyString(empty) =>
+        c.child match {
+          case v: NamedLambdaVariable => v.exprId == lambdaVar.exprId
+          case _ => false
+        }
+      case _ => false
+    }
+    isFixedWidth(lambdaVar.dataType) && (body match {
+      case Not(EqualTo(l, r)) =>
+        (isCoalescedCast(l) && isEmptyString(r)) ||
+        (isEmptyString(l) && isCoalescedCast(r))
+      case _ => false
+    })
+  }
+
+  /**
+   * General lambda: run Spark's own evaluation through the codegen dispatcher so the result
+   * matches Spark exactly, like the other higher-order functions (`transform`, `exists`). Falls
+   * back to Spark when the dispatcher is disabled.
+   */
+  private def dispatch(
+      expr: ArrayFilter,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+}
+
+/**
+ * A lambda parameter inside the body of a higher-order function that Comet runs natively. It is
+ * only reachable from such a body: the enclosing serde decides whether to serialize the body.
+ */
+object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+
+  /**
+   * The native side resolves a lambda variable by name, so the name must be unique per lambda.
+   */
+  def uniqueName(v: NamedLambdaVariable): String = s"${v.name}#${v.exprId.id}"
+
+  override def convert(
+      expr: NamedLambdaVariable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val variable = ExprOuterClass.LambdaVariable.newBuilder().setName(uniqueName(expr))
+    Some(ExprOuterClass.Expr.newBuilder().setLambdaVariable(variable).build())
   }
 }
 
@@ -1245,7 +1495,44 @@ trait ArraysBase {
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
 
-object CometArrayExists extends CometCodegenDispatch[ArrayExists]
+/**
+ * `exists(arr, x -> body)`. When the body is made of natively supported expressions it runs under
+ * DataFusion's `array_any_match`, which returns what Spark returns with three-valued logic: true
+ * for a match, NULL when none matches but the predicate was NULL for some element, false
+ * otherwise. Spark returns false instead of NULL in that last case when
+ * `spark.sql.legacy.followThreeValuedLogicInArrayExists` is false, so `exists` stays on the
+ * dispatcher with that setting.
+ *
+ * Spark also stops at the first element that matches, so it never evaluates the body on the
+ * elements after it, while `array_any_match` evaluates the body on every element of the batch. A
+ * body in which any expression can raise would raise on an element Spark never reaches, so it
+ * stays on the dispatcher whatever operators it uses.
+ */
+object CometArrayExists extends CometExpressionSerde[ArrayExists] with NativeLambdaSerde {
+
+  override def getSupportLevel(expr: ArrayExists): SupportLevel = Compatible()
+
+  override def convert(
+      expr: ArrayExists,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.function match {
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
+          if binding && expr.followThreeValuedLogic &&
+            nativeLambdaSupported(expr.argument, body) && !body.exists(mayRaise) =>
+        convertLambda("array_any_match", expr.argument, lambdaVar, body, inputs, binding)
+          .orElse(dispatch(expr, inputs, binding))
+      case _ => dispatch(expr, inputs, binding)
+    }
+  }
+
+  /** Spark's own evaluation through the codegen dispatcher, as for `transform` and `forall`. */
+  private def dispatch(
+      expr: ArrayExists,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+}
 
 object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
 

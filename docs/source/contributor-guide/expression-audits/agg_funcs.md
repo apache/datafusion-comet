@@ -44,6 +44,7 @@
 - Spark 3.4.3 (2026-05-26)
 - Spark 3.5.8 (2026-05-26): aggregate logic identical to 3.4.3
 - Spark 4.0.1 (2026-05-26): aggregate logic identical to 3.5.8; only `QueryContext` import path differs. `YearMonthIntervalType` and `DayTimeIntervalType` inputs (supported by Spark) fall back to Spark in Comet.
+- Performance (tuned 2026-11-17, PR [#7674](https://github.com/apache/datafusion-comet/pull/7674)): the grouped decimal accumulator loads the sum's precision bounds once and compares against them on every update and merge, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. Benchmark: `benches/decimal_groups.rs`.
 
 ## bit_and
 
@@ -117,5 +118,9 @@
 - Spark 4.1.1 (audited 2026-07-02): identical to 4.0.1.
 - Spark 4.2.0 (audited 2026-10-12): the `TreeMap` is chosen for every pivot column type without proper equals (`!TypeUtils.typeWithProperEquals`), which adds binary and strings with a non-binary-equality collation, so binary pivot values now match by content. A `findPivotIndex` wrapper returns `-1` for a null key on the `TreeMap` path instead of throwing.
 - `CometPivotFirst` (in `spark/src/main/scala/org/apache/comet/serde/aggregates.scala`) forwards the aggregate to the native `SparkPivotFirst` UDAF (`native/spark-expr/src/agg_funcs/pivot_first.rs`) when the value type is in the supported set and the pivot column is a Boolean, Byte, Short, Int, Long, Float, Double, Decimal, UTF8_BINARY String, Date, Timestamp or TimestampNTZ. Those are the types Spark keys by value equality on every version, which the native lookup reproduces, including the float rules. Other pivot columns fall back, as does a list where `indexSize` is smaller than the list (duplicates, including `0.0` next to `-0.0`). State layout matches Spark's `aggBufferAttributes` (one scalar column per pivot slot) so the shuffle schema between Partial and Final stays consistent. The result reassembles the slots into a `ListArray` matching `PivotFirst.dataType = ArrayType(valueDataType)`.
+
+## sum
+
+- Performance (tuned 2026-11-17, PR [#7674](https://github.com/apache/datafusion-comet/pull/7674)): the grouped decimal accumulator loads the result's precision bounds once and compares against them on every update, merge, and evaluate, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. Benchmark: `benches/decimal_groups.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
