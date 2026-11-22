@@ -145,7 +145,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::parquet::objectstore::http_metrics::HttpRequestMetrics;
 
-/// Shared by the initial and Spark-sized planners for one file occurrence.
+/// Shared by the initial and replacement planners for one file occurrence.
 #[derive(Debug, Default)]
 pub(super) struct ReplanFooter(pub OnceLock<Arc<ParquetMetaData>>);
 
@@ -496,6 +496,28 @@ fn has_arrow_schema(file: &FileMetaData) -> bool {
     })
 }
 
+// Keep Comet's ordinary batching when footer bounds prove that converting
+// every TIMESTAMP_MILLIS in the file is safe, even for a short consumer.
+fn may_overflow_millis(metadata: &ParquetMetaData) -> bool {
+    use parquet::file::statistics::Statistics;
+    metadata
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .any(|(index, column)| {
+            column.converted_type() == ConvertedType::TIMESTAMP_MILLIS
+                && metadata.row_groups().iter().any(|group| {
+                    let Some(Statistics::Int64(stats)) = group.column(index).statistics() else {
+                        return true;
+                    };
+                    stats.min_opt().and_then(|v| v.checked_mul(1_000)).is_none()
+                        || stats.max_opt().and_then(|v| v.checked_mul(1_000)).is_none()
+                })
+        })
+}
+
 /// Arrow restores advisory `ARROW:schema` types that can differ from Spark's physical Parquet
 /// interpretation. Replace that hint with physical inference and the ENUM string mapping.
 /// Rebuild only the returned metadata; the shared cache retains the original footer.
@@ -796,12 +818,8 @@ impl AsyncFileReader for EagerPageIndexReader {
                         column.self_type().get_basic_info().repetition()
                             == parquet::basic::Repetition::REPEATED
                     });
-                let replan_footer = replan_footer.filter(|_| {
-                    has_arrow_schema(file)
-                        && columns.iter().any(|column| {
-                            column.converted_type() == ConvertedType::TIMESTAMP_MILLIS
-                        })
-                });
+                let replan_footer = replan_footer
+                    .filter(|_| has_arrow_schema(file) && may_overflow_millis(&metadata));
                 if !needs_check && replan_footer.is_none() {
                     return Ok(metadata);
                 }

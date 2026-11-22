@@ -42,7 +42,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -510,6 +510,9 @@ abstract class ParquetReadSuite extends CometTestBase {
       withSQLConf(batchSize -> "2", CometConf.COMET_BATCH_SIZE.key -> "3") {
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.limit(1), Seq(classOf[CometNativeScanExec]))
+        checkSparkAnswerAndOperator(
+          df.where("monotonically_increasing_id() = 0").limit(1),
+          Seq(classOf[CometNativeScanExec], classOf[CometFilterExec]))
         assert(df.queryExecution.toRdd.take(1).head.getStruct(0, 1).getLong(0) == 7000L)
         val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
         assert(sparkErr.exists(e => causeChain(e).last.isInstanceOf[ArithmeticException]))

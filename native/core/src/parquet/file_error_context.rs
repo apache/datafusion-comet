@@ -26,6 +26,9 @@ use arrow::array::RecordBatch;
 use datafusion::common::{
     config::ConfigOptions, tree_node::TreeNodeRecursion, DataFusionError, Result,
 };
+use datafusion::datasource::physical_plan::parquet::{
+    ParquetAccessPlan, RowGroupAccess, RowGroupAccessPlanFilter,
+};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSource};
 use datafusion::physical_expr::{
     projection::ProjectionExprs, EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
@@ -40,7 +43,7 @@ use datafusion_datasource::{
     morsel::{Morsel, MorselPlan, MorselPlanner, Morselizer},
     PartitionedFile, TableSchema,
 };
-use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use futures::{stream, stream::BoxStream, StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use std::{fmt, sync::Arc};
 
@@ -49,8 +52,19 @@ use std::{fmt, sync::Arc};
 pub(crate) struct SparkFilePath(pub Arc<str>);
 
 /// Spark's read boundary, attached to every file of a scan that might need it.
-#[derive(Debug)]
-pub(crate) struct SparkReaderBatchSize(pub usize);
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SparkReaderBatchSize {
+    pub spark: usize,
+    pub comet: usize,
+}
+
+impl SparkReaderBatchSize {
+    fn decoder_size(self) -> usize {
+        // Sub-batches must stay inside both Spark's error boundary and Comet's
+        // original window, whose distinct values fit the Arrow dictionary key.
+        num::integer::gcd(self.spark, self.comet)
+    }
+}
 
 /// Delegate scan planning and pushdown to ParquetSource, wrapping only its per-file work.
 pub(crate) struct ParquetErrorContext(Arc<dyn FileSource>);
@@ -91,9 +105,9 @@ impl FileSource for ParquetErrorContext {
             .and_then(|file| file.extensions.get::<SparkReaderBatchSize>())
             .map(|size| {
                 self.0
-                    .with_batch_size(size.0)
+                    .with_batch_size(size.decoder_size())
                     .create_morselizer(Arc::clone(&store), config, partition)
-                    .map(Arc::from)
+                    .map(|reader| (Arc::from(reader), *size))
             })
             .transpose()?;
         Ok(Box::new(FileContextMorselizer {
@@ -185,7 +199,7 @@ impl FileSource for ParquetErrorContext {
 #[derive(Debug)]
 struct FileContextMorselizer {
     inner: Box<dyn Morselizer>,
-    spark_morselizer: Option<Arc<dyn Morselizer>>,
+    spark_morselizer: Option<(Arc<dyn Morselizer>, SparkReaderBatchSize)>,
 }
 
 #[derive(Debug)]
@@ -193,6 +207,74 @@ struct SparkBatchReplan {
     morselizer: Arc<dyn Morselizer>,
     file: PartitionedFile,
     footer: Arc<ReplanFooter>,
+    size: SparkReaderBatchSize,
+}
+
+#[derive(Debug)]
+struct SparkWindows {
+    size: usize,
+    row_groups: Vec<usize>,
+}
+
+impl SparkBatchReplan {
+    fn windows(&self) -> Option<Arc<SparkWindows>> {
+        if self.size.decoder_size() == self.size.spark {
+            return None;
+        }
+        let groups = self.footer.0.get()?.row_groups();
+        let mut filter = RowGroupAccessPlanFilter::new(ParquetAccessPlan::new_all(groups.len()));
+        if let Some(range) = &self.file.range {
+            filter.prune_by_range(groups, range);
+        }
+        let access = self.file.extensions.get::<ParquetAccessPlan>();
+        let row_groups = filter
+            .row_group_indexes()
+            .map(|i| match access.and_then(|plan| plan.inner().get(i)) {
+                Some(RowGroupAccess::Skip) => 0,
+                Some(RowGroupAccess::Selection(selection)) => selection.row_count(),
+                _ => groups[i].num_rows() as usize,
+            })
+            .collect();
+        Some(Arc::new(SparkWindows {
+            size: self.size.spark,
+            row_groups,
+        }))
+    }
+}
+
+impl SparkWindows {
+    fn buffer(
+        &self,
+        input: BoxStream<'static, Result<RecordBatch>>,
+    ) -> BoxStream<'static, Result<RecordBatch>> {
+        // The unfiltered reader starts a fresh batch in each row group. Validate
+        // the whole Spark window before exposing its first sub-batch to LIMIT.
+        let size = self.size;
+        let windows = self.row_groups.clone().into_iter().flat_map(move |rows| {
+            (0..rows)
+                .step_by(size)
+                .map(move |start| size.min(rows - start))
+        });
+        stream::try_unfold(
+            (input.fuse(), windows),
+            |(mut input, mut windows)| async move {
+                let mut batches = Vec::new();
+                let mut remaining = windows.next().unwrap_or(1);
+                while remaining > 0 {
+                    let Some(batch) = input.try_next().await? else {
+                        break;
+                    };
+                    remaining = remaining.saturating_sub(batch.num_rows());
+                    batches.push(Ok::<_, DataFusionError>(batch));
+                }
+                Ok::<_, DataFusionError>(
+                    (!batches.is_empty()).then_some((stream::iter(batches), (input, windows))),
+                )
+            },
+        )
+        .try_flatten()
+        .boxed()
+    }
 }
 
 impl Morselizer for FileContextMorselizer {
@@ -202,19 +284,21 @@ impl Morselizer for FileContextMorselizer {
             .get::<SparkFilePath>()
             .map(|path| Arc::clone(&path.0))
             .unwrap_or_else(|| Arc::from(file.object_meta.location.as_ref()));
-        let replan = self.spark_morselizer.as_ref().map(|morselizer| {
+        let replan = self.spark_morselizer.as_ref().map(|(morselizer, size)| {
             let footer = Arc::new(ReplanFooter::default());
             file.extensions.insert_arc(Arc::clone(&footer));
             Arc::new(SparkBatchReplan {
                 morselizer: Arc::clone(morselizer),
                 file: file.clone(),
                 footer,
+                size: *size,
             })
         });
         Ok(Box::new(FilePlanner {
             inner: self.inner.plan_file(file)?,
             path,
             replan,
+            windows: None,
         }))
     }
 }
@@ -224,6 +308,7 @@ struct FilePlanner {
     inner: Box<dyn MorselPlanner>,
     path: Arc<str>,
     replan: Option<Arc<SparkBatchReplan>>,
+    windows: Option<Arc<SparkWindows>>,
 }
 
 impl MorselPlanner for FilePlanner {
@@ -232,11 +317,13 @@ impl MorselPlanner for FilePlanner {
             mut inner,
             path,
             mut replan,
+            mut windows,
         } = *self;
         // The first planner after the metadata load can switch readers
         // before decoding rows. The replacement uses the marked footer.
         if let Some(next) = replan.as_ref().filter(|next| next.footer.0.get().is_some()) {
             inner = next.morselizer.plan_file(next.file.clone())?;
+            windows = next.windows();
             replan = None;
         }
         let Some(mut plan) = inner.plan()? else {
@@ -249,6 +336,7 @@ impl MorselPlanner for FilePlanner {
                 Box::new(FileMorsel {
                     inner,
                     path: Arc::clone(&path),
+                    windows: windows.clone(),
                 }) as Box<dyn Morsel>
             })
             .collect();
@@ -259,6 +347,7 @@ impl MorselPlanner for FilePlanner {
                 Box::new(Self {
                     inner,
                     path: Arc::clone(&path),
+                    windows: windows.clone(),
                     replan: replan.clone(),
                 }) as Box<dyn MorselPlanner>
             })
@@ -269,6 +358,7 @@ impl MorselPlanner for FilePlanner {
                     inner: pending.await?,
                     path,
                     replan,
+                    windows,
                 }) as Box<dyn MorselPlanner>)
             });
         }
@@ -278,15 +368,23 @@ impl MorselPlanner for FilePlanner {
 
 #[derive(Debug)]
 struct FileMorsel {
+    windows: Option<Arc<SparkWindows>>,
     inner: Box<dyn Morsel>,
     path: Arc<str>,
 }
 
 impl Morsel for FileMorsel {
     fn into_stream(self: Box<Self>) -> BoxStream<'static, Result<RecordBatch>> {
-        let Self { inner, path } = *self;
-        inner
-            .into_stream()
+        let Self {
+            inner,
+            path,
+            windows,
+        } = *self;
+        let mut input = inner.into_stream();
+        if let Some(windows) = windows {
+            input = windows.buffer(input);
+        }
+        input
             .map_err(move |error| {
                 // Conversion runs inside this file's stream, before batches from other files mix.
                 if let DataFusionError::External(source) = &error {
@@ -324,6 +422,7 @@ mod tests {
             Box::new(FileMorsel {
                 inner: Box::new(FailedMorsel(error)) as Box<dyn Morsel>,
                 path: Arc::from(path),
+                windows: None,
             })
             .into_stream()
         };
