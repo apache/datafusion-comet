@@ -34,7 +34,7 @@ import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
-import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetUtils}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -69,16 +69,6 @@ case class CometScanExec(
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
   override lazy val supportsColumnar: Boolean =
     relation.fileFormat.supportBatch(relation.sparkSession, schema)
-
-  private[comet] def parquetReaderBatchSize: Int = {
-    val sqlConf = relation.sparkSession.sessionState.conf
-    val readSchema = StructType(relation.partitionSchema.fields ++ requiredSchema.fields)
-    if (ParquetUtils.isBatchReadSupportedForSchema(sqlConf, readSchema)) {
-      sqlConf.parquetVectorizedReaderBatchSize
-    } else {
-      1
-    }
-  }
 
   override def vectorTypes: Option[Seq[String]] = wrapped.vectorTypes
 

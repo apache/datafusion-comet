@@ -3042,6 +3042,7 @@ pub(crate) mod test {
     ) -> Result<RecordBatch, DataFusionError> {
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.allow_cast_unsigned_ints = true;
+        spark_parquet_options.checked_dictionary_timestamp_overflow = true;
         let mut stream = scan_parquet(batch, required_schema, spark_parquet_options)?;
         stream.next().await.unwrap()
     }
@@ -4540,15 +4541,18 @@ pub(crate) mod test {
             "{err}"
         );
 
-        let mut options = default_options();
-        options.checked_timestamp_overflow = false;
-        let mut stream = scan_parquet(&batch, schema, options)?;
-        let unchecked = stream.next().await.unwrap()?;
-        let values = unchecked.column(0).as_struct().column(0);
-        assert_eq!(
-            values.as_primitive::<TimestampMicrosecondType>(),
-            &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000), None])
-        );
+        let mut filtered = default_options();
+        filtered.checked_dictionary_timestamp_overflow = true;
+        filtered.checked_timestamp_overflow = false;
+        for options in [default_options(), filtered] {
+            let mut stream = scan_parquet(&batch, Arc::clone(&schema), options)?;
+            let unchecked = stream.next().await.unwrap()?;
+            let values = unchecked.column(0).as_struct().column(0);
+            assert_eq!(
+                values.as_primitive::<TimestampMicrosecondType>(),
+                &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000), None])
+            );
+        }
         Ok(())
     }
 

@@ -59,6 +59,16 @@ pub(crate) struct SparkReaderBatchSize {
 }
 
 impl SparkReaderBatchSize {
+    pub(crate) fn for_scan(config: &FileScanConfig) -> Option<Self> {
+        config
+            .file_groups
+            .iter()
+            .find_map(|group| group.files().first())?
+            .extensions
+            .get::<Self>()
+            .copied()
+    }
+
     fn decoder_size(self) -> usize {
         // Sub-batches must stay inside both Spark's error boundary and Comet's
         // original window, whose distinct values fit the Arrow dictionary key.
@@ -98,16 +108,13 @@ impl FileSource for ParquetErrorContext {
     ) -> Result<Box<dyn Morselizer>> {
         // The reader batch size is a scan-wide setting. DataFusion fixes it
         // here, before the footer reveals any dictionary timestamp columns.
-        let spark_morselizer = config
-            .file_groups
-            .iter()
-            .find_map(|group| group.files().first())
-            .and_then(|file| file.extensions.get::<SparkReaderBatchSize>())
+        let spark_morselizer = SparkReaderBatchSize::for_scan(config)
+            .filter(|size| size.comet != size.spark)
             .map(|size| {
                 self.0
                     .with_batch_size(size.decoder_size())
                     .create_morselizer(Arc::clone(&store), config, partition)
-                    .map(|reader| (Arc::from(reader), *size))
+                    .map(|reader| (Arc::from(reader), size))
             })
             .transpose()?;
         Ok(Box::new(FileContextMorselizer {

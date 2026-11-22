@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -182,7 +183,13 @@ case class CometNativeScanExec(
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
       val commonBuilder = nativeOp.getNativeScan.getCommon.toBuilder
-      commonBuilder.setParquetReaderBatchSize(scan.parquetReaderBatchSize)
+      if (dataFilters.isEmpty) {
+        val sqlConf = relation.sparkSession.sessionState.conf
+        val readSchema = StructType(relation.partitionSchema.fields ++ requiredSchema.fields)
+        val vectorized = ParquetUtils.isBatchReadSupportedForSchema(sqlConf, readSchema)
+        commonBuilder.setParquetReaderBatchSize(
+          if (vectorized) sqlConf.parquetVectorizedReaderBatchSize else 1)
+      }
       val scalarSubqueryFilters = dataFilters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
       scalarSubqueryFilters.foreach { f =>

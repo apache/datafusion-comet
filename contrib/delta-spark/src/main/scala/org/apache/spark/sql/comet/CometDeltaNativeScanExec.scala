@@ -30,7 +30,8 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.contrib.delta.DeltaSparkScanEnvelope
-import org.apache.comet.serde.OperatorOuterClass.{DeltaSparkScan, Operator}
+import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
  * Native scan node for Delta Lake tables (contrib). Delta's own planning (log replay, snapshot
@@ -144,8 +145,12 @@ case class CometDeltaNativeScanExec(
     copy(runtimeFilters = filters)
   }
 
+  /**
+   * Lazy split-mode serialization, mirroring CometNativeScanExec: common data was serialized at
+   * planning; per-partition file lists serialize here, at execution time.
+   */
   @transient private lazy val serializedPartitionData
-      : (DeltaSparkScan, Array[Array[Byte]], Array[Seq[String]]) = {
+      : (Array[Byte], Array[Array[Byte]], Array[Seq[String]]) = {
     // Resolve the helper's DPP subqueries: it holds its own InSubqueryExec instances that
     // Spark's expressions walk does not see (the helper is derived, not a child).
     scanHelper.partitionFilters.foreach {
@@ -154,7 +159,7 @@ case class CometDeltaNativeScanExec(
       case _ =>
     }
 
-    val commonScan = {
+    val commonBytes = {
       val deltaScan = DeltaSparkScanEnvelope.unpack(nativeOp)
       // Scalar subqueries in dataFilters were unresolved at planning; resolve them now and
       // append them as pushed filters, as CometNativeScanExec.serializedPartitionData does.
@@ -170,11 +175,12 @@ case class CometDeltaNativeScanExec(
         resolved.protos.foreach(builder.addDataFilters)
         builder.build()
       }
-      DeltaSparkScan
+      OperatorOuterClass.DeltaSparkScan
         .newBuilder()
         .setCommon(common)
         .setDeltaCommon(deltaScan.getDeltaCommon)
         .build()
+        .toByteArray
     }
 
     val filePartitions = scanHelper.getFilePartitions()
@@ -187,16 +193,10 @@ case class CometDeltaNativeScanExec(
 
     val perPartitionPaths = filePartitions.map(_.files.map(_.filePath.toString).toSeq).toArray
 
-    (commonScan, perPartitionBytes, perPartitionPaths)
+    (commonBytes, perPartitionBytes, perPartitionPaths)
   }
 
-  // outputPartitioning can force serializedPartitionData during planning. Spark reads
-  // the Parquet batch size when building the RDD.
-  @transient override lazy val commonData: Array[Byte] = {
-    val builder = serializedPartitionData._1.toBuilder
-    builder.getCommonBuilder.setParquetReaderBatchSize(scanHelper.parquetReaderBatchSize)
-    builder.build().toByteArray
-  }
+  override def commonData: Array[Byte] = serializedPartitionData._1
 
   override def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 

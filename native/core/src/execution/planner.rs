@@ -148,12 +148,9 @@ pub type PlanCreationResult =
 
 fn streams_checked_nested_timestamps(plan: &dyn ExecutionPlan) -> bool {
     if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {
-        // Only scans with overflow checking use ParquetErrorContext. Dictionary
-        // encoding is known only once the reader opens each file.
         return scan
             .downcast_to_file_source::<ParquetErrorContext>()
-            .is_some()
-            && requests_nested_timestamp(&scan.schema());
+            .is_some_and(|(config, _)| SparkReaderBatchSize::for_scan(config).is_some());
     }
     plan.properties().emission_type != EmissionType::Final
         && plan
@@ -648,11 +645,7 @@ impl PhysicalPlanner {
 
         let has_data_filters = common.has_data_filters || !common.data_filters.is_empty();
         let size = common.parquet_reader_batch_size.unwrap_or_default();
-        if !has_data_filters
-            && size > 0
-            && requests_nested_timestamp(&required_schema)
-            && size as usize != self.session_ctx.copied_config().batch_size()
-        {
+        if !has_data_filters && size > 0 && requests_nested_timestamp(&required_schema) {
             let size = Arc::new(SparkReaderBatchSize {
                 spark: size as usize,
                 comet: self.session_ctx.copied_config().batch_size(),

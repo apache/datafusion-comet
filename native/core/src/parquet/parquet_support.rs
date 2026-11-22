@@ -123,6 +123,9 @@ pub struct SparkParquetOptions {
     /// (overflow -> NULL), because Spark may discard values through pruning paths that
     /// DataFusion cannot fully mirror before conversion.
     pub checked_timestamp_overflow: bool,
+    /// Extend checked conversion to dictionary timestamps only when the scan can
+    /// match Spark's reader batch boundaries for consumers that stop early.
+    pub checked_dictionary_timestamp_overflow: bool,
     /// When true, resolve each file's datetime calendar-rebase policy from its parquet footer
     /// metadata (`org.apache.spark.legacyDateTime` and friends) and rebase -- or refuse --
     /// affected values, mirroring Spark's per-file `DataSourceUtils.datetimeRebaseSpec`
@@ -154,6 +157,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            checked_dictionary_timestamp_overflow: false,
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
@@ -172,6 +176,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            checked_dictionary_timestamp_overflow: false,
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
@@ -230,6 +235,7 @@ fn parquet_convert_array_impl(
     let array = match (array.data_type(), to_type) {
         (Dictionary(_, value), Timestamp(TimeUnit::Microsecond, target_tz))
             if parquet_options.checked_timestamp_overflow
+                && parquet_options.checked_dictionary_timestamp_overflow
                 && matches!(value.as_ref(), Timestamp(TimeUnit::Millisecond, _)) =>
         {
             let dictionary = array.as_any_dictionary();
@@ -2914,7 +2920,8 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        options.checked_dictionary_timestamp_overflow = true;
         let keys = Int8Array::from(vec![Some(1), None, Some(2), Some(1)]);
         let expected =
             TimestampMicrosecondArray::from(vec![Some(-7_000), None, None, Some(-7_000)])
@@ -2954,7 +2961,8 @@ mod tests {
                 [millis, dictionary]
             });
             for millis in inputs {
-                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+                let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+                options.checked_dictionary_timestamp_overflow = true;
                 let field = Arc::new(Field::new("ts", millis.data_type().clone(), false));
                 let target_field = Arc::new(Field::new(
                     "ts",
