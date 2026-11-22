@@ -125,8 +125,8 @@ Supported input formats match Spark exactly:
 
 `CAST(date AS TIMESTAMP)` converts the start of the date in the session timezone to microseconds
 since the Unix epoch. For a region such as `America/Los_Angeles`, Comet uses the JVM's timezone
-rules to compute the start of the date in Rust, including daylight saving time in years beyond
-2099. This also applies when Spark inserts the cast to compare a date with a timestamp.
+rules to compute the start of the date in Rust, including daylight saving time after 2099.
+This also applies when Spark inserts the cast to compare a date with a timestamp.
 
 ## Date to TimestampNTZ
 

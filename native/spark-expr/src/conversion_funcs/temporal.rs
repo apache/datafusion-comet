@@ -17,9 +17,12 @@
 
 use crate::conversion_funcs::string::parse_sign_offset;
 use crate::conversion_funcs::utils::{timestamp_micros_with_tz, MICROS_PER_SECOND};
+use crate::utils::resolve_local_datetime;
 use crate::{EvalMode, SparkCastOptions, SparkError, SparkResult};
+use arrow::array::timezone::Tz;
 use arrow::array::{ArrayRef, AsArray, Date32Array, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Date32Type};
+use chrono::{NaiveDate, NaiveTime};
 use std::sync::Arc;
 
 const DAYS_PER_400_YEARS: i64 = 146_097;
@@ -35,6 +38,7 @@ pub struct DateOffsets {
 }
 
 impl DateOffsets {
+    /// `starts` holds strictly increasing epoch days beginning at `i32::MIN`.
     /// Each offset in seconds applies from its inclusive start day until the next
     /// start. Recurring rules repeat every 400 Gregorian years from `repeat_from_day`.
     /// Zones without recurring rules use `i32::MAX` as `repeat_from_day`.
@@ -92,14 +96,24 @@ pub(crate) fn cast_date_to_timestamp(
         dates_to_micros(dates, mode, |_| 0)
     } else if let Some(offsets) = &cast_options.date_offsets {
         dates_to_micros(dates, mode, |day| offsets.offset(day))
-    } else {
-        let offset = parse_sign_offset(&cast_options.timezone).ok_or_else(|| {
-            SparkError::Internal(format!(
-                "Missing start-of-day offsets for DATE to TIMESTAMP in {}",
-                cast_options.timezone
-            ))
-        })?;
+    } else if let Some(offset) = parse_sign_offset(&cast_options.timezone) {
         dates_to_micros(dates, mode, |_| offset)
+    } else {
+        // Rust callers and older plans use chrono-tz's finite transition history.
+        let tz: Tz = cast_options.timezone.parse()?;
+        dates_to_micros(dates, mode, |day| {
+            // Clamp only the offset lookup. Both limits are beyond all transitions.
+            // Leave a day at the lower end so local midnight can convert to UTC.
+            let probe = day.clamp(
+                NaiveDate::MIN.to_epoch_days() + 1,
+                NaiveDate::MAX.to_epoch_days(),
+            );
+            let midnight = NaiveDate::from_epoch_days(probe)
+                .unwrap()
+                .and_time(NaiveTime::MIN);
+            (midnight.and_utc().timestamp() - resolve_local_datetime(&tz, midnight).timestamp())
+                as i32
+        })
     }?;
     Ok(timestamp_micros_with_tz(timestamps, target_tz))
 }
@@ -165,7 +179,7 @@ mod tests {
         // 95,026,237 is +262143-01-01, the day after chrono's maximum date.
         let days = [Some(0), Some(95_026_237), Some(-95_026_237), None];
         let dates: ArrayRef = Arc::new(Date32Array::from_iter(days));
-        for (zone, offset) in [("UTC", 0), ("-08:00", -28_800), ("+05:30", 19_800)] {
+        for (zone, offset) in [("", 0), ("UTC", 0), ("-08:00", -28_800), ("+05:30", 19_800)] {
             let actual = cast_date_to_timestamp(
                 &dates,
                 &SparkCastOptions::new(EvalMode::Legacy, zone),
@@ -181,6 +195,28 @@ mod tests {
     }
 
     #[test]
+    fn test_region_without_date_offsets() {
+        let target = Some("UTC".into());
+        for (zone, day, offset) in [
+            ("America/Los_Angeles", 19_723, -28_800), // 2024-01-01
+            ("America/Los_Angeles", 19_793, -25_200), // 2024-03-11
+            ("America/Los_Angeles", 100_000_000, -28_800),
+            ("Etc/GMT-9", -100_000_000, 32_400),
+        ] {
+            let dates: ArrayRef = Arc::new(Date32Array::from(vec![day]));
+            let options = SparkCastOptions::new(EvalMode::Legacy, zone);
+            let actual = cast_date_to_timestamp(&dates, &options, &target).unwrap();
+            let micros = (i64::from(day) * 86_400 - offset) * MICROS_PER_SECOND;
+            let expected = TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC");
+            assert_eq!(actual.as_ref(), &expected, "{zone}, {day}");
+        }
+
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![0]));
+        let options = SparkCastOptions::new(EvalMode::Legacy, "Unknown/Region");
+        assert!(cast_date_to_timestamp(&dates, &options, &target).is_err());
+    }
+
+    #[test]
     fn test_cast_date_to_timestamp_offset_at_boundary() {
         // The same day can fit or overflow depending on the offset.
         for (days, zone, expected) in [
@@ -190,6 +226,8 @@ mod tests {
             (-106_751_991, "-18:00", Some(-9_223_371_957_600_000_000)),
             (i32::MAX, "UTC", None),
             (i32::MIN, "UTC", None),
+            (i32::MAX, "America/Los_Angeles", None),
+            (i32::MIN, "Asia/Tokyo", None),
         ] {
             let dates: ArrayRef = Arc::new(Date32Array::from(vec![days]));
             for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
