@@ -33,9 +33,8 @@ macro_rules! hash_array {
                 )
             });
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(&array.value(i), $hashes[i]);
+            for (i, hash) in $hashes.iter_mut().enumerate() {
+                *hash = $hash_method(&array.value(i), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -62,12 +61,8 @@ macro_rules! hash_array_boolean {
                 )
             });
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(
-                    $hash_input_type::from(array.value(i)).to_le_bytes(),
-                    $hashes[i],
-                );
+            for (hash, value) in $hashes.iter_mut().zip(array.values().iter()) {
+                *hash = $hash_method($hash_input_type::from(value).to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -99,9 +94,8 @@ macro_rules! hash_array_primitive {
         let values = array.values();
 
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..values.len() {
-                $hashes[i] = $hash_method((values[i] as $ty).to_le_bytes(), $hashes[i]);
+            for (hash, &value) in $hashes.iter_mut().zip(values.iter()) {
+                *hash = $hash_method((value as $ty).to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -130,10 +124,9 @@ macro_rules! hash_array_primitive_float {
         let values = array.values();
 
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..values.len() {
-                let value = $crate::float_semantics::hash_input(values[i]);
-                $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
+            for (hash, &value) in $hashes.iter_mut().zip(values.iter()) {
+                let value = $crate::float_semantics::hash_input(value);
+                *hash = $hash_method(value.to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -168,17 +161,14 @@ macro_rules! hash_array_interval_month_day_nano {
         // always an exact multiple of 1000 and out-of-range intervals throw at
         // conversion time instead of reaching this hasher.
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                let value = array.value(i);
+            for (hash, value) in $hashes.iter_mut().zip(array.values().iter()) {
                 // Match Spark 4.2 generated code, which omits the days field:
                 // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
                 // SPARK-58236 includes days starting in Spark 4.3; the version
                 // switch for that is tracked in
                 // https://github.com/apache/datafusion-comet/issues/5498.
-                $hashes[i] =
-                    $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
-                $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+                *hash = $hash_method((value.nanoseconds / 1_000).to_le_bytes(), *hash);
+                *hash = $hash_method(value.months.to_le_bytes(), *hash);
             }
         } else {
             // Slow path: check nulls
@@ -209,13 +199,12 @@ macro_rules! hash_array_small_decimal {
             });
 
         if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(
-                    i64::try_from(array.value(i))
+            for (hash, &value) in $hashes.iter_mut().zip(array.values().iter()) {
+                *hash = $hash_method(
+                    i64::try_from(value)
                         .map(|v| v.to_le_bytes())
                         .map_err(|e| DataFusionError::Execution(e.to_string()))?,
-                    $hashes[i],
+                    *hash,
                 );
             }
         } else {
@@ -305,6 +294,47 @@ macro_rules! hash_list_primitive {
                         if !$elem_array.is_null(start + elem_idx) {
                             let value = $elem_array.value(start + elem_idx);
                             *hash = $hash_method($value_transform(value), *hash);
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
+/// Hash the entries of a map array whose key and value arrays have been downcast to concrete
+/// types. Spark hashes each entry as key then value, chaining the running hash. A null map
+/// row leaves the hash unchanged, and a null key or value is skipped on its own.
+#[macro_export]
+macro_rules! hash_map_entries {
+    ($offsets:expr, $map_array:ident, $key_array:ident, $value_array:ident, $hashes:expr, $hash_method:ident, $key_transform:expr, $value_transform:expr) => {
+        if $map_array.null_count() == 0
+            && $key_array.null_count() == 0
+            && $value_array.null_count() == 0
+        {
+            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
+                let start = $offsets[row_idx] as usize;
+                let end = $offsets[row_idx + 1] as usize;
+                for entry_idx in start..end {
+                    *hash = $hash_method($key_transform($key_array.value(entry_idx)), *hash);
+                    *hash = $hash_method($value_transform($value_array.value(entry_idx)), *hash);
+                }
+            }
+        } else {
+            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
+                if !$map_array.is_null(row_idx) {
+                    let start = $offsets[row_idx] as usize;
+                    let end = $offsets[row_idx + 1] as usize;
+                    for entry_idx in start..end {
+                        if !$key_array.is_null(entry_idx) {
+                            *hash =
+                                $hash_method($key_transform($key_array.value(entry_idx)), *hash);
+                        }
+                        if !$value_array.is_null(entry_idx) {
+                            *hash = $hash_method(
+                                $value_transform($value_array.value(entry_idx)),
+                                *hash,
+                            );
                         }
                     }
                 }
@@ -834,6 +864,15 @@ macro_rules! create_hashes_internal {
         use datafusion_comet_common::children_with_parent_nulls;
 
         for (i, col) in $arrays.iter().enumerate() {
+            // The fast paths zip the hashes with the values, which would silently skip rows if
+            // the lengths differed.
+            if col.len() != $hashes_buffer.len() {
+                return Err(datafusion::common::DataFusionError::Internal(format!(
+                    "Column {i} has {} rows but the hashes buffer has {}",
+                    col.len(),
+                    $hashes_buffer.len()
+                )));
+            }
             // The dictionary fast path hashes each distinct dictionary value once and reuses that
             // result for every key, which is only valid while every row carries the same incoming
             // hash. Position in the column list is not a sufficient test: this macro also runs on
@@ -1134,118 +1173,22 @@ macro_rules! create_hashes_internal {
                             (DataType::Utf8, DataType::Int32) => {
                                 let key_array = keys.as_any().downcast_ref::<StringArray>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v| v, |v: i32| v.to_le_bytes());
                             }
                             (DataType::Int32, DataType::Utf8) => {
                                 let key_array = keys.as_any().downcast_ref::<Int32Array>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<StringArray>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes(), |v| v);
                             }
                             (DataType::Utf8, DataType::Utf8) => {
                                 let key_array = keys.as_any().downcast_ref::<StringArray>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<StringArray>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v| v, |v| v);
                             }
                             (DataType::Int32, DataType::Int32) => {
                                 let key_array = keys.as_any().downcast_ref::<Int32Array>().unwrap();
                                 let value_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                                if map_array.null_count() == 0 && key_array.null_count() == 0 && value_array.null_count() == 0 {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for entry_idx in start..end {
-                                            *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                            *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                        }
-                                    }
-                                } else {
-                                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                        if !map_array.is_null(row_idx) {
-                                            let start = offsets[row_idx] as usize;
-                                            let end = offsets[row_idx + 1] as usize;
-                                            for entry_idx in start..end {
-                                                if !key_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(key_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                                if !value_array.is_null(entry_idx) {
-                                                    *hash = $hash_method(value_array.value(entry_idx).to_le_bytes(), *hash);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                $crate::hash_map_entries!(offsets, map_array, key_array, value_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes(), |v: i32| v.to_le_bytes());
                             }
                             _ => {
                                 // Fall back to recursive approach for other type combinations

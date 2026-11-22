@@ -18,6 +18,7 @@
 use arrow::array::{
     Array, ArrayRef, GenericStringArray, OffsetSizeTrait, StringArray, StringBuilder,
 };
+use arrow::buffer::{Buffer, OffsetBuffer};
 use arrow::datatypes::DataType;
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
@@ -34,7 +35,7 @@ use super::regexp_extract_common::{parse_args, ParsedArgs};
 /// Returns the substring of `subject` matched by group `idx` of the first match of `pattern`.
 /// `idx = 0` returns the entire match. Returns an empty string when there is no match or the
 /// matched group is unset (optional group). Returns null when any input is null. Errors when
-/// `idx` is out of range for the pattern's group count.
+/// `idx` is out of range for the pattern's group count and some row matches, as Spark does.
 ///
 /// Note: this uses the Rust `regex` crate, whose syntax differs from Java's regex engine in
 /// some ways. The expression is therefore reported as Incompatible.
@@ -49,6 +50,7 @@ pub fn spark_regexp_extract(
             subject,
         } => (regex, group_idx, subject),
         ParsedArgs::NullResult { len } => return Ok(null_result(len)),
+        ParsedArgs::NoMatch { subject } => return Ok(empty_result(subject)),
     };
 
     match subject {
@@ -127,6 +129,20 @@ fn null_result(len: Option<usize>) -> ColumnarValue {
     match len {
         Some(n) => ColumnarValue::Array(Arc::new(StringArray::new_null(n))),
         None => ColumnarValue::Scalar(ScalarValue::Utf8(None)),
+    }
+}
+
+/// An empty string for every non-null row of `subject` and null for every null row.
+fn empty_result(subject: &ColumnarValue) -> ColumnarValue {
+    match subject {
+        ColumnarValue::Array(array) => ColumnarValue::Array(Arc::new(StringArray::new(
+            OffsetBuffer::new_zeroed(array.len()),
+            Buffer::from_vec(Vec::<u8>::new()),
+            array.nulls().cloned(),
+        ))),
+        ColumnarValue::Scalar(s) => {
+            ColumnarValue::Scalar(ScalarValue::Utf8((!s.is_null()).then(String::new)))
+        }
     }
 }
 
@@ -264,6 +280,72 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("group index"), "{msg}");
         assert!(msg.contains("but got -1"), "{msg}");
+    }
+
+    #[test]
+    fn out_of_range_index_without_a_match_returns_empty_string() {
+        for i in [1, -1] {
+            let result = run(vec![
+                array(vec![Some("abc"), None, Some("def")]),
+                pattern(r"\d+"),
+                idx(i),
+            ])
+            .unwrap();
+            assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);
+        }
+    }
+
+    #[test]
+    fn out_of_range_index_errors_when_one_row_matches() {
+        let err = call_raw(&[
+            array(vec![Some("abc"), Some("a1"), None]),
+            pattern(r"\d+"),
+            idx(1),
+        ])
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("but got 1"), "{err}");
+    }
+
+    #[test]
+    fn out_of_range_index_on_all_null_subject_returns_null() {
+        let result = run(vec![array(vec![None, None]), pattern(r"\d+"), idx(1)]).unwrap();
+        assert_eq!(result, vec![None, None]);
+    }
+
+    #[test]
+    fn out_of_range_index_on_scalar_subject() {
+        let scalar = |s: &str| ColumnarValue::Scalar(ScalarValue::Utf8(Some(s.to_string())));
+        let result = run(vec![scalar("abc"), pattern(r"\d+"), idx(1)]).unwrap();
+        assert_eq!(result, vec![Some(String::new())]);
+        let null = ColumnarValue::Scalar(ScalarValue::Utf8(None));
+        let result = run(vec![null, pattern(r"\d+"), idx(1)]).unwrap();
+        assert_eq!(result, vec![None]);
+        assert!(call_raw(&[scalar("a1"), pattern(r"\d+"), idx(1)]).is_err());
+    }
+
+    #[test]
+    fn out_of_range_index_on_large_utf8_subject() {
+        let large =
+            |v: Vec<Option<&str>>| ColumnarValue::Array(Arc::new(LargeStringArray::from(v)));
+        let result = run(vec![
+            large(vec![Some("abc"), None]),
+            pattern(r"\d+"),
+            idx(1),
+        ])
+        .unwrap();
+        assert_eq!(result, vec![Some(String::new()), None]);
+        assert!(call_raw(&[large(vec![Some("a1")]), pattern(r"\d+"), idx(1)]).is_err());
+    }
+
+    #[test]
+    fn out_of_range_index_on_unsupported_subject_errors() {
+        let ints = ColumnarValue::Array(Arc::new(arrow::array::Int32Array::from(vec![1])));
+        let err = call_raw(&[ints, pattern(r"\d+"), idx(1)]).err().unwrap();
+        assert!(
+            err.to_string().contains("expects Utf8 or LargeUtf8"),
+            "{err}"
+        );
     }
 
     #[test]

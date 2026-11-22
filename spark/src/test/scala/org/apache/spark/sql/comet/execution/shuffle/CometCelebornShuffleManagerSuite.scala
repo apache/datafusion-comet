@@ -293,7 +293,7 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
         val original = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(12, stageId, 0, 0, 0))
         assert(original.authorized)
 
-        // Spark 3.4 calls stageFailed when taskCompleted matches an authorized file committer.
+        // Spark calls stageFailed when taskCompleted matches an authorized file committer.
         // Keeping that slot empty also covers executor loss, where no task-side cleanup can run.
         assert(sparkCommitOwners(sparkCoordinator, stageId).forall(_ == null))
         completeFailedAttempt(sparkCoordinator, stageId, 0, 0, 0, reason)
