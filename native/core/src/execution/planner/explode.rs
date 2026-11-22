@@ -34,7 +34,9 @@ use jni::objects::{Global, JObject};
 
 use super::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult};
 use crate::{
-    execution::{operators::ExecutionError, spark_plan::SparkPlan},
+    execution::{
+        expressions::map_entries::MapEntriesExpr, operators::ExecutionError, spark_plan::SparkPlan,
+    },
     extract_op,
 };
 
@@ -56,7 +58,7 @@ impl OperatorBuilder for ExplodeBuilder {
         let (scans, shuffle_scans, child) =
             planner.create_plan(&children[0], inputs, partition_count)?;
 
-        // Create the expression for the array to explode
+        // Create the expression for the collection to explode
         let child_expr = if let Some(child_expr) = &explode.child {
             planner.create_expr(child_expr, child.schema())?
         } else {
@@ -71,6 +73,26 @@ impl OperatorBuilder for ExplodeBuilder {
             .expect("Failed to get field from child expression")
             .name()
             .to_string();
+
+        // Expose maps as List<Struct<key, value>>, sharing their entries buffers.
+        // Reuse the list path for outer rows, positions and bounded output batches,
+        // then flatten the entry struct into Spark's two output columns.
+        let map_fields = match child_expr.data_type(&child_schema)? {
+            DataType::Map(entries, _) => match entries.data_type() {
+                DataType::Struct(fields) => Some(fields.clone()),
+                _ => {
+                    return Err(ExecutionError::GeneralError(
+                        "Map entries must be a struct".to_string(),
+                    ));
+                }
+            },
+            _ => None,
+        };
+        let child_expr: Arc<dyn PhysicalExpr> = if map_fields.is_some() {
+            Arc::new(MapEntriesExpr::new(child_expr))
+        } else {
+            child_expr
+        };
 
         // Both posexplode variants reference the array twice: once for positions
         // and once for values. Materialize computed arrays so both references
@@ -178,6 +200,14 @@ impl OperatorBuilder for ExplodeBuilder {
                     .iter()
                     .map(|f| f.as_ref().clone().with_nullable(true)),
             );
+            vec![array_input_index]
+        } else if let Some(fields) = map_fields {
+            output_fields.extend(fields.iter().map(|field| {
+                field
+                    .as_ref()
+                    .clone()
+                    .with_nullable(explode.outer || field.is_nullable())
+            }));
             vec![array_input_index]
         } else {
             output_fields.push(Field::new(
