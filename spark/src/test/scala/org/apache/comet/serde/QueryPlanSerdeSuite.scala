@@ -464,6 +464,69 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     }
   }
 
+  test("skipsSharedSubexpression exempts a repeat only where Spark eliminates it") {
+    val map = AttributeReference("m", MapType(DoubleType, IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val cast = Cast(text, DoubleType, Some("UTC"), EvalMode.ANSI)
+    val lookup = ElementAt(map, Add(cast, cast))
+    // Spark's elimination does not look into a branch, so it does not share the repeat
+    val branch = If(EqualTo(text, Literal("abc")), lookup, Literal(0))
+
+    for (enabled <- Seq(true, false)) {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      SQLConf.withExistingConf(conf) {
+        withSharedSubexpressions(Seq(lookup), certain = true) {
+          assert(!skipsSharedSubexpression(lookup))
+        }
+        withSharedSubexpressions(Seq(lookup), certain = false) {
+          assert(skipsSharedSubexpression(lookup) == enabled)
+        }
+        for (certain <- Seq(true, false)) {
+          withSharedSubexpressions(Seq.empty, certain = certain) {
+            assert(skipsSharedSubexpression(lookup) == enabled)
+          }
+        }
+        withSharedSubexpressions(Seq(branch), certain = true) {
+          assert(skipsSharedSubexpression(lookup) == enabled)
+        }
+        withSharedSubexpressions(Seq(lookup), alwaysShared = true, certain = false) {
+          assert(skipsSharedSubexpression(lookup))
+        }
+      }
+    }
+  }
+
+  test("skipsSharedSubexpression ignores a repeat that cannot raise") {
+    val map = AttributeReference("m", MapType(IntegerType, IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val struct = AttributeReference("st", StructType(Seq(StructField("f", IntegerType))))()
+    val failing = Cast(text, IntegerType, None, ansiEnabled = true)
+    // Spark shares the repeat in the first scope, nothing in the second, and does not eliminate
+    // out of the branch in the third
+    def scopes(expr: Expression): Seq[Seq[Expression]] =
+      Seq(Seq(expr), Seq.empty, Seq(If(EqualTo(text, Literal("abc")), expr, Literal(0))))
+
+    val conf = new SQLConf
+    conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, true)
+    SQLConf.withExistingConf(conf) {
+      for {
+        (repeat, raises) <- Seq(
+          Length(text) -> false,
+          GetStructField(struct, 0) -> false,
+          failing -> true)
+        certain <- Seq(true, false)
+      } {
+        val lookup = ElementAt(map, Add(repeat, repeat, EvalMode.LEGACY))
+        for ((scope, i) <- scopes(lookup).zipWithIndex) {
+          withSharedSubexpressions(scope, certain = certain) {
+            assert(skipsSharedSubexpression(lookup) == (raises && !(certain && i == 0)))
+          }
+        }
+      }
+    }
+  }
+
   test("canSkipEvaluation ignores shared subexpressions that cannot raise") {
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val text = AttributeReference("s", StringType)()
