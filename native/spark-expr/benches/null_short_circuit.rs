@@ -144,7 +144,7 @@ fn mul_nested_sub() -> Expr {
 
 /// `p * (1 - d)` over decimals, as in TPC-H Q1, whose right operand Comet plans as a
 /// `CheckOverflow`, which fails if the subtraction overflows when `fail_on_error` is set, as under
-/// ANSI, and returns NULL otherwise
+/// ANSI, and returns NULL otherwise, so that only the ANSI form is wrapped
 fn decimal_mul_nested_sub(fail_on_error: bool) -> Expr {
     let one = Arc::new(Literal::new(ScalarValue::Decimal128(Some(100), 12, 2)));
     let sub: Expr = Arc::new(BinaryExpr::new(one, Operator::Minus, column("d", 5)));
@@ -190,7 +190,8 @@ fn decimal_mul_rescaling_cast() -> Expr {
     Arc::new(BinaryExpr::new(column("p", 4), Operator::Multiply, cast))
 }
 
-/// `concat(q, upper(s))`, whose `upper` Spark evaluates only where `q` is not NULL
+/// `concat(q, upper(s))`, whose `upper` Spark evaluates only where `q` is not NULL. `upper`
+/// cannot fail, so Comet evaluates it for every row
 fn concat_upper() -> Expr {
     let function = |udf: Arc<ScalarUDF>, args: Vec<Expr>| -> Expr {
         let name = udf.name().to_string();
@@ -240,7 +241,7 @@ fn bench_arithmetic(c: &mut Criterion) {
         (
             "legacy_decimal_mul_nested_sub",
             legacy_decimal_mul_nested_sub,
-            true,
+            false,
         ),
         ("wide_decimal_mul", wide_decimal_mul, true),
         (
@@ -248,7 +249,7 @@ fn bench_arithmetic(c: &mut Criterion) {
             decimal_mul_rescaling_cast,
             true,
         ),
-        ("concat_upper", concat_upper, true),
+        ("concat_upper", concat_upper, false),
         ("concat_cast", concat_cast, false),
     ];
     for (name, shape, wrapped) in shapes {

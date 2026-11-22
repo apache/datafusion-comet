@@ -359,7 +359,11 @@ pub(super) struct Masked {
     /// expressions measured in `benches/null_short_circuit.rs`. Whatever it returns for a skipped
     /// row is ignored, so it only matters if it fails there, and it requires an expression that
     /// returns the same for a row whichever rows it sees. If it fails, the rows are selected
-    /// instead, here and for the batches after it.
+    /// instead, here and for the batches after it. It is not tried again: a failure means the
+    /// data has rows that Spark skips and the expression fails on, which later batches of the
+    /// same task are likely to have too, and every failed try evaluates the whole batch for
+    /// nothing and builds an error. Selecting the rows only costs what it would without
+    /// speculation.
     speculate: AtomicBool,
     /// Whether the expression is so cheap that evaluating it over the whole batch is about as fast
     /// as selecting the rows that need it, however few they are, as [`is_cheap`] decides
