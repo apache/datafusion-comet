@@ -333,7 +333,7 @@ class CometMapExpressionSuite extends CometTestBase {
           val plan = df.queryExecution.executedPlan
           loweredLimit.foreach(n => spark.conf.set(limit.key, n.toString))
           assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
-          if (firstPolicy == "LAST_WIN") {
+          if (mode == generated) {
             // The RDD action reads the task's default normalization when it consumes the row.
             assert(df.rdd.collect().toSeq == Seq(Row(Seq(2), Seq(2))))
           }
