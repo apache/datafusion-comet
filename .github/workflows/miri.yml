@@ -38,6 +38,7 @@ jobs:
     # The nightly runs upstream only. A fork can still run it by dispatch.
     if: github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet'
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       # Keep Miri focused on Comet's memory-access code. Whole-workspace tests
@@ -86,6 +87,7 @@ jobs:
     permissions:
       issues: write
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/github-script@v9
         with:

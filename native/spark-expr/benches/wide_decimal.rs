@@ -35,11 +35,22 @@ const BATCH_SIZE: usize = 8192;
 
 /// Build a RecordBatch with two Decimal128 columns.
 fn make_decimal_batch(p1: u8, s1: i8, p2: u8, s2: i8) -> RecordBatch {
+    make_decimal_batch_from(p1, s1, p2, s2, 123456789012345, 987654321098765)
+}
+
+fn make_decimal_batch_from(
+    p1: u8,
+    s1: i8,
+    p2: u8,
+    s2: i8,
+    left_start: i128,
+    right_start: i128,
+) -> RecordBatch {
     let mut left = Decimal128Builder::new();
     let mut right = Decimal128Builder::new();
     for i in 0..BATCH_SIZE as i128 {
-        left.append_value(123456789012345_i128 + i * 1000);
-        right.append_value(987654321098765_i128 - i * 1000);
+        left.append_value(left_start + i * 1000);
+        right.append_value(right_start - i * 1000);
     }
     let left = left.finish().with_data_type(DataType::Decimal128(p1, s1));
     let right = right.finish().with_data_type(DataType::Decimal128(p2, s2));
@@ -167,6 +178,28 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
         let new = build_new_expr(WideDecimalOp::Multiply, 38, 6, EvalMode::Legacy);
         bench_case(&mut group, "multiply", &batch, &old, &new);
+    }
+
+    // Case 3b: Multiply with 48-digit products, which make the i256 division longer
+    {
+        let batch = make_decimal_batch_from(
+            38,
+            10,
+            38,
+            10,
+            123456789012345678901234,
+            987654321098765432109876,
+        );
+        let old = build_old_expr(
+            38,
+            10,
+            38,
+            10,
+            Operator::Multiply,
+            DataType::Decimal128(38, 6),
+        );
+        let new = build_new_expr(WideDecimalOp::Multiply, 38, 6, EvalMode::Legacy);
+        bench_case(&mut group, "multiply_48_digit_products", &batch, &old, &new);
     }
 
     // Case 4: Subtract with same scale - Decimal128(38,18) - Decimal128(38,18) -> Decimal128(38,18)
