@@ -154,7 +154,7 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array` | ✅ | Native |  |
-| `array_append` | ✅ | Hybrid | A nondeterministic operand over a nullable array routes through the JVM codegen dispatcher |
+| `array_append` | ✅ | Hybrid | On Spark 3.x, a nondeterministic operand over a nullable array routes through the JVM codegen dispatcher. Spark 4.0+ rewrites `array_append` to `array_insert`. |
 | `array_compact` | ✅ | — |  |
 | `array_contains` | ✅ | Hybrid | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
 | `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
@@ -170,8 +170,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_repeat` | ✅ | Native |  |
 | `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
 | `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
-| `arrays_zip` | ✅ | Hybrid |  |
-| `element_at` | ✅ | Hybrid |  |
+| `arrays_zip` | ✅ | Hybrid | A nondeterministic child, and an array whose elements hold a map, a day-time or year-month interval, or a `TIME` value, route through the JVM codegen dispatcher. Variant and user-defined type elements fall back to Spark. |
+| `element_at` | ✅ | Hybrid | Under ANSI mode, a nondeterministic nullable array routes through the JVM codegen dispatcher |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
@@ -205,10 +205,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array_size` | ✅ | — |  |
-| `cardinality` | ✅ | Hybrid |  |
+| `cardinality` | ✅ | Hybrid | A nondeterministic child routes through the JVM codegen dispatcher |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
 | `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | Hybrid |  |
+| `size` | ✅ | Hybrid | A nondeterministic child routes through the JVM codegen dispatcher |
 
 ---
 
@@ -281,7 +281,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `hour` | ✅ | Native |  |
 | `last_day` | ✅ | Native |  |
 | `localtimestamp` | ✅ | — |  |
-| `make_date` | ✅ | Native | Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions or a parent could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. Operator-level safeguards and their opt-out are described in [make_date evaluation](#make_date-evaluation). |
+| `make_date` | ✅ | Native | Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions that can raise, or a parent, could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. Operator-level safeguards and their opt-out are described in [make_date evaluation](#make_date-evaluation). |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -403,7 +403,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `element_at` | ✅ | Hybrid |  |
+| `element_at` | ✅ | Hybrid | `FLOAT`, `DOUBLE`, array, map, and struct keys, keys with a non-default string collation, and a nondeterministic nullable map under ANSI mode, route through the JVM codegen dispatcher. `map[key]` does the same for those key types. |
 | `map` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |

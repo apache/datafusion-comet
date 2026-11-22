@@ -53,12 +53,12 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
     if (unsupportedProjection.isDefined) {
       return Unsupported(Some(s"unsupported projection: ${unsupportedProjection.get}"))
     }
-    op.sortOrder.foreach { s =>
-      val o = exprToProto(s, op.child.output)
-      if (o.isEmpty) {
-        return Unsupported(Some(s"unsupported sort order: $s"))
-      }
-      o
+    // The same scope as `topKNativePlan`
+    val unsupportedSortOrder = withSharedSubexpressions(Seq.empty, certain = false) {
+      op.sortOrder.find(s => exprToProto(s, op.child.output).isEmpty)
+    }
+    if (unsupportedSortOrder.isDefined) {
+      return Unsupported(Some(s"unsupported sort order: ${unsupportedSortOrder.get}"))
     }
     if (!supportedSortType(op, op.sortOrder)) {
       return Unsupported(Some("unsupported data type in sort order"))
@@ -146,7 +146,7 @@ case class CometTakeOrderedAndProjectExec(
 
   // Spark's ordering evaluates each sort key on its own, without subexpression elimination
   private def topKNativePlan(offset: Int): Option[OperatorOuterClass.Operator] =
-    withSharedSubexpressions(Seq.empty, certain = true) {
+    withSharedSubexpressions(Seq.empty, certain = false) {
       CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit, offset)
     }
 
