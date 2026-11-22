@@ -1340,10 +1340,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * and never shares among them. In a filter's or a join's condition, a join's keys or an
    * aggregation's results, whether Spark shares depends on how it runs the operator (see
    * `certain`), so a function that would skip a shared subexpression that can raise falls back
-   * there rather than guess. They are found on the first `canShortCircuitNulls` call for the
-   * operator (or `skipsSharedSubexpression`), so an operator without an argument to skip never
-   * runs `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are
-   * unknown. `canSkipEvaluation` counts only those that can raise, see `cannotRaise`.
+   * there rather than guess. A dispatched expression falls back where it and Spark could evaluate
+   * one of them, or one it repeats itself, on different rows, see `skipsSharedSubexpression`.
+   * They are found on the first `canShortCircuitNulls` call for the operator (or
+   * `skipsSharedSubexpression`), so an operator without an argument to skip never runs
+   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
+   * `canSkipEvaluation` counts only those that can raise, see `cannotRaise`.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1433,10 +1435,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * projection in generated code (its interpreted fallback evaluates them lazily, as before), an
    * aggregation's function inputs, a shuffle's keys, a TakeOrderedAndProject's list and a sort's
    * first key, whose prefix is one projection that shares within that key as a project does. A
-   * sort's later keys are compared one by one and never share. A filter's or a join's condition,
-   * a join's keys and an aggregation's results are uncertain: their sharing depends on the Spark
-   * version, whole-stage codegen or the join side. Other operators, such as an expand, a generate
-   * or a window, are uncertain as a conservative default.
+   * sort's later keys and a top-k ordering's keys are compared one by one and never share. A
+   * filter's or a join's condition, a join's keys and an aggregation's results are uncertain:
+   * their sharing depends on the Spark version, whole-stage codegen or the join side. Other
+   * operators, such as an expand, a generate or a window, are uncertain as a conservative
+   * default.
    */
   def withSharedSubexpressions[T](
       expressions: Seq[Expression],
@@ -1485,18 +1488,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Whether a node of `expr` can skip a child holding a subexpression the operator's expressions
-   * share. Spark evaluates that subexpression for every row, but the dispatcher, compiling `expr`
-   * alone, can skip it and so miss an ANSI error. While subexpression elimination is on, a
-   * subexpression `expr` itself repeats does not count, as the dispatcher eliminates it too.
-   * Every other shared subexpression counts, whether or not it can raise. False outside
-   * `withSharedSubexpressions`.
+   * Whether a node of `expr` can skip a child holding a subexpression that Spark and the
+   * dispatcher may evaluate on different rows. Spark evaluates one the operator's expressions
+   * share for every row, but the dispatcher, compiling `expr` alone, can skip it and so miss an
+   * ANSI error. While subexpression elimination is on, the dispatcher evaluates one `expr` itself
+   * repeats for every row, and so can raise where Spark skips it. Where Spark is `certain` to
+   * eliminate what the operator shares, a subexpression counts when it is only one of the two,
+   * such as a repeat in a conditional branch, which Spark does not hoist. Elsewhere both count.
+   * They count whether or not they can raise. False outside `withSharedSubexpressions`.
    */
   def skipsSharedSubexpression(expr: Expression): Boolean =
     sharedSubexpressions.value.exists { s =>
       lazy val repeated =
         if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
         else Nil
+      def counts(e: Expression): Boolean =
+        !s.certain || s.common.exists(_.semanticEquals(e)) != repeated.exists(_.semanticEquals(e))
       expr.exists { node =>
         val skippable = node match {
           // the divisor is evaluated first, so only the dividend (`left`) can be skipped
@@ -1511,7 +1518,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           case _ => node.children.drop(1)
         }
         !skippable.forall(_.isInstanceOf[LeafExpression]) &&
-        holdsSharedSubexpression(skippable, s.common, e => !repeated.exists(_.semanticEquals(e)))
+        holdsSharedSubexpression(skippable, s.common ++ repeated, counts)
       }
     }
 

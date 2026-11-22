@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, EvalMode, Expression, GetStructField, In, Length, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, EqualTo, EvalMode, Expression, GetStructField, If, In, Length, Literal, MakeDate, Not, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -32,7 +32,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsSharedSubexpression, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -296,6 +296,39 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
       }
       // Outside an operator's conversion what they share is still unknown
       assert(!canShortCircuitNulls(contains))
+    }
+  }
+
+  test("skipsSharedSubexpression exempts a repeat only where Spark eliminates it") {
+    val map = AttributeReference("m", MapType(DoubleType, IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val cast = Cast(text, DoubleType, Some("UTC"), EvalMode.ANSI)
+    val lookup = ElementAt(map, Add(cast, cast))
+    // Spark's elimination does not look into a branch, so it does not share the repeat
+    val branch = If(EqualTo(text, Literal("abc")), lookup, Literal(0))
+
+    for (enabled <- Seq(true, false)) {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      SQLConf.withExistingConf(conf) {
+        withSharedSubexpressions(Seq(lookup), certain = true) {
+          assert(!skipsSharedSubexpression(lookup))
+        }
+        withSharedSubexpressions(Seq(lookup), certain = false) {
+          assert(skipsSharedSubexpression(lookup) == enabled)
+        }
+        for (certain <- Seq(true, false)) {
+          withSharedSubexpressions(Seq.empty, certain = certain) {
+            assert(skipsSharedSubexpression(lookup) == enabled)
+          }
+        }
+        withSharedSubexpressions(Seq(branch), certain = true) {
+          assert(skipsSharedSubexpression(lookup) == enabled)
+        }
+        withSharedSubexpressions(Seq(lookup), alwaysShared = true, certain = false) {
+          assert(skipsSharedSubexpression(lookup))
+        }
+      }
     }
   }
 
