@@ -27,7 +27,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ScansTestGroup
 
+@ScansTestGroup
 class CometEmptyRelationParquetWriterSuite extends CometParquetWriterTestBase {
 
   test("EmptyRelationExec keeps AQE empty parquet output readable") {

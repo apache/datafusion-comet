@@ -20,7 +20,9 @@
 package org.apache.comet
 
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometFuzzAggregateSuite extends CometFuzzTestBase {
 
   test("count distinct - simple columns") {

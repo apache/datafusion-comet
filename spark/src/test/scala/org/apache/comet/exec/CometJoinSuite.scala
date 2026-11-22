@@ -53,7 +53,9 @@ import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, Extende
 import org.apache.comet.CometSparkSessionExtensions.hasFallbackReason
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.tags.ExecTestGroup
 
+@ExecTestGroup
 class CometJoinSuite extends CometTestBase {
 
   import testImplicits._

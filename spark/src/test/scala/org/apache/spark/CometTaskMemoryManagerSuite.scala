@@ -26,6 +26,9 @@ import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.core.LogEvent
 import org.apache.spark.memory.{MemoryConsumer, TaskMemoryManager, TestMemoryManager}
 
+import org.apache.comet.tags.ExecTestGroup
+
+@ExecTestGroup
 class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
 
   test("native memory usage is visible to Spark's memory consumer") {

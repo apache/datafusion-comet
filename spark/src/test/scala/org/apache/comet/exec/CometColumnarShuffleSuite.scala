@@ -40,6 +40,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ShuffleTestGroup
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
@@ -1065,6 +1066,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 }
 
+@ShuffleTestGroup
 class CometShuffleSuite extends CometColumnarShuffleSuite {
   protected val adaptiveExecutionEnabled: Boolean = true
 
@@ -1116,6 +1118,7 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
   }
 }
 
+@ShuffleTestGroup
 class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
   protected val adaptiveExecutionEnabled: Boolean = false
 
@@ -1162,6 +1165,7 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
   }
 }
 
+@ShuffleTestGroup
 class CometShuffleEncryptionSuite extends CometTestBase {
 
   import testImplicits._
@@ -1197,6 +1201,7 @@ class CometShuffleEncryptionSuite extends CometTestBase {
   }
 }
 
+@ShuffleTestGroup
 class CometShuffleManagerSuite extends CometTestBase {
 
   test("should not bypass merge sort if executor cores are too high") {

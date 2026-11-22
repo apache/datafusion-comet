@@ -31,7 +31,9 @@ import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, Shuffl
 import org.apache.spark.sql.comet.{NativeScanPlanDataInjector, PlanDataInjector}
 
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.tags.ShuffleTestGroup
 
+@ShuffleTestGroup
 class CometCelebornShuffleManagerSuite extends AnyFunSuite {
 
   // Match the optional CelebornConf API, including its enum-valued policy and Long threshold.

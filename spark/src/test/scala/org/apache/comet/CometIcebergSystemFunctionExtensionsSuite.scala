@@ -24,6 +24,8 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.ApplyFunctionExpression
 import org.apache.spark.sql.catalyst.plans.logical.Filter
 
+import org.apache.comet.tags.ScansTestGroup
+
 /**
  * Iceberg's system functions once Iceberg's SQL extensions have rewritten them.
  *
@@ -33,6 +35,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Filter
  * it with the same native kernels as the `StaticInvoke` that CometIcebergSystemFunctionSuite
  * covers. `spark.sql.extensions` is static, so this path needs a suite of its own.
  */
+@ScansTestGroup
 class CometIcebergSystemFunctionExtensionsSuite extends CometTestBase with CometIcebergTestBase {
 
   override protected def sparkConf: SparkConf =

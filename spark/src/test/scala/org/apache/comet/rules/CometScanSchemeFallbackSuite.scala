@@ -44,6 +44,7 @@ import org.apache.comet.{CometConf, CometExplainInfo, CometIcebergTestBase, Exte
 import org.apache.comet.hadoop.fs.{FakeHdfsAuthorityFileSystem, FakeHDFSFileSystem, FakeHdfsSchemeFileSystem, FakeWasbSchemeFileSystem}
 import org.apache.comet.iceberg.IcebergStorageSchemes
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.tags.ExecTestGroup
 
 /**
  * Comet's native readers go through object_store, which understands a fixed set of URL schemes. A
@@ -55,6 +56,7 @@ import org.apache.comet.objectstore.NativeConfig
  * native probe is cached per probe URL so an authorityless URL can't poison the authority-bearing
  * form of the same scheme.
  */
+@ExecTestGroup
 class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBase {
 
   private var fakeRootDir: File = _
