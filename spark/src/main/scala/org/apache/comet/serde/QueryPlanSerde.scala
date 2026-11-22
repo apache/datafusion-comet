@@ -29,6 +29,7 @@ import scala.util.DynamicVariable
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
@@ -836,6 +837,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
           return None
         }
+        def convertNative(): Option[AggExpr] =
+          withChildEvaluation(aggExpr)(aggHandler.convert(aggExpr, fn, inputs, binding, conf))
         aggHandler.getSupportLevel(fn) match {
           case Unsupported(notes) =>
             withFallbackReason(fn, notes.getOrElse(""))
@@ -849,7 +852,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                     s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                     s"but has notes: ${notes.get}")
               }
-              aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+              convertNative()
             } else {
               val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
               withFallbackReason(
@@ -863,7 +866,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             if (notes.isDefined) {
               logWarning(s"Comet supports $fn but has notes: ${notes.get}")
             }
-            aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+            convertNative()
         }
       case _ =>
         withFallbackReason(aggExpr, s"unsupported Spark aggregate function: ${fn.prettyName}")
@@ -891,7 +894,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             s"FILTER (WHERE ...) is not supported for aggregate mode ${aggExpr.mode}")
           return None
         }
-        val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
+        val filterProto = withChildEvaluation(aggExpr) {
+          exprToProto(aggExpr.filter.get, inputs, binding)
+        }
         if (filterProto.isEmpty) {
           return None
         }
@@ -1051,6 +1056,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
         return None
       }
+      def convertNative(): Option[Expr] =
+        withChildEvaluation(expr)(handler.convert(expr, inputs, binding))
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
           // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
@@ -1078,7 +1085,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                   s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                   s"but has notes: ${notes.get}")
             }
-            handler.convert(expr, inputs, binding)
+            convertNative()
           } else {
             // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
             // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
@@ -1108,13 +1115,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           nativeOptIn.foreach { optIn =>
             withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
-          handler.convert(expr, inputs, binding)
+          convertNative()
       }
     }
 
-    sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
-      .orElse(expr match {
-
+    sparkVersionSpecificExprToProtoInternal(
+      expr,
+      inputs,
+      binding,
+      fallback = expr match {
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
@@ -1331,6 +1340,102 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
   }
 
+  // When a shim cannot convert a lookup, the generic handler may try compiling the
+  // whole expression. Check that kernel in its own enclosing evaluation context too.
+  private[comet] def retryEnclosingDispatch(expr: Expression)(
+      fallback: => Option[Expr]): Option[Expr] = {
+    if (expr.exists(e =>
+        exprSerdeMap.get(e.getClass).exists(_.isInstanceOf[GatedCodegenDispatchFallback]))) {
+      GatedCodegenDispatchFallback.declineReason(expr) match {
+        case Some(reason) =>
+          withFallbackReason(expr, reason)
+          return None
+        case None =>
+      }
+    }
+    fallback
+  }
+
+  private val evaluationParents = new DynamicVariable[List[Expression]](Nil)
+
+  def withChildEvaluation[T](parent: Expression)(f: => T): T = parent match {
+    case _: LeafExpression | _: Alias | _: IsNull | _: IsNotNull | _: GetStructField |
+        _: MapKeys | _: MapValues | _: MapEntries | _: Cast | _: CreateArray |
+        _: CreateNamedStruct =>
+      f
+    case _ => evaluationParents.withValue(parent :: evaluationParents.value)(f)
+  }
+
+  // CodegenFallback includes imperative aggregates, whose update calls child.eval directly.
+  // GenerateExec can also interpret its generator if it ends up outside a whole-stage stage.
+  private def interpretsChildren(parent: Expression): Boolean = parent match {
+    case a: AggregateExpression => interpretsChildren(a.aggregateFunction)
+    case _: CodegenFallback | _: Generator => true
+    case _ => false
+  }
+
+  private def sparkMayInterpret: Boolean =
+    evaluationParents.value.exists(interpretsChildren) || SQLConf.get
+      .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+      .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
+
+  private def simpleInput(node: Expression): Boolean = node match {
+    case _: CreateArray | _: CreateNamedStruct => true
+    case c: Cast => CometCast.isNumericWidening(c.child.dataType, c.dataType)
+    case _ => EvaluationOrder.isUnobservable(node)
+  }
+
+  private def safeOnAnyRow(e: Expression): Boolean = !e.exists {
+    case _: GetMapValue | _: ArraysZip | _: Size => false
+    case a: ElementAt if a.left.dataType.isInstanceOf[MapType] => false
+    case node => !simpleInput(node) && !nodeCannotRaise(node)
+  }
+
+  private def preservesAggregateEvaluation(a: AggregateExpression): Boolean = {
+    val fn = a.aggregateFunction
+    val evaluatesAll = fn match {
+      case _: Min | _: Max | _: Sum | _: Average => true
+      case c: Count => c.children.size == 1
+      case _: First => false
+      // Other unary updates read their input on every row. Allow a computed input
+      // such as x + 1 when skipping any of its operands is unobservable.
+      case _ => fn.children.size == 1 && fn.children.head.children.forall(safeOnAnyRow)
+    }
+    a.filter.forall(safeOnAnyRow) &&
+    ((a.filter.isEmpty && evaluatesAll) || fn.children.forall(safeOnAnyRow))
+  }
+
+  private[serde] def dispatchEvaluationReason(expr: Expression): Option[String] = {
+    // A standalone kernel sees only the rows its native parents pass to it. For example,
+    // coalesce duplicates operands in CASE, and aggregate FILTER masks rows after evaluation.
+    def preservesEvaluation(parent: Expression): Boolean = parent match {
+      case _: If | _: CaseWhen => canSkipEvaluation(Seq(expr))
+      case _: Size | _: Coalesce if !NullGuardSupport.isNondeterministic(parent) =>
+        canSkipEvaluation(Seq(expr))
+      case r: ArrayRepeat if !r.right.nullable => true
+      case Not(b: BinaryComparison) => preservesEvaluation(b)
+      case b: BinaryComparison => !b.left.nullable || safeOnAnyRow(b.right)
+      case _: Add | _: Subtract | _: Multiply if parent.children.head eq expr =>
+        safeOnAnyRow(parent.children(1))
+      case a: AggregateExpression => preservesAggregateEvaluation(a)
+      case _ => parent.children.forall(safeOnAnyRow)
+    }
+
+    // Deterministic map builders already dispatch for float keys and LAST_WIN.
+    if (expr.isInstanceOf[MapFromArrays] && expr.deterministic) {
+      None
+    } else if (sparkMayInterpret && expr.children.exists(_.exists(e => !simpleInput(e)))) {
+      Some("Spark may interpret computed arguments that the dispatcher would compile")
+    } else {
+      evaluationParents.value
+        .collectFirst {
+          case parent if !preservesEvaluation(parent) =>
+            s"${parent.prettyName} can evaluate this expression on different rows than Spark"
+        }
+        .orElse(sharedSubexpressions.value.flatMap(_.aggregateEvaluationReason))
+    }
+  }
+
   /**
    * The subexpressions that occur more than once in the expressions of the operator being
    * serialized, as Spark's subexpression elimination finds them. Where Spark eliminates them, it
@@ -1352,6 +1457,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expressions: Seq[Expression],
       alwaysShared: Boolean,
       val certain: Boolean) {
+    // Dispatch in one function or grouping key can make all functions native. Grouped
+    // aggregates evaluate arguments before filtering. Global aggregates filter first, but
+    // Spark's generated code can hoist a shared argument above the filters.
+    lazy val aggregateEvaluationReason: Option[String] = expressions.collectFirst {
+      case a: AggregateExpression if !preservesAggregateEvaluation(a) =>
+        s"${a.aggregateFunction.prettyName} can evaluate an argument on different rows than Spark"
+    }
+
     // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
     lazy val common: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {

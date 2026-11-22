@@ -119,6 +119,13 @@ SELECT element_at(m1, 1.0D / x) FROM test_map_lookup_shared
 query expect_dispatch(getmapvalue)
 SELECT m1[1.0D / x] FROM test_map_lookup_shared
 
+query expect_dispatch(getmapvalue)
+SELECT m1[1.0D / x] + 1 <> 7 FROM test_map_lookup_shared
+
+-- TopK checks the sort key in the same scope that it uses at execution.
+query
+SELECT x FROM test_map_lookup_shared ORDER BY coalesce(m1[1D], 0), x LIMIT 2
+
 -- Subexpression elimination never shares a column.
 query expect_dispatch(element_at)
 SELECT element_at(m1, x), element_at(m2, x) FROM test_map_lookup_shared
@@ -283,3 +290,16 @@ SET spark.sql.ansi.enabled=false
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x) FROM test_map_lookup_shared
+
+-- Interpreted projection evaluates a shared key on demand, after the map's NULL check.
+statement
+SET spark.sql.ansi.enabled=true
+
+statement
+SET spark.sql.codegen.wholeStage=false
+
+statement
+SET spark.sql.codegen.factoryMode=NO_CODEGEN
+
+query expect_fallback(Spark may interpret computed arguments)
+SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared

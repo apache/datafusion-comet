@@ -60,3 +60,27 @@ query expect_dispatch(arrays_zip, monotonically_increasing_id)
 SELECT arrays_zip(array(map(x, monotonically_increasing_id()))) AS a,
   arrays_zip(array(map(y, monotonically_increasing_id()))) AS b
 FROM test_arrays_zip_nondet_pair
+
+statement
+SET spark.sql.ansi.enabled=true
+
+-- The map element requires dispatch. Generated projections skip the division when x = 0.
+query expect_dispatch(arrays_zip)
+SELECT size(arrays_zip(IF(x = 0, NULL, array(x)), array(map(1, 10 DIV x))))
+FROM test_arrays_zip_nondet_pair
+
+-- CollectList.update calls child.eval, where arrays_zip evaluates both arrays on every row.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT collect_list(size(arrays_zip(IF(x = 0, NULL, array(x)), array(map(1, 10 DIV x)))))
+FROM test_arrays_zip_nondet_pair
+
+statement
+SET spark.sql.codegen.wholeStage=false
+
+statement
+SET spark.sql.codegen.factoryMode=NO_CODEGEN
+
+-- The counter advances even on the NULL-array row in an interpreted projection.
+query expect_fallback(Spark may interpret computed arguments)
+SELECT x, arrays_zip(IF(x = 0, NULL, array(x)), array(map(1, monotonically_increasing_id())))
+FROM test_arrays_zip_nondet_pair

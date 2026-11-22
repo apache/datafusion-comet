@@ -68,13 +68,16 @@ object CometArrayRemove
  */
 private[serde] object NullGuardSupport {
 
+  // Invoke.deterministic checks its arguments but skips its receiver.
+  def isNondeterministic(expr: Expression): Boolean = expr.exists(!_.deterministic)
+
   val nondeterministicReason: String =
     "Comet has no native path for a nondeterministic operand such as `rand()` or " +
       "`monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice."
 
   def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
     children
-      .find(child => !child.deterministic)
+      .find(isNondeterministic)
       .map(_ => Unsupported(Some(nondeterministicReason)))
 }
 
@@ -115,7 +118,7 @@ object CometArrayAppend
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
 
   override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
-    if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
+    if (expr.left.nullable && expr.children.exists(NullGuardSupport.isNondeterministic)) {
       Unsupported(Some(nondeterministicReason))
     } else {
       Compatible()
@@ -925,7 +928,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with GatedCodegenD
   override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
 
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    if (needsNullGuard(expr) && !expr.left.deterministic) {
+    if (needsNullGuard(expr) && NullGuardSupport.isNondeterministic(expr.left)) {
       Unsupported(Some(eagerIndexReason))
     } else {
       expr.left.dataType match {

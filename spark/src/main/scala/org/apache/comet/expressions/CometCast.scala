@@ -644,6 +644,11 @@ object CometCast
       DataTypes.FloatType,
       DataTypes.DoubleType)
 
+  private[comet] def isNumericWidening(fromType: DataType, toType: DataType): Boolean = {
+    val from = numericWidening.indexOf(fromType)
+    from >= 0 && from < numericWidening.indexOf(toType)
+  }
+
   private def integralDigits(dataType: DataType): Option[Int] = dataType match {
     case DataTypes.ByteType => Some(3)
     case DataTypes.ShortType => Some(5)
@@ -660,8 +665,7 @@ object CometCast
   private def keyCastCannotFail(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
       case _ if fromType == toType => true
-      case (from, to) if numericWidening.contains(from) && numericWidening.contains(to) =>
-        numericWidening.indexOf(from) < numericWidening.indexOf(to)
+      case (from, to) if isNumericWidening(from, to) => true
       case (from, to: DecimalType) if integralDigits(from).isDefined =>
         to.precision - to.scale >= integralDigits(from).get
       case (from: DecimalType, to: DecimalType) =>

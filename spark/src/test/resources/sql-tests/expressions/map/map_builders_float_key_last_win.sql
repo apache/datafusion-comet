@@ -42,7 +42,11 @@ INSERT INTO float_map_keys_last_win VALUES
 
 -- A repeated string key: the last value wins.
 query expect_dispatch(map_from_arrays)
-SELECT id, map_keys(map_from_arrays(k, v)), map_values(map_from_arrays(k, v))
+SELECT id, map_keys(map_from_arrays(k, v)), map_values(map_from_arrays(k, v)), map_from_arrays(k, v)['a']
+FROM float_map_keys_last_win
+
+query expect_dispatch(map_from_arrays)
+SELECT sort_array(collect_list(size(map_from_arrays(array(d, -d), array(1, 2)))))
 FROM float_map_keys_last_win
 
 query expect_dispatch(map_from_entries)

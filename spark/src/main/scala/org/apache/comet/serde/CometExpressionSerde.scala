@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.types.CalendarIntervalType
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BinaryExpression, CallMethodViaReflection, ElementAt, Expression, GetArrayItem, ScalaUDF}
+import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType}
 
 import org.apache.comet.serde.QueryPlanSerde.skipsSharedSubexpression
 
@@ -132,14 +132,44 @@ trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressi
   def dispatchDeclineReason(expr: Expression): Option[String] = None
 }
 
-/** Sends the two cases below, which the dispatcher would get wrong, to Spark. */
+/** Keeps expressions in Spark when compiling them as separate kernels would change behavior. */
 trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
   self: CometExpressionSerde[_] =>
 
   override def dispatchDeclineReason(expr: Expression): Option[String] =
+    GatedCodegenDispatchFallback.declineReason(expr)
+}
+
+private[serde] object GatedCodegenDispatchFallback {
+  def declineReason(expr: Expression): Option[String] =
     CalendarIntervalOutput
       .declineReason(expr)
+      .orElse(expr.collectFirst {
+        case e if e.deterministic && e.children.exists(!_.deterministic) =>
+          "Spark reports a stateful subtree as deterministic, so compiling it separately " +
+            "can change its evaluation"
+        case u: ScalaUDF if !u.udfDeterministic =>
+          "a nondeterministic user function can share state across calls that Spark evaluates " +
+            "together for each row"
+        case _: CallMethodViaReflection =>
+          "a reflected method can share static state across calls that Spark evaluates " +
+            "together for each row"
+        case e: ElementAt if writesUndeclaredNullFlag(e, e.failOnError) => undeclaredNullFlag
+        case e: GetArrayItem if writesUndeclaredNullFlag(e, e.failOnError) => undeclaredNullFlag
+      })
       .orElse(SharedSubexpressionArgument.declineReason(expr))
+      .orElse(QueryPlanSerde.dispatchEvaluationReason(expr))
+
+  private def undeclaredNullFlag: String =
+    "Spark's generated code for this non-nullable array lookup assigns an undeclared null flag"
+
+  // BinaryExpression declares the flag only for nullable results. Both array lookups assign
+  // it in their bounds and null-element branches even when the literal index rules them out.
+  private def writesUndeclaredNullFlag(e: BinaryExpression, failOnError: Boolean): Boolean =
+    e.left.dataType match {
+      case ArrayType(_, containsNull) => !e.nullable && (!failOnError || containsNull)
+      case _ => false
+    }
 }
 
 /** See https://github.com/apache/datafusion-comet/issues/5279. */

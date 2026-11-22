@@ -374,3 +374,23 @@ INSERT INTO test_to_time_col_fmt VALUES
 -- A non-foldable format column takes the same codegen-dispatch path as the literal form above.
 query
 SELECT to_time(s, f) FROM test_to_time_col_fmt
+
+statement
+SET spark.sql.ansi.enabled=true
+
+statement
+CREATE TABLE test_to_time_lookup USING parquet AS
+SELECT id, map(1D, '12:30') AS m FROM range(0, 2, 1, 1)
+
+-- Spark catches division by zero in the lookup key inside try_to_time.
+query expect_dispatch(invoke)
+SELECT try_to_time(m[1D / id]) FROM test_to_time_lookup
+
+-- A separate kernel for the matching row would restart its counter and miss key 1.
+query expect_fallback(can evaluate this expression on different rows)
+SELECT coalesce(try_to_time(m[CAST(monotonically_increasing_id() AS DOUBLE)]), make_time(0, 0, 0))
+FROM test_to_time_lookup
+
+query expect_fallback(can evaluate this expression on different rows)
+SELECT coalesce(extract(second FROM to_time(m[CAST(monotonically_increasing_id() AS DOUBLE)])), -1)
+FROM test_to_time_lookup

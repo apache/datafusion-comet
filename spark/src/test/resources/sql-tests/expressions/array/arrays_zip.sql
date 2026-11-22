@@ -235,6 +235,10 @@ INSERT INTO test_arrays_zip_map VALUES
 query expect_dispatch(arrays_zip)
 SELECT arrays_zip(m, n) FROM test_arrays_zip_map
 
+-- The Rust array_repeat kernel consumes the dispatched list of non-null structs.
+query expect_dispatch(arrays_zip)
+SELECT array_repeat(arrays_zip(m, n), 2) FROM test_arrays_zip_map
+
 query expect_dispatch(arrays_zip)
 SELECT arrays_zip(m, array(1, 2, 3)) FROM test_arrays_zip_map
 

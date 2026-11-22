@@ -2188,13 +2188,31 @@ impl PhysicalPlanner {
         expr: &ScalarFunc,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let args = expr
+        let mut args = expr
             .args
             .iter()
             .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+        // array_repeat rebuilds a list argument with a nullable item field and expects
+        // that list to match its input type. Comet's cast preserves struct field positions.
+        if let ("array_repeat", Some(element)) = (fun_name.as_str(), args.first_mut()) {
+            match element.data_type(&input_schema)? {
+                DataType::List(item)
+                    if *item != Field::new_list_field(item.data_type().clone(), true) =>
+                {
+                    *element = Arc::new(Cast::new(
+                        Arc::clone(element),
+                        DataType::new_list(item.data_type().clone(), true),
+                        SparkCastOptions::new(EvalMode::Legacy, "UTC"),
+                        None,
+                        None,
+                    ));
+                }
+                _ => {}
+            }
+        }
         // `map_entries` needs its argument's entry `value` field widened to nullable first (only
         // that outer field). See `widen_map_entry_value_nullable`.
         let args = if fun_name == "map_entries" {
