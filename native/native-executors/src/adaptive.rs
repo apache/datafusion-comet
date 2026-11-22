@@ -61,10 +61,6 @@ use datafusion_comet_proto::spark_operator::{
 use log::{debug, info};
 use prost::Message;
 
-/// The most rows the hash tables of a broadcast build side may hold over all the partitions of
-/// the stage it is broadcast to: its rows times the stage's partitions.
-const MAX_BROADCAST_BUILD_ROWS: usize = 100_000_000;
-
 /// Whether `consumer` reads only one input that isn't read whole, so that how that input's rows
 /// are placed in partitions matters only to operators above a column that places them.
 fn only_partitioned_input(consumer: &CometFragmentExec) -> bool {
@@ -604,7 +600,7 @@ impl BroadcastIntoProbe {
             inputs.iter().map(|input| input.name()).collect::<Vec<_>>()
         );
         for join in joins {
-            let (Some((probe, probe_stage)), Some(build)) = (
+            let (Some((probe, _)), Some(build)) = (
                 inputs
                     .get(join.probe_input)
                     .copied()
@@ -683,16 +679,7 @@ impl BroadcastIntoProbe {
                 (None, Some(rows)) => *rows <= threshold_rows,
                 (None, None) => false,
             };
-            // Each partition of the probe side's stage plans its own copy of the block, so it
-            // builds its own hash table of the whole build side. Past a point that costs more
-            // than the shuffle it saves.
-            let partitions = probe_stage.properties().partitioning.partition_count();
-            let small = small
-                && keeps_keys
-                && stats
-                    .num_rows
-                    .get_value()
-                    .is_none_or(|rows| rows.saturating_mul(partitions) <= MAX_BROADCAST_BUILD_ROWS);
+            let small = small && keeps_keys;
             if !held && !small {
                 continue;
             }
