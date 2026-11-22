@@ -775,6 +775,34 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: data location with user info in its authority, reason without it") {
+    Seq(
+      "userinfo_s3" -> "s3://alice:SECRET@nonexistent-bucket/iceberg/db/t?sig=SAS-MARKER" ->
+        "s3 data location carries user info in its authority",
+      "userinfo_s3a" -> "s3a://alice:SECRET@my_bucket/iceberg/db/t" ->
+        "s3a data location carries user info in its authority",
+      "userinfo_s3_tab" -> "s3:\t//alice:SECRET@nonexistent-bucket/iceberg/db/t" ->
+        "s3 data location carries user info in its authority",
+      "userinfo_file" -> "file://alice@localhost/tmp/iceberg/db/t" ->
+        "file data location carries user info in its authority",
+      "userinfo_hdfs" -> "hdfs://alice:SECRET@nn.invalid:8020/iceberg/db/t" ->
+        "unsupported storage scheme: hdfs",
+      "no_bucket_s3" -> "s3:///nonexistent-bucket/iceberg/db/t" ->
+        "s3 data location has no bucket in its authority: s3:///nonexistent-bucket/iceberg/db/t")
+      .foreach { case ((tableName, location), expected) =>
+        withDetectionCatalog { _ =>
+          createTable(
+            tableName,
+            partitionSpec = "",
+            properties = Some(s"'write.data.path'='$location'"))
+          val support =
+            CometIcebergNativeWrite.getSupportLevel(
+              planInsertWriteExec(s"$catalog.$ns.$tableName"))
+          assert(support == Unsupported(Some(expected)), s"$location: $support")
+        }
+      }
+  }
+
   test("storageScheme follows the native scheme_of rule") {
     // Keep in step with `scheme_of_extracts_scheme_from_all_uri_forms` in iceberg_common.rs.
     Seq(

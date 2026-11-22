@@ -510,6 +510,48 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("hasUserInfo - an @ in the authority, not in the path or an opaque part") {
+    Seq(
+      "s3://alice@b/p",
+      "s3://alice:SECRET@b/p",
+      "s3://@b/p",
+      "s3a://alice:SECRET@my_bucket/p",
+      "hdfs://alice@nn:8020/p",
+      "file://alice@host/p").foreach { location =>
+      withClue(location) {
+        NativeConfig.hasUserInfo(new URI(location)) shouldBe true
+        NativeConfig.hasUserInfo(location) shouldBe true
+      }
+    }
+    // A `/` in the password ends the authority before the `@`, so no user info is seen there.
+    Seq("s3://b/p", "s3://b/a@b/p", "s3:alice@b", "s3://alice:/SECRET@b/p", "s3://b#a@b")
+      .foreach { location =>
+        withClue(location) {
+          NativeConfig.hasUserInfo(new URI(location)) shouldBe false
+          NativeConfig.hasUserInfo(location) shouldBe false
+        }
+      }
+  }
+
+  test("hasUserInfo - the text form reads locations java.net.URI rejects") {
+    NativeConfig.hasUserInfo("s3://alice:p ss@bucket/f") shouldBe true
+    NativeConfig.hasUserInfo("s3://bucket/dir with space/f") shouldBe false
+    NativeConfig.hasUserInfo("/tmp/a b/x://alice@host/f") shouldBe false
+    NativeConfig.hasUserInfo("s3://bucket?x=a@b") shouldBe false
+  }
+
+  test("hasUserInfo - the text form ignores what URL parsing strips, and a missing scheme") {
+    // WHATWG URL parsing, which iceberg-rust's `Url::parse` follows, drops tabs and newlines
+    // anywhere and trims leading and trailing C0 controls and spaces.
+    Seq("s3:\t//alice:SECRET@b/p", " s3://alice@b/p", "s3:/\n/alice@b/p", "//alice:SECRET@b/p")
+      .foreach { location =>
+        withClue(location) {
+          NativeConfig.hasUserInfo(location) shouldBe true
+        }
+      }
+    NativeConfig.hasUserInfo(" //b/p") shouldBe false
+  }
+
   test("objectStoreKey - matches the native object store key for each path form") {
     // The same table is asserted natively by `object_store_key_matches_jvm_fixture` in
     // native/core/src/parquet/parquet_support.rs. Native scans group files by this key, and the
