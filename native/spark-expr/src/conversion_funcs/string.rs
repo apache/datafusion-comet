@@ -708,13 +708,9 @@ fn is_special_value(trimmed: &str) -> bool {
 /// NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI). Since SPARK-60118 Spark skips that limit for zero,
 /// which fits any decimal type, and casts it to 0.
 ///
-/// `tiny_to_zero` selects how a value far below the target scale's ulp is cast when the difference
-/// to the target scale does not fit in an int ("1e-2147483647" to a negative target scale). Spark
-/// used to rescale with `BigDecimal.setScale`, which throws a raw `ArithmeticException` there in
-/// every eval mode, so such a string is an error here too. Since SPARK-60119 Spark skips
-/// `setScale` when the magnitude already decides the result, and casts the value to 0.
-/// For a very large decrease that fits in an int, Comet rounds to zero even on earlier
-/// releases where `setScale` can fail (https://github.com/apache/datafusion-comet/issues/6966).
+/// `tiny_to_zero` selects how a tiny value is cast when `BigDecimal.setScale` would need a
+/// divisor beyond the JDK's limit. Since SPARK-60119 Spark rounds it to zero. Earlier releases
+/// throw a raw `ArithmeticException` in every eval mode (see Comet issue #6966).
 ///
 /// Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed it,
 /// with NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI, whatever the target type. It does not with
@@ -952,9 +948,11 @@ fn parse_decimal_str(
             .chain(fractional_part)
             .all(|&d| d == b'0')
     };
-    // BigDecimal.setScale checks the number of places to add or drop as a positive int.
-    if adjustment.abs() > i64::from(i32::MAX) {
-        if (tiny_to_zero && adjustment < 0) || is_zero() {
+    // On OpenJDK 17 and 21, BigInteger.TEN.pow(n) rejects (4 * n) / 32 > 2^26
+    // using integer division. Before SPARK-60119, setScale needs this divisor.
+    const MAX_POWER_OF_TEN: i64 = 536_870_919;
+    if (!tiny_to_zero && adjustment < -MAX_POWER_OF_TEN) || adjustment > i64::from(i32::MAX) {
+        if is_zero() {
             return Ok(Some(0));
         }
         return Err(invalid_decimal_cast(original_str, precision, scale));
@@ -2966,7 +2964,7 @@ mod tests {
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
         }
         // The parsed scale fits in an int, but rescaling it to a negative target scale does not.
-        // `test_parse_string_to_decimal_tiny_value_to_negative_scale` covers it from here.
+        // `test_parse_string_to_decimal_extreme_scale_drop` covers it from here.
         let err =
             parse_string_to_decimal("1e-2147483647", 10, -2, false, false, false).unwrap_err();
         assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
@@ -2980,12 +2978,11 @@ mod tests {
         );
     }
 
-    /// `BigDecimal.setScale` fails when the difference to the target scale does not fit in an int,
-    /// so Spark used to raise a raw `ArithmeticException` for a string such as "1e-2147483647" cast
-    /// to a negative-scale decimal, in every eval mode. Since SPARK-60119 Spark skips `setScale`
-    /// for a value far below the target scale's ulp and casts it to 0, whatever its sign.
+    /// Before SPARK-60119, `BigDecimal.setScale` could fail for a nonzero value when the
+    /// drop exceeded the int range or the divisor exceeded `BigInteger`'s range.
     #[test]
-    fn test_parse_string_to_decimal_tiny_value_to_negative_scale() {
+    fn test_parse_string_to_decimal_extreme_scale_drop() {
+        let long = "9999999999999999999999999999999999999999e-2147483647";
         // A target with a negative scale exists only with
         // `spark.sql.legacy.allowNegativeScaleOfDecimal`, which also lifts the limit on integral
         // digits, so both settings of the limit are checked.
@@ -2995,8 +2992,11 @@ mod tests {
                 ("-1e-2147483647", -2),
                 ("12e-2147483647", -2),
                 ("99999999999999999999999999999999999999e-2147483647", -2),
-                // Dropping exactly 2^31 places exceeds BigDecimal's positive int limit.
-                ("9999999999999999999999999999999999999999e-2147483647", -1),
+                (long, -1), // drop 2^31
+                (long, 2),  // drop 2^31 - 3
+                ("1e-2147483646", -1),
+                ("1e-536870922", 2), // first drop rejected by BigInteger.TEN.pow on JDK 17/21
+                ("1e-536870923", 2),
             ] {
                 let err =
                     parse_string_to_decimal(s, 10, scale, false, false, skip_integral_digit_limit)
@@ -3020,13 +3020,14 @@ mod tests {
                 }
             }
         }
-        // The option only changes drops greater than i32::MAX.
+        // Scale increases, zero and drops within the divisor limit behave the same either way.
         for tiny_to_zero in [false, true] {
             let err = parse_string_to_decimal("1e2147483647", 10, 2, true, tiny_to_zero, true)
                 .unwrap_err();
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
             for (s, scale) in [
-                ("1e-2147483646", -1),
+                ("0e-2147483647", 2),
+                ("1e-536870921", 2), // last drop accepted by BigInteger.TEN.pow on JDK 17/21
                 ("1e-100000000", 2),
                 ("-1e-100000000", -2),
                 ("123", -2),

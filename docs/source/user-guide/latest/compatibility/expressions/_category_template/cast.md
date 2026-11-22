@@ -81,14 +81,13 @@ under ANSI mode. Comet chooses the behavior by the Spark version number. On a ve
 reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
 returns `0`.
 
-Likewise, a string far below the target scale's unit in the last place casts to `0` on those
-releases when the difference to the target scale does not fit in an int (SPARK-60119), for example
-`'1e-2147483647'` cast to `DECIMAL(10,-2)`, which needs
-`spark.sql.legacy.allowNegativeScaleOfDecimal=true`. Earlier releases raise a raw
-`ArithmeticException` in every eval mode, which Comet cannot reproduce: it returns `NULL`, or
-raises `CAST_INVALID_INPUT` under ANSI mode. Comet again chooses the behavior by the Spark version
-number, so on a vendor build that reports an older version but includes SPARK-60119, Comet returns
-`NULL` (or raises) where Spark returns `0`.
+On those same releases, Spark and Comet cast `'1e-2147483647'` to `DECIMAL(10,2)` as `0.00`
+(SPARK-60119). On earlier releases with OpenJDK 17 or 21, reducing the scale of a nonzero
+value by 536,870,920 or more places raises an `ArithmeticException` in every eval mode.
+Comet uses this limit and raises `CAST_INVALID_INPUT` under ANSI mode or returns `NULL` otherwise
+([#6966](https://github.com/apache/datafusion-comet/issues/6966)). The limit can differ on
+other JDKs. Comet chooses the behavior by the Spark version number, so a vendor build that
+backports SPARK-60119 to an earlier version can return `0` where Comet raises or returns `NULL`.
 
 A string whose integral part has more than 38 digits, such as `'6E+38'`, is rejected before Spark
 checks the value against the target type. Comet does the same: the result is `NULL`, or
@@ -97,8 +96,10 @@ checks the value against the target type. Comet does the same: the result is `NU
 does Comet.
 
 Comet then rounds to the target scale with ties away from zero. A string with more than 38 digits
-can fit the target precision after rounding. A cast to a scale below `-128` falls back to Spark
-because the Arrow decimal type in Rust stores the scale as a signed byte.
+can fit the target precision after rounding. Casting a string column to a decimal with a scale
+below `-128` falls back to Spark because the Arrow decimal type in Rust stores the scale as a
+signed byte. Folded decimal literals and existing decimal columns bypass this cast check. Their
+scales can wrap when Comet converts their types to Arrow (for example, `-256` becomes `0`).
 
 Under ANSI mode, a value that parses but is too large for the target type can raise
 `CAST_INVALID_INPUT` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`, when the target scale exceeds

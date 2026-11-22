@@ -1818,6 +1818,19 @@ class CometNativeCastSuite
     }
   }
 
+  test("(ansi) cast a long decimal coefficient with an extreme negative exponent") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val data = roundtripParquet(Seq("9" * 40 + "e-2147483647").toDF("s"), dir)
+        val df = data.select(col("s").cast(DecimalType(10, 2)))
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        // Before SPARK-60119 Spark throws a raw ArithmeticException (#6966).
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkError.isDefined == cometError.isDefined)
+      }
+    }
+  }
+
   test("(ansi) cast string to negative-scale decimal fails when rescaling overflows an int") {
     assume(
       !SparkFixes.castsTinyStringToDecimalZero(org.apache.spark.SPARK_VERSION),
