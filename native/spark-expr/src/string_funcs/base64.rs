@@ -27,6 +27,8 @@ use base64::Engine;
 use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
 
+use crate::utils::checked_output_size;
+
 /// Spark `base64(bin)`: encodes a binary value as a padded base64 string.
 ///
 /// The second argument is a boolean `chunk` flag mirroring Spark's
@@ -35,6 +37,13 @@ use datafusion::physical_plan::ColumnarValue;
 /// 76 characters joined by a CRLF (`\r\n`), with no trailing separator. When false, the output is a
 /// single unwrapped line, matching `java.util.Base64.getMimeEncoder(-1, [])`.
 pub fn spark_base64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_base64_with_limit(args, i32::MAX as usize)
+}
+
+fn spark_base64_with_limit(
+    args: &[ColumnarValue],
+    limit: usize,
+) -> Result<ColumnarValue, DataFusionError> {
     if args.len() != 2 {
         return exec_err!("base64 expects exactly two arguments, got {}", args.len());
     }
@@ -47,16 +56,21 @@ pub fn spark_base64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionE
             DataType::Binary => Ok(ColumnarValue::Array(Arc::new(encode_array(
                 array.as_binary::<i32>(),
                 chunk,
-            )))),
+                limit,
+            )?))),
             DataType::LargeBinary => Ok(ColumnarValue::Array(Arc::new(encode_array(
                 array.as_binary::<i64>(),
                 chunk,
-            )))),
+                limit,
+            )?))),
             other => exec_err!("base64 expects a binary argument, got {other}"),
         },
         ColumnarValue::Scalar(ScalarValue::Binary(value))
         | ColumnarValue::Scalar(ScalarValue::LargeBinary(value)) => {
-            let encoded = value.as_ref().map(|bytes| encode(bytes, chunk));
+            let encoded = value
+                .as_ref()
+                .map(|bytes| encode(bytes, chunk, limit))
+                .transpose()?;
             Ok(ColumnarValue::Scalar(ScalarValue::Utf8(encoded)))
         }
         ColumnarValue::Scalar(other) => {
@@ -71,16 +85,25 @@ const LINE_LEN: usize = 76;
 const INFALLIBLE_SINK: &str = "writing base64 to an in-memory buffer cannot fail";
 
 /// Length of the padded base64 encoding of `n` input bytes.
-fn base64_encoded_len(n: usize) -> usize {
-    n.div_ceil(3) * 4
+fn base64_encoded_len(n: usize) -> Option<usize> {
+    n.div_ceil(3).checked_mul(4)
 }
 
 /// Length after CRLF wrapping if `encoded_len` bytes are chunked at `LINE_LEN` chars per line.
-fn chunked_len(encoded_len: usize) -> usize {
+fn chunked_len(encoded_len: usize) -> Option<usize> {
     if encoded_len == 0 {
-        0
+        Some(0)
     } else {
-        encoded_len + ((encoded_len - 1) / LINE_LEN) * 2
+        encoded_len.checked_add(((encoded_len - 1) / LINE_LEN).checked_mul(2)?)
+    }
+}
+
+fn encoded_len(n: usize, chunk: bool) -> Option<usize> {
+    let len = base64_encoded_len(n)?;
+    if chunk {
+        chunked_len(len)
+    } else {
+        Some(len)
     }
 }
 
@@ -121,7 +144,7 @@ fn encode_into<W: Write>(
     Ok(())
 }
 
-/// O(1) upper bound on the total encoded length of `array`, for sizing the output value buffer.
+/// Sizes the output buffer using an O(1) upper bound, counting exactly if it exceeds the limit.
 ///
 /// Each row pads independently, so the encoded total is `sum ceil(len_i / 3) * 4`, which cannot be
 /// derived from the input's total byte count alone: N rows of one byte each encode to `4N`, not to
@@ -129,19 +152,42 @@ fn encode_into<W: Write>(
 /// to the whole-input encoding turns the estimate into a true upper bound while staying O(1) — no
 /// pass over the offsets. It over-reserves by at most 4 bytes per row, which matters only for
 /// arrays of very short values, where the buffer is small in absolute terms anyway.
-fn encoded_capacity<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) -> usize {
-    let encoded_total =
-        base64_encoded_len(array.value_data().len()) + 4 * array.len().saturating_sub(1);
-    if chunk {
-        chunked_len(encoded_total)
-    } else {
-        encoded_total
+fn encoded_capacity<O: OffsetSizeTrait>(
+    array: &GenericBinaryArray<O>,
+    chunk: bool,
+    limit: usize,
+) -> Result<usize, DataFusionError> {
+    if array.null_count() == array.len() {
+        return Ok(0);
     }
+
+    let offsets = array.value_offsets();
+    let visible_bytes = (offsets[array.len()] - offsets[0]).as_usize();
+    if visible_bytes == 0 {
+        return Ok(0);
+    }
+    let estimate = base64_encoded_len(visible_bytes)
+        .and_then(|len| len.checked_add(array.len().saturating_sub(1).checked_mul(4)?))
+        .and_then(|len| if chunk { chunked_len(len) } else { Some(len) });
+    if let Some(estimate) = estimate.filter(|&len| len <= limit) {
+        return Ok(estimate);
+    }
+
+    // The estimate includes padding slack and bytes hidden by nulls, so only an exact
+    // count of the visible, non-null values can establish that the output is too large.
+    array.iter().flatten().try_fold(0usize, |total, bytes| {
+        let len = checked_output_size("base64 value", encoded_len(bytes.len(), chunk), limit)?;
+        checked_output_size("base64 batch", total.checked_add(len), limit)
+    })
 }
 
-fn encode_array<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) -> StringArray {
-    let mut builder =
-        GenericStringBuilder::<i32>::with_capacity(array.len(), encoded_capacity(array, chunk));
+fn encode_array<O: OffsetSizeTrait>(
+    array: &GenericBinaryArray<O>,
+    chunk: bool,
+    limit: usize,
+) -> Result<StringArray, DataFusionError> {
+    let capacity = encoded_capacity(array, chunk, limit)?;
+    let mut builder = GenericStringBuilder::<i32>::with_capacity(array.len(), capacity);
     // Reused across rows, so a batch pays no per-row allocation.
     let mut scratch = String::new();
     for i in 0..array.len() {
@@ -153,20 +199,26 @@ fn encode_array<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) 
         // Finalizes the value written through `fmt::Write` above.
         builder.append_value("");
     }
-    builder.finish()
+    Ok(builder.finish())
 }
 
-fn encode(bytes: &[u8], chunk: bool) -> String {
+fn encode(bytes: &[u8], chunk: bool, limit: usize) -> Result<String, DataFusionError> {
+    let len = checked_output_size("base64 value", encoded_len(bytes.len(), chunk), limit)?;
     let mut scratch = String::new();
-    let mut out = String::new();
+    let mut out = String::with_capacity(len);
     encode_into(bytes, chunk, &mut scratch, &mut out).expect(INFALLIBLE_SINK);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, LargeBinaryArray};
+    use arrow::array::{ArrayRef, BinaryArray, LargeBinaryArray};
+    use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+
+    fn encode(bytes: &[u8], chunk: bool) -> String {
+        super::encode(bytes, chunk, i32::MAX as usize).unwrap()
+    }
 
     #[test]
     fn unchunked_is_a_single_line() {
@@ -250,7 +302,7 @@ mod tests {
                 let actual: usize = (0..input.len())
                     .map(|i| encode(input.value(i), chunk).len())
                     .sum();
-                let estimated = encoded_capacity(&input, chunk);
+                let estimated = encoded_capacity(&input, chunk, i32::MAX as usize).unwrap();
                 assert!(
                     estimated >= actual,
                     "shape {shape:?}, chunk={chunk}: estimate {estimated} < actual {actual}"
@@ -266,7 +318,7 @@ mod tests {
         let values: Vec<Option<&[u8]>> = (0..100).map(|_| Some(&b"a"[..])).collect();
         let input = BinaryArray::from(values);
         for chunk in [false, true] {
-            let out = encode_array(&input, chunk);
+            let out = encode_array(&input, chunk, i32::MAX as usize).unwrap();
             assert_eq!(out.len(), 100);
             for i in 0..out.len() {
                 assert_eq!(out.value(i), "YQ==");
@@ -288,7 +340,7 @@ mod tests {
             None,
             Some(&c120[..]), // wraps twice
         ]);
-        let out = encode_array(&input, true);
+        let out = encode_array(&input, true, i32::MAX as usize).unwrap();
         assert_eq!(out.len(), 6);
         assert_eq!(out.value(0), "");
         assert!(out.is_null(1));
@@ -302,10 +354,138 @@ mod tests {
     fn encode_array_large_binary_unchunked() {
         // Exercises the LargeBinaryArray (i64 offsets) instantiation of the generic.
         let input = LargeBinaryArray::from(vec![None, Some(&b"abc"[..]), Some(&b"hi!"[..])]);
-        let out = encode_array(&input, false);
+        let out = encode_array(&input, false, i32::MAX as usize).unwrap();
         assert_eq!(out.len(), 3);
         assert!(out.is_null(0));
         assert_eq!(out.value(1), "YWJj");
         assert_eq!(out.value(2), BASE64_STANDARD.encode(b"hi!"));
+    }
+
+    #[test]
+    fn lengths_are_checked_at_the_utf8_and_usize_boundaries() {
+        let limit = i32::MAX as usize;
+        let input_len = limit / 4 * 3;
+        let len = encoded_len(input_len, false).unwrap();
+        assert_eq!(len, limit - 3);
+        assert!(checked_output_size("base64 value", Some(len), limit).is_ok());
+        assert!(
+            checked_output_size("base64 value", encoded_len(input_len + 1, false), limit).is_err()
+        );
+        assert_eq!(base64_encoded_len(usize::MAX), None);
+        assert_eq!(chunked_len(usize::MAX), None);
+    }
+
+    #[test]
+    fn small_limit_checks_scalar_output_including_wrapping() {
+        for value in [
+            ScalarValue::Binary(Some(vec![b'a'; 58])),
+            ScalarValue::LargeBinary(Some(vec![b'a'; 58])),
+        ] {
+            for (chunk, size) in [(false, 80), (true, 82)] {
+                let args = [
+                    ColumnarValue::Scalar(value.clone()),
+                    ColumnarValue::Scalar(ScalarValue::Boolean(Some(chunk))),
+                ];
+                let err = spark_base64_with_limit(&args, size - 1).unwrap_err();
+                assert!(err.to_string().contains("base64 value output size"));
+                let result = spark_base64_with_limit(&args, size).unwrap();
+                let ColumnarValue::Scalar(result) = result else {
+                    panic!("expected a scalar result");
+                };
+                assert_eq!(result, ScalarValue::Utf8(Some(encode(&[b'a'; 58], chunk))));
+            }
+        }
+        let args = [
+            ColumnarValue::Scalar(ScalarValue::Binary(None)),
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
+        ];
+        assert!(matches!(
+            spark_base64_with_limit(&args, 0).unwrap(),
+            ColumnarValue::Scalar(ScalarValue::Utf8(None))
+        ));
+    }
+
+    #[test]
+    fn small_limit_checks_array_total_and_accepts_overestimated_output() {
+        let binary: ArrayRef = Arc::new(BinaryArray::from(vec![
+            b"abc".as_slice(),
+            b"def".as_slice(),
+        ]));
+        let large: ArrayRef = Arc::new(LargeBinaryArray::from(vec![
+            b"abc".as_slice(),
+            b"def".as_slice(),
+        ]));
+        for input in [binary, large] {
+            for chunk in [false, true] {
+                let args = [
+                    ColumnarValue::Array(Arc::clone(&input)),
+                    ColumnarValue::Scalar(ScalarValue::Boolean(Some(chunk))),
+                ];
+                let err = spark_base64_with_limit(&args, 7).unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("base64 batch output size 8 exceeds 7 bytes"));
+                let result = spark_base64_with_limit(&args, 8)
+                    .unwrap()
+                    .into_array(2)
+                    .unwrap();
+                let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+                assert_eq!(result, &StringArray::from(vec!["YWJj", "ZGVm"]));
+            }
+        }
+    }
+
+    fn assert_visible_output_size<O: OffsetSizeTrait>() {
+        let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![
+            O::usize_as(0),
+            O::usize_as(99),
+            O::usize_as(102),
+            O::usize_as(201),
+        ]));
+        let input = GenericBinaryArray::<O>::new(
+            offsets,
+            Buffer::from(vec![b'a'; 201]),
+            Some(NullBuffer::from(vec![false, true, false])),
+        );
+        for chunk in [false, true] {
+            let out = encode_array(&input, chunk, 4).unwrap();
+            assert_eq!(out, StringArray::from(vec![None, Some("YWFh"), None]));
+            let slice = input.slice(1, 1);
+            assert_eq!(
+                encode_array(&slice, chunk, 4).unwrap(),
+                StringArray::from(vec!["YWFh"])
+            );
+            for null_slice in [input.slice(0, 1), input.slice(0, 0)] {
+                let out = encode_array(&null_slice, chunk, 0).unwrap();
+                assert_eq!(out.len(), null_slice.len());
+                assert_eq!(out.null_count(), null_slice.len());
+                assert!(out.value_data().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn null_spans_and_slices_do_not_count_hidden_bytes() {
+        assert_visible_output_size::<i32>();
+        assert_visible_output_size::<i64>();
+    }
+
+    #[test]
+    fn small_limit_rejects_a_wrapped_array_value() {
+        let input = BinaryArray::from(vec![[b'a'; 58].as_slice()]);
+        let err = encode_array(&input, true, 81).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("base64 value output size 82 exceeds 81 bytes"));
+        assert_eq!(encode_array(&input, false, 80).unwrap().value(0).len(), 80);
+
+        let input = BinaryArray::from(vec![[b'a'; 58].as_slice(); 2]);
+        let err = encode_array(&input, true, 163).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("base64 batch output size 164 exceeds 163 bytes"));
+        let out = encode_array(&input, true, 164).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.value(1), encode(&[b'a'; 58], true));
     }
 }
