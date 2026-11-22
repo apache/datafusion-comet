@@ -156,7 +156,6 @@ FILTERS = {
         "spark/src/main/scala/org/apache/comet/vector/**",
         "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
         "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
-        "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
@@ -198,34 +197,6 @@ FILTERS = {
         "spark/src/main/scala/org/apache/comet/expressions/**",
         "spark/src/main/spark-*/**",
     ],
-    "spark_3_4": [
-        "native/**/src/**",
-        "native/**/Cargo.toml",
-        "native/Cargo.lock",
-        "common/src/main/**",
-        "common/pom.xml",
-        "spark/src/main/**",
-        "!spark/src/main/spark-3.5/**",
-        "!spark/src/main/spark-4.0/**",
-        "!spark/src/main/spark-4.1/**",
-        "!spark/src/main/spark-4.2/**",
-        "!spark/src/main/spark-4.x/**",
-        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
-        "spark/pom.xml",
-        "dev/diffs/3.4.3.diff",
-        "pom.xml",
-        "rust-toolchain.toml",
-        ".github/workflows/ci.yml",
-        ".github/workflows/spark_sql_test_reusable.yml",
-        "dev/ci/spark-sql-modules.py",
-        ".github/actions/setup-builder/**",
-        ".github/actions/setup-spark-builder/**",
-        ".github/actions/upload-artifact-retry/**",
-        ".github/actions/download-artifact-retry/**",
-        ".github/actions/maven-bootstrap/**",
-        ".mvn/**",
-        "mvnw",
-    ],
     "spark_3_5": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -233,7 +204,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-4.0/**",
         "!spark/src/main/spark-4.1/**",
         "!spark/src/main/spark-4.2/**",
@@ -261,7 +231,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.1/**",
@@ -289,7 +258,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -317,7 +285,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -343,31 +310,6 @@ FILTERS = {
     # ci.yml folds the two outputs into the reusable workflow's `modules`
     # input. Populated below, after the dict, so the two lists cannot drift.
     "spark_4_1_hive": [],
-    "iceberg_1_8": [
-        "native/**/src/**",
-        "native/**/Cargo.toml",
-        "native/Cargo.lock",
-        "common/src/main/**",
-        "common/pom.xml",
-        "spark/src/main/**",
-        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
-        "spark/pom.xml",
-        "dev/diffs/iceberg/**",
-        "pom.xml",
-        "rust-toolchain.toml",
-        ".github/workflows/ci.yml",
-        ".github/workflows/iceberg_spark_test_reusable.yml",
-        ".github/actions/setup-builder/**",
-        ".github/actions/setup-iceberg-builder/**",
-        "dev/ci/iceberg-test-shards.gradle",
-        "dev/ci/check-iceberg-shards.py",
-        "dev/ci/test-iceberg-shards.py",
-        ".github/actions/upload-artifact-retry/**",
-        ".github/actions/download-artifact-retry/**",
-        ".github/actions/maven-bootstrap/**",
-        ".mvn/**",
-        "mvnw",
-    ],
     "iceberg_1_9": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -478,7 +420,8 @@ FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 
 # Which events may run each job, independent of the path filters above.
 #
-#   "pr"              every pull request
+#   "pr"              every pull request, except one from a fork (see
+#                     UPSTREAM below), plus a push to a fork
 #   "queue"           the merge queue, i.e. a merge_group event
 #   "nightly"         the scheduled run against main, once a day
 #   "push"            push to main
@@ -513,8 +456,8 @@ FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 # `schedule` only on the default branch. A tier there would not defer a suite,
 # it would drop it. And the tiers exist because of main's volume, which a
 # release branch does not have: branch-1.0 took 28 pull requests in its first
-# two months. "push" jobs (the site deploy) and label-only jobs (Spark 3.4)
-# keep their rules on a release branch.
+# two months. "push" jobs (the site deploy) and any label-only job keep their
+# rules on a release branch.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
@@ -572,31 +515,28 @@ POLICY = {
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],
-    # Spark 3.4 is deprecated, so it is the one test job outside the queue
-    # tier: a failure there no longer blocks a merge. It stays runnable on
-    # demand -- the label on a pull request, or a workflow_dispatch -- so
-    # anyone who wants to check a change against 3.4 still can.
-    "spark_3_4": ["label:run-spark-3.4-tests"],
     # Spark 4.1 is the default build profile and the one Spark SQL suite the
     # queue runs; 3.5, 4.0 and 4.2 run nightly, or on a pull request with
     # their label.
     "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
     "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
-    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
-    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
-    # out) and then catalyst and sql_core alone. What changed is how often a
-    # pull request is pushed: with agent-driven review and agent-driven
-    # replies to review, a PR now goes through several more rounds before it
-    # is queued, and each round paid for the whole 4.1 build. The queue still
-    # runs every shard before anything lands; the two labels bring the run
-    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
-    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
-    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
-    "spark_4_1_hive": [
-        "queue",
-        "label:run-spark-4.1-tests",
-        "label:run-spark-4.1-hive-tests",
-    ],
+    # Spark 4.1 is the default build profile, and its catalyst and sql_core
+    # shards are the one Spark SQL suite every pull request runs. For a pull
+    # request from a fork that is the fork's runners, not ASF's: the PR tier
+    # runs there (see UPSTREAM below). The suite was out of the PR tier while
+    # the PR tier ran upstream, because agent-driven review rounds meant each
+    # pull request paid for the whole 4.1 build several times over. On a fork
+    # that repetition costs ASF nothing, and running the suite there means a
+    # contributor sees a 4.1 failure before the queue does, rather than having
+    # to ask for a label. The queue runs the same shards again on the merge
+    # result, and it stays the gate.
+    #
+    # The sql_hive shards stay in the queue alone. They are four more shards
+    # on every push for a surface few changes touch, and the queue still runs
+    # them before anything lands; `run-spark-4.1-hive-tests` brings them
+    # forward onto a pull request.
+    "spark_4_1": ["pr", "queue"],
+    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
     # Spark 4.2 support is experimental, but the suite passes, so it sits in
     # the nightly tier with the other non-default versions rather than being
     # reachable only on demand. Nightly is the right tier for it twice over:
@@ -606,12 +546,12 @@ POLICY = {
     # until someone thinks to ask for it.
     "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
-    # the one Iceberg version the queue runs; the three older versions run
-    # nightly. One label opts a pull request into all four.
-    "iceberg_1_8": ["nightly", "label:run-iceberg-tests"],
+    # the one Iceberg version every pull request and the queue run, for the
+    # same reason as Spark 4.1 above. The two older versions run nightly,
+    # and one label brings both forward onto a pull request.
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
-    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_11": ["pr", "queue"],
     # The Delta contrib suites all run nightly. The PR tier's strict warnings
     # job compiles the contrib against Spark 3.5, so a change that breaks its
     # build on Spark 3.5 fails on its own pull request. One label opts a pull
@@ -620,6 +560,45 @@ POLICY = {
     "delta_4_0": ["nightly", "label:run-delta-tests"],
     "delta_4_1": ["nightly", "label:run-delta-tests"],
 }
+
+
+# Pull requests from a contributor's fork do not run the PR tier on ASF runners.
+# The contributor's fork runs it instead, on a push to the PR branch (see
+# ci_fork.yml), and a bridge workflow (fork_ci_status.yml) mirrors that run onto
+# the pull request as the informational `CI (fork)` check. The merge queue still
+# runs the queue tier on the merge result, so the fork's verdict is feedback and
+# never a gate: a contributor controls their own workflows. A fork PR keeps
+# every opt-in label job, and a PR from a branch of this repository, or one that
+# targets a release branch, keeps the PR tier upstream.
+UPSTREAM = "apache/datafusion-comet"
+
+
+def is_fork_pull_request(event):
+    """Does the pull request's PR tier run on a fork, not here?
+
+    That is a pull request from a fork of UPSTREAM into the default branch. It
+    is also any pull request opened inside a fork, whose own branch push has
+    already run the tier through ci_fork.yml: running it again on the
+    `pull_request` event would test the same commit twice.
+    """
+    if event.get("name") != "pull_request":
+        return False
+    repository = event.get("repository", "")
+    if repository and repository != UPSTREAM:
+        return True
+    head = event.get("head_repository", "")
+    return (
+        repository == UPSTREAM
+        and bool(head)
+        and head != UPSTREAM
+        and event.get("base") == "main"
+    )
+
+
+def is_fork_push(event):
+    """Is this a push to a contributor's fork, rather than to UPSTREAM?"""
+    repository = event.get("repository", "")
+    return event.get("name") == "push" and bool(repository) and repository != UPSTREAM
 
 
 # Release branches are named `branch-<major>.<minor>`, as in branch-0.17 and
@@ -636,9 +615,11 @@ def gating_labels(job):
 def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
-    `event` is {"name", "action", "label", "labels", "base"}: the workflow event
-    name, the pull_request action, the label just added on a `labeled` event,
-    the labels currently on the pull request, and the branch it targets.
+    `event` is {"name", "action", "label", "labels", "base", "repository",
+    "head_repository"}: the workflow event name, the pull_request action, the
+    label just added on a `labeled` event, the labels currently on the pull
+    request, the branch it targets, the repository the workflow runs in, and
+    the repository the pull request's branch lives in.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -646,6 +627,11 @@ def event_allows(job, event):
     if name == "workflow_dispatch":
         return True
     if name == "push":
+        # A push to a fork's branch is the contributor's own pull request tier.
+        # The "push" tier is main's cache refresh and site deploy, and a fork
+        # has no site to deploy.
+        if is_fork_push(event):
+            return "pr" in tiers
         return "push" in tiers
     if name == "merge_group":
         return "queue" in tiers
@@ -660,7 +646,7 @@ def event_allows(job, event):
     if gates:
         if not any(label in event.get("labels", []) for label in gates):
             return False
-    elif "pr" not in tiers:
+    elif "pr" not in tiers or is_fork_pull_request(event):
         return False
 
     # A `labeled` event fires at the same commit as the opened/synchronize run
@@ -680,7 +666,7 @@ def release_branch_allows(job, event):
     automatic = any(tier in tiers for tier in RELEASE_BRANCH_TIERS)
     # The opened/synchronize run already ran every automatic job at this
     # commit, so a `labeled` run adds only a job that nothing else runs there,
-    # which leaves the label-only Spark 3.4 suite.
+    # which leaves only the label-only jobs, of which there are currently none.
     if event.get("action") == "labeled":
         return not automatic and event.get("label") in gates
     return automatic or any(label in event.get("labels", []) for label in gates)
@@ -702,6 +688,8 @@ def event_from_env():
         "label": os.environ.get("LABEL_NAME", ""),
         "labels": json.loads(labels) if labels.strip() else [],
         "base": os.environ.get("PR_BASE_REF", ""),
+        "repository": os.environ.get("REPOSITORY", ""),
+        "head_repository": os.environ.get("PR_HEAD_REPO", ""),
     }
 
 

@@ -71,6 +71,8 @@ message Operator {
     RangeScan range_scan = 121;
     MergeRows merge_rows = 122;
     ArrowPythonUdf arrow_python_udf = 123;
+    CrossJoin cross_join = 124;
+    TextScan text_scan = 125;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -291,6 +293,26 @@ message CsvOptions {
   bool truncated_rows = 8;
 }
 
+// Native Text scan, mirroring Spark's `text` data source (a single `value: string` column).
+message TextScan {
+  // Partition columns are not supported by the native Text scan, so there is no partition schema.
+  reserved 2;
+  reserved "partition_schema";
+  repeated SparkStructField data_schema = 1;
+  repeated int32 projection_vector = 3;
+  repeated SparkFilePartition file_partitions = 4;
+  map<string, string> object_store_options = 5;
+  TextOptions text_options = 6;
+}
+
+message TextOptions {
+  // When true, each file is read as a single row instead of being split into lines.
+  bool whole_text = 1;
+  // Custom line separator, as the exact bytes Spark computed (lineSeparatorInRead, already encoded
+  // with the file's charset). When unset, lines are split on `\n`, `\r\n`, or `\r`.
+  optional bytes line_sep = 2;
+}
+
 // A typed Iceberg primitive value, shared by partition values and predicate literals. The oneof
 // case is the type tag (iceberg-rust's Datum is self-typed and Predicate::bind does not coerce, so
 // the type must be known at construction). Grows by adding a case as Iceberg adds primitives
@@ -388,7 +410,12 @@ message IcebergScanCommon {
   // Schema to read
   repeated SparkStructField required_schema = 3;
 
-  // Deduplication pools (must contain all entries for cross-partition deduplication)
+  // Deduplication pools. In the common block every task gets, the per-file pools
+  // (partition_data_pool, delete_files_pool, residual_pool, delete_file_pool,
+  // delete_file_path_pool) are empty: each partition's IcebergScan.common holds the entries its
+  // tasks use, and the JVM merges the two before the plan reaches native. The driver ships a
+  // partition's delete files, their paths, and its residuals apart from its message, shared with
+  // the other partitions that use them, and the executor JVM adds them to the partition's pools.
   repeated string schema_pool = 4;
   // Index-aligned with partition_spec_pool: entry i is the StructType JSON for the spec at
   // partition_spec_pool[i]. Native uses this pairing to recover each entry's spec_id when
@@ -414,8 +441,8 @@ message IcebergScanCommon {
 
   // Flat pool of unique delete files, referenced by index from DeleteFileList. Iceberg's default
   // partition delete granularity has one delete file apply to many data files, so interning each
-  // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
-  // common message from growing with the number of references.
+  // delete file here (rather than embedding copies per delete_files_pool set) keeps a
+  // partition's pools from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
 
   // Flat pool of unique delete-file paths, referenced by index from IcebergDeleteFile. A V3
@@ -432,7 +459,8 @@ message IcebergScanCommon {
 }
 
 message IcebergScan {
-  // Common data shared across partitions (pools, metadata, catalog props)
+  // Common data shared across partitions (pools, metadata, catalog props). In the per-partition
+  // message the driver ships, it holds only that partition's per-file pool entries.
   IcebergScanCommon common = 1;
 
   // Single partition's file scan tasks
@@ -931,6 +959,8 @@ message HashAggregate {
   // keys (ascending, nulls first). The native planner sorts the aggregate output on the
   // grouping columns unless the aggregate already emits its groups in that order.
   bool ordered_by_grouping_keys = 9;
+  // Attach this partial MIN/MAX execution's live bound to an eligible native reader.
+  bool dynamic_filter_enabled = 10;
 }
 
 message Limit {
@@ -1052,6 +1082,11 @@ message ParquetWriter {
   // operators call, for every file that is neither local nor on HDFS. See HadoopFileOutput for
   // why.
   bool jvm_output_stream = 10;
+  // The Spark version (`SPARK_VERSION_SHORT`) written into the footer's key-value metadata as
+  // `org.apache.spark.version`, as Spark's own ParquetWriteSupport does. Spark's datetime rebase
+  // logic reads it back to tell files written by Spark 3.0+ from older ones. Optional so native
+  // callers such as tests can omit it; when absent or empty the key is not written.
+  optional string spark_version = 11;
 }
 
 enum AggregateMode {
@@ -1113,9 +1148,9 @@ message MergeOutputRow {
 }
 
 message Explode {
-  // The array expression to explode into multiple rows
+  // The array or map expression to explode into multiple rows
   spark.spark_expression.Expr child = 1;
-  // Whether this is explode_outer (produces null row for empty/null arrays)
+  // Whether this is explode_outer (produces null row for empty/null collections)
   bool outer = 2;
   // Expressions for other columns to project alongside the exploded values
   repeated spark.spark_expression.Expr project_list = 3;
@@ -1148,12 +1183,18 @@ message SortMergeJoin {
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
   optional spark.spark_expression.Expr condition = 5;
+  // Spark sets this for a right sort reading a single integer equality key from a Comet shuffle.
+  bool right_key_reduction_enabled = 6;
 }
 
 message BroadcastNestedLoopJoin {
   JoinType join_type = 1;
   BuildSide build_side = 2;
   optional spark.spark_expression.Expr condition = 3;
+}
+
+// Spark's CartesianProductExec without a condition (one with a condition falls back to Spark).
+message CrossJoin {
 }
 
 enum JoinType {
@@ -1240,6 +1281,9 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+  // The partition keys ascending, when Spark planned no sort below the window because its input
+  // reports that order. Empty otherwise.
+  repeated spark.spark_expression.Expr input_sort_orders = 5;
 }
 
 // Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec

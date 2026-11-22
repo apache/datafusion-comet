@@ -39,6 +39,25 @@ set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a n
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
 
+### Left-semi sort-merge joins
+
+A left-semi join returns each left row if any right row matches. For an unfiltered batch join
+on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to keep one copy of each repeated key per batch before the native sort. The option is off by
+default. The right sort must read the key column directly from a Comet shuffle. With the
+`fair_unified` memory pool, the native planner checks at first execution for memory held by another
+Spark consumer in the task and skips reduction if it finds any, logging the reason at
+debug level. This best-effort check does not cover consumers that allocate memory later.
+
+The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
+batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
+partition. Batches with too few repeated keys also pass through; after an unprofitable
+batch, reduction is only tried again on a larger batch in the same partition. The join
+reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+
+Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Extending reduction to those joins or across small batches is separate follow-up work.
+
 ### Broadcast Joins
 
 Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
@@ -49,6 +68,20 @@ broadcast again. Each task still builds its own hash table.
 
 Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
 itself.
+
+#### Broadcast compression
+
+Comet compresses the Arrow IPC batches of a broadcast with Spark's `spark.io.compression.codec`. When
+`spark.broadcast.compress` is `true`, which is Spark's default, Spark compresses the broadcast again with the same
+codec, and executors decompress it twice. The second pass runs on the driver before the join can start, and it saves few
+bytes because the data is already compressed: up to about 10% when the build side has sorted or sequential columns,
+such as surrogate keys, and 0 to 6% otherwise. Its cost grows with the size of the broadcast and with the codec level.
+In local tests with broadcasts of 270 to 460 MiB, it added about 0.2 seconds of driver time and up to 0.15 seconds on
+each executor with `lz4`, and about 0.85 seconds of driver time with `zstd` at level 5.
+
+For queries that broadcast large build sides, consider setting `spark.broadcast.compress=false`. The setting applies to
+every broadcast in the application, so broadcasts that Comet does not create, such as the build side of a join that
+runs in Spark, are sent uncompressed too.
 
 ### Join Runtime Filters
 

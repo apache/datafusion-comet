@@ -34,10 +34,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.comet.exec.inMemoryCache.enabled=true
 ```
 
-On Spark 3.4, a union of a shuffle and a relation cached in Comet's format keeps every shuffle
-partition. Spark 3.4 has no hook for the rule through which Comet lets AQE coalesce the shuffle
-partitions of a union that Comet runs.
-
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
 cache format it started with however the config is set afterwards. The plugin installs Comet's
@@ -176,11 +172,8 @@ several times faster, at six times the memory.
 The two relations are not comparable to each other — different row counts, and a struct column
 carries several values per row.
 
-Array and map columns are deliberately absent from the benchmark, not from the format — the cache
-stores and projects them, and `CometInMemoryCacheSuite` covers them. They cannot be measured _here_
-because the left column would not exist: it needs Spark's cache scan to bridge into Comet operators,
-and `CometSparkToColumnarExec` declines `ArrayType` and `MapType`, so a query projecting one falls
-back to Spark row execution above the scan and the two columns stop measuring the same boundary.
+Array and map columns are not in the benchmark, though the cache stores and projects them, and
+`CometInMemoryCacheSuite` covers them.
 
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
@@ -232,7 +225,8 @@ above it.
 Building the cache is measured the same way, from the same source, with its rows produced either by
 Comet operators or by Spark operators. Comet's format is written straight from the Arrow batches of
 Comet operators, while Spark's is always built from rows, so above Comet operators it first converts
-their batches. Measured on an Apple M3 Max (JDK 17, Spark 4.1, release build):
+their batches. On Spark 3.5, Comet's format is written from Arrow batches only with AQE off; see
+[Limitations](#limitations). Measured on an Apple M3 Max (JDK 17, Spark 4.1, release build):
 
 | Rows produced by | Spark's cache format | Comet's cache format, `zstd` | Comet's cache format, `none` |
 | ---------------- | -------------------: | ---------------------------: | ---------------------------: |
@@ -308,6 +302,14 @@ operator reads a relation cached in Comet's format depends on the scan below it:
 
 Whenever Spark's scan reads Comet's format, which also happens for a relation whose cached plan
 records `Dataset.observe` metrics, Comet records a fallback reason on the scan.
+
+On **Spark 3.5**, a relation cached under AQE (`spark.sql.adaptive.enabled`, on by default) is built
+from rows. Spark builds a cache from the batches of its plan only when the plan supports columnar
+output, and a cached `AdaptiveSparkPlanExec` does not until Spark 4.0. So the cached plan runs
+natively, then converts its batches to rows, which are written into Arrow again before they are
+compressed, where Spark 4.0 and later, or any version without AQE, write the Arrow batches as they
+are. Comet cannot change this without a hook in Spark. The relation is read the same way once it is
+built, but the build timings above are from Spark 4.1 and do not apply to this case.
 
 Measured by the same benchmark over the same 5M-row relation, with native execution off so that
 Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused

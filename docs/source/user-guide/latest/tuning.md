@@ -26,7 +26,7 @@ guide is split into the following pages:
 - [Memory Tuning](tuning/memory.md): configuring Comet's off-heap memory pool and the executor
   memory overhead, choosing a memory pool, batch size, and limiting spill disk usage.
 - [Shuffle Tuning](tuning/shuffle.md): enabling Comet shuffle, the native and columnar shuffle
-  implementations, and shuffle compression.
+  implementations, limiting the native shuffle writer's memory, and shuffle compression.
 - [Remote Shuffle with Celeborn](tuning/celeborn.md): bounding frame sizes and memory admission
   for native remote shuffle.
 - [Parquet Scan Tuning](parquet.md#tuning): row filter pushdown and late materialization, and
@@ -35,6 +35,8 @@ guide is split into the following pages:
   `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`.
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
   floating-point values.
+- [Expression Tuning](tuning/expressions.md): lambdas and higher-order functions such as `filter`, and the
+  built-in array functions that replace them.
 - [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many
   operators fall back to Spark, and the experimental direct columnar-to-row converter.
 
