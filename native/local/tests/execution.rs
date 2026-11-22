@@ -555,6 +555,30 @@ impl Gated {
         assert_eq!(self.started(), (0..partitions).collect::<Vec<_>>());
     }
 
+    /// `wait_started` for a stream the test reads itself. Partitions start only while the
+    /// stream is polled, and a partition can finish after the poll that delivered its batch, so
+    /// this keeps polling the stream, which has nothing to deliver meanwhile.
+    async fn poll_until_started(
+        &self,
+        stream: &mut (impl futures::Stream<Item = Result<RecordBatch>> + Unpin),
+        partitions: usize,
+    ) {
+        timeout(DEADLINE, async {
+            while self.started.lock().unwrap().len() < partitions {
+                assert!(futures::poll!(stream.next()).is_pending());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("partitions did not start");
+        let settling = Instant::now();
+        while settling.elapsed() < Duration::from_millis(50) {
+            assert!(futures::poll!(stream.next()).is_pending());
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(self.started(), (0..partitions).collect::<Vec<_>>());
+    }
+
     /// Opens every gate and checks that `reader` read every partition in order.
     async fn read_in_order(&self, reader: tokio::task::JoinHandle<Result<Vec<RecordBatch>>>) {
         for partition in 0..self.gates.len() {
@@ -625,7 +649,7 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
         .unwrap()
         .unwrap();
     assert_eq!(ids(&[first]), (0..4).collect::<Vec<_>>());
-    gated.wait_started(3).await;
+    gated.poll_until_started(&mut stream, 3).await;
     collect_in_order(&gated, stream, 1).await;
 }
 
@@ -742,11 +766,9 @@ async fn partition_order_follows_a_changing_running_limit() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(futures::poll!(stream.next()).is_pending());
-    gated.wait_started(2).await;
+    gated.poll_until_started(&mut stream, 2).await;
     // A higher limit applies to the partitions started from then on, up to the maximum.
     limit.store(usize::MAX, Ordering::Release);
-    assert!(futures::poll!(stream.next()).is_pending());
-    gated.wait_started(4).await;
+    gated.poll_until_started(&mut stream, 4).await;
     collect_in_order(&gated, stream, 1).await;
 }
