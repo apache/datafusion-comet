@@ -181,7 +181,8 @@ case class CometNativeScanExec(
     // NativeScanCommon protobuf. Same approach as FileSourceScanLike.pushedDownFilters
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
-      val base = nativeOp.getNativeScan.getCommon
+      val commonBuilder = nativeOp.getNativeScan.getCommon.toBuilder
+      commonBuilder.setParquetReaderBatchSize(scan.parquetReaderBatchSize)
       val scalarSubqueryFilters = dataFilters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
       scalarSubqueryFilters.foreach { f =>
@@ -196,7 +197,6 @@ case class CometNativeScanExec(
           Literal.create(s.eval(null), s.dataType)
         })
       if (resolvedFilters.nonEmpty) {
-        val commonBuilder = base.toBuilder
         commonBuilder.setHasDataFilters(true)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
@@ -205,10 +205,8 @@ case class CometNativeScanExec(
               logWarning(s"Could not serialize resolved scalar subquery filter: $filter")
           }
         }
-        commonBuilder.build().toByteArray
-      } else {
-        base.toByteArray
       }
+      commonBuilder.build().toByteArray
     }
 
     // Get file partitions from CometScanExec (handles bucketing, etc.)

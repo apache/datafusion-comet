@@ -93,9 +93,11 @@ use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::file_error_context::SparkReaderBatchSize;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::{
-    object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
+    object_store_url_key, prepare_object_store_with_configs, requests_nested_timestamp,
+    ObjectStoreBackend,
 };
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
@@ -561,7 +563,7 @@ impl PhysicalPlanner {
         common: &spark_operator::NativeScanCommon,
         object_store_url: ObjectStoreUrl,
         object_store_backend: ObjectStoreBackend,
-        files: Vec<PartitionedFile>,
+        mut files: Vec<PartitionedFile>,
         rebase_from_file_metadata: bool,
         datetime_rebase_mode_in_read: &str,
         int96_rebase_mode_in_read: &str,
@@ -626,6 +628,18 @@ impl PhysicalPlanner {
 
         let default_values = self.parse_default_values(common, &required_schema)?;
 
+        let has_data_filters = common.has_data_filters || !common.data_filters.is_empty();
+        let size = common.parquet_reader_batch_size.unwrap_or_default();
+        if !has_data_filters
+            && size > 0
+            && requests_nested_timestamp(&required_schema)
+            && size as usize != self.session_ctx.copied_config().batch_size()
+        {
+            let size = Arc::new(SparkReaderBatchSize(size as usize));
+            for file in &mut files {
+                file.extensions.insert_arc(Arc::clone(&size));
+            }
+        }
         let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
 
         let scan = init_datasource_exec(
@@ -636,7 +650,7 @@ impl PhysicalPlanner {
             object_store_backend,
             file_groups,
             Some(projection_vector),
-            if common.has_data_filters || !common.data_filters.is_empty() {
+            if has_data_filters {
                 Some(data_filters?)
             } else {
                 None

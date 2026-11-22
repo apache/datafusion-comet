@@ -187,6 +187,8 @@ message NativeScanCommon {
   // True when Spark supplied a Parquet data filter, including when Comet could
   // not serialize any of those filters into data_filters.
   bool has_data_filters = 19;
+  // Rows Spark decodes per read within a row group (1 for the row reader).
+  optional int32 parquet_reader_batch_size = 21;
 }
 
 message NativeScan {

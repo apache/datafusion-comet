@@ -15,12 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Preserve the file identity across Parquet's asynchronous planning and decoding.
+//! Preserve per-file reader settings and error context through Parquet planning and decoding.
 //!
 //! The schema adapter receives no file identity. Capture it when planning a file and retain it
 //! through that file's pending planners and streams. Delegate source operations to preserve
 //! Parquet's projection, filter, and sort pushdown.
 
+use super::eager_page_index_reader_factory::ReplanFooter;
 use arrow::array::RecordBatch;
 use datafusion::common::{
     config::ConfigOptions, tree_node::TreeNodeRecursion, DataFusionError, Result,
@@ -46,6 +47,10 @@ use std::{fmt, sync::Arc};
 /// The original URL-encoded Spark path, before object-store aliases and paths are normalized.
 #[derive(Debug, Clone)]
 pub(crate) struct SparkFilePath(pub Arc<str>);
+
+/// Spark's read boundary, attached to every file of a scan that might need it.
+#[derive(Debug)]
+pub(crate) struct SparkReaderBatchSize(pub usize);
 
 /// Delegate scan planning and pushdown to ParquetSource, wrapping only its per-file work.
 pub(crate) struct ParquetErrorContext(Arc<dyn FileSource>);
@@ -77,9 +82,24 @@ impl FileSource for ParquetErrorContext {
         config: &FileScanConfig,
         partition: usize,
     ) -> Result<Box<dyn Morselizer>> {
-        Ok(Box::new(FileContextMorselizer(
-            self.0.create_morselizer(store, config, partition)?,
-        )))
+        // The reader batch size is a scan-wide setting. DataFusion fixes it
+        // here, before the footer reveals any dictionary timestamp columns.
+        let spark_morselizer = config
+            .file_groups
+            .iter()
+            .find_map(|group| group.files().first())
+            .and_then(|file| file.extensions.get::<SparkReaderBatchSize>())
+            .map(|size| {
+                self.0
+                    .with_batch_size(size.0)
+                    .create_morselizer(Arc::clone(&store), config, partition)
+                    .map(Arc::from)
+            })
+            .transpose()?;
+        Ok(Box::new(FileContextMorselizer {
+            inner: self.0.create_morselizer(store, config, partition)?,
+            spark_morselizer,
+        }))
     }
 
     fn table_schema(&self) -> &TableSchema {
@@ -163,31 +183,62 @@ impl FileSource for ParquetErrorContext {
 }
 
 #[derive(Debug)]
-struct FileContextMorselizer(Box<dyn Morselizer>);
+struct FileContextMorselizer {
+    inner: Box<dyn Morselizer>,
+    spark_morselizer: Option<Arc<dyn Morselizer>>,
+}
+
+#[derive(Debug)]
+struct SparkBatchReplan {
+    morselizer: Arc<dyn Morselizer>,
+    file: PartitionedFile,
+    footer: Arc<ReplanFooter>,
+}
 
 impl Morselizer for FileContextMorselizer {
-    fn plan_file(&self, file: PartitionedFile) -> Result<Box<dyn MorselPlanner>> {
+    fn plan_file(&self, mut file: PartitionedFile) -> Result<Box<dyn MorselPlanner>> {
         let path = file
             .extensions
             .get::<SparkFilePath>()
             .map(|path| Arc::clone(&path.0))
             .unwrap_or_else(|| Arc::from(file.object_meta.location.as_ref()));
-        Ok(Box::new(FileContext {
-            inner: self.0.plan_file(file)?,
+        let replan = self.spark_morselizer.as_ref().map(|morselizer| {
+            let footer = Arc::new(ReplanFooter::default());
+            file.extensions.insert_arc(Arc::clone(&footer));
+            Arc::new(SparkBatchReplan {
+                morselizer: Arc::clone(morselizer),
+                file: file.clone(),
+                footer,
+            })
+        });
+        Ok(Box::new(FilePlanner {
+            inner: self.inner.plan_file(file)?,
             path,
+            replan,
         }))
     }
 }
 
 #[derive(Debug)]
-struct FileContext<T> {
-    inner: T,
+struct FilePlanner {
+    inner: Box<dyn MorselPlanner>,
     path: Arc<str>,
+    replan: Option<Arc<SparkBatchReplan>>,
 }
 
-impl MorselPlanner for FileContext<Box<dyn MorselPlanner>> {
+impl MorselPlanner for FilePlanner {
     fn plan(self: Box<Self>) -> Result<Option<MorselPlan>> {
-        let Self { inner, path } = *self;
+        let Self {
+            mut inner,
+            path,
+            mut replan,
+        } = *self;
+        // The first planner after the metadata load can switch readers
+        // before decoding rows. The replacement uses the marked footer.
+        if let Some(next) = replan.as_ref().filter(|next| next.footer.0.get().is_some()) {
+            inner = next.morselizer.plan_file(next.file.clone())?;
+            replan = None;
+        }
         let Some(mut plan) = inner.plan()? else {
             return Ok(None);
         };
@@ -195,7 +246,7 @@ impl MorselPlanner for FileContext<Box<dyn MorselPlanner>> {
             .take_morsels()
             .into_iter()
             .map(|inner| {
-                Box::new(FileContext {
+                Box::new(FileMorsel {
                     inner,
                     path: Arc::clone(&path),
                 }) as Box<dyn Morsel>
@@ -205,17 +256,19 @@ impl MorselPlanner for FileContext<Box<dyn MorselPlanner>> {
             .take_ready_planners()
             .into_iter()
             .map(|inner| {
-                Box::new(FileContext {
+                Box::new(Self {
                     inner,
                     path: Arc::clone(&path),
+                    replan: replan.clone(),
                 }) as Box<dyn MorselPlanner>
             })
             .collect();
         if let Some(pending) = plan.take_pending_planner() {
             plan.set_pending_planner(async move {
-                Ok(Box::new(FileContext {
+                Ok(Box::new(Self {
                     inner: pending.await?,
                     path,
+                    replan,
                 }) as Box<dyn MorselPlanner>)
             });
         }
@@ -223,7 +276,13 @@ impl MorselPlanner for FileContext<Box<dyn MorselPlanner>> {
     }
 }
 
-impl Morsel for FileContext<Box<dyn Morsel>> {
+#[derive(Debug)]
+struct FileMorsel {
+    inner: Box<dyn Morsel>,
+    path: Arc<str>,
+}
+
+impl Morsel for FileMorsel {
     fn into_stream(self: Box<Self>) -> BoxStream<'static, Result<RecordBatch>> {
         let Self { inner, path } = *self;
         inner
@@ -262,7 +321,7 @@ mod tests {
     #[tokio::test]
     async fn file_paths_stay_with_their_streams() {
         let stream = |path: &'static str, error| {
-            Box::new(FileContext {
+            Box::new(FileMorsel {
                 inner: Box::new(FailedMorsel(error)) as Box<dyn Morsel>,
                 path: Arc::from(path),
             })

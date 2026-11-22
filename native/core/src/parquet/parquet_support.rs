@@ -24,7 +24,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::{can_cast_types, take};
-use arrow::datatypes::{FieldRef, Fields};
+use arrow::datatypes::{FieldRef, Fields, Schema};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -463,6 +463,71 @@ fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
         | DataType::Map(field, _) => has_timestamp_unit(field.data_type(), unit),
         _ => false,
     }
+}
+
+pub(crate) fn requests_nested_timestamp(schema: &Schema) -> bool {
+    schema.fields().iter().any(|field| {
+        field.data_type().is_nested()
+            && has_timestamp_unit(field.data_type(), TimeUnit::Microsecond)
+    })
+}
+
+pub(super) fn projects_nested_dictionary_timestamp_millis(
+    physical: &Schema,
+    required: &Schema,
+    options: &SparkParquetOptions,
+) -> bool {
+    fn matches_fields(
+        physical: &Fields,
+        required: &Fields,
+        options: &SparkParquetOptions,
+        top_level: bool,
+    ) -> bool {
+        let Ok(indices) = match_struct_fields(physical, required, options) else {
+            // Leave matching errors to the schema adapter.
+            return false;
+        };
+        required
+            .iter()
+            .zip(indices.into_owned())
+            .any(|(field, index)| {
+                (!top_level || field.data_type().is_nested())
+                    && index.is_some_and(|i| matches_pair(&physical[i], field, options))
+            })
+    }
+
+    fn matches_pair(
+        physical: &FieldRef,
+        required: &FieldRef,
+        options: &SparkParquetOptions,
+    ) -> bool {
+        use DataType::*;
+        match (physical.data_type(), required.data_type()) {
+            (Dictionary(_, value), Timestamp(TimeUnit::Microsecond, _)) => {
+                matches!(value.as_ref(), Timestamp(TimeUnit::Millisecond, _))
+            }
+            (Struct(from), Struct(to)) => matches_fields(from, to, options, false),
+            (
+                List(from)
+                | LargeList(from)
+                | FixedSizeList(from, _)
+                | ListView(from)
+                | LargeListView(from),
+                List(to) | LargeList(to) | FixedSizeList(to, _) | ListView(to) | LargeListView(to),
+            ) => matches_pair(from, to, options),
+            (Map(from, from_sorted), Map(to, to_sorted)) if from_sorted == to_sorted => {
+                let (Struct(from), Struct(to)) = (from.data_type(), to.data_type()) else {
+                    return false;
+                };
+                from.iter()
+                    .zip(to.iter())
+                    .any(|(physical, required)| matches_pair(physical, required, options))
+            }
+            _ => false,
+        }
+    }
+
+    matches_fields(physical.fields(), required.fields(), options, true)
 }
 
 // List/map values can include entries outside a slice or beneath a null parent.
