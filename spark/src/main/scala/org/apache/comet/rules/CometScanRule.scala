@@ -289,9 +289,11 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
       return None
     }
-    // Legacy lists can hide INT96 leaves from DataFusion's microsecond coercion. Rebuilding
-    // the footer with a schema hint would lose the decryptor. Remove after adopting
-    // https://github.com/apache/datafusion/pull/26464.
+    // DataFusion expects paths like at.list.array when coercing INT96 to microseconds.
+    // It misses legacy paths like at.bag.array, so decoding in nanoseconds can overflow.
+    // TODO: Remove this fallback once Comet pins a DataFusion release that includes
+    // https://github.com/apache/datafusion/pull/26464
+    // https://github.com/apache/datafusion-comet/issues/7029
     if (encryptionConfigured && containsTimestampInArray(scanExec.requiredSchema)) {
       withFallbackReason(
         scanExec,
