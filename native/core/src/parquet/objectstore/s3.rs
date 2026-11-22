@@ -25,6 +25,7 @@ use crate::execution::jni_api::get_runtime;
 use crate::parquet::objectstore::location_scoped::{
     LocationScopedObjectStore, LocationSource, LocationStoreFactory,
 };
+use crate::parquet::objectstore::url_redaction::without_credentials;
 use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
@@ -69,11 +70,13 @@ pub fn create_store(
     configs: &HashMap<String, String>,
     min_ttl: Duration,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+    // The parser and the S3 builder quote the URL in their errors.
+    let url = &without_credentials(url);
     let (scheme, path) = ObjectStoreScheme::parse(url)?;
     if scheme != ObjectStoreScheme::AmazonS3 {
         return Err(object_store::Error::Generic {
             store: "S3",
-            source: format!("Scheme of URL is not S3: {url}").into(),
+            source: format!("Scheme of URL is not S3: {}", url.scheme()).into(),
         });
     }
     let path = Path::parse(path)?;
@@ -1320,6 +1323,45 @@ mod tests {
 
         let store = get_runtime().block_on(async { template.build(S3Credentials::SkipSignature) });
         assert!(store.is_ok(), "{:?}", store.err());
+    }
+
+    #[test]
+    fn create_store_errors_do_not_echo_userinfo_or_query() {
+        // Anonymous access and a configured region keep the builder case offline.
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(HADOOP_ANONYMOUS)
+            .with_region("us-east-1")
+            .build();
+        let error_for = |raw: &str| {
+            let url = Url::parse(raw).unwrap();
+            let err = match create_store(&url, &configs, Duration::from_secs(300)) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{raw} built a store"),
+            };
+            for leaked in ["alice", "SECRET", "SAS-MARKER"] {
+                assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+            }
+            err
+        };
+        let not_s3 = error_for("abfss://alice:SECRET@acct.dfs.core.windows.net/p?sig=SAS-MARKER");
+        assert!(
+            not_s3.ends_with("Scheme of URL is not S3: abfss"),
+            "{not_s3}"
+        );
+        assert!(!not_s3.contains("acct"), "host echoed: {not_s3}");
+        let unknown = error_for("foo://alice:SECRET@host/dir/f.parquet?sig=SAS-MARKER");
+        assert!(unknown.contains("Unable to recognise URL"), "{unknown}");
+        assert!(unknown.contains("foo://host"), "{unknown}");
+        // The parser accepts any amazonaws.com host; the builder rejects this one and quotes it.
+        let rejected = error_for("https://alice:SECRET@bucket.amazonaws.com/k?sig=SAS-MARKER");
+        assert!(
+            rejected.contains("URL did not match any known pattern"),
+            "{rejected}"
+        );
+        assert!(
+            rejected.contains("https://bucket.amazonaws.com/k"),
+            "{rejected}"
+        );
     }
 
     #[test]
