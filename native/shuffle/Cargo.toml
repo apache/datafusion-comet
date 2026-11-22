@@ -83,3 +83,7 @@ harness = false
 [[bench]]
 name = "shuffle_reader"
 harness = false
+
+[[bench]]
+name = "pmod"
+harness = false

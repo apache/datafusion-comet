@@ -32,7 +32,7 @@ use datafusion::common::{internal_datafusion_err, Result};
 use datafusion::logical_expr::Volatility;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{
-    BinaryExpr, Column, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
+    BinaryExpr, Column, IsNotNullExpr, IsNullExpr, LambdaVariable, Literal, NotExpr,
 };
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use std::fmt::{Display, Formatter};
@@ -167,6 +167,7 @@ pub(super) fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
         return is_deterministic(short_circuit.inner());
     }
     let node_is_deterministic = expr.is::<Column>()
+        || expr.is::<LambdaVariable>()
         || expr.is::<Literal>()
         || expr.is::<Cast>()
         || expr.is::<BinaryExpr>()

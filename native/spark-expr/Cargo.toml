@@ -522,3 +522,7 @@ harness = false
 [[bench]]
 name = "null_short_circuit"
 harness = false
+
+[[bench]]
+name = "decimal_groups"
+harness = false

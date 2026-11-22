@@ -40,7 +40,7 @@ You probably do, if any of these are true:
 
 If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
 
-These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
+On the Parquet native scan path, enabling an adapter is opt-in: naming it is what activates it. Native Iceberg writes use `HadoopS3ACredentialProviderAdapter` without any configuration when the S3A provider list is set explicitly (see [Native Iceberg writes](#native-iceberg-writes)). Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
 
 The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there — put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, credential resolution fails at planning with `NoClassDefFoundError` before the adapter can report anything useful.
 
@@ -62,6 +62,12 @@ Anonymous access is the one exception. A bucket whose chain resolves to `Anonymo
 spark.hadoop.fs.s3a.bucket.<public-bucket>.comet.credential.provider.class=
 ```
 
+#### Native Iceberg writes
+
+A native Iceberg write to an `s3` or `s3a` location uses `HadoopS3ACredentialProviderAdapter` by itself when the table's `FileIO` writes through Hadoop S3A, as `HadoopFileIO` does, and `fs.s3a.aws.credentials.provider` (or the data bucket's `fs.s3a.bucket.<bucket>.aws.credentials.provider`) names the providers explicitly. iceberg-java's own writer signs with exactly that list, so the native writer runs the same list rather than its own credential chain. Comet forwards the `FileIO`'s explicit `fs.s3a.*` settings, and the `hadoop.security.credential.*` and `hadoop.security.credstore.*` credential-store settings Hadoop reads secrets through, to the adapter, including the catalog's `spark.sql.catalog.<catalog>.hadoop.*` overrides. Any other key a custom provider reads has to reach the executors through `spark.hadoop.*`. A credential without an expiry, which is every credential on the Spark 3.x builds, is fetched again for every request of a write, because a data file can stay open longer than a short-lived session credential lasts.
+
+A `spark.sql.catalog.<catalog>.s3.comet.credential.provider.class` that you set keeps its precedence: Comet then does not name the adapter, and the write falls back to iceberg-java while the S3A list is set, because the two could resolve different identities. A list that names an anonymous provider, directly or through `fs.s3a.aws.credentials.provider.mapping`, falls back too.
+
 ### `AwsSdkCredentialProviderAdapter`
 
 Wraps a single raw AWS SDK credential-provider class that is not registered through S3A. Name the delegate in a separate key:
@@ -75,7 +81,7 @@ spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
 
 ### Which one, and which Spark version
 
-Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
+Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.5 build, v2 on 4.0+), so you configure one name and get the right implementation.
 
 ## Enabling a bridge
 
@@ -159,7 +165,7 @@ When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` a
 
 **STS endpoint selection** uses the global `sts.amazonaws.com` endpoint only in the plain commercial case, and leaves everything else to the AWS SDK. The global endpoint is used when your region is in the standard commercial partition, FIPS and dual-stack are both off, no custom STS endpoint is set, and `AWS_STS_REGIONAL_ENDPOINTS` is `legacy` or unset. That matches the previous behavior, so a network that only reaches the global endpoint keeps working. In every other case the SDK's own regional endpoint is used: FIPS (`AWS_USE_FIPS_ENDPOINT`) always uses the regional FIPS endpoint since there is no global FIPS STS endpoint (an accompanying `AWS_STS_REGIONAL_ENDPOINTS=legacy` is ignored and a warning is logged), dual-stack (`AWS_USE_DUALSTACK_ENDPOINT`) uses the dual-stack regional endpoint, a custom STS endpoint (`AWS_ENDPOINT_URL_STS` or a profile) is honored, `AWS_STS_REGIONAL_ENDPOINTS=regional` stays regional, and the China, GovCloud, ISO and EUSC regions (and any region Comet does not recognize as commercial) use their own regional endpoints.
 
-It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class or catalog static keys / `client.assume-role.arn`, static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`) -- and when no region is set (`AWS_REGION` / `AWS_DEFAULT_REGION`). These all rank ahead of web-identity in opendal's default chain or need its no-region fallback, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these apply, so the take-over still engages there.
+It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class or catalog static keys / `client.assume-role.arn`, static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`) -- and when no region is set (`AWS_REGION` / `AWS_DEFAULT_REGION`). These all rank ahead of web-identity in opendal's default chain or need its no-region fallback, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these apply, so the take-over still engages there. A native Iceberg write that signs with an explicit S3A provider list (see [Native Iceberg writes](#native-iceberg-writes)) uses that list instead, as iceberg-java does.
 
 Tuning is rarely needed. Set these as catalog properties under the `s3.` prefix (the same namespace as the credential-provider SPI key):
 
@@ -204,7 +210,7 @@ public interface CometS3CredentialProvider extends AutoCloseable {
 
     CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) throws Exception;
 
-    /** Invoked from the dispatcher's JVM shutdown hook. Default is a no-op. */
+    /** Invoked when Comet retires the instance, or at JVM shutdown. Default is a no-op. */
     @Override default void close() throws Exception {}
 }
 ```
@@ -213,11 +219,13 @@ The class must have a public no-arg constructor. `getCredentialsForPath` may be 
 
 ### Lifecycle
 
-Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
+Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` once, and keeps the instance while some reader uses it. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
 
 `initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. On the Parquet path it carries the `fs.s3a.*` config subset (including static keys such as `fs.s3a.access.key`); in Comet 1.0 this map was empty on the Parquet path. The map may contain secrets, so do not log it.
 
-`close()` is invoked from a JVM shutdown hook installed by the dispatcher. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
+Comet calls `close()` once no reader uses an instance any more, and at JVM shutdown for instances still in use. On the Iceberg path an instance is retired when the table's next `FileIO` replaces the one built on it, and when an executor's cache of 64 `FileIO`s evicts it. A new `FileIO` replaces the old one when the catalog vends new credentials for the table and both sets carry `s3.session-token-expires-at-ms`, the new one later. New credentials without a later expiry don't replace the old `FileIO`, so its instance stays open until the 64-entry bound evicts it. A later read with the same key then gets a new instance, with its own `initialize` call. On the Parquet path Comet keeps each object store, and so its provider, for the executor's lifetime.
+
+So `close()` can run while the job is still running. Comet calls it at most once per instance, on a dispatcher thread rather than a reader's, and possibly while a new instance for the same key runs `initialize`. Release only the instance's own resources, never state that other instances share. A `close()` that blocks delays only the closes queued behind it. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
 
 ### Caching, refresh, and distribution
 
@@ -241,11 +249,11 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
 
 Spark delegation token propagation is supported on YARN and Kubernetes only. Standalone deployments need a different refresh path, typically a vendor-side service callback authenticated by long-lived state in `catalogProperties` or Hadoop conf.
 
-Publish a real `expirationEpochMillis` when you have one. On both paths Comet reuses a credential until five minutes before that expiry and then asks you again. Comet makes at most one call at a time for each location (each bucket, for a provider without locations), and requests that arrive while it is in flight share its answer, even one Comet cannot keep. `0` means unknown: Comet does not keep the credential and asks you again for every request that does not overlap a call already in flight, and on the Iceberg path it assumes the credential lasts five minutes. `Long.MAX_VALUE` means the credential does not expire, and Comet does not keep it either. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown, with a warning. If a credential can be revoked before the expiry you report, report an earlier one, or `0`.
+Publish a real `expirationEpochMillis` when you have one. On both paths Comet reuses a credential until five minutes before that expiry and then asks you again. Comet makes at most one call at a time for each location (each bucket, for a provider without locations), and requests that arrive while it is in flight share its answer, even one Comet cannot keep. `0` means unknown: Comet does not keep the credential and asks you again for every request that does not overlap a call already in flight. On the Iceberg path a read assumes such a credential lasts five minutes, and a write asks you again for every request. `Long.MAX_VALUE` means the credential does not expire, and Comet does not keep it either. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown, with a warning. If a credential can be revoked before the expiry you report, report an earlier one, or `0`.
 
 On the Parquet/`object_store` path, `object_store` signs a request once and sends the same signature on every retry, for up to 3 minutes by default, and it does not retry a 403. The five minutes Comet leaves before an expiry cover those retries. A credential you return with less time left than that is used for the request that asked for it and not kept.
 
-The built-in adapters report an expiry when the AWS SDK exposes one, which it does on the Spark 4.x builds (SDK v2). On the Spark 3.4 and 3.5 builds (SDK v1) they cannot, and report `0`.
+The built-in adapters report an expiry when the AWS SDK exposes one, which it does on the Spark 4.x builds (SDK v2). On the Spark 3.5 build (SDK v1) they cannot, and report `0`.
 
 ### Returned fields
 

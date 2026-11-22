@@ -19,7 +19,7 @@
 --
 -- `CharsetProvider.forName` permits only us-ascii, iso-8859-1, utf-8, utf-16be, utf-16le, utf-16
 -- and utf-32 unless `spark.sql.legacy.javaCharsets` is enabled, and otherwise raises
--- `INVALID_PARAMETER_VALUE.CHARSET`. On Spark 3.4/3.5 a JVM charset outside that list is simply
+-- `INVALID_PARAMETER_VALUE.CHARSET`. On Spark 3.5 a JVM charset outside that list is simply
 -- accepted; see encode_invalid_charset.sql. Enabling the legacy flag restores that behavior on
 -- 4.0+; see encode_legacy_charsets.sql.
 -- MinSparkVersion: 4.0

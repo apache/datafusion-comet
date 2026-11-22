@@ -59,6 +59,11 @@ updates:
       interval: weekly
     target-branch: main
     labels: [dependencies]
+    # This workspace builds native/core and native/proto by path, so a manifest
+    # bump here edits Cargo.toml files that the /native workspace owns without
+    # updating native/Cargo.lock. Only refresh this workspace's own lockfile, and
+    # leave manifest bumps to the /native entry above.
+    versioning-strategy: lockfile-only
     ignore:
       # major version bumps of datafusion*, arrow*, parquet are handled manually
       - dependency-name: "arrow*"

@@ -35,7 +35,6 @@ import org.apache.spark.sql.types.{ArrayType, IntegerType}
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.rules.CometExecRule
 
 class CometCollectMetricsSuite extends CometTestBase {
@@ -44,7 +43,7 @@ class CometCollectMetricsSuite extends CometTestBase {
 
   private def observedMetrics(observation: Observation): Map[String, Any] = {
     // A missing observation in the executed plan must fail instead of blocking in get forever.
-    // Observation.get is available on every supported Spark version, including Spark 3.4.
+    // Observation.get is available on every supported Spark version.
     val result = new FutureTask[Map[String, Any]](() => observation.get)
     val reader = new Thread(result, "comet-observation-reader")
     reader.setDaemon(true)
@@ -162,7 +161,6 @@ class CometCollectMetricsSuite extends CometTestBase {
 
   for (adaptive <- Seq(false, true)) {
     test(s"observation preserves widened array nullability, AQE=$adaptive") {
-      assume(isSpark35Plus)
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
@@ -471,7 +469,6 @@ class CometCollectMetricsSuite extends CometTestBase {
   }
 
   test("observation below a window group limit preserves Spark row demand") {
-    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
@@ -576,8 +573,7 @@ class CometCollectMetricsSuite extends CometTestBase {
 
   for ((consumeRows, sortBeforeConsume) <- Seq((1, false), (0, true))) {
     test(s"public foreachPartition preserves observation row demand, rows=$consumeRows") {
-      // Spark 3.4 runs foreachPartition without a name, so no listener callback reports its plan.
-      assume(isSpark35Plus)
+      // A listener callback may not report the foreachPartition plan.
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
