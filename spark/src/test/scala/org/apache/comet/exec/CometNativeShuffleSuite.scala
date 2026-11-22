@@ -43,20 +43,21 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference,
 import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometExec, CometHashAggregateExec, CometHashJoinExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
-import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, spark_partition_id, sum}
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, ShuffledJoin, SortMergeJoinExec}
+import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, lit, spark_partition_id, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -1037,9 +1038,10 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
     }
     // The gate recurses, so a duplicate struct nested in an array or map is declined too.
-    for (nested <- Seq(ArrayType(duplicate), MapType(LongType, duplicate))) {
+    for (sink <- Seq(CometLocalTableScanExec, CometSparkToColumnarExec);
+      nested <- Seq(ArrayType(duplicate), MapType(LongType, duplicate))) {
       val reasons = ListBuffer.empty[String]
-      assert(!CometLocalTableScanExec.isSchemaSupported(schemaWith(nested), reasons), s"$nested")
+      assert(!sink.isSchemaSupported(schemaWith(nested), reasons), s"$sink accepted $nested")
       assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
     }
     // Names that differ only by case are distinct to Java Arrow and stay supported.
@@ -1989,7 +1991,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("AQE DPP query with a broadcast side reads its shuffle stage through ShuffleScan") {
-    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
     withTempDir { dir =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
@@ -2012,6 +2013,143 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           assert(shuffleReadingBlocks(plan) == Seq(shuffleStageRead), plan)
         }
       }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6530
+  private val skewJoinConfs = Seq(
+    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+    SQLConf.SKEW_JOIN_ENABLED.key -> "true",
+    SQLConf.SKEW_JOIN_SKEWED_PARTITION_THRESHOLD.key -> "1KB",
+    SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "1KB",
+    SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+    SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+    SQLConf.SHUFFLE_PARTITIONS.key -> "10")
+
+  /**
+   * Nine in ten rows have key 0, so its shuffle partition is skewed, and AQE splits it along the
+   * map tasks.
+   */
+  private def skewedFact: DataFrame =
+    spark
+      .range(0, 100000, 1, 20)
+      .select(
+        when(col("id") % 10 < 9, lit(0L)).otherwise(col("id") % 20000).as("k"),
+        col("id").as("v"))
+
+  /** Even keys only, so half of the other fact keys find no match. */
+  private def skewJoinDim: DataFrame =
+    spark.range(0, 20000, 2, 4).select(col("id").as("k"), (col("id") * 3).as("w"))
+
+  for {
+    (hint, joinClass) <- Seq(
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec])
+    joinType <- Seq("inner", "left_outer", "left_semi", "right_outer")
+  } {
+    test(s"AQE skew join split stays native: $hint $joinType") {
+      // Spark splits only the right side of a right outer join, so the fact side goes there.
+      // The partial aggregate above the join shares its stage.
+      def skewedJoin: DataFrame = {
+        val dim = skewJoinDim.hint(hint)
+        val joined = if (joinType == "right_outer") {
+          dim.join(skewedFact, Seq("k"), joinType)
+        } else {
+          skewedFact.join(dim, Seq("k"), joinType)
+        }
+        joined.agg(count("*"), sum("v"))
+      }
+      // (coalescing, shuffle direct read): the defaults, then the other value of each
+      Seq((true, true), (false, false)).foreach { case (coalesce, directRead) =>
+        withSQLConf(
+          skewJoinConfs ++ Seq(
+            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> coalesce.toString,
+            CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString): _*) {
+          val (_, plan) = checkSparkAnswerAndOperator(skewedJoin)
+          withClue(s"coalescing $coalesce, direct read $directRead:\n$plan\n") {
+            assert(
+              collect(plan) { case r: AQEShuffleReadExec if r.hasSkewedPartition => r }.nonEmpty,
+              "AQE did not split the skewed partition")
+            assert(collect(plan) { case j if joinClass.isInstance(j) => j }.nonEmpty)
+            checkCometOperatorsInFinalPlan(plan)
+            // Both sides of the join read their split partitions as a native shuffle input.
+            val leaf = if (directRead) "SHUFFLE_SCAN" else "SCAN"
+            assert(shuffleReadingBlocks(plan).contains(Seq.fill(2)("AQEShuffleReadExec" -> leaf)))
+          }
+        }
+      }
+    }
+  }
+
+  test("AQE skew join split next to a Spark shuffle leaves the join on Spark") {
+    // Comet leaves the JSON scan, and so the dim side's shuffle, to Spark, and the join cannot
+    // be native. The fact side's split read is still converted, and must be unwrapped again.
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        skewJoinDim.write.json(dir.getPath)
+      }
+      withSQLConf(
+        skewJoinConfs ++ Seq(
+          CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key -> "false",
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet,json"): _*) {
+        Seq("MERGE", "SHUFFLE_HASH").foreach { hint =>
+          val dim = spark.read.schema("k BIGINT, w BIGINT").json(dir.getPath).hint(hint)
+          val (_, plan) = checkSparkAnswer(skewedFact.join(dim, "k").agg(count("*"), sum("v")))
+          withClue(s"$hint:\n$plan\n") {
+            assert(collect(plan) {
+              case r: AQEShuffleReadExec if r.hasSkewedPartition => r
+            }.nonEmpty)
+            // The skew join reads a Comet shuffle on the fact side and a Spark one on the dim side.
+            val joins = collect(plan) { case j: ShuffledJoin if j.isSkewJoin => j }
+            assert(joins.size == 1)
+            val inputs = joins.head.children.map(_.collectFirst { case s: ShuffleQueryStageExec =>
+              s.shuffle.getClass
+            })
+            assert(
+              inputs == Seq(
+                Some(classOf[CometShuffleExchangeExec]),
+                Some(classOf[ShuffleExchangeExec])))
+            assert(collect(plan) { case p: CometSinkPlaceHolder => p }.isEmpty)
+            if (hint == "MERGE") {
+              // The native sort above the fact side reads the split partitions itself.
+              assert(
+                shuffleReadingBlocks(plan).contains(Seq("AQEShuffleReadExec" -> "SHUFFLE_SCAN")))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("AQE forced skew join split that adds a shuffle stays a skew join") {
+    // Every right row has key 0, so its partition is skewed. Splitting it breaks the
+    // partitioning the GROUP BY needs, so the split adds a shuffle, which AQE accepts only
+    // when forceOptimizeSkewedJoin is on and its cost evaluator counts the split join.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN.key -> "true",
+      SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "false",
+      SQLConf.SKEW_JOIN_SKEWED_PARTITION_THRESHOLD.key -> "100",
+      SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "100",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+      val left = spark.range(0, 1000, 1, 10).select((col("id") % 3).as("k1"), col("id"))
+      val right = spark.range(0, 1000, 1, 10).select((col("id") % 1).as("k2"))
+      // A split read is the hash join's child, and the child of a sort under a sort-merge join.
+      Seq("MERGE" -> classOf[SortMergeJoinExec], "SHUFFLE_HASH" -> classOf[ShuffledHashJoinExec])
+        .foreach { case (hint, joinClass) =>
+          val (_, plan) = checkSparkAnswerAndFallbackReason(
+            left.join(right.hint(hint), col("k1") === col("k2")).groupBy("k1").count(),
+            SQLConf.ADAPTIVE_FORCE_OPTIMIZE_SKEWED_JOIN.key)
+          withClue(s"$hint:\n$plan\n") {
+            assert(collect(plan) {
+              case j: ShuffledJoin if j.isSkewJoin && joinClass.isInstance(j) => j
+            }.size == 1)
+            assert(collect(plan) { case s: ShuffleExchangeLike => s }.size == 3)
+          }
+        }
     }
   }
 

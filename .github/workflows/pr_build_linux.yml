@@ -88,6 +88,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
     outputs:
@@ -116,6 +117,7 @@ jobs:
     name: Lint Scala (syntactic)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -157,6 +159,7 @@ jobs:
     name: Lint Java (${{ matrix.profile.name }})
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
       env:
@@ -286,6 +289,7 @@ jobs:
     name: Strict Scala warnings (Spark 3.5, JDK 17)
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
     steps:
@@ -329,6 +333,7 @@ jobs:
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
       env:
@@ -394,6 +399,7 @@ jobs:
     needs: lint
     name: Build Native Library
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     container:
       image: amd64/rust
     steps:
@@ -460,6 +466,7 @@ jobs:
     name: ubuntu-latest/rust-test
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     steps:
@@ -485,6 +492,7 @@ jobs:
     name: ubuntu-latest/native-executors
     if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     steps:
@@ -547,6 +555,7 @@ jobs:
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
+              org.apache.comet.text.CometTextNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.DataGeneratorSuite
@@ -582,10 +591,11 @@ jobs:
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
-              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecCompatibilitySuite
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometMergeRowsSuite
               org.apache.comet.exec.CometTopKSuite
+              org.apache.comet.exec.CometMinMaxSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometRangeExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
@@ -614,16 +624,19 @@ jobs:
               org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
+              org.apache.comet.local.CometLocalExecutionSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
               org.apache.spark.CometPluginsDeprecatedConfigWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometDriverPluginShuffleManagerSuite
               org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
+              org.apache.comet.cloud.s3.CometS3CredentialReleaseSuite
               org.apache.comet.rules.CometMultiStoreScanSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
@@ -715,6 +728,7 @@ jobs:
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     container:
       image: amd64/rust
       env:
@@ -766,6 +780,7 @@ jobs:
     name: Verify TPC-H Results
     if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:
@@ -840,6 +855,7 @@ jobs:
     name: Verify TPC-DS Results
     if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:

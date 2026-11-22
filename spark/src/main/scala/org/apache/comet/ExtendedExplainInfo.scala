@@ -23,7 +23,7 @@ import java.util.{Collections, IdentityHashMap, Locale}
 
 import scala.collection.mutable
 
-import org.apache.spark.sql.ExtendedExplainGenerator
+import org.apache.spark.sql.{DataFrame, ExtendedExplainGenerator}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometPlan, CometSparkToColumnarExec}
@@ -62,6 +62,29 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {
     fallbackReasons(plan).toSeq.sorted
+  }
+
+  /**
+   * The fallback reasons in the executed plan of `df`, as returned by `getFallbackReasons(plan)`.
+   * This does not run the query. For an adaptive query that has not run yet, the executed plan is
+   * the initial plan, so run the query first (for example with `collect()`) to get the reasons
+   * for the final plan and its query stages.
+   */
+  def getFallbackReasons(df: DataFrame): Seq[String] = {
+    getFallbackReasons(df.queryExecution.executedPlan)
+  }
+
+  /**
+   * Whether the executed plan of `df` is fully accelerated: Comet is enabled for its session and
+   * reports no fallback reasons for the plan. A plan with partial fallback, where some operators
+   * run in Comet and others fall back to Spark, is not fully accelerated. Enabled means the check
+   * the Comet planner rules make, so this is false when Comet disabled itself, for example
+   * because Spark is not in off-heap mode or the Comet shuffle manager is not set, even if
+   * `spark.comet.enabled` is true. Like `getFallbackReasons(df)`, this does not run the query.
+   */
+  def isFullyAccelerated(df: DataFrame): Boolean = {
+    val conf = df.queryExecution.sparkSession.sessionState.conf
+    CometSparkSessionExtensions.isCometLoaded(conf) && getFallbackReasons(df).isEmpty
   }
 
   /**
