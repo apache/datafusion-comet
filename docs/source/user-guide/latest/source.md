@@ -77,3 +77,43 @@ To build Comet from the source distribution on an isolated environment without a
 ```console
 make release-nogit PROFILES="-Pspark-4.1"
 ```
+
+## Building with the jemalloc allocator
+
+The native library allocates its memory with the system allocator, which is glibc malloc on Linux.
+In a long-running executor, glibc can keep several GiB of freed native memory resident (see
+[#7108](https://github.com/apache/datafusion-comet/issues/7108)). The published jars use the system
+allocator, and each release also publishes a jar with the `jemalloc` classifier that uses
+[jemalloc](https://jemalloc.net/). To build Comet with jemalloc yourself, add the `jemalloc` profile:
+
+```console
+make release PROFILES="-Pspark-4.1 -Pjemalloc"
+```
+
+`make release-nogit` accepts it too. The profile itself has no settings, because Maven does not
+build the native library. `make` is what adds the `jemalloc` Cargo feature when `PROFILES` names
+the profile. The feature cannot be combined with `mimalloc`. If you build the native library
+yourself with `cargo build`, pass `--features jemalloc` there. Running `./mvnw install -Pjemalloc`
+after a plain `cargo build` packages a library that uses the system allocator, with no warning.
+
+jemalloc replaces the allocator of the Rust code in the native library. C code linked into it, such
+as zstd, the JVM and any other native library in the executor still allocate through glibc. To use
+jemalloc for the whole executor process instead, preload a jemalloc library installed on the
+executors, for example with `spark.executorEnv.LD_PRELOAD`, which needs no special Comet build.
+
+jemalloc reads its options from the `_RJEM_MALLOC_CONF` environment variable rather than
+`MALLOC_CONF`, because Comet links a build of jemalloc with prefixed symbols. Set it for executors
+with `spark.executorEnv._RJEM_MALLOC_CONF`, for example
+`--conf spark.executorEnv._RJEM_MALLOC_CONF=background_thread:true`.
+
+jemalloc fails every allocation on a kernel whose memory pages are larger than those of the machine
+it was built on. The jemalloc jars that Comet publishes are built for 4 KiB pages, which is what
+x86_64 always uses and what the default arm64 kernels of Ubuntu, Debian, Fedora, RHEL 9 and 10 and
+Oracle Linux use. Some arm64 kernels use 64 KiB pages: RHEL 8 and its rebuilds, RHEL 9 and 10 when
+the optional `kernel-64k` is installed, and NVIDIA Grace systems running the 64 KiB kernel that NVIDIA
+recommends, for example Ubuntu's `linux-nvidia-64k`.
+
+`getconf PAGESIZE` prints the page size of a machine. On executors with 64 KiB pages, use the jar with
+the system allocator, or build Comet from source with `JEMALLOC_SYS_WITH_LG_PAGE=16` set in the
+environment, which builds jemalloc for 64 KiB pages. That library works on kernels with 4 KiB and
+64 KiB pages, but can raise memory use on the smaller ones.

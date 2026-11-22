@@ -23,6 +23,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.AttributeSet
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.catalyst.plans.physical.{Distribution, UnspecifiedDistribution}
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriter, PhysicalWriteInfoImpl, WriterCommitMessage}
@@ -46,6 +47,11 @@ case class IcebergWriteExec(
 
   // Spark already adds a distribution for the V2 write; adding another here is redundant.
   override def requiredChildDistribution: Seq[Distribution] = Seq(UnspecifiedDistribution)
+
+  // `output` is the commit-message attribute this node creates, not one its child supplies.
+  // Without declaring it as produced, Spark counts it as missing input and EXPLAIN prints the
+  // node with a `!` prefix.
+  override def producedAttributes: AttributeSet = outputSet
 
   // The write's custom metrics are registered on IcebergCommitExec only: Iceberg reports them
   // through the driver-side commit report, and its DataWriters expose no task-level values.

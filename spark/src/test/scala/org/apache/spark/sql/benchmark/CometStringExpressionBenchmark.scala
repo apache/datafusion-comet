@@ -126,7 +126,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
             "from parquetV1Table"))
     }
 
-  // Collated cases are Spark 4.0+ only, since the COLLATE syntax does not parse on 3.4 and 3.5.
+  // Collated cases are Spark 4.0+ only, since the COLLATE syntax does not parse on 3.5.
   // CometLevenshtein reports collated input as Unsupported and CodegenDispatchFallback runs it
   // through the JVM codegen dispatcher, so these measure the dispatcher rather than the native
   // kernel. See https://github.com/apache/datafusion-comet/issues/5591.

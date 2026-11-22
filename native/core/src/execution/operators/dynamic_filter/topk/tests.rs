@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::super::test_utils::{omit_null_counts, parquet_input, parquet_scan, session};
 use super::*;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
@@ -29,6 +30,7 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::collect;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
@@ -40,16 +42,6 @@ mod reader;
 mod schema;
 mod statistics;
 mod timestamp;
-
-fn session(batch_size: usize) -> Arc<SessionContext> {
-    let mut config = SessionConfig::new()
-        .with_target_partitions(1)
-        .with_batch_size(batch_size)
-        .with_parquet_page_index_pruning(false);
-    // Isolate dynamic row-group pruning from row filters and page indexes.
-    config.options_mut().execution.parquet.pushdown_filters = false;
-    Arc::new(SessionContext::new_with_config(config))
-}
 
 fn batch(values: Vec<Option<i32>>, key_type: &DataType) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("key", key_type.clone(), true)]));
@@ -119,86 +111,4 @@ fn count_metric(plan: &dyn ExecutionPlan, name: &str) -> usize {
     plan.metrics()
         .and_then(|metrics| metrics.sum_by_name(name))
         .map_or(0, |metric| metric.as_usize())
-}
-
-/// Select key@1 in the physical file as key@0 in the scan output. Reader
-/// attachment must retain live updates when it remaps the predicate.
-fn parquet_input(
-    values: Vec<Option<i32>>,
-    key_type: &DataType,
-    session: &Arc<SessionContext>,
-    group_size: usize,
-) -> (tempfile::NamedTempFile, Arc<DataSourceExec>) {
-    let key = cast(&Int32Array::from(values), key_type).unwrap();
-    let file_schema = Arc::new(Schema::new(vec![
-        Field::new("payload", DataType::Int32, false),
-        Field::new("key", key_type.clone(), true),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&file_schema),
-        vec![
-            Arc::new(Int32Array::from_iter_values(0..key.len() as i32)) as ArrayRef,
-            key,
-        ],
-    )
-    .unwrap();
-    let file = tempfile::NamedTempFile::new().unwrap();
-    let properties = WriterProperties::builder()
-        .set_max_row_group_row_count(Some(group_size))
-        .set_statistics_enabled(EnabledStatistics::Chunk)
-        .set_dictionary_enabled(false)
-        .build();
-    let mut writer = ArrowWriter::try_new(
-        file.reopen().unwrap(),
-        Arc::clone(&file_schema),
-        Some(properties),
-    )
-    .unwrap();
-    writer.write(&batch).unwrap();
-    let metadata = writer.close().unwrap();
-    assert_eq!(
-        metadata.num_row_groups(),
-        batch.num_rows().div_ceil(group_size)
-    );
-    let scan = parquet_scan(&[&file], file_schema, vec![1], None, false, session);
-    (file, scan)
-}
-
-fn parquet_scan(
-    files: &[&tempfile::NamedTempFile],
-    file_schema: Arc<Schema>,
-    projection: Vec<usize>,
-    data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
-    allow_type_promotion: bool,
-    session: &Arc<SessionContext>,
-) -> Arc<DataSourceExec> {
-    init_datasource_exec(
-        Arc::new(file_schema.project(&projection).unwrap()),
-        Some(file_schema),
-        None,
-        ObjectStoreUrl::local_filesystem(),
-        ObjectStoreBackend::Local,
-        vec![files
-            .iter()
-            .map(|file| {
-                PartitionedFile::from_path(file.path().to_string_lossy().into_owned()).unwrap()
-            })
-            .collect()],
-        Some(projection),
-        data_filters,
-        None,
-        "UTC",
-        true,
-        false,
-        allow_type_promotion,
-        false,
-        session,
-        false,
-        false,
-        false,
-        false,
-        "CORRECTED",
-        "CORRECTED",
-    )
-    .unwrap()
 }
