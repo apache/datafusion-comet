@@ -87,7 +87,7 @@ object CometTimeZone {
       val count = offsets.getOffsetsCount
       if (count == 0 || offsets.getOffsets(count - 1) != offset) {
         offsets.addStarts(day.toInt)
-        offsets.addOffsets(offset)
+        val _ = offsets.addOffsets(offset)
       }
     }
 
