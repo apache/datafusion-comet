@@ -60,8 +60,8 @@ private[local] class NativeLocal extends NativeBase {
   @native def close(id: Long): Unit
 
   /**
-   * The partition whose turn it was when the query failed, or -1. Reading it forgets it, as does
-   * `close`.
+   * The partition whose turn it is, which after a failure is the failed partition, or -1 once the
+   * query is closed. A failed query stays open until `close`.
    */
   @native def failedPartition(id: Long): Int
 

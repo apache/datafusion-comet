@@ -80,10 +80,6 @@ static QUERIES: LazyLock<Mutex<HashMap<i64, Arc<Entry>>>> = LazyLock::new(Mutex:
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
 const MAX_LIVE_QUERIES: usize = 1024;
 
-// The partition whose turn it was when a query failed, kept after the failure closes the query
-// until the JVM reads it or closes the query, so that a file read error can name its files.
-static FAILED_PARTITIONS: LazyLock<Mutex<HashMap<i64, usize>>> = LazyLock::new(Mutex::default);
-
 fn close(id: i64) {
     let entry = QUERIES.lock().remove(&id);
     if let Some(entry) = entry {
@@ -133,11 +129,14 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
         );
         JVMClasses::init(env);
         let serialized_plan = env.convert_byte_array(serialized_query)?;
-        let mut scan_partitions_vec = Vec::with_capacity(scan_partitions.len(env)?);
-        for i in 0..scan_partitions.len(env)? {
+        let scan_partition_count = scan_partitions.len(env)?;
+        let mut scan_partitions_vec = Vec::with_capacity(scan_partition_count);
+        for i in 0..scan_partition_count {
             let bytes = scan_partitions.get_element(env, i)?;
             let bytes = unsafe { JByteArray::from_raw(&*env, bytes.into_raw()) };
-            scan_partitions_vec.push(env.convert_byte_array(bytes)?);
+            scan_partitions_vec.push(env.convert_byte_array(&bytes)?);
+            // A scan can have more partitions than the local frame holds, so free each one.
+            env.delete_local_ref(bytes);
         }
         let task_memory_manager =
             Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
@@ -403,13 +402,9 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_nextBatch(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         let result = next(env, id, arrays, schemas);
-        if result.is_err() {
-            let partition = QUERIES.lock().get(&id).map(|entry| entry.query.partition());
-            if let Some(partition) = partition {
-                FAILED_PARTITIONS.lock().insert(id, partition);
-            }
-        }
-        if result.is_err() || matches!(result, Ok(-1)) {
+        // A failed query stays until the JVM closes it, which it does right after reading
+        // `failedPartition`. A failed stream has already dropped its partitions.
+        if matches!(result, Ok(-1)) {
             close(id);
         }
         result
@@ -424,12 +419,12 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_close(
 ) {
     try_unwrap_or_throw(&e, |_| {
         close(id);
-        FAILED_PARTITIONS.lock().remove(&id);
         Ok(())
     })
 }
 
-/// The partition whose turn it was when the query failed, or -1. Reading it forgets it.
+/// The partition whose turn it is, which after a failure is the failed partition, or -1 once
+/// the query is closed.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_local_NativeLocal_failedPartition(
     e: EnvUnowned,
@@ -437,10 +432,10 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_failedPartition(
     id: jlong,
 ) -> jint {
     try_unwrap_or_throw(&e, |_| {
-        Ok(FAILED_PARTITIONS
+        Ok(QUERIES
             .lock()
-            .remove(&id)
-            .map_or(-1, |partition| partition as jint))
+            .get(&id)
+            .map_or(-1, |entry| entry.query.partition() as jint))
     })
 }
 
@@ -449,10 +444,7 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_activeQueries(
     e: EnvUnowned,
     _: JObject,
 ) -> jlong {
-    // A failure kept for the JVM counts until it is read, so that tests catch one left behind.
-    try_unwrap_or_throw(&e, |_| {
-        Ok((QUERIES.lock().len() + FAILED_PARTITIONS.lock().len()) as jlong)
-    })
+    try_unwrap_or_throw(&e, |_| Ok(QUERIES.lock().len() as jlong))
 }
 
 #[cfg(test)]

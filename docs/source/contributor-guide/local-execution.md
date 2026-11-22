@@ -156,8 +156,9 @@ partitions as without local execution.
 
 ## Lifecycle and cancellation
 
-The JNI registry holds numeric, never reused IDs for at most 1024 live queries. EOF, errors,
-early termination and task completion remove an entry. A concurrent pull holds an `Arc`, so a
+The JNI registry holds numeric, never reused IDs for at most 1024 live queries. EOF, early
+termination and task completion remove an entry. A failed query stays until the JVM, having
+read which partition failed, closes it. A concurrent pull holds an `Arc`, so a
 close cannot free an entry that is being read, and cancellation wakes a waiting pull, so it waits
 only for a poll the pull is already in. Each partition records when it has sent its last batch;
 if the runtime stops it before that, the reader reports an error instead of a truncated result.

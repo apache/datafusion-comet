@@ -362,9 +362,6 @@ impl Stream for PartitionOrder {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             self.start_partitions();
-            if self.running.is_empty() {
-                return Poll::Ready(None);
-            }
             let turn = self.next - self.running.len();
             self.turn.store(turn, Ordering::Release);
             let Some(partition) = self.running.front_mut() else {
