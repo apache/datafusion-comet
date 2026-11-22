@@ -923,9 +923,18 @@ object CometExecIterator extends Logging {
     val activeConf = CapturedSQLConf.activeMapBuilderConf
     builder.putEntries(normalizationKey, disableNormalization(taskConf))
     builder.putEntries("comet.eagerDisableMapKeyNormalization", disableNormalization(activeConf))
-    builder.putEntries(
-      SQLConf.MAP_KEY_DEDUP_POLICY.key,
-      activeConf.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString)
+    // Spark picks the projection factory when constructing the task iterator. With NO_CODEGEN,
+    // the interpreted expression creates its builder on first evaluation, like the normalizer.
+    val policy = SQLConf.MAP_KEY_DEDUP_POLICY
+    val activePolicy = activeConf.getConf(policy).toString
+    val lazyPolicy =
+      if (activeConf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") {
+        taskConf.getConf(policy).toString
+      } else {
+        activePolicy
+      }
+    builder.putEntries(policy.key, lazyPolicy)
+    builder.putEntries("comet.eagerMapKeyDedupPolicy", activePolicy)
     builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy)
 
     // Any Comet config that the native side reads must be added here manually, resolved.

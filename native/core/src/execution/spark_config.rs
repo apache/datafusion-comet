@@ -43,6 +43,7 @@ pub(crate) const SPARK_DISABLE_MAP_KEY_NORMALIZATION: &str =
 pub(crate) const SPARK_MAP_KEY_DEDUP_POLICY: &str = "spark.sql.mapKeyDedupPolicy";
 pub(crate) const EAGER_DISABLE_MAP_KEY_NORMALIZATION: &str =
     "comet.eagerDisableMapKeyNormalization";
+pub(crate) const EAGER_MAP_KEY_DEDUP_POLICY: &str = "comet.eagerMapKeyDedupPolicy";
 pub(crate) const DRIVER_MAP_KEY_DEDUP_POLICY: &str = "comet.driverMapKeyDedupPolicy";
 
 /// Comet configs read through this trait must be resolved by the JVM first:

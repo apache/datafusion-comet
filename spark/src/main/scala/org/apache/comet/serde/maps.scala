@@ -26,13 +26,14 @@ import scala.util.DynamicVariable
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.comet.{CometNativeExec, MapCodegenStage, MapCodegenStagePolicy => Policy}
+import org.apache.spark.sql.comet.{CometNativeExec, CometPlan, MapCodegenStage, MapCodegenStagePolicy => Policy}
 import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, InputAdapter, LocalLimitExec, ProjectExec, RowToColumnarExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
-import org.apache.spark.sql.execution.exchange.Exchange
+import org.apache.spark.sql.execution.exchange.{Exchange, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.serde.literals.CometLiteral
@@ -154,8 +155,33 @@ private[comet] object MapBuilderKeySupport {
   }
   private val context = new DynamicVariable[Option[Context]](None)
 
-  def withPlan[T](plan: SparkPlan)(f: => T): T =
-    context.withValue(Some(new Context(plan)))(f)
+  def withPlan(plan: SparkPlan, preparingStages: Boolean)(f: => SparkPlan): SparkPlan =
+    if (!preparingStages) context.withValue(Some(new Context(plan)))(f)
+    else if (CometConf.COMET_EXEC_ENABLED.get(plan.conf) && deferToStageCreation(plan)) plan
+    else context.withValue(None)(f)
+
+  // AQE forms codegen stages after query stage preparation, possibly with different settings.
+  // Leave simple pipelines intact for preColumnarTransitions, including their original scans.
+  // Other plans need the early pass to coordinate aggregate buffers and join inputs.
+  private def deferToStageCreation(plan: SparkPlan): Boolean = {
+    def simple(node: SparkPlan): Boolean = node match {
+      case _: ProjectExec | _: FilterExec | _: ExpandExec | _: SortExec | _: LocalLimitExec |
+          _: GlobalLimitExec | _: CollectLimitExec | _: DeserializeToObjectExec |
+          _: ShuffleExchangeExec =>
+        true
+      case _ => node.children.isEmpty
+    }
+    def candidate(expr: Expression): Boolean = expr match {
+      case m @ (_: MapFromArrays | _: MapFromEntries) =>
+        isFloatingPoint(m.dataType.asInstanceOf[MapType].keyType) && m.children.forall(safeInput)
+      case _ => false
+    }
+    !plan.exists(node => !simple(node)) && plan.exists {
+      case op @ (_: ProjectExec | _: FilterExec | _: ExpandExec) =>
+        op.expressions.exists(_.exists(candidate))
+      case _ => false
+    }
+  }
 
   private def select(expr: Expression): Option[Policy] =
     context.value.flatMap(_.policies.getOrDefault(expr, None))
@@ -177,10 +203,9 @@ private[comet] object MapBuilderKeySupport {
 
   private def builderPolicies(plan: SparkPlan): Policies = {
     val policies = new Policies
+    if (plan.exists(_.isInstanceOf[CometPlan])) return policies
     val conf = SQLConf.get
     if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return policies
-    val defaultLimit =
-      conf.hugeMethodLimit >= SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get
 
     // Walk the stages Spark would form before Comet replaces scans or fuses operators.
     // None for consumers means the first insertion can happen in an unknown scope.
@@ -189,7 +214,7 @@ private[comet] object MapBuilderKeySupport {
         stage: Option[MapCodegenStage],
         consumers: Option[List[MapCodegenStage]]): Unit = node match {
       case generated: WholeStageCodegenExec =>
-        val probe = if (defaultLimit) MapCodegenStage.probe(generated) else None
+        val probe = MapCodegenStage.probe(generated)
         visit(generated.child, probe, consumers.filter(_ => probe.isDefined))
       case adapter: InputAdapter => visit(adapter.child, None, consumers)
       case _ =>

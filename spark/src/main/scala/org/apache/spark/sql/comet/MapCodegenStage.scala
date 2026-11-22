@@ -39,8 +39,6 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 /** The original Spark stage that determines when a map builder reads its settings. */
 private[apache] final class MapCodegenStage private (stage: WholeStageCodegenExec) {
   def fits(limit: Int): Boolean = {
-    if (limit >= SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get) return true
-
     // CodegenSupport.produce mutates the plan. Give each RDD construction its own copy.
     val copy = stage.session.withActive(stage.clone().asInstanceOf[WholeStageCodegenExec])
     val source = copy.doCodeGen()._2

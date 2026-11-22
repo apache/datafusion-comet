@@ -293,6 +293,44 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("float maps match Spark when switching to interpreted projections after planning") {
+    val policy = SQLConf.MAP_KEY_DEDUP_POLICY.key
+    val factory = SQLConf.CODEGEN_FACTORY_MODE.key
+    val limit = SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT
+    val sc = spark.sparkContext
+    withParquetTable(Seq((Seq(1.0, 1.0), Seq(7, 8))), "duplicate_keys") {
+      for {
+        comet <- Seq(false, true)
+        sort <- Seq(false, true)
+      } {
+        // The sort consumes its input inside SQLExecutionRDD's session scope. Without it,
+        // the first evaluation takes place after Spark has restored the task's local properties.
+        val (sessionPolicy, taskPolicy) =
+          if (sort) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> comet.toString,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          factory -> "FALLBACK",
+          limit.key -> limit.defaultValueString,
+          policy -> sessionPolicy) {
+          val order = if (sort) " SORT BY s" else ""
+          val df = sql("SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys" + order)
+          val plan = df.queryExecution.executedPlan
+          if (comet) assertExpressionImpl(plan, Seq("map_from_arrays"), Seq.empty)
+          spark.conf.set(limit.key, "1")
+          spark.conf.set(factory, "NO_CODEGEN")
+          val previous = sc.getLocalProperty(policy)
+          sc.setLocalProperty(policy, taskPolicy)
+          try {
+            assert(df.queryExecution.toRdd.map(_.getInt(0)).collect().toSeq == Seq(1))
+          } finally {
+            sc.setLocalProperty(policy, previous)
+          }
+        }
+      }
+    }
+  }
+
   test("float map builders match Spark's policy and normalization on repeated actions") {
     assume(isSpark40Plus)
     val disableNormalization = "spark.sql.legacy.disableMapKeyNormalization"
@@ -313,15 +351,17 @@ class CometMapExpressionSuite extends CometTestBase {
         fittingLimit = stages.head._3.maxMethodCodeSize
       }
       assert(fittingLimit > 1 && fittingLimit < limit.defaultValue.get)
-      val dispatchModes = Seq(limit.key -> "1", SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN")
-      val nativeModes = Seq(
+      val interpreted = SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN"
+      val modes = Seq(
+        interpreted,
         generated,
         lowerLimitAfterPlanning,
+        limit.key -> "1",
         SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "1",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")
       for {
         comet <- Seq(false, true)
-        mode <- nativeModes ++ dispatchModes
+        mode <- modes
         loweredLimit <-
           (if (mode == lowerLimitAfterPlanning)
              Seq(Some(1), Some(fittingLimit - 1), Some(fittingLimit))
@@ -348,7 +388,7 @@ class CometMapExpressionSuite extends CometTestBase {
           }
           if (comet) {
             val builders = Seq("map_from_arrays", "map_from_entries")
-            if (dispatchModes.contains(mode)) assertExpressionImpl(plan, Seq.empty, builders)
+            if (mode == interpreted) assertExpressionImpl(plan, Seq.empty, builders)
             else assertExpressionImpl(plan, builders, Seq.empty)
           }
           withSQLConf(
@@ -414,35 +454,35 @@ class CometMapExpressionSuite extends CometTestBase {
   test("float map builder matches Spark's dedup policy before a shuffle in an RDD action") {
     val policyKey = SQLConf.MAP_KEY_DEDUP_POLICY.key
     val limit = SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT
+    val codegen = SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key
     val sc = spark.sparkContext
     withParquetTable(Seq((Seq(1.0, 1.0), Seq(7, 8))), "duplicate_keys") {
       for {
         comet <- Seq(false, true)
+        adaptive <- Seq(false, true)
         (wholeStage, lowerLimit) <- Seq((false, false), (true, false), (true, true))
       } {
         val (sessionPolicy, taskPolicy) =
           if (wholeStage && !lowerLimit) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
         withSQLConf(
           CometConf.COMET_ENABLED.key -> comet.toString,
-          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage.toString,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          codegen -> (if (adaptive) !wholeStage else wholeStage).toString,
           limit.key -> limit.defaultValueString,
           policyKey -> sessionPolicy) {
           val df = sql("SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys")
             .repartition(2, col("s"))
           val plan = df.queryExecution.executedPlan
-          if (comet) {
-            assertExpressionImpl(plan, native = Seq("map_from_arrays"), dispatched = Seq.empty)
-          }
+          // AQE collapses codegen stages after preparing its initial plan.
+          if (adaptive) spark.conf.set(codegen, wholeStage.toString)
           val previousPolicy = sc.getLocalProperty(policyKey)
           sc.setLocalProperty(policyKey, taskPolicy)
           try {
-            if (lowerLimit) {
-              spark.conf.set(limit.key, "64")
-              // Dataset.rdd prepares another plan. toRdd executes the plan above.
-              assert(df.queryExecution.toRdd.map(_.getInt(0)).collect().toSeq == Seq(1))
-            } else {
-              assert(df.rdd.collect().toSeq == Seq(Row(1)))
+            if (lowerLimit) spark.conf.set(limit.key, "64")
+            // Execute the inspected plan under the task-local settings.
+            assert(df.queryExecution.toRdd.map(_.getInt(0)).collect().toSeq == Seq(1))
+            if (comet) {
+              assertExpressionImpl(plan, native = Seq("map_from_arrays"), dispatched = Seq.empty)
             }
           } finally {
             sc.setLocalProperty(policyKey, previousPolicy)
