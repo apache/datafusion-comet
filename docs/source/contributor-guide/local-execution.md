@@ -69,7 +69,8 @@ single partition. That partition's task creates the native graph:
 - `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
   order, so the result has Spark's row order. Each partition starts its operators on its own
   task, so a start that waits, for instance for a memory grant, does not hold up the pull, and a
-  partition's error, including a failure to start, is reported when its turn comes.
+  partition's error, including a failure to start, is reported when its turn comes. Once a
+  partition fails, no other starts, since none after it can be delivered.
 - At most as many partitions run at once as Spark runs tasks, `spark.executor.cores` divided by
   `spark.task.cpus`, and another starts whenever one finishes, as Spark starts a task whenever
   one ends. A partition's operators register their memory consumers when it starts and are
@@ -167,7 +168,7 @@ make core
 
 The native tests cover partition-order delivery, the bound on running partitions and its
 changes, partitions that finish before their turn, partition starts that wait, read-ahead,
-errors reported in a partition's turn, cancellation with busy workers, the pull that waits on
+errors reported in a partition's turn, no starts after a failure, cancellation with busy workers, the pull that waits on
 its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
 AQE, reported orderings, limits left to ordinary execution, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After

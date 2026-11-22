@@ -83,7 +83,8 @@ impl LocalQuery {
     ///
     /// A partition starts its operators on its own task, so a start that waits, for instance to
     /// register a memory consumer, does not hold up delivery. A failure to start is reported in
-    /// the partition's turn.
+    /// the partition's turn. Once a partition fails, no other starts, since none after it can be
+    /// delivered.
     ///
     /// The running partitions do not wait for their turn: each runs ahead of delivery while the
     /// batches they all hold total less than `read_ahead` bytes, and up to a few batches beyond
@@ -164,6 +165,7 @@ fn in_partition_order(query: &LocalQuery) -> SendableRecordBatchStream {
             held: AtomicUsize::new(0),
             delivered: Notify::new(),
             finished: AtomicWaker::new(),
+            failed: AtomicBool::new(false),
         }),
         running: VecDeque::new(),
     };
@@ -184,6 +186,9 @@ struct ReadAhead {
     delivered: Notify,
     /// Woken whenever a partition finishes, so that another can start.
     finished: AtomicWaker,
+    /// Set before `finished` once a partition fails. The partitions after it cannot be
+    /// delivered, so none starts from then on.
+    failed: AtomicBool,
 }
 
 /// One root partition running on its own Tokio task, ahead of delivery.
@@ -244,6 +249,7 @@ impl Partition {
                         *slot = Slot::Running(started);
                     }
                     Err(error) => {
+                        read_ahead.failed.store(true, Ordering::Release);
                         let _ = sender.send(Err(error));
                         return;
                     }
@@ -276,6 +282,7 @@ impl Partition {
                             }
                         }
                         Some(Err(error)) => {
+                            read_ahead.failed.store(true, Ordering::Release);
                             let _ = sender.send(Err(error));
                             return;
                         }
@@ -290,6 +297,7 @@ impl Partition {
             .catch_unwind()
             .await;
             if result.is_err() {
+                read_ahead.failed.store(true, Ordering::Release);
                 let _ = sender.send(Err(DataFusionError::Execution(
                     "Local query partition panicked".into(),
                 )));
@@ -341,7 +349,9 @@ struct PartitionOrder {
 impl PartitionOrder {
     fn start_partitions(&mut self) {
         let partitions = self.partitions;
-        if self.next >= partitions {
+        // Every partition before a failed one has started, so stopping here cannot stall
+        // delivery.
+        if self.next >= partitions || self.read_ahead.failed.load(Ordering::Acquire) {
             return;
         }
         let limit = self

@@ -480,16 +480,23 @@ struct Gated {
     gates: Vec<Arc<tokio::sync::Semaphore>>,
     /// Held by each partition's stream until it is dropped.
     streams: Vec<Arc<()>>,
+    /// The partition that fails once its gate opens, if any.
+    failing: Option<usize>,
 }
 
 impl Gated {
     fn new(partitions: usize) -> Arc<Self> {
+        Self::failing(partitions, None)
+    }
+
+    fn failing(partitions: usize, failing: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             started: Mutex::new(Vec::new()),
             gates: (0..partitions)
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(0)))
                 .collect(),
             streams: (0..partitions).map(|_| Arc::new(())).collect(),
+            failing,
         })
     }
 
@@ -500,8 +507,14 @@ impl Gated {
             let gate = Arc::clone(&gated.gates[partition]);
             let held = Arc::clone(&gated.streams[partition]);
             let base = partition as i64 * 4;
+            let fails = gated.failing == Some(partition);
             let stream = futures::stream::once(async move {
                 gate.acquire().await.unwrap().forget();
+                if fails {
+                    return Err(DataFusionError::Execution(format!(
+                        "partition {partition} failed"
+                    )));
+                }
                 Ok(batch(base..base + 4))
             })
             .inspect(move |_| {
@@ -634,14 +647,43 @@ async fn a_partition_that_finishes_before_its_turn_gives_up_its_slot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn finished_partitions_wait_for_their_turn_within_the_read_ahead_limit() {
     let gated = Gated::new(6);
-    let reader = tokio::spawn(gated.query(2, 0).execute().unwrap().try_collect());
+    // A limit of one byte lets a partition start only while no batch is held.
+    let reader = tokio::spawn(gated.query(2, 1).execute().unwrap().try_collect());
     gated.wait_started(2).await;
-    // The second partition finishes, but it holds a batch beyond the read-ahead limit, so no
+    // The second partition finishes, and its batch counts toward the read-ahead limit, so no
     // partition starts beyond the two that are not delivered.
     gated.open(1);
     gated.wait_dropped(1).await;
     gated.wait_started(2).await;
     gated.read_in_order(reader).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_partition_starts_after_one_fails() {
+    let gated = Gated::failing(6, Some(1));
+    let reader = tokio::spawn(
+        gated
+            .query(2, usize::MAX)
+            .execute()
+            .unwrap()
+            .try_collect::<Vec<_>>(),
+    );
+    gated.wait_started(2).await;
+    // The second partition fails before its turn. It gives up its slot, but no partition after
+    // it can be delivered, so none starts.
+    gated.open(1);
+    gated.wait_dropped(1).await;
+    gated.wait_started(2).await;
+    // Delivering the first partition does not start another either, and the error is reported
+    // in the second partition's turn.
+    gated.open(0);
+    let error = timeout(DEADLINE, reader)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("partition 1 failed"), "{error}");
+    assert_eq!(gated.started(), vec![0, 1]);
 }
 
 /// A first partition that never delivers, and a second one of ten batches.
