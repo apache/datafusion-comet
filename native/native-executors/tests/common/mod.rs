@@ -32,7 +32,7 @@ use datafusion_comet_proto::spark_expression::{
 use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::{
     operator::OpStruct, BuildSide, HashJoin, JoinType, Operator, Projection, RangeScan, Scan,
-    ShuffleScan, Sort, SparkStructField,
+    ShuffleScan, Sort, SortMergeJoin, SparkStructField,
 };
 use datafusion_comet_proto::spark_partitioning::{
     partitioning::PartitioningStruct, HashPartition, Partitioning, RangePartition, SinglePartition,
@@ -224,6 +224,15 @@ pub fn null_long() -> Expr {
     }))
 }
 
+pub fn multiply(left: Expr, right: Expr) -> Expr {
+    expr(ExprStruct::Multiply(Box::new(MathExpr {
+        left: Some(Box::new(left)),
+        right: Some(Box::new(right)),
+        return_type: Some(long_type()),
+        ..Default::default()
+    })))
+}
+
 pub fn remainder(left: Expr, right: Expr) -> Expr {
     expr(ExprStruct::Remainder(Box::new(MathExpr {
         left: Some(Box::new(left)),
@@ -361,6 +370,66 @@ pub fn joining_stage(probe: u32, build: u32, num_partitions: i32) -> Stage {
         inputs: vec![input(probe), input(build)],
         num_partitions: num_partitions as u32,
         output_schema: vec![field(long_type()), field(long_type())],
+        ..Default::default()
+    }
+}
+
+/// A stage that joins the first columns of stages `left` and `right`, read through hash exchanges
+/// of `num_partitions`, with a sort-merge join of `join_type` over sorts of both sides, as Spark
+/// plans one. A semi or anti join outputs the left side's column, any other both sides'.
+pub fn sort_merge_joining_stage(
+    left: u32,
+    right: u32,
+    num_partitions: i32,
+    join_type: JoinType,
+) -> Stage {
+    let sorted_leaf = || Operator {
+        children: vec![Operator {
+            op_struct: Some(OpStruct::ShuffleScan(ShuffleScan {
+                fields: vec![long_type()],
+                source: "test".to_string(),
+            })),
+            ..Default::default()
+        }],
+        op_struct: Some(OpStruct::Sort(Sort {
+            sort_orders: vec![sort_key(0, long_type(), false, true)],
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let input = |producer| StageInput {
+        producer,
+        partitioning: Some(hash_on_first_column(num_partitions)),
+        broadcast: false,
+    };
+    let both_sides = !matches!(join_type, JoinType::LeftSemi | JoinType::LeftAnti);
+    let outer_right = matches!(join_type, JoinType::LeftOuter | JoinType::FullOuter);
+    let outer_left = matches!(join_type, JoinType::RightOuter | JoinType::FullOuter);
+    let mut output_schema = vec![SparkStructField {
+        nullable: outer_left,
+        ..field(long_type())
+    }];
+    if both_sides {
+        output_schema.push(SparkStructField {
+            nullable: outer_right,
+            ..field(long_type())
+        });
+    }
+    Stage {
+        plan: Some(Operator {
+            children: vec![sorted_leaf(), sorted_leaf()],
+            op_struct: Some(OpStruct::SortMergeJoin(SortMergeJoin {
+                left_join_keys: vec![bound(0, long_type())],
+                right_join_keys: vec![bound(0, long_type())],
+                join_type: join_type as i32,
+                sort_options: vec![sort_key(0, long_type(), false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }),
+        inputs: vec![input(left), input(right)],
+        num_partitions: num_partitions as u32,
+        output_schema,
         ..Default::default()
     }
 }

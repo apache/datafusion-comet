@@ -41,7 +41,9 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use ballista_core::client::BallistaClient;
-use ballista_core::config::{BallistaConfig, ExecutionMode};
+use ballista_core::config::{
+    BallistaConfig, ExecutionMode, BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK,
+};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{
@@ -65,6 +67,7 @@ use prost_types::Timestamp;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::assembly::{build_plan, check_version};
+use crate::codec::CometPhysicalCodec;
 
 /// The Ballista session every query runs in. Every query uses Ballista's default settings, and
 /// executors cache a runtime per session, so sharing one lets queries share those runtimes.
@@ -112,8 +115,18 @@ impl CometFlightService {
         scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
         ballista_settings: &[(String, String)],
     ) -> Result<Self, String> {
+        // The scheduler encodes plans with Comet's codec, and so must the session: Ballista's
+        // exchange reuse matches two stages by their encodings, so with Ballista's own codec,
+        // which can't encode a Comet stage, no stage would ever be shared.
+        //
+        // Each partition of a Comet stage runs its own copy of the block, so a task gains nothing
+        // from holding several partitions, while a task of several waits for its slowest before
+        // its slots go to other work: one partition per task lets stages overlap and keeps every
+        // slot busy, unless the settings say otherwise.
         let session = ballista_settings.iter().fold(
-            SessionConfig::new_with_ballista(),
+            SessionConfig::new_with_ballista()
+                .with_ballista_physical_extension_codec(Arc::new(CometPhysicalCodec::default()))
+                .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "1"),
             |session, (key, value)| session.set_str(key, value),
         );
         // Check the settings now rather than when the first query runs.

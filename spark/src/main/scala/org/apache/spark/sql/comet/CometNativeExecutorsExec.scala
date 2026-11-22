@@ -30,7 +30,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruning, DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, DeserializeToObjectExec, LeafExecNode, ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
@@ -435,6 +435,24 @@ object CometNativeExecutors {
       if (known != null) {
         return known
       }
+      // A subplan the query reads more than once, such as a common table expression or the same
+      // scan under two subqueries, runs as one stage that each consumer reads, as Spark's
+      // ReuseExchangeAndSubquery and AQE's stage cache would arrange. The driver takes the plan
+      // before either runs.
+      val canonical = if (reuseExchanges) Some(plan.canonicalized) else None
+      canonical.flatMap(c => Option(canonicalStages.get(c))).foreach { index =>
+        stageIndexes.put(plan, index)
+        return index
+      }
+      val index = newStage(plan)
+      canonical.foreach(canonicalStages.put(_, index))
+      index
+    }
+
+    private val reuseExchanges = SQLConf.get.exchangeReuseEnabled
+    private val canonicalStages = new java.util.HashMap[SparkPlan, Integer]()
+
+    private def newStage(plan: SparkPlan): Int = {
       val block = plan match {
         case take: CometTakeOrderedAndProjectExec => return takeOrderedStage(take)
         case native: CometNativeExec if native.serializedPlanOpt.isDefined => native
@@ -450,8 +468,12 @@ object CometNativeExecutors {
 
       // A block that reads files runs one copy per partition, each naming its own files.
       val (common, perPartition) =
-        if (withFiles) filesOf(block, scans.toSeq)
-        else (Map.empty[String, Array[Byte]], Map.empty[String, Array[PartitionPlanData]])
+        if (withFiles) {
+          val (common, perPartition) = filesOf(block, scans.toSeq)
+          (common, regroup(perPartition, scans.toSeq))
+        } else {
+          (Map.empty[String, Array[Byte]], Map.empty[String, Array[PartitionPlanData]])
+        }
       val partitionPlans = if (perPartition.isEmpty) {
         Seq.empty
       } else {
@@ -509,6 +531,56 @@ object CometNativeExecutors {
             key -> Array(PartitionPlanData(partition))
           }.toMap)
       }
+    }
+
+    /**
+     * `perPartition`, the planning data of a block's scans, with the files of a single Parquet
+     * scan packed into at most `spark.comet.nativeExecutors.scanPartitions` partitions. Each
+     * piece of a file goes, largest first, to the partition with the fewest bytes so far, so the
+     * partitions read about as much as each other. A scan whose partitions Spark placed rows in
+     * by buckets keeps them, and so does a block with more than one scan, whose partitions must
+     * line up.
+     */
+    private def regroup(
+        perPartition: Map[String, Array[PartitionPlanData]],
+        scans: Seq[CometLeafExec]): Map[String, Array[PartitionPlanData]] = {
+      val target = CometConf.COMET_NATIVE_EXECUTORS_SCAN_PARTITIONS.get()
+      val regroupable = target > 0 && perPartition.size == 1 && scans.size == 1 &&
+        (scans.head match {
+          case scan: CometNativeScanExec =>
+            scan.outputPartitioning.isInstanceOf[UnknownPartitioning] &&
+            scan.outputOrdering.isEmpty
+          case _ => false
+        })
+      if (!regroupable || perPartition.head._2.length <= target) {
+        return perPartition
+      }
+      val (key, partitions) = perPartition.head
+      val pieces = partitions
+        .flatMap { partition =>
+          OperatorOuterClass.NativeScan
+            .parseFrom(partition.bytes)
+            .getFilePartition
+            .getPartitionedFileList
+            .asScala
+        }
+        .sortBy(piece => -piece.getLength)
+      val groups = Array.fill(target)(OperatorOuterClass.SparkFilePartition.newBuilder())
+      val sizes = Array.fill(target)(0L)
+      pieces.foreach { piece =>
+        val smallest = sizes.indices.minBy(sizes)
+        groups(smallest).addPartitionedFile(piece)
+        sizes(smallest) += piece.getLength
+      }
+      val regrouped = groups.map { group =>
+        PartitionPlanData(
+          OperatorOuterClass.NativeScan
+            .newBuilder()
+            .setFilePartition(group)
+            .build()
+            .toByteArray)
+      }
+      Map(key -> regrouped)
     }
 
     /** An input of a stage that reads the stage running `producer`, as `configure` says. */

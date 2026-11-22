@@ -584,6 +584,21 @@ object CometConf extends ShimCometConf {
       .stringConf
       .createWithDefault("http://localhost:50060")
 
+  val COMET_NATIVE_EXECUTORS_SCAN_PARTITIONS: ConfigEntry[Int] =
+    conf("spark.comet.nativeExecutors.scanPartitions")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. The most partitions a stage that reads files runs on a Comet Native " +
+          "Executor cluster. Spark splits the files into pieces of at most " +
+          "`spark.sql.files.maxPartitionBytes`, and the driver packs them into this many " +
+          "partitions of about the same size, as DataFusion groups files. Set it to about the " +
+          "cluster's task slots. 0 keeps Spark's partitions. " +
+          "See `spark.comet.nativeExecutors.enabled`.")
+      .internal()
+      .intConf
+      .checkValue(_ >= 0, "must not be negative")
+      .createWithDefault(0)
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)

@@ -65,3 +65,12 @@ path = "src/bin/comet-scheduler.rs"
 [[bin]]
 name = "comet-executor"
 path = "src/bin/comet-executor.rs"
+
+# The main workspace's release profile (native/Cargo.toml): this workspace's own builds of Comet's
+# crates and of Ballista get the same optimization.
+[profile.release]
+debug = true
+overflow-checks = false
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

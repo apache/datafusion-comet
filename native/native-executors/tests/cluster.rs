@@ -34,6 +34,7 @@ use common::*;
 use datafusion::arrow::array::{AsArray, RecordBatch};
 use datafusion::arrow::datatypes::Int64Type;
 use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage};
+use datafusion_comet_proto::spark_operator::JoinType;
 use futures::TryStreamExt;
 use prost::Message;
 use tonic::transport::Endpoint;
@@ -414,6 +415,215 @@ async fn join_with_a_build_side_that_measures_empty_returns_no_rows() {
     let rows = cluster.run(&request).await.concat();
 
     assert_eq!(rows.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+}
+
+/// `range(0, 10_000)` as stage 0, large by Spark's estimate, and `range(0, 100)` as stage 1,
+/// small, then `join` reading them.
+fn large_and_small(join: Stage) -> QueryRequest {
+    let mut large = range_stage(10_000, 4);
+    large.estimated_output_bytes = Some(1 << 40);
+    let mut small = range_stage(100, 2);
+    small.estimated_output_bytes = Some(1 << 30);
+    query(vec![large, small, join])
+}
+
+fn assert_broadcast(cluster: &Cluster) {
+    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
+    assert!(log.contains("Holding back a join's probe side"), "{log}");
+    assert!(
+        log.contains("broadcasting it to the probe side's stage"),
+        "{log}"
+    );
+}
+
+fn column_values(rows: &[RecordBatch], column: usize) -> Vec<Option<i64>> {
+    let mut values: Vec<Option<i64>> = rows
+        .iter()
+        .flat_map(|batch| batch.column(column).as_primitive::<Int64Type>().iter())
+        .collect();
+    values.sort();
+    values
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_the_small_side_of_a_sort_merge_join() {
+    let cluster = Cluster::start();
+    let request = large_and_small(sort_merge_joining_stage(0, 1, 3, JoinType::Inner));
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        column_values(&rows, 0),
+        (0..100).map(Some).collect::<Vec<_>>()
+    );
+    for batch in &rows {
+        assert_eq!(batch.column(0), batch.column(1));
+    }
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_the_left_side_of_a_sort_merge_join_into_the_right_sides_stage() {
+    // The small side is on the left, so the join, built on the left, runs in the right side's
+    // stage, and the left side's column still comes first.
+    let cluster = Cluster::start();
+    let request = large_and_small(sort_merge_joining_stage(1, 0, 3, JoinType::Inner));
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        column_values(&rows, 0),
+        (0..100).map(Some).collect::<Vec<_>>()
+    );
+    for batch in &rows {
+        assert_eq!(batch.column(0), batch.column(1));
+    }
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_the_right_side_of_a_semi_join() {
+    let cluster = Cluster::start();
+    let request = large_and_small(sort_merge_joining_stage(0, 1, 3, JoinType::LeftSemi));
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(rows[0].num_columns(), 1);
+    assert_eq!(
+        column_values(&rows, 0),
+        (0..100).map(Some).collect::<Vec<_>>()
+    );
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_the_right_side_of_an_anti_join() {
+    let cluster = Cluster::start();
+    let request = large_and_small(sort_merge_joining_stage(0, 1, 3, JoinType::LeftAnti));
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        column_values(&rows, 0),
+        (100..10_000).map(Some).collect::<Vec<_>>()
+    );
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_the_right_side_of_a_left_outer_join() {
+    let cluster = Cluster::start();
+    let request = large_and_small(sort_merge_joining_stage(0, 1, 3, JoinType::LeftOuter));
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        column_values(&rows, 0),
+        (0..10_000).map(Some).collect::<Vec<_>>()
+    );
+    let mut expected: Vec<Option<i64>> = std::iter::repeat(None)
+        .take(9_900)
+        .chain((0..100).map(Some))
+        .collect();
+    expected.sort();
+    assert_eq!(column_values(&rows, 1), expected);
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_the_left_side_of_a_right_outer_join() {
+    let cluster = Cluster::start();
+    let request = large_and_small(sort_merge_joining_stage(1, 0, 3, JoinType::RightOuter));
+
+    let rows = cluster.run(&request).await.concat();
+
+    let mut expected: Vec<Option<i64>> = std::iter::repeat(None)
+        .take(9_900)
+        .chain((0..100).map(Some))
+        .collect();
+    expected.sort();
+    assert_eq!(column_values(&rows, 0), expected);
+    assert_eq!(
+        column_values(&rows, 1),
+        (0..10_000).map(Some).collect::<Vec<_>>()
+    );
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sorts_a_broadcast_sort_merge_joins_output_for_the_sort_merge_join_above_it() {
+    // A second sort-merge join on the same key reads the first one's output without a sort of
+    // its own, as Spark plans it, so the moved join's output is sorted in the consumer.
+    let cluster = Cluster::start();
+    let mut join = sort_merge_joining_stage(0, 1, 3, JoinType::Inner);
+    let lower = join.plan.take().unwrap();
+    // The third stage's side, sorted, as the upper join reads it.
+    let third = sort_merge_joining_stage(0, 2, 3, JoinType::Inner)
+        .plan
+        .unwrap()
+        .children
+        .remove(1);
+    let upper = sort_merge_joining_stage(0, 2, 3, JoinType::LeftSemi);
+    let mut plan = upper.plan.unwrap();
+    plan.children = vec![lower, third];
+    join.plan = Some(plan);
+    join.inputs.push(upper.inputs[1].clone());
+    let mut large = range_stage(10_000, 4);
+    large.estimated_output_bytes = Some(1 << 40);
+    let mut small = range_stage(100, 2);
+    small.estimated_output_bytes = Some(1 << 30);
+    // Only the even ids of the third stage match.
+    let evens = projecting_stage(
+        range_stage(50, 2),
+        vec![multiply(bound(0, long_type()), long_literal(2))],
+        vec![long_type()],
+    );
+    let request = query(vec![large, small, evens, join]);
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        column_values(&rows, 0),
+        (0..50).map(|id| Some(id * 2)).collect::<Vec<_>>()
+    );
+    assert_broadcast(&cluster);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_a_join_whose_probe_side_is_filtered_into_the_probe_sides_stage() {
+    // Spark plans filters and projections between joins: the filter moves with the join.
+    let cluster = Cluster::start();
+    let mut join = joining_stage(0, 1, 3);
+    let plan = join.plan.as_mut().unwrap();
+    let leaf = plan.children.remove(0);
+    let even = equal(
+        remainder(bound(0, long_type()), long_literal(2)),
+        long_literal(0),
+    );
+    plan.children.insert(
+        0,
+        datafusion_comet_proto::spark_operator::Operator {
+            children: vec![leaf],
+            op_struct: Some(
+                datafusion_comet_proto::spark_operator::operator::OpStruct::Filter(
+                    datafusion_comet_proto::spark_operator::Filter {
+                        predicate: Some(even),
+                        ..Default::default()
+                    },
+                ),
+            ),
+            ..Default::default()
+        },
+    );
+    let request = held_join_query(range_stage(100, 2), join);
+
+    let rows = cluster.run(&request).await.concat();
+
+    assert_eq!(
+        column_values(&rows, 0),
+        (0..50).map(|id| Some(id * 2)).collect::<Vec<_>>()
+    );
+    assert_broadcast(&cluster);
 }
 
 /// Settings that run queries in Ballista's pipelined mode.
