@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{SortOrder, SubqueryExpression}
 import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
-import org.apache.spark.sql.comet.{CometNativeExec, CometRangeExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometRangeExec, MapCodegenStagePolicy}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -129,11 +129,15 @@ private[comet] object CometLocalRule {
       val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
       partitions >= 1 && partitions <= MaxPartitions
     } &&
-    withoutJvmCallbacks(block.nativeOp)
+    supportsLocalExpressions(block.nativeOp)
   }
 
-  private def withoutJvmCallbacks(message: Message): Boolean = {
+  private def supportsLocalExpressions(message: Message): Boolean = {
     val accepted = message match {
+      // The local collector and ordinary consumers build separate RDDs. A generated Spark
+      // map builder retains the driver's deduplication policy across both kinds of action.
+      case expression: Expr if expression.hasScalarFunc =>
+        expression.getScalarFunc.getFunc != MapCodegenStagePolicy.Driver
       case expression: Expr => !JvmCallbacks.contains(expression.getExprStructCase)
       case _ => true
     }
@@ -141,9 +145,9 @@ private[comet] object CometLocalRule {
       if (field.getJavaType != JavaType.MESSAGE) {
         true
       } else if (field.isRepeated) {
-        value.asInstanceOf[java.util.List[Message]].asScala.forall(withoutJvmCallbacks)
+        value.asInstanceOf[java.util.List[Message]].asScala.forall(supportsLocalExpressions)
       } else {
-        withoutJvmCallbacks(value.asInstanceOf[Message])
+        supportsLocalExpressions(value.asInstanceOf[Message])
       }
     }
   }

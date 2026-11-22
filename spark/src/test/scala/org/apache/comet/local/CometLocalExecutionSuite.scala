@@ -34,8 +34,9 @@ import org.apache.spark.sql.execution.columnar.InMemoryRelation
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{col, desc, row_number}
+import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometArrowImportAllocator, CometConf, CometExecIterator, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{CometArrowImportAllocator, CometConf, CometExecIterator, CometSparkSessionExtensions, ExtendedExplainInfo, NativeBase}
 import org.apache.comet.vector.NativeUtil
 
 class CometLocalExecutionSuite
@@ -241,6 +242,35 @@ class CometLocalExecutionSuite
     assert(
       range.rdd.mapPartitions(rows => Iterator(rows.size)).collect().toSeq == Seq.fill(6)(50))
     assert(!ordinary(query).isInstanceOf[ColumnarToRowExec], ordinary(query))
+  }
+
+  test("float map builders retain their driver policy across collect and RDD actions") {
+    assume(CometSparkSessionExtensions.isSpark40Plus)
+    val policy = SQLConf.MAP_KEY_DEDUP_POLICY.key
+    val sc = spark.sparkContext
+    withConf(policy, "LAST_WIN") {
+      val query = spark
+        .range(0, 1, 1, 1)
+        .selectExpr(
+          "size(map_from_arrays(array(CAST(id AS DOUBLE), CAST(id AS DOUBLE)), array(7, 8)))")
+      assert(query.collect().toSeq == Seq(Row(1)))
+      withConf(policy, "EXCEPTION") {
+        val previous = sc.getLocalProperty(policy)
+        sc.setLocalProperty(policy, "LAST_WIN")
+        try {
+          assert(query.queryExecution.toRdd.map(_.getInt(0)).collect().toSeq == Seq(1))
+        } finally {
+          sc.setLocalProperty(policy, previous)
+        }
+      }
+      val plan = query.queryExecution.executedPlan
+      assert(localNodes(query).isEmpty, plan.toString)
+      val explain = new ExtendedExplainInfo()
+      assert(explain.getNativeExpressions(plan).contains("map_from_arrays"), plan.toString)
+      assert(
+        !explain.getCodegenDispatchExpressions(plan).contains("map_from_arrays"),
+        plan.toString)
+    }
   }
 
   test("output validation and timestamp label checks apply to local output") {
