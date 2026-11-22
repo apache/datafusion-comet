@@ -89,7 +89,7 @@ case class CometNativeScanExec(
     lazy val mayPushFilter = hasSubquery ||
       dataFilters.exists(f => DataSourceStrategy.translateFilter(f, nested).isDefined)
     // With field IDs, Spark can select a physical column by ID but decode it by name.
-    // Check only when both readers resolve the requested columns by name with the same casing rules.
+    // Check only when both readers match columns by name with the same case sensitivity.
     (common.getHasDataFilters || hasSubquery) &&
     requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
     !ParquetUtils.hasFieldIds(requiredSchema) &&
