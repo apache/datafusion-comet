@@ -209,6 +209,7 @@ object CometCast
         // Spark does not apply the 38 integral-digit limit to a string cast to decimal with
         // spark.sql.legacy.allowNegativeScaleOfDecimal.
         castBuilder.setDecimalSkipIntegralDigitLimit(allowNegativeScaleOfDecimal)
+        castBuilder.setJavaFeatureVersion(Runtime.version().feature())
         Some(
           ExprOuterClass.Expr
             .newBuilder()

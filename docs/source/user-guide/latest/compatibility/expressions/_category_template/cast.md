@@ -82,12 +82,11 @@ reports an older version but includes SPARK-60118, Comet returns `NULL` (or rais
 returns `0`.
 
 On those same releases, Spark and Comet cast `'1e-2147483647'` to `DECIMAL(10,2)` as `0.00`
-(SPARK-60119). On earlier releases with OpenJDK 17 or 21, reducing the scale of a nonzero
-value by 536,870,920 or more places raises an `ArithmeticException` in every eval mode.
-Comet uses this limit and raises `CAST_INVALID_INPUT` under ANSI mode or returns `NULL` otherwise
-([#6966](https://github.com/apache/datafusion-comet/issues/6966)). The limit can differ on
-other JDKs. Comet chooses the behavior by the Spark version number, so a vendor build that
-backports SPARK-60119 to an earlier version can return `0` where Comet raises or returns `NULL`.
+(SPARK-60119). On earlier releases, this cast needs a power of ten larger than the JDK supports.
+Spark raises an `ArithmeticException` in every eval mode. Comet checks the limit for the
+driver's JDK version and raises `CAST_INVALID_INPUT` under ANSI mode or returns `NULL` otherwise
+([#6966](https://github.com/apache/datafusion-comet/issues/6966)). A vendor build that backports
+SPARK-60119 to an earlier Spark version can return `0` where Comet raises or returns `NULL`.
 
 A string whose integral part has more than 38 digits, such as `'6E+38'`, is rejected before Spark
 checks the value against the target type. Comet does the same: the result is `NULL`, or

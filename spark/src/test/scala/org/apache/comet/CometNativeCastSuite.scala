@@ -1547,7 +1547,7 @@ class CometNativeCastSuite
 
   // The tests above compare the cast with the Spark they run on, and SparkFixesSuite covers the
   // setting for each Spark version.
-  test("cast StringType to DecimalType sets the decimal options for the running Spark version") {
+  test("cast StringType to DecimalType sets the decimal options for Spark and Java versions") {
     val a = AttributeReference("a", StringType)()
     val cast =
       CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false).map(_.getCast)
@@ -1557,6 +1557,7 @@ class CometNativeCastSuite
         Some(SparkFixes.castsZeroWithAnyExponentToDecimal(version)))
     assert(
       cast.map(_.getDecimalTinyToZero) == Some(SparkFixes.castsTinyStringToDecimalZero(version)))
+    assert(cast.map(_.getJavaFeatureVersion) == Some(Runtime.version().feature()))
   }
 
   test(
