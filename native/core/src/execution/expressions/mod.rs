@@ -21,6 +21,7 @@ pub mod arithmetic;
 pub mod bitwise;
 pub mod comparison;
 pub mod logical;
+pub mod map_entries;
 pub mod nullcheck;
 pub mod partition;
 pub mod random;

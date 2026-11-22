@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.TaskContext
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.internal.{ReadOnlySQLConf, SQLConf}
 
 import org.apache.comet.CometConf
@@ -45,6 +46,7 @@ class CapturedSQLConf private (configs: Map[String, String]) extends Serializabl
   def withConf[T](f: => T): T = {
     val context = TaskContext.get()
     if (configs.isEmpty || context == null || !SQLConf.get.isInstanceOf[ReadOnlySQLConf] ||
+      context.getLocalProperty(SQLExecution.EXECUTION_ID_KEY) != null ||
       configs.keys.exists(context.getLocalProperty(_) != null)) {
       f
     } else {
