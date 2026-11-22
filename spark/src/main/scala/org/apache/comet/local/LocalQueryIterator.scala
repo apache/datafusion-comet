@@ -31,7 +31,7 @@ import org.apache.comet.vector.NativeUtil
 private[local] class LocalQueryIterator(
     spec: LocalQuerySpec,
     context: TaskContext,
-    driverMapKeyDedupPolicy: String)
+    driverMapKeyDedupPolicy: Option[String])
     extends Iterator[ColumnarBatch]
     with AutoCloseable {
   private val native = new NativeLocal

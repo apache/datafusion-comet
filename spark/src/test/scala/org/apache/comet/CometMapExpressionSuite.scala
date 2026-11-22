@@ -300,11 +300,12 @@ class CometMapExpressionSuite extends CometTestBase {
       sql("CREATE TABLE map_normalization(k ARRAY<DOUBLE>, v ARRAY<INT>) USING parquet")
       sql("INSERT INTO map_normalization VALUES (array(0.0D, double('-0.0')), array(1, 2))")
       val generated = SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "2"
-      val dispatchModes = Seq(
-        SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.key -> "1",
-        SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN")
+      val limit = SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT
+      val lowerLimitAfterPlanning = limit.key -> limit.defaultValueString
+      val dispatchModes = Seq(limit.key -> "1", SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN")
       val nativeModes = Seq(
         generated,
+        lowerLimitAfterPlanning,
         SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "1",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")
       for {
@@ -324,6 +325,8 @@ class CometMapExpressionSuite extends CometTestBase {
           val df = sql(
             "SELECT map_values(map_from_arrays(k, v)), " +
               "map_values(map_from_entries(arrays_zip(k, v))) FROM map_normalization")
+          val plan = df.queryExecution.executedPlan
+          if (mode == lowerLimitAfterPlanning) spark.conf.set(limit.key, "1")
           assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
           if (firstPolicy == "LAST_WIN") {
             // The RDD action reads the task's default normalization when it consumes the row.
@@ -331,7 +334,6 @@ class CometMapExpressionSuite extends CometTestBase {
           }
           if (comet) {
             val builders = Seq("map_from_arrays", "map_from_entries")
-            val plan = df.queryExecution.executedPlan
             if (dispatchModes.contains(mode)) assertExpressionImpl(plan, Seq.empty, builders)
             else assertExpressionImpl(plan, builders, Seq.empty)
           }
@@ -363,19 +365,37 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("float map builder uses the session dedup policy before a shuffle in an RDD action") {
+  test("float map builder matches Spark's dedup policy before a shuffle in an RDD action") {
+    val policyKey = SQLConf.MAP_KEY_DEDUP_POLICY.key
+    val sc = spark.sparkContext
     withParquetTable(Seq((Seq(1.0, 1.0), Seq(7, 8))), "duplicate_keys") {
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
-        SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
-        val df = sql("SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys")
-          .repartition(2, col("s"))
-        assertExpressionImpl(
-          df.queryExecution.executedPlan,
-          native = Seq("map_from_arrays"),
-          dispatched = Seq.empty)
-        assert(df.rdd.collect().toSeq == Seq(Row(1)))
+      for {
+        comet <- Seq(false, true)
+        wholeStage <- Seq(false, true)
+      } {
+        val (sessionPolicy, taskPolicy) =
+          if (wholeStage) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> comet.toString,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage.toString,
+          policyKey -> sessionPolicy) {
+          val df = sql("SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys")
+            .repartition(2, col("s"))
+          if (comet) {
+            assertExpressionImpl(
+              df.queryExecution.executedPlan,
+              native = Seq("map_from_arrays"),
+              dispatched = Seq.empty)
+          }
+          val previousPolicy = sc.getLocalProperty(policyKey)
+          sc.setLocalProperty(policyKey, taskPolicy)
+          try {
+            assert(df.rdd.collect().toSeq == Seq(Row(1)))
+          } finally {
+            sc.setLocalProperty(policyKey, previousPolicy)
+          }
+        }
       }
     }
   }

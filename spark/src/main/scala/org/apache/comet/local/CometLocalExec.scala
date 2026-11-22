@@ -82,7 +82,7 @@ case class CometLocalExec private[local] (
 
 private[local] class LocalQueryRDD(sc: SparkContext, spec: LocalQuerySpec)
     extends RDD[ColumnarBatch](sc, Nil) {
-  private val driverMapKeyDedupPolicy = CapturedSQLConf.currentMapKeyDedupPolicy
+  private val driverMapKeyDedupPolicy = CapturedSQLConf.captureDriverMapKeyDedupPolicy()
 
   override protected def getPartitions: Array[Partition] = Array(new Partition {
     override def index: Int = 0

@@ -20,6 +20,8 @@
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+-- Spark's JSON rewrite reads the first field of struct() in the empty-struct case below.
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.OptimizeCsvJsonExprs
 
 -- Parquet canonicalizes NaN, so negating a stored NaN gives one with the sign bit set.
 statement

@@ -103,7 +103,7 @@ class CometExecIterator(
     outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
     outputTypes: Seq[DataType] = Seq.empty,
-    driverMapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy)
+    driverMapKeyDedupPolicy: Option[String] = None)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -894,8 +894,7 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  def serializeCometSQLConfs(
-      driverMapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy): Array[Byte] = {
+  def serializeCometSQLConfs(driverMapKeyDedupPolicy: Option[String] = None): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
@@ -918,8 +917,9 @@ object CometExecIterator extends Logging {
     val disableNormalization = !CometSparkSessionExtensions.isSpark40Plus ||
       taskConf.getConfString(normalizationKey, "false").trim.toBoolean
     builder.putEntries(normalizationKey, disableNormalization.toString)
-    builder.putEntries(SQLConf.MAP_KEY_DEDUP_POLICY.key, CapturedSQLConf.currentMapKeyDedupPolicy)
-    builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy)
+    val policy = CapturedSQLConf.currentMapKeyDedupPolicy
+    builder.putEntries(SQLConf.MAP_KEY_DEDUP_POLICY.key, policy)
+    builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy.getOrElse(policy))
 
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were
