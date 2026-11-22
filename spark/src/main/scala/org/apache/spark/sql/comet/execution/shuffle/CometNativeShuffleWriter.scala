@@ -156,7 +156,7 @@ class CometNativeShuffleWriter[K, V](
         shuffleId,
         unifiedPlan,
         ctx.commonByKey,
-        shuffleInputIter.planDataByKey)
+        shuffleInputIter.planDataByKey.map { case (key, data) => key -> data.bytes })
     } else {
       unifiedPlan
     }
@@ -184,9 +184,14 @@ class CometNativeShuffleWriter[K, V](
 
     // The leaf scans execute inside this writer's single plan rather than a separate native
     // stage RDD, so the usual CometExecRDD.compute() bridge (operators.scala) never runs for
-    // them. Report their bytes/rows to the task's input metrics here instead.
+    // them. Report their bytes/rows to the task's input metrics here instead. A plan without a
+    // JVM input reads all of the task's input, so it also reports while it runs.
     if (ctx.hasScanInput) {
-      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+      if (inputObjects.isEmpty) {
+        Option(context).foreach(nativeMetrics.reportScanInputMetricsWhileRunning)
+      } else {
+        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+      }
     }
 
     val cometIter = new CometExecIterator(

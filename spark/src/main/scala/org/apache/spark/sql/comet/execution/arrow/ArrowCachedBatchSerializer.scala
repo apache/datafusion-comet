@@ -792,7 +792,7 @@ object ArrowCachedBatchSerializer {
     classOf[java.math.BigInteger],
     // A relation whose schema this serializer cannot store is delegated to Spark's
     // DefaultCachedBatchSerializer, so its payload has to survive Kryo too. Spark registers
-    // DefaultCachedBatch itself only from 4.1 onwards, so on 3.4, 3.5 and 4.0 the delegated path
+    // DefaultCachedBatch itself only from 4.1 onwards, so on 3.5 and 4.0 the delegated path
     // fails without this. Registering it twice on 4.1 is a no-op.
     classOf[DefaultCachedBatch])
 }

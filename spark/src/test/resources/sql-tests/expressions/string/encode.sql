@@ -59,7 +59,7 @@ query
 SELECT encode(s, 'ISO-8859-1') FROM test_encode
 
 -- US-ASCII: use ASCII-only input so this file stays version-agnostic. Unmappable input under
--- US-ASCII substitutes on Spark 3.4/3.5 and throws on Spark 4.0+, so it is covered by the paired
+-- US-ASCII substitutes on Spark 3.5 and throws on Spark 4.0+, so it is covered by the paired
 -- fixtures encode_unmappable.sql and encode_unmappable_strict.sql instead.
 
 statement

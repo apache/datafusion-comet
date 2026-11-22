@@ -74,7 +74,7 @@ object NativeConfig {
     s3Properties.map { case (_, s3aSuffix, icebergKey) => s3aSuffix -> icebergKey }.toMap
 
   /** A URI's scheme, lowercased; None when it has none. */
-  private[comet] def lowerScheme(uri: URI): Option[String] =
+  def lowerScheme(uri: URI): Option[String] =
     Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT))
 
   // Comma-separated scheme list -> trimmed, lowercased set (case-insensitive). Shared with
@@ -133,6 +133,26 @@ object NativeConfig {
   }
 
   /**
+   * As in native, the user ends at the first `:` and the host follows the last `@`. An authority
+   * with no password is returned as is.
+   */
+  private[objectstore] def authorityWithoutPassword(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    val at = rawAuthority.lastIndexOf('@')
+    if (at < 0 || (at > 0 && rawAuthority.lastIndexOf(':', at - 1) < 0)) {
+      rawAuthority
+    } else {
+      val user = rawAuthority.take(at).takeWhile(_ != ':')
+      val host = rawAuthority.substring(at + 1)
+      if (user.isEmpty) host else s"$user@$host"
+    }
+  }
+
+  /** `scheme://[user@]host[:port]` of `uri`, for messages: no password, path or query. */
+  private[comet] def displayAuthority(uri: URI): String =
+    s"${lowerScheme(uri).getOrElse("file")}://${authorityWithoutPassword(uri)}"
+
+  /**
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
    * when it is unset or blank, as native `is_hdfs_scheme` decides.
    */
@@ -146,7 +166,7 @@ object NativeConfig {
    * which native reads through libhdfs. `scanOnly` holds those listed only through the scan's
    * reader options, which the scan gates decline.
    */
-  private[comet] case class ScanLibhdfsSchemes(libhdfs: Set[String], scanOnly: Set[String])
+  case class ScanLibhdfsSchemes(libhdfs: Set[String], scanOnly: Set[String])
 
   /**
    * Splits the `fs.comet.libhdfs.schemes` lists of `sessionConf` (the session's Hadoop conf) and
@@ -154,7 +174,7 @@ object NativeConfig {
    * the scan's list, but libhdfs builds its configuration from the executor classpath
    * (`core-site.xml`), not the scan's options, so a reader option cannot add a libhdfs scheme.
    */
-  private[comet] def resolveScanLibhdfsSchemes(
+  def resolveScanLibhdfsSchemes(
       sessionConf: Configuration,
       scanConf: Configuration): ScanLibhdfsSchemes =
     resolveScanLibhdfsSchemes(resolveLibhdfsSchemes(sessionConf), scanConf)
@@ -163,7 +183,7 @@ object NativeConfig {
    * As above, with the session's list already resolved by [[resolveLibhdfsSchemes]], so a caller
    * planning many scans copies the session's Hadoop conf once.
    */
-  private[comet] def resolveScanLibhdfsSchemes(
+  def resolveScanLibhdfsSchemes(
       sessionSchemes: Set[String],
       scanConf: Configuration): ScanLibhdfsSchemes = {
     val scan = resolveLibhdfsSchemes(scanConf)
@@ -198,7 +218,7 @@ object NativeConfig {
     val scheme = lowerScheme(uri).getOrElse("file")
     val isLibhdfs = libhdfsSchemes.contains(scheme)
     val authority =
-      if (scheme == "abfs" || scheme == "abfss") Option(uri.getRawAuthority).getOrElse("")
+      if (scheme == "abfs" || scheme == "abfss") authorityWithoutPassword(uri)
       else hostAndPort(uri)
     val isS3Alias = !isLibhdfs &&
       (scheme == "s3a" ||
@@ -421,9 +441,12 @@ object NativeConfig {
             s"(${first.getScheme} and ${uri.getScheme})")
       }
       if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
+        // Hadoop reads the whole user info, password too, as the container.
+        val (a, b) = (displayAuthority(first), displayAuthority(uri))
+        val stores = if (a == b) s"$a, with different user info" else s"$a and $b"
         return Left(
           "Native scan does not support ABFS files from more than one container or account " +
-            s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
+            s"($stores)")
       }
     }
     if (firstIsAbfs) {
