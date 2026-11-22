@@ -188,9 +188,10 @@ With normalization enabled, `map_from_entries` stores `0.0` for a `-0.0` key and
 NaN for any NaN key. Like Spark, `map_from_arrays` preserves the original keys when they are
 distinct. When `LAST_WIN` removes a duplicate, it stores normalized keys throughout that map.
 
-Comet selects Rust for projections and filters, as well as generated hash aggregates and expands,
-when it can determine when Spark reads the map settings. Other operators and pipelines with an
-eager consumer can use codegen dispatch.
+Comet selects Rust for projections, filters, generated hash aggregate inputs and expands when
+it can identify Spark's original codegen stage and when the first key is inserted. Builders
+converted during adaptive query stage preparation use JVM codegen dispatch or Spark fallback.
+Projections that Spark plans directly can use Rust with adaptive execution enabled.
 
 The Rust builders accept array columns, including arrays with variable-width values. They also
 accept directly supported array literals and simple constructors with fixed-width fields.

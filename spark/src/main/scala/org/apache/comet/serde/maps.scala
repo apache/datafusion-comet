@@ -28,12 +28,12 @@ import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.{CometNativeExec, CometPlan, MapCodegenStage, MapCodegenStagePolicy => Policy}
 import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, InputAdapter, LocalLimitExec, ProjectExec, RowToColumnarExec, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
-import org.apache.spark.sql.execution.exchange.{Exchange, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.Exchange
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.serde.literals.CometLiteral
@@ -155,33 +155,9 @@ private[comet] object MapBuilderKeySupport {
   }
   private val context = new DynamicVariable[Option[Context]](None)
 
-  def withPlan(plan: SparkPlan, preparingStages: Boolean)(f: => SparkPlan): SparkPlan =
-    if (!preparingStages) context.withValue(Some(new Context(plan)))(f)
-    else if (CometConf.COMET_EXEC_ENABLED.get(plan.conf) && deferToStageCreation(plan)) plan
-    else context.withValue(None)(f)
-
   // AQE forms codegen stages after query stage preparation, possibly with different settings.
-  // Leave simple pipelines intact for preColumnarTransitions, including their original scans.
-  // Other plans need the early pass to coordinate aggregate buffers and join inputs.
-  private def deferToStageCreation(plan: SparkPlan): Boolean = {
-    def simple(node: SparkPlan): Boolean = node match {
-      case _: ProjectExec | _: FilterExec | _: ExpandExec | _: SortExec | _: LocalLimitExec |
-          _: GlobalLimitExec | _: CollectLimitExec | _: DeserializeToObjectExec |
-          _: ShuffleExchangeExec =>
-        true
-      case _ => node.children.isEmpty
-    }
-    def candidate(expr: Expression): Boolean = expr match {
-      case m @ (_: MapFromArrays | _: MapFromEntries) =>
-        isFloatingPoint(m.dataType.asInstanceOf[MapType].keyType) && m.children.forall(safeInput)
-      case _ => false
-    }
-    !plan.exists(node => !simple(node)) && plan.exists {
-      case op @ (_: ProjectExec | _: FilterExec | _: ExpandExec) =>
-        op.expressions.exists(_.exists(candidate))
-      case _ => false
-    }
-  }
+  def withPlan(plan: SparkPlan, queryStagePrep: Boolean)(f: => SparkPlan): SparkPlan =
+    context.withValue(if (queryStagePrep) None else Some(new Context(plan)))(f)
 
   private def select(expr: Expression): Option[Policy] =
     context.value.flatMap(_.policies.getOrDefault(expr, None))
@@ -203,7 +179,10 @@ private[comet] object MapBuilderKeySupport {
 
   private def builderPolicies(plan: SparkPlan): Policies = {
     val policies = new Policies
-    if (plan.exists(_.isInstanceOf[CometPlan])) return policies
+    // Converted inputs and materialized stages can hide Spark's original columnar transitions.
+    if (plan.exists(p => p.isInstanceOf[CometPlan] || p.isInstanceOf[QueryStageExec])) {
+      return policies
+    }
     val conf = SQLConf.get
     if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return policies
 

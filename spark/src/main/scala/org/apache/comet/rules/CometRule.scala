@@ -168,16 +168,16 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     } else if (CometLocalRule.isLocal(plan)) {
       plan
     } else if (queryStagePrep) {
-      convert(plan, preparingStages = true)
+      convert(plan)
     } else {
       // Local execution admits only exchange-free plans, which AQE does not wrap, so this
       // instance sees them whether or not AQE is enabled.
-      CometLocalRule(session, plan, p => convert(p))
+      CometLocalRule(session, plan, convert)
     }
   }
 
-  private def convert(plan: SparkPlan, preparingStages: Boolean = false): SparkPlan =
-    MapBuilderKeySupport.withPlan(plan, preparingStages) {
+  private def convert(plan: SparkPlan): SparkPlan =
+    MapBuilderKeySupport.withPlan(plan, queryStagePrep) {
       execRule.apply(scanRule.apply(plan))
     }
 
