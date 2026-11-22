@@ -1181,10 +1181,6 @@ values, and map keys at any depth, reach an Arrow string array unchecked, which 
 differ only in such bytes distinct: they match Spark in a release build, and a debug build
 panics on top-level values (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7032">#7032</a>, part of
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4764">#4764</a>).</p></li>
-<li><p><strong>Field-id reads where one file column matches a field by id and a sibling by name.</strong> With
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>, Comet returns NULL for the sibling at the top
-level. Inside a struct, it returns the values of the field matched by id. Spark’s own readers
-disagree here (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6994">#6994</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">TIMESTAMP_MILLIS</span></code> values that overflow when converted to microseconds.</strong> In nested fields, and
 in every column of a scan that has data filters, Comet returns NULL where Spark fails with
 <code class="docutils literal notranslate"><span class="pre">ArithmeticException:</span> <span class="pre">long</span> <span class="pre">overflow</span></code>
@@ -1285,6 +1281,13 @@ failure, because a 239 MB row group fit in a 256 MB pool
 <section id="differences-that-are-not-comet-bugs">
 <h3>Differences that are not Comet bugs<a class="headerlink" href="#differences-that-are-not-comet-bugs" title="Link to this heading">#</a></h3>
 <ul class="simple">
+<li><p><strong>Field-id reads where one file column matches a field by id and a sibling by name.</strong> With
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>, when both siblings are requested and their types
+are compatible with the file column, Comet’s native reader gives the value to the id match and
+returns NULL for the name match, both at the top level and inside structs. Spark’s parquet-mr
+reader does the same. Spark’s vectorized reader can return zeros for the losing sibling with
+on-heap column vectors, or uninitialized memory values with off-heap column vectors
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6994">#6994</a>).</p></li>
 <li><p><strong>Field-id reads with a read schema that swaps two nested field names.</strong> With
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>, Spark’s vectorized reader pairs the file’s columns
 with the read fields by the file’s names, so it fails with a type mismatch or returns no rows.
