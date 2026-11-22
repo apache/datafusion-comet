@@ -62,6 +62,11 @@ it runs against:
   (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
   (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
   (SPARK-59602).
+- `arrays_overlap` looks up the elements of a flat array in a `java.util.HashSet` of boxed values,
+  so it follows `Double.equals` and keeps signed zeros apart up to Spark 4.0.4 and 4.1.3. The same
+  two changes make the zeros one value: Spark 4.2.0 normalizes its arguments in the plan
+  (SPARK-54918), and 4.0.5, 4.1.4 and 4.2.1 normalize each flat `FLOAT` or `DOUBLE` element before
+  the lookup (SPARK-59602). Nested elements compare in the SQL ordering on every version.
 - Map construction (`ArrayBasedMapBuilder`) finds a duplicate `FLOAT` or `DOUBLE` key in a
   `HashMap` of boxed values, which follows `Double.equals`, and a duplicate struct or array key in a
   `TreeMap` in the SQL ordering. From Spark 4.0 it normalizes a `FLOAT` or `DOUBLE` key before the
@@ -138,8 +143,8 @@ normalized and the output keeps the original values.
 
 Rules that depend on the Spark version are decided in Scala. The serde either chooses the native
 path or passes a flag to native code, as `Mode`'s `normalize_neg_zero` does. Where a patch release
-changed the rule, check the runtime version down to the patch with
-`Utils.majorMinorPatchVersion(SPARK_VERSION)`, as `ArraySetSupport` in `arrays.scala` does.
+changed the rule, add a predicate to `SparkFixes` that checks the version down to the patch with
+`Utils.majorMinorPatchVersion`, as `SparkFixes.arraySetFunctionsNormalizeFloats` does.
 
 Until an expression has a native implementation that follows its rule, report it `Incompatible`
 for floating-point input so that Spark evaluates it.
@@ -201,11 +206,16 @@ and only for a type that contains a `FLOAT` or `DOUBLE`.
   `MaxSparkVersion`, and add the `run-all-spark-profiles` label to the pull request. CI pins one
   patch release per Spark line, so when a patch release changed the rule, also test the routing in
   Scala.
-- Add the expression to `CometFloatSemanticsSuite`, which crosses the edge values with operator
-  contexts and with every expression and aggregate that accepts floating-point input. New
-  expressions go in its `expressions` or `aggregates` list. If one does not match Spark yet, add a
-  `KnownGap` that links the issue. Known gaps are strict: a case that starts matching Spark fails,
-  so the fix also removes the entry.
+- Add the expression to the sweep in `float_semantics/`, which crosses the edge values with
+  operator contexts and with every expression and aggregate that accepts floating-point input.
+  A new expression goes in `expressions.sql`, or in `aggregates.sql` for an aggregate, with one
+  query for `DOUBLE` and one for `FLOAT`. An expression that falls back in the default config,
+  such as `mode` or the array set operations, goes in a file that turns on its
+  `allowIncompatible` config and sets `MinSparkVersion` to the first release where it runs
+  natively (`aggregates_mode.sql`, `array_set_operations_4_2.sql`), so that a plain `query` pins
+  native execution. If one does not match Spark yet, add a strict test in
+  `CometFloatSemanticsSuite` that links the issue and fails once the answers match, like its
+  `collect_set` test before Spark 4.2. A SQL file test cannot expect a difference.
 
 Fixtures to start from include `expressions/conditional/float_comparisons.sql`,
 `expressions/math/nan_divisor.sql`, `expressions/math/greatest_least_floating_point.sql`,

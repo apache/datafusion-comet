@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::utils::timestamp_micros_with_tz;
 use crate::SparkResult;
-use arrow::array::{Array, ArrayRef, AsArray, TimestampMicrosecondBuilder};
-use arrow::datatypes::DataType;
+use arrow::array::{ArrayRef, AsArray, PrimitiveArray, StringBuilder};
+use arrow::datatypes::{ArrowPrimitiveType, DataType, TimestampMicrosecondType};
 use std::sync::Arc;
 
 /// Boolean -> Decimal is intentionally absent: it has no native path and is routed through the
@@ -35,18 +36,39 @@ pub(crate) fn cast_boolean_to_timestamp(
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
     let bool_array = array_ref.as_boolean();
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(bool_array.len());
+    // true is 1 microsecond and false is 0.
+    let micros = PrimitiveArray::<TimestampMicrosecondType>::from_unary(bool_array, |value| {
+        i64::from(value)
+    });
+    Ok(timestamp_micros_with_tz(micros, target_tz))
+}
 
-    for i in 0..bool_array.len() {
-        if bool_array.is_null(i) {
-            builder.append_null();
-        } else {
-            let micros = if bool_array.value(i) { 1 } else { 0 };
-            builder.append_value(micros);
+/// true is 1 and false is 0, as in Spark. `from_unary` maps every slot in one pass and keeps the
+/// null buffer, where Arrow's cast checks each row for null.
+pub(crate) fn cast_boolean_to_numeric<T>(array_ref: &ArrayRef) -> ArrayRef
+where
+    T: ArrowPrimitiveType,
+    T::Native: From<bool>,
+{
+    Arc::new(PrimitiveArray::<T>::from_unary(
+        array_ref.as_boolean(),
+        T::Native::from,
+    ))
+}
+
+/// "true" or "false", as in Spark, into a builder sized for the longest value, where Arrow's cast
+/// formats each row through a dynamic formatter.
+pub(crate) fn cast_boolean_to_utf8(array_ref: &ArrayRef) -> ArrayRef {
+    let bool_array = array_ref.as_boolean();
+    let mut builder = StringBuilder::with_capacity(bool_array.len(), bool_array.len() * 5);
+    for value in bool_array.iter() {
+        match value {
+            Some(true) => builder.append_value("true"),
+            Some(false) => builder.append_value("false"),
+            None => builder.append_null(),
         }
     }
-
-    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+    Arc::new(builder.finish())
 }
 
 #[cfg(test)]
@@ -56,10 +78,11 @@ mod tests {
     use crate::{EvalMode, SparkCastOptions};
     use arrow::array::{
         Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-        Int64Array, Int8Array, StringArray,
+        Int64Array, Int8Array, StringArray, TimestampMicrosecondBuilder,
     };
-    use arrow::datatypes::DataType::Decimal128;
-    use arrow::datatypes::TimestampMicrosecondType;
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::DataType::{Decimal128, Timestamp};
+    use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
     use std::sync::Arc;
 
     fn test_input_bool_array() -> ArrayRef {
@@ -220,6 +243,84 @@ mod tests {
             assert_eq!(ts_array.value(1), 0); // false -> 0 (epoch)
             assert!(ts_array.is_null(2));
             assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
+    }
+
+    #[test]
+    fn test_cast_boolean_to_timestamp_edges() {
+        let all_true: ArrayRef = Arc::new(BooleanArray::from(vec![true, true]));
+        let out = cast_boolean_to_timestamp(&all_true, &None).unwrap();
+        let ts = out.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.values().as_ref(), &[1, 1]);
+        assert!(ts.nulls().is_none());
+    }
+
+    #[test]
+    fn test_cast_boolean_to_timestamp_null_slot_matches_builder() {
+        let tz = Some(Arc::from("UTC"));
+        // The slice starts on a null whose bit is set.
+        let bits = BooleanArray::from(vec![false, true, false, true]);
+        let masked = BooleanArray::new(
+            bits.values().clone(),
+            Some(NullBuffer::from(vec![true, false, true, false])),
+        );
+        let input = Array::slice(&masked, 1, 3);
+        let bools = input.as_boolean();
+        let mut builder = TimestampMicrosecondBuilder::with_capacity(bools.len());
+        for i in 0..bools.len() {
+            if bools.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(i64::from(bools.value(i)));
+            }
+        }
+        let expected = builder.finish().with_timezone_opt(tz.clone());
+
+        let out = cast_array(
+            Arc::clone(&input),
+            &Timestamp(TimeUnit::Microsecond, tz),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
+        )
+        .unwrap();
+        let actual = out.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(actual.timezone(), expected.timezone());
+        for i in 0..actual.len() {
+            assert_eq!(actual.is_null(i), expected.is_null(i), "index {i}");
+            if actual.is_valid(i) {
+                assert_eq!(actual.value(i), expected.value(i), "index {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_bool_casts_match_arrow_cast() {
+        // The native kernels replaced Arrow's cast for these targets; on a sliced input with nulls
+        // they must give the same arrays.
+        let input: ArrayRef = Arc::new(BooleanArray::from(vec![
+            Some(false),
+            Some(true),
+            None,
+            Some(false),
+            None,
+            Some(true),
+        ]));
+        let sliced = input.slice(1, 5);
+        for to_type in [
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::Float32,
+            DataType::Float64,
+            DataType::Utf8,
+        ] {
+            for array in [&input, &sliced] {
+                let actual =
+                    cast_array(Arc::clone(array), &to_type, &test_input_spark_opts()).unwrap();
+                let expected = arrow::compute::cast(array, &to_type).unwrap();
+                assert_eq!(&actual, &expected, "{to_type}");
+            }
         }
     }
 }

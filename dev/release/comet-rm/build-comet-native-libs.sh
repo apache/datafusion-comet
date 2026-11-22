@@ -23,12 +23,12 @@
 set -e
 
 REPO=$1
-BRANCH=$2
+COMMIT=$2
 ARCH=$3
 
 function usage {
   local NAME=$(basename $0)
-  echo "Usage: ${NAME} [git repo] [branch] [arm64 | amd64]"
+  echo "Usage: ${NAME} [git repo] [commit] [arm64 | amd64]"
   exit 1
 }
 
@@ -44,12 +44,34 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 
-echo "Building architecture: ${ARCH} for ${REPO}/${BRANCH}"
+echo "Building architecture: ${ARCH} for ${REPO} at commit ${COMMIT}"
 rm -fr comet
 git clone "$REPO" comet
 cd comet
-git checkout "$BRANCH"
+git checkout "$COMMIT"
 
-# build comet binaries
+# Build the native library twice, once with the system allocator and once with the jemalloc
+# allocator, and keep each build in its own directory under /opt/comet-rm/lib. The caller copies
+# them out. Cargo reuses the compiled dependencies, so the second build only compiles jemalloc and
+# the comet crate again.
+LIB_DIR=/opt/comet-rm/lib
+mkdir -p "$LIB_DIR/default" "$LIB_DIR/jemalloc"
 
 make core-${ARCH}-libs
+cp native/target/release/libcomet.so "$LIB_DIR/default/"
+
+# jemalloc takes the page size of the machine it is built on, and fails every allocation on a
+# kernel whose pages are larger. Fix it at 4 KiB so that the published library does not depend on the
+# machine that built it. Kernels with 64 KiB pages, which some arm64 distributions use, need a
+# library built from source with JEMALLOC_SYS_WITH_LG_PAGE=16. The user guide says so.
+export JEMALLOC_SYS_WITH_LG_PAGE=12
+
+COMET_FEATURES=jemalloc make core-${ARCH}-libs
+cp native/target/release/libcomet.so "$LIB_DIR/jemalloc/"
+
+# The jemalloc library must differ from the default one, otherwise the feature was not applied
+if cmp -s "$LIB_DIR/default/libcomet.so" "$LIB_DIR/jemalloc/libcomet.so"
+then
+  echo "Error: the jemalloc build of libcomet.so is identical to the default build"
+  exit 1
+fi

@@ -20,12 +20,12 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Add, ArrayContains, AttributeReference, BitwiseNot, Cast, CreateArray, Divide, EvalMode, Multiply, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.{Add, ArrayContains, AttributeReference, BitwiseNot, Cast, CreateArray, Divide, EvalMode, If, Literal, Multiply, NamedExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Partial, Sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.serde.{CometDivide, ExprOuterClass, QueryPlanSerde, Unsupported}
 
 class CometDecimalPromotionSuite extends CometTestBase {
@@ -36,6 +36,36 @@ class CometDecimalPromotionSuite extends CometTestBase {
       hasProto: ExprOuterClass.Expr => Boolean)
 
   private case class TestMode(name: String, ansiEnabled: Boolean, failOnError: Boolean)
+
+  test("issue #5499: decimal fallback lift ignores stale shared literal reasons") {
+    val literal = Literal.TrueLiteral
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    val previous = literal.getTagValue(tag)
+    val stale = "issue-5499-unrelated-query"
+    try {
+      literal.setTagValue(tag, Set(stale))
+      val amount = AttributeReference("amount", DecimalType(10, 2))()
+      val expression = If(literal, Add(amount, amount), amount)
+      assert(!(DecimalPrecision.promote(expression) eq expression))
+      val key = CometConf.getExprEnabledConfigKey("Add")
+      withSQLConf(key -> "false") {
+        assert(QueryPlanSerde.exprToProto(expression, Seq(amount)).isEmpty)
+        assert(
+          expression
+            .getTagValue(tag)
+            .contains(Set(s"Expression support is disabled. Set $key=true to enable it.")))
+      }
+      // Reusing the shared literal in a later successful conversion must not lift its old tag.
+      val successful = If(literal, Add(amount, amount), amount)
+      assert(QueryPlanSerde.exprToProto(successful, Seq(amount)).isDefined)
+      assert(successful.getTagValue(tag).isEmpty)
+    } finally {
+      previous match {
+        case Some(reasons) => literal.setTagValue(tag, reasons)
+        case None => literal.unsetTagValue(tag)
+      }
+    }
+  }
 
   test("issue #5190: decimal promotion is idempotent during recursive serialization") {
     val left = "CAST(id AS DECIMAL(10, 0))"

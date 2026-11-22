@@ -126,7 +126,7 @@ trait CometS3TestBase extends CometTestBase {
     case p: CometNativeScanExec => p
   }
 
-  private def withS3Client[T](f: S3Client => T): T = {
+  protected def withS3Client[T](f: S3Client => T): T = {
     val credentials = AwsBasicCredentials.create(userName, password)
     val s3Client = S3Client
       .builder()

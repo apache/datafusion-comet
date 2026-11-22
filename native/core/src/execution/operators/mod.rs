@@ -22,8 +22,14 @@ pub use crate::errors::ExecutionError;
 pub use iceberg_scan::*;
 pub use scan::*;
 
+#[cfg(feature = "python-udf")]
+mod arrow_python_udf;
+#[cfg(feature = "python-udf")]
+pub use arrow_python_udf::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 mod dynamic_filter;
-pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
+pub(crate) use dynamic_filter::{
+    DynamicFilterJoinExec, MinMaxReaderFilterExec, TopKReaderFilterExec,
+};
 pub(crate) mod iceberg_common;
 pub use iceberg_common::clear_file_io_cache;
 mod iceberg_dictionary;
@@ -44,5 +50,9 @@ mod csv_scan;
 pub mod projection;
 mod scan;
 mod shuffle_scan;
+mod sorted_input;
+mod text_scan;
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
+pub use sorted_input::SortedInputExec;
+pub use text_scan::init_text_datasource_exec;

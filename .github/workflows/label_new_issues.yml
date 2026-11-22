@@ -27,6 +27,7 @@ permissions:
 jobs:
   add-triage-label:
     runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
       - uses: actions/github-script@v9
         with:

@@ -20,16 +20,17 @@ use crate::parquet::datetime_rebase::{
     resolve_file_rebase_policies, wrap_datetime_rebase, FileRebasePolicies, RebaseReadMode,
     SessionRebaseModes,
 };
+use crate::parquet::field_resolver::{duplicate_name_error, FieldResolver, Selection};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    duplicate_parquet_field_error, field_id, field_names_with_id, match_struct_fields,
-    spark_parquet_convert, SparkParquetOptions,
+    duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
+    SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
@@ -41,6 +42,7 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
+use itertools::Itertools;
 use parquet::variant::VariantType;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
@@ -71,12 +73,6 @@ impl SparkPhysicalExprAdapterFactory {
             default_values,
         }
     }
-}
-
-/// True when a root field of `schema` carries a field id. Root only on purpose: it gates the
-/// root name remap, and Spark's `clipParquetGroupFields` decides id matching one level at a time.
-fn any_root_field_has_id(schema: &SchemaRef) -> bool {
-    schema.fields().iter().any(|f| field_id(f).is_some())
 }
 
 /// Returns true when casting `physical_type` to `target_type` is a *pure* structural
@@ -187,155 +183,146 @@ fn is_pure_structural_narrowing(
     })
 }
 
+/// What the root remap does with one file column, strongest claim first. Spark's
+/// `clipParquetGroupFields` resolves every requested field on its own, but a rename gives a file
+/// column one name. A column that more than one requested field claims therefore takes the
+/// strongest claim, and between equal claims the earliest requested field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootResolution {
+    /// Requested field `.0` selects the column by Parquet field id (Spark's `matchIdField`).
+    /// The column takes that field's name.
+    IdMatch(usize),
+    /// The column has the folded name of an id-bearing requested field that did not select it.
+    /// `matchIdField` never compares names, so the column takes a placeholder name (Spark's
+    /// `generateFakeColumnName`), which keeps DataFusion's name lookup from reaching it.
+    Shadowed,
+    /// Requested field `.0`, which carries no id or reads with id matching off, selects the
+    /// column by folded name. The column takes that field's name, which differs from the file
+    /// name at most in case.
+    NameMatch(usize),
+    /// No requested field claims the column. It keeps its file name.
+    Unchanged,
+}
+
+impl RootResolution {
+    fn strength(self) -> u8 {
+        match self {
+            RootResolution::IdMatch(_) => 3,
+            RootResolution::Shadowed => 2,
+            RootResolution::NameMatch(_) => 1,
+            RootResolution::Unchanged => 0,
+        }
+    }
+
+    /// Keep `claim` if it is stronger than the current resolution. Requested fields claim in
+    /// order, so the earliest one wins a tie.
+    fn claim(&mut self, claim: RootResolution) {
+        if claim.strength() > self.strength() {
+            *self = claim;
+        }
+    }
+}
+
+/// Resolve every root file column against the requested root fields. Raises Spark's
+/// `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" when an id-bearing logical field would
+/// resolve to more than one physical field. That check covers every logical field, which is the
+/// whole data schema rather than the projection, so it also fails a read that never references
+/// the field, where Spark reads the file (#7006). An ambiguous name fails only for a referenced
+/// column (see `check_duplicate_columns`).
+fn resolve_root_fields(resolver: &FieldResolver) -> DataFusionResult<Vec<RootResolution>> {
+    let mut resolutions = vec![RootResolution::Unchanged; resolver.file_fields().len()];
+    for requested in 0..resolver.requested_fields().len() {
+        match resolver.select(requested)? {
+            Selection::ById(matched) => {
+                if let Some(file) = matched {
+                    resolutions[file].claim(RootResolution::IdMatch(requested));
+                }
+                // All ID-bearing targets resolve by ID, even when a different file column has
+                // the requested name. Hide that shadowing column after giving its own ID match
+                // precedence, whether the target's ID was missing or resolved elsewhere.
+                for &file in resolver.name_matches(requested) {
+                    resolutions[file].claim(RootResolution::Shadowed);
+                }
+            }
+            Selection::ByName(matches) => {
+                for &file in matches {
+                    resolutions[file].claim(RootResolution::NameMatch(requested));
+                }
+            }
+        }
+    }
+    Ok(resolutions)
+}
+
+/// `field` under `name`, keeping everything else the file says about it.
+fn renamed_field(field: &FieldRef, name: impl Into<String>) -> FieldRef {
+    Arc::new(field.as_ref().clone().with_name(name))
+}
+
+/// `field` under the name of the logical field that selected it, recording the
+/// `logical name -> physical name` pair so the adapter can restore the physical name.
+fn rename_to_logical(
+    field: &FieldRef,
+    logical_name: &str,
+    name_map: &mut HashMap<String, String>,
+) -> FieldRef {
+    if field.name() == logical_name {
+        return Arc::clone(field);
+    }
+    name_map.insert(logical_name.to_string(), field.name().clone());
+    renamed_field(field, logical_name)
+}
+
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
 /// `clipParquetGroupFields`: prefer ID match for any logical field that carries a
-/// `PARQUET:field_id`, fall back to case-insensitive name match otherwise.
+/// `PARQUET:field_id`, fall back to case-insensitive name match otherwise. `resolver` resolves
+/// the logical root fields against the physical ones.
 ///
 /// The remap only changes top-level field NAMES so that `DefaultPhysicalExprAdapter`'s
 /// exact-name lookup hits. Indices, types, nullability, and metadata stay as in the file.
 /// Returns the rewritten schema and a `logical_name -> original_physical_name` map used
 /// downstream to restore the original physical names before stream consumption.
 fn remap_physical_schema(
-    logical_schema: &SchemaRef,
-    physical_schema: &SchemaRef,
-    case_sensitive: bool,
-    use_field_id: bool,
+    resolver: &FieldResolver,
 ) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
-    let should_match_by_id = use_field_id && any_root_field_has_id(logical_schema);
+    let resolutions = resolve_root_fields(resolver)?;
 
-    // Build id -> all matching physical field names. We need the full list so we can mirror
-    // Spark's `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" error when an ID-bearing
-    // logical field would resolve to more than one physical field.
-    let mut id_to_phys_names: HashMap<i32, Vec<String>> = HashMap::new();
-    if should_match_by_id {
-        for pf in physical_schema.fields() {
-            if let Some(id) = field_id(pf) {
-                id_to_phys_names
-                    .entry(id)
-                    .or_default()
-                    .push(pf.name().clone());
-            }
-        }
-        for lf in logical_schema.fields() {
-            if let Some(id) = field_id(lf) {
-                if let Some(matches) = id_to_phys_names.get(&id) {
-                    if matches.len() > 1 {
-                        return Err(SparkError::DuplicateFieldByFieldId {
-                            required_id: id,
-                            matched_fields: field_names_with_id(physical_schema.fields(), id),
-                        }
-                        .into());
-                    }
-                }
-            }
-        }
-    }
-
-    // Pre-build id -> first matching logical field for the per-physical rename pass below.
-    let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
-        let mut map = HashMap::with_capacity(logical_schema.fields().len());
-        for lf in logical_schema.fields() {
-            if let Some(id) = field_id(lf) {
-                map.entry(id).or_insert(lf);
-            }
-        }
-        map
+    // Placeholder names for shadowed file columns, Spark's `generateFakeColumnName`. A
+    // placeholder skips every folded logical and physical name, the names downstream lookups
+    // compare, so no requested column can reach a shadowed column through its placeholder, even
+    // one whose name differs from the placeholder only in case. Most reads shadow nothing, so
+    // the reserved names are gathered only when one does.
+    let reserved: HashSet<&str> = if resolutions.contains(&RootResolution::Shadowed) {
+        resolver
+            .requested_folded()
+            .iter()
+            .chain(resolver.file_folded())
+            .map(String::as_str)
+            .collect()
     } else {
-        HashMap::new()
+        HashSet::new()
+    };
+    let mut placeholders: usize = 0;
+    let mut placeholder = || loop {
+        placeholders += 1;
+        let name = format!("__comet_unmatched_field_id_{placeholders}");
+        if !reserved.contains(name.as_str()) {
+            break name;
+        }
     };
 
-    // Fold every logical and physical field name once (Spark's `toLowerCase(Locale.ROOT)`, via the
-    // JVM) so the O(physical x logical) name matching below compares pre-folded strings instead of
-    // crossing into the JVM for every pair. Mirrors Spark's `caseInsensitiveParquetFieldMap`, which
-    // groups file fields by their folded name a single time.
-    let logical_folded = fold_schema_names(logical_schema, case_sensitive)?;
-    let physical_folded = fold_schema_names(physical_schema, case_sensitive)?;
-
-    // All ID-bearing targets resolve by ID, even when a different file column has the
-    // requested name. Hide that shadowing column after giving its own ID match precedence.
-    let id_logical_folded: HashSet<&String> = logical_schema
-        .fields()
-        .iter()
-        .zip(&logical_folded)
-        .filter(|(field, _)| should_match_by_id && field_id(field).is_some())
-        .map(|(_, name)| name)
-        .collect();
-    let mut occupied_names = HashSet::new();
-    let mut fake_counter: usize = 0;
-
     let mut name_map: HashMap<String, String> = HashMap::new();
-    let remapped_fields: Vec<FieldRef> = physical_schema
-        .fields()
+    let remapped_fields: Vec<FieldRef> = resolver
+        .file_fields()
         .iter()
-        .enumerate()
-        .map(|(phys_idx, field)| {
-            // ID match first when the logical schema is ID-bearing.
-            if should_match_by_id {
-                if let Some(phys_id) = field_id(field) {
-                    if let Some(logical_field) = id_to_logical.get(&phys_id) {
-                        if logical_field.name() != field.name() {
-                            name_map.insert(logical_field.name().clone(), field.name().clone());
-                            return Arc::new(
-                                Field::new(
-                                    logical_field.name(),
-                                    field.data_type().clone(),
-                                    field.is_nullable(),
-                                )
-                                .with_metadata(field.metadata().clone()),
-                            );
-                        }
-                        return Arc::clone(field);
-                    }
-                }
+        .zip(resolutions)
+        .map(|(field, resolution)| match resolution {
+            RootResolution::IdMatch(logical) | RootResolution::NameMatch(logical) => {
+                let logical_name = resolver.requested_fields()[logical].name();
+                rename_to_logical(field, logical_name, &mut name_map)
             }
-
-            // Block accidental name matches for ID-bearing targets, whether their ID was
-            // missing or resolved to a different physical column.
-            if should_match_by_id && id_logical_folded.contains(&physical_folded[phys_idx]) {
-                if fake_counter == 0 {
-                    occupied_names.extend(logical_folded.iter().chain(&physical_folded).cloned());
-                }
-                let fake_name = loop {
-                    fake_counter += 1;
-                    let name = format!("__comet_unmatched_field_id_{}", fake_counter);
-                    if occupied_names.insert(name.clone()) {
-                        break name;
-                    }
-                };
-                return Arc::new(
-                    Field::new(fake_name, field.data_type().clone(), field.is_nullable())
-                        .with_metadata(field.metadata().clone()),
-                );
-            }
-
-            // Name match. Spark's `matchIdField` does not fall through to a name match for
-            // ID-bearing logical fields, so skip those when the schema is ID-bearing.
-            if !case_sensitive {
-                let logical_field = logical_schema
-                    .fields()
-                    .iter()
-                    .enumerate()
-                    .find(|(j, lf)| {
-                        let lf_has_id = should_match_by_id && field_id(lf).is_some();
-                        !lf_has_id && logical_folded[*j] == physical_folded[phys_idx]
-                    })
-                    .map(|(_, lf)| lf);
-                if let Some(logical_field) = logical_field {
-                    if logical_field.name() != field.name() {
-                        name_map.insert(logical_field.name().clone(), field.name().clone());
-                        return Arc::new(
-                            Field::new(
-                                logical_field.name(),
-                                field.data_type().clone(),
-                                field.is_nullable(),
-                            )
-                            .with_metadata(field.metadata().clone()),
-                        );
-                    }
-                }
-            }
-
-            Arc::clone(field)
+            RootResolution::Shadowed => renamed_field(field, placeholder()),
+            RootResolution::Unchanged => Arc::clone(field),
         })
         .collect();
 
@@ -467,7 +454,7 @@ fn reject_on_non_empty_expr(
 
 /// Outcome of checking one Parquet (physical) -> Spark (logical) type pair against the
 /// conversion rules of Spark's vectorized Parquet reader. A pair Spark rejects when it opens
-/// the file, before it decodes anything, is an error from [`check_conversion`] instead.
+/// the file, before it decodes anything, is an error from [`check_field_conversion`] instead.
 enum ConversionCheck {
     /// Spark has an updater for the pair (for a same-shape complex pair: for every leaf).
     Accept,
@@ -496,7 +483,7 @@ fn is_complex(data_type: &DataType) -> bool {
     )
 }
 
-/// Check a pair that [`check_conversion`] doesn't walk: two primitives, or two types of
+/// Check a pair that [`check_field_conversion`] doesn't walk: two primitives, or two types of
 /// different shape. `column` is the Spark-style column path used in the error (`a` for a
 /// top-level column, `s, x` for a nested leaf, mirroring `Arrays.toString(descriptor.getPath())`).
 ///
@@ -512,6 +499,7 @@ fn check_leaf_conversion(
     target_type: &DataType,
     column: &str,
     options: &SparkParquetOptions,
+    nanos_timestamp: bool,
 ) -> DataFusionResult<ConversionCheck> {
     if physical_type == target_type {
         return Ok(ConversionCheck::Accept);
@@ -537,7 +525,7 @@ fn check_leaf_conversion(
                 target_type,
             ));
         }
-    } else if spark_has_updater(physical_type, target_type, options) {
+    } else if spark_has_updater(physical_type, target_type, options, nanos_timestamp) {
         return Ok(ConversionCheck::Accept);
     }
     Ok(ConversionCheck::RejectOnNonEmpty {
@@ -549,11 +537,14 @@ fn check_leaf_conversion(
 
 /// Whether Spark's `ParquetVectorUpdaterFactory.getUpdater` has an updater that reads the
 /// primitive Parquet (physical) type as the requested (logical) type. The same rules apply to
-/// top-level columns and, through [`check_conversion`], to nested leaves.
+/// top-level columns and, through [`check_field_conversion`], to nested leaves.
+/// `nanos_timestamp` is whether the file declares the leaf `TIMESTAMP(NANOS)` (see
+/// [`NANOS_TIMESTAMP_KEY`]).
 fn spark_has_updater(
     physical_type: &DataType,
     target_type: &DataType,
     options: &SparkParquetOptions,
+    nanos_timestamp: bool,
 ) -> bool {
     // Reject reading a string/binary Parquet column as anything else. Spark's
     // `ParquetVectorUpdaterFactory.getUpdater` BINARY case allows StringType /
@@ -687,6 +678,24 @@ fn spark_has_updater(
         return false;
     }
 
+    // Spark has no updater that reads TIMESTAMP(NANOS) as a timestamp; it reads it only as a
+    // long, under `spark.sql.legacy.parquet.nanosAsLong`. The Arrow type cannot tell it apart
+    // from INT96, which Spark reads as a timestamp and which can also arrive as a nanosecond
+    // timestamp, with or without a timezone (#7029, an `ARROW:schema` hint, or the raw footer
+    // schema before INT96 coercion). So the rule keys on the leaf's Parquet type, which only
+    // the footer check knows. See #7034.
+    if nanos_timestamp
+        && matches!(
+            (physical_type, target_type),
+            (
+                DataType::Timestamp(TimeUnit::Nanosecond, _),
+                DataType::Timestamp(TimeUnit::Microsecond, _)
+            )
+        )
+    {
+        return false;
+    }
+
     // Spark 3.x refuses to read a Parquet TimestampLTZ column as
     // TimestampNTZ (SPARK-36182); Spark 4.0 (SPARK-47447) lifted that.
     // The flag tracks Comet's per-Spark-version constant in
@@ -728,6 +737,17 @@ fn combine_checks(
     Ok(combined)
 }
 
+/// [`check_field_conversion`] for a bare physical type, which carries no footer marker.
+#[cfg(test)]
+fn check_conversion(
+    physical_type: &DataType,
+    target_type: &DataType,
+    column: &str,
+    options: &SparkParquetOptions,
+) -> DataFusionResult<ConversionCheck> {
+    check_nested_conversion(physical_type, target_type, column, options, false)
+}
+
 /// Check a physical/logical type pair the way Spark's vectorized reader does. Spark runs
 /// `getUpdater` on every *leaf* column regardless of nesting, so same-shape complex pairs
 /// (struct / list / map, at any depth) are walked and [`check_leaf_conversion`] is applied to
@@ -739,15 +759,40 @@ fn combine_checks(
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
 /// (they read as null / default, as before). A pair Spark rejects when it opens the file is an
 /// error, and sibling verdicts combine as in [`combine_checks`].
-fn check_conversion(
-    physical_type: &DataType,
+///
+/// `physical_field` may carry [`NANOS_TIMESTAMP_KEY`].
+fn check_field_conversion(
+    physical_field: &Field,
     target_type: &DataType,
     column: &str,
     options: &SparkParquetOptions,
 ) -> DataFusionResult<ConversionCheck> {
+    check_nested_conversion(
+        physical_field.data_type(),
+        target_type,
+        column,
+        options,
+        is_nanos_timestamp(physical_field),
+    )
+}
+
+/// Whether the footer check marked `field` as a `TIMESTAMP(NANOS)` leaf.
+fn is_nanos_timestamp(field: &Field) -> bool {
+    field.metadata().contains_key(NANOS_TIMESTAMP_KEY)
+}
+
+/// [`check_field_conversion`] where `nanos_timestamp` says whether `physical_type` is the type
+/// of a `TIMESTAMP(NANOS)` leaf.
+fn check_nested_conversion(
+    physical_type: &DataType,
+    target_type: &DataType,
+    column: &str,
+    options: &SparkParquetOptions,
+    nanos_timestamp: bool,
+) -> DataFusionResult<ConversionCheck> {
     // Normalize before dispatching on shape, including dictionary-wrapped containers.
     if let DataType::Dictionary(_, value_type) = physical_type {
-        return check_conversion(value_type, target_type, column, options);
+        return check_nested_conversion(value_type, target_type, column, options, nanos_timestamp);
     }
     match (physical_type, target_type) {
         (DataType::Struct(physical_fields), DataType::Struct(target_fields)) => {
@@ -755,11 +800,12 @@ fn check_conversion(
             combine_checks(target_fields.iter().zip(physical_indices).filter_map(
                 |(target_field, physical_index)| {
                     let physical_field = &physical_fields[physical_index?];
-                    Some(check_conversion(
+                    Some(check_nested_conversion(
                         physical_field.data_type(),
                         target_field.data_type(),
                         &format!("{column}, {}", physical_field.name()),
                         options,
+                        is_nanos_timestamp(physical_field),
                     ))
                 },
             ))
@@ -787,11 +833,12 @@ fn check_conversion(
                     target_type,
                 ));
             }
-            check_conversion(
+            check_nested_conversion(
                 physical_item.data_type(),
                 target_item.data_type(),
                 &format!("{column}, list, {}", physical_item.name()),
                 options,
+                is_nanos_timestamp(physical_item),
             )
         }
         (
@@ -812,7 +859,7 @@ fn check_conversion(
                 }
                 return combine_checks(physical_kv.iter().zip(target_kv.iter()).map(
                     |(physical_field, target_field)| {
-                        check_conversion(
+                        check_nested_conversion(
                             physical_field.data_type(),
                             target_field.data_type(),
                             &format!(
@@ -821,6 +868,7 @@ fn check_conversion(
                                 physical_field.name()
                             ),
                             options,
+                            is_nanos_timestamp(physical_field),
                         )
                     },
                 ));
@@ -831,7 +879,7 @@ fn check_conversion(
                 target_type,
             ))
         }
-        _ => check_leaf_conversion(physical_type, target_type, column, options),
+        _ => check_leaf_conversion(physical_type, target_type, column, options, nanos_timestamp),
     }
 }
 
@@ -871,28 +919,95 @@ fn checked_decoded_expr(
     Ok(expr)
 }
 
-/// Whether `col_name` (with folded form `col_folded`) is case-insensitively ambiguous in the
-/// file. `folded_to_indices` maps each folded physical name to the indices of the original
-/// physical fields that fold to it (built once in `create`), so more than one index under the
-/// column's folded key is the same ambiguity Spark reports as `_LEGACY_ERROR_TEMP_2093`. The
-/// matched names are resolved from `physical_schema` only on that (rare) error path.
-fn check_column_duplicate(
-    col_name: &str,
-    col_folded: &str,
-    folded_to_indices: &HashMap<String, Vec<usize>>,
-    physical_schema: &SchemaRef,
-) -> Option<SparkError> {
-    match folded_to_indices.get(col_folded) {
-        Some(indices) if indices.len() > 1 => {
-            let matched: Vec<&str> = indices
-                .iter()
-                .map(|&i| physical_schema.field(i).name().as_str())
-                .collect();
-            Some(SparkError::duplicate_field_case_insensitive(
-                col_name, &matched,
-            ))
+/// Folded logical name -> byte-identical duplicate physical name, for every id-bearing logical
+/// field whose id a repeated root name carries. See `SparkPhysicalExprAdapter::id_duplicate_roots`
+/// for why such a read is rejected.
+fn id_duplicate_roots(
+    logical_file_schema: &SchemaRef,
+    logical_folded: &[String],
+    physical_file_schema: &SchemaRef,
+) -> HashMap<String, String> {
+    let duplicate_names: HashSet<&String> = physical_file_schema
+        .fields()
+        .iter()
+        .map(|f| f.name())
+        .duplicates()
+        .collect();
+    let duplicated_ids: HashMap<i32, String> = physical_file_schema
+        .fields()
+        .iter()
+        .filter(|f| duplicate_names.contains(f.name()))
+        .filter_map(|f| field_id(f).map(|id| (id, f.name().clone())))
+        .collect();
+    logical_file_schema
+        .fields()
+        .iter()
+        .zip(logical_folded)
+        .filter_map(|(field, folded)| {
+            field_id(field)
+                .and_then(|id| duplicated_ids.get(&id))
+                .map(|name| (folded.clone(), name.clone()))
+        })
+        .collect()
+}
+
+impl SparkPhysicalExprAdapterFactory {
+    /// Per-file calendar-rebase policies, resolved from the ORIGINAL physical file schema: its
+    /// metadata carries the parquet footer's key-value pairs (they survive the parquet -> arrow
+    /// schema conversion; the remapped schema rebuilds fields only and keeps no metadata)
+    /// including the reader factory's INT96 leaf stamp, and its field tree validates that stamp.
+    /// `adapted_physical_folded` holds the folded names of the remapped schema, which keeps the
+    /// file's column order. `None` -- the overwhelmingly common case -- means no wrapping in
+    /// `rewrite` at all.
+    fn resolve_rebase_policies(
+        &self,
+        logical_file_schema: &SchemaRef,
+        logical_folded: &[String],
+        physical_file_schema: &SchemaRef,
+        adapted_physical_folded: &[String],
+    ) -> Option<FileRebasePolicies> {
+        if !self.parquet_options.rebase_from_file_metadata {
+            return None;
         }
-        _ => None,
+        // The session read modes only matter for files without Spark writer metadata
+        // (getRebaseSpec's modeByConfig fallback); empty strings parse to EXCEPTION.
+        let session_modes = SessionRebaseModes {
+            datetime: RebaseReadMode::from_conf_value(
+                &self.parquet_options.datetime_rebase_mode_in_read,
+            ),
+            int96: RebaseReadMode::from_conf_value(&self.parquet_options.int96_rebase_mode_in_read),
+        };
+        let policies = resolve_file_rebase_policies(physical_file_schema, session_modes);
+        policies.any_rebase_needed().then(|| {
+            // Pair each physical column with the logical field the adapter narrows it to,
+            // through the folded names computed in `create` (the remap already renamed
+            // id-matched columns to their logical names), so the wrapper -- which sits beneath
+            // the nested narrowing -- never checks a nested leaf the narrowing drops, and reads
+            // each timestamp leaf under the policy of its REQUESTED type (TIMESTAMP_NTZ never
+            // rebases, TIMESTAMP always takes a spec), as Spark's updater factory does. An
+            // unpaired physical column keeps every leaf under its physical type's policy;
+            // nothing references it anyway.
+            // First match wins on a folded-name collision, the same tie-break as
+            // `wrap_all_type_mismatches` and `remap_physical_schema`.
+            let mut logical_index: HashMap<&str, usize> = HashMap::new();
+            for (i, name) in logical_folded.iter().enumerate() {
+                logical_index.entry(name.as_str()).or_insert(i);
+            }
+            let requested: Vec<Option<&DataType>> = adapted_physical_folded
+                .iter()
+                .map(|name| {
+                    logical_index
+                        .get(name.as_str())
+                        .map(|&i| logical_file_schema.field(i).data_type())
+                })
+                .collect();
+            policies.restrict_to_requested(
+                physical_file_schema,
+                &requested,
+                self.parquet_options.case_sensitive,
+                self.parquet_options.use_field_id,
+            )
+        })
     }
 }
 
@@ -902,6 +1017,22 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
     ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
+        // Fold both schemas once, through the JVM for non-ASCII names, so the resolver, the remap
+        // and the per-column rewrite paths reuse the folds instead of re-folding on every
+        // `rewrite` call. Case-sensitive mode folds to identity.
+        let case_sensitive = self.parquet_options.case_sensitive;
+        let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive)?;
+        let original_folded = fold_schema_names(&physical_file_schema, case_sensitive)?;
+        let resolver = FieldResolver::new(
+            logical_file_schema.fields(),
+            &logical_folded,
+            physical_file_schema.fields(),
+            &original_folded,
+            case_sensitive,
+            self.parquet_options.use_field_id,
+        );
+        let should_match_by_id = resolver.matches_by_id();
+
         // Remap physical schema field names to match logical names by Parquet field id
         // (when the logical schema carries IDs and `use_field_id` is set) and/or by
         // case-insensitive name match. The DefaultPhysicalExprAdapter uses exact name
@@ -913,104 +1044,37 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // to the original physical names. This is necessary because downstream code
         // (reassign_expr_columns) looks up columns by name in the actual stream schema,
         // which uses the original physical file column names.
-        let case_sensitive = self.parquet_options.case_sensitive;
-        let should_match_by_id =
-            self.parquet_options.use_field_id && any_root_field_has_id(&logical_file_schema);
-        let needs_remap = !case_sensitive || should_match_by_id;
-        let (adapted_physical_schema, logical_to_physical_names) = if needs_remap {
-            let (remapped, logical_to_physical) = remap_physical_schema(
-                &logical_file_schema,
-                &physical_file_schema,
-                case_sensitive,
-                self.parquet_options.use_field_id,
-            )?;
-            (
-                remapped,
-                if logical_to_physical.is_empty() {
-                    None
-                } else {
-                    Some(logical_to_physical)
-                },
-            )
-        } else {
-            (Arc::clone(&physical_file_schema), None)
-        };
+        let (adapted_physical_schema, logical_to_physical_names) =
+            if !case_sensitive || should_match_by_id {
+                let (remapped, logical_to_physical) = remap_physical_schema(&resolver)?;
+                (
+                    remapped,
+                    (!logical_to_physical.is_empty()).then_some(logical_to_physical),
+                )
+            } else {
+                (Arc::clone(&physical_file_schema), None)
+            };
 
-        // Fold both schemas once here so the per-column rewrite paths reuse them instead of
-        // re-folding on every `rewrite` call. Case-sensitive mode folds to identity.
-        let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive)?;
-        let physical_folded = fold_schema_names(&adapted_physical_schema, case_sensitive)?;
-        let original_folded = if Arc::ptr_eq(&adapted_physical_schema, &physical_file_schema) {
-            None
-        } else {
-            Some(fold_schema_names(&physical_file_schema, case_sensitive)?)
-        };
-        let original_folded = original_folded.as_ref().unwrap_or(&physical_folded);
-
-        // Only allocate per-column index vectors when a folded name actually collides.
-        let mut seen = HashSet::with_capacity(original_folded.len());
-        let mut collisions = HashSet::new();
-        for name in original_folded {
-            if !seen.insert(name.as_str()) {
-                collisions.insert(name.as_str());
-            }
-        }
-        let original_physical_dup_check = if collisions.is_empty() {
-            None
-        } else {
-            let mut duplicates: HashMap<String, Vec<usize>> = HashMap::new();
-            for (i, name) in original_folded.iter().enumerate() {
-                if collisions.contains(name.as_str()) {
-                    duplicates.entry(name.clone()).or_default().push(i);
-                }
-            }
-            Some((Arc::clone(&physical_file_schema), duplicates))
-        };
-
+        let original_physical_dup_check = resolver
+            .name_collisions()
+            .map(|duplicates| (Arc::clone(&physical_file_schema), duplicates));
         // Folded names of logical fields that resolve by Parquet field id. Spark's `matchIdField`
         // selects these by id before comparing names, so the duplicate check must
         // skip them: an explicit `ω` (id 2) can select the file's `ω` (id 2) even when the file
         // also holds `Ω` (id 1). Use the configured fold in both case modes.
-        let id_resolved_logical_folded = if should_match_by_id {
-            Some(
-                logical_file_schema
-                    .fields()
-                    .iter()
-                    .zip(&logical_folded)
-                    .filter(|(lf, _)| field_id(lf).is_some())
-                    .map(|(_, folded)| folded.clone())
-                    .collect::<HashSet<String>>(),
-            )
-        } else {
-            None
-        };
-
+        let id_resolved_logical_folded: HashSet<String> = (0..logical_folded.len())
+            .filter(|&logical| resolver.requested_id(logical).is_some())
+            .map(|logical| logical_folded[logical].clone())
+            .collect();
         let id_duplicate_roots = if should_match_by_id {
-            let mut exact_names = HashSet::with_capacity(physical_file_schema.fields().len());
-            let mut duplicate_names = HashSet::new();
-            for field in physical_file_schema.fields() {
-                if !exact_names.insert(field.name()) {
-                    duplicate_names.insert(field.name());
-                }
-            }
-            let duplicated_ids: HashMap<i32, String> = physical_file_schema
-                .fields()
-                .iter()
-                .filter(|f| duplicate_names.contains(f.name()))
-                .filter_map(|f| field_id(f).map(|id| (id, f.name().clone())))
-                .collect();
-            logical_file_schema
-                .fields()
-                .iter()
-                .zip(&logical_folded)
-                .filter_map(|(field, folded)| {
-                    field_id(field)
-                        .and_then(|id| duplicated_ids.get(&id))
-                        .map(|name| (folded.clone(), name.clone()))
-                })
-                .collect()
+            id_duplicate_roots(&logical_file_schema, &logical_folded, &physical_file_schema)
         } else {
             HashMap::new()
+        };
+        let physical_folded = if Arc::ptr_eq(&adapted_physical_schema, &physical_file_schema) {
+            original_folded
+        } else {
+            fold_schema_names(&adapted_physical_schema, case_sensitive)?
         };
 
         let default_factory = DefaultPhysicalExprAdapterFactory;
@@ -1019,57 +1083,12 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             Arc::clone(&adapted_physical_schema),
         )?;
 
-        // Per-file calendar-rebase policies, resolved from the ORIGINAL physical file schema:
-        // its metadata carries the parquet footer's key-value pairs (they survive the parquet
-        // -> arrow schema conversion; the remapped schema above rebuilds fields only and keeps
-        // no metadata) including the reader factory's INT96 leaf stamp, and its field tree
-        // validates that stamp. `None` -- the overwhelmingly common case -- means no wrapping
-        // in `rewrite` at all.
-        let rebase_policies = if self.parquet_options.rebase_from_file_metadata {
-            // The session read modes only matter for files without Spark writer metadata
-            // (getRebaseSpec's modeByConfig fallback); empty strings parse to EXCEPTION.
-            let session_modes = SessionRebaseModes {
-                datetime: RebaseReadMode::from_conf_value(
-                    &self.parquet_options.datetime_rebase_mode_in_read,
-                ),
-                int96: RebaseReadMode::from_conf_value(
-                    &self.parquet_options.int96_rebase_mode_in_read,
-                ),
-            };
-            let policies = resolve_file_rebase_policies(&physical_file_schema, session_modes);
-            policies.any_rebase_needed().then(|| {
-                // Pair each physical column with the logical field the adapter narrows it to,
-                // through the folded names computed above (the remap already renamed id-matched
-                // columns to their logical names), so the wrapper -- which sits beneath the
-                // nested narrowing -- never checks a nested leaf the narrowing drops, and reads
-                // each timestamp leaf under the policy of its REQUESTED type (TIMESTAMP_NTZ
-                // never rebases, TIMESTAMP always takes a spec), as Spark's updater factory
-                // does. An unpaired physical column keeps every leaf under its physical type's
-                // policy; nothing references it anyway.
-                // First match wins on a folded-name collision, the same tie-break as
-                // `wrap_all_type_mismatches` and `remap_physical_schema`.
-                let mut logical_index: HashMap<&str, usize> = HashMap::new();
-                for (i, name) in logical_folded.iter().enumerate() {
-                    logical_index.entry(name.as_str()).or_insert(i);
-                }
-                let requested: Vec<Option<&DataType>> = physical_folded
-                    .iter()
-                    .map(|name| {
-                        logical_index
-                            .get(name.as_str())
-                            .map(|&i| logical_file_schema.field(i).data_type())
-                    })
-                    .collect();
-                policies.restrict_to_requested(
-                    &physical_file_schema,
-                    &requested,
-                    case_sensitive,
-                    self.parquet_options.use_field_id,
-                )
-            })
-        } else {
-            None
-        };
+        let rebase_policies = self.resolve_rebase_policies(
+            &logical_file_schema,
+            &logical_folded,
+            &physical_file_schema,
+            &physical_folded,
+        );
 
         Ok(Arc::new(SparkPhysicalExprAdapter {
             logical_file_schema,
@@ -1120,8 +1139,8 @@ struct SparkPhysicalExprAdapter {
     original_physical_dup_check: Option<(SchemaRef, HashMap<String, Vec<usize>>)>,
     /// Folded names of logical fields resolved by Parquet field id (see `create`). Spark selects
     /// these by id before comparing names, so the duplicate check above must not fire for them.
-    /// `None` when not matching by id.
-    id_resolved_logical_folded: Option<HashSet<String>>,
+    /// Empty when not matching by id.
+    id_resolved_logical_folded: HashSet<String>,
     /// Folded logical name -> byte-identical duplicate physical name. Populated only when
     /// matching by field ID, then checked before the ID-resolved name skip so decoded duplicate
     /// roots still fail.
@@ -1150,44 +1169,7 @@ struct SparkPhysicalExprAdapter {
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        // Check if any Column references multiple physical fields under the configured fold.
-        // Only the columns actually referenced trigger the error (not the whole schema).
-        if let Some((orig_physical, folded_to_indices)) = &self.original_physical_dup_check {
-            // Collect referenced column names, then fold them in one JVM crossing rather than one
-            // per Column node. Physical names were already folded once in `create()`.
-            let mut col_names: Vec<String> = Vec::new();
-            let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
-                if let Some(col) = e.downcast_ref::<Column>() {
-                    col_names.push(col.name().to_string());
-                }
-                Ok(Transformed::no(e))
-            });
-            let col_refs: Vec<&str> = col_names.iter().map(|s| s.as_str()).collect();
-            let col_folded = fold_names(&col_refs, self.parquet_options.case_sensitive)?;
-            for (name, folded) in col_names.iter().zip(&col_folded) {
-                if let Some(physical_name) = self.id_duplicate_roots.get(folded) {
-                    return Err(duplicate_parquet_field_error(physical_name));
-                }
-                // Fields resolved by Parquet field id are selected by id before names are
-                // compared, so an id-resolved column must not trip the name-ambiguity check
-                // (mirrors Spark's `matchIdField`, which never raises the duplicate-field error).
-                if self
-                    .id_resolved_logical_folded
-                    .as_ref()
-                    .is_some_and(|ids| ids.contains(folded))
-                {
-                    continue;
-                }
-                if self.parquet_options.case_sensitive && folded_to_indices.contains_key(folded) {
-                    return Err(duplicate_parquet_field_error(name));
-                }
-                if let Some(err) =
-                    check_column_duplicate(name, folded, folded_to_indices, orig_physical)
-                {
-                    return Err(DataFusionError::External(Box::new(err)));
-                }
-            }
-        }
+        self.check_duplicate_columns(&expr)?;
 
         // First let the default adapter handle column remapping, missing columns,
         // and simple scalar type casts. Then replace DataFusion's CastColumnExpr
@@ -1214,44 +1196,85 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             }
         };
         let expr = self.wrap_direct_variant_column(expr)?;
-
-        // For case-insensitive mode: remap column names from logical back to
-        // original physical names. The default adapter was given a remapped
-        // physical schema (with logical names) so it could find columns. But
-        // downstream code (reassign_expr_columns) looks up columns by name in
-        // the actual parquet stream schema, which uses the original physical names.
-        let expr = if let Some(name_map) = &self.logical_to_physical_names {
-            expr.transform(|e| {
-                if let Some(col) = e.downcast_ref::<Column>() {
-                    if let Some(physical_name) = name_map.get(col.name()) {
-                        return Ok(Transformed::yes(Arc::new(Column::new(
-                            physical_name,
-                            col.index(),
-                        ))));
-                    }
-                }
-                Ok(Transformed::no(e))
-            })
-            .data()?
-        } else {
-            expr
-        };
+        let expr = self.restore_physical_names(expr)?;
 
         // Last, wrap column references to this file's date/timestamp columns per its resolved
         // calendar-rebase policies (Delta arm only; see `datetime_rebase.rs`). Runs after every
         // remap so the wrap keys on the FINAL physical column indices, and wraps the raw column
         // BENEATH any cast the adapters inserted, so casts see rebased (proleptic) values.
-        let expr = if let Some(policies) = &self.rebase_policies {
-            wrap_datetime_rebase(expr, &self.physical_file_schema, policies)?
-        } else {
-            expr
-        };
-
-        Ok(expr)
+        match &self.rebase_policies {
+            Some(policies) => wrap_datetime_rebase(expr, &self.physical_file_schema, policies),
+            None => Ok(expr),
+        }
     }
 }
 
 impl SparkPhysicalExprAdapter {
+    /// Check if any Column references multiple physical fields under the configured fold.
+    /// Only the columns actually referenced trigger the error (not the whole schema).
+    fn check_duplicate_columns(&self, expr: &Arc<dyn PhysicalExpr>) -> DataFusionResult<()> {
+        let Some((orig_physical, folded_to_indices)) = &self.original_physical_dup_check else {
+            return Ok(());
+        };
+        // Collect referenced column names, then fold them in one JVM crossing rather than one
+        // per Column node. Physical names were already folded once in `create()`.
+        let mut col_names: Vec<&str> = Vec::new();
+        expr.apply(|e| {
+            if let Some(col) = e.downcast_ref::<Column>() {
+                col_names.push(col.name());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        let col_folded = fold_names(&col_names, self.parquet_options.case_sensitive)?;
+        for (name, folded) in col_names.iter().zip(&col_folded) {
+            if let Some(physical_name) = self.id_duplicate_roots.get(folded) {
+                return Err(duplicate_parquet_field_error(physical_name));
+            }
+            // Fields resolved by Parquet field id are selected by id before names are
+            // compared, so an id-resolved column must not trip the name-ambiguity check
+            // (mirrors Spark's `matchIdField`, which never raises the duplicate-field error).
+            if self.id_resolved_logical_folded.contains(folded) {
+                continue;
+            }
+            // `folded_to_indices` holds only folded names that more than one physical field
+            // shares, the ambiguity Spark reports as `_LEGACY_ERROR_TEMP_2093`.
+            if let Some(matches) = folded_to_indices.get(folded) {
+                return Err(duplicate_name_error(
+                    name,
+                    orig_physical.fields(),
+                    matches,
+                    self.parquet_options.case_sensitive,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Remap column names from logical back to original physical names. The default adapter
+    /// was given a remapped physical schema (with logical names) so it could find columns. But
+    /// downstream code (reassign_expr_columns) looks up columns by name in the actual parquet
+    /// stream schema, which uses the original physical names.
+    fn restore_physical_names(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        let Some(name_map) = &self.logical_to_physical_names else {
+            return Ok(expr);
+        };
+        expr.transform(|e| {
+            if let Some(col) = e.downcast_ref::<Column>() {
+                if let Some(physical_name) = name_map.get(col.name()) {
+                    return Ok(Transformed::yes(Arc::new(Column::new(
+                        physical_name,
+                        col.index(),
+                    ))));
+                }
+            }
+            Ok(Transformed::no(e))
+        })
+        .data()
+    }
+
     /// The default adapter leaves an identical physical/logical Field as a bare Column. Variant
     /// still needs normalization because a canonical unshredded value may already have that exact
     /// marked layout.
@@ -1337,8 +1360,8 @@ impl SparkPhysicalExprAdapter {
                         // we'd otherwise build a CometCastColumnExpr that silently converts, or
                         // can't actually convert (e.g. BINARY -> DECIMAL with no
                         // `DecimalLogicalTypeAnnotation`). See #4088, #4351 and #5671.
-                        match check_conversion(
-                            physical_field.data_type(),
+                        match check_field_conversion(
+                            physical_field,
                             logical_field.data_type(),
                             physical_field.name(),
                             &self.parquet_options,
@@ -1387,6 +1410,14 @@ impl SparkPhysicalExprAdapter {
     }
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
+    ///
+    /// Only the casts that reconcile a file column with its table-schema type are Parquet read
+    /// conversions, which Spark's vectorized reader validates. DataFusion's default adapter builds
+    /// them with `CastExpr::new_with_target_field`, so `has_explicit_metadata()` is true, also for a
+    /// column named `""`. Any other `CastExpr` is part of the predicate itself and is left as the
+    /// planner built it. Comet's planner uses `CastExpr::new`, for example to coerce `substring`'s
+    /// Int32 literals to Int64, and applying the read rules to that cast rejected valid queries as
+    /// a disallowed `INT32 -> bigint` promotion on Spark 3.x.
     fn replace_with_spark_cast(
         &self,
         expr: Arc<dyn PhysicalExpr>,
@@ -1394,6 +1425,10 @@ impl SparkPhysicalExprAdapter {
         // Check for CastExpr and replace with spark_expr::Cast
         if let Some(cast) = expr.downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
         {
+            if !cast.has_explicit_metadata() {
+                return Ok(Transformed::no(expr));
+            }
+
             let child = Arc::clone(cast.expr());
             let target_type = cast.target_field().data_type();
 
@@ -1445,8 +1480,8 @@ impl SparkPhysicalExprAdapter {
             // in `ParquetVectorUpdaterFactory.getUpdater`, nested or not. Apply the same rules
             // here (see `check_leaf_conversion`) so a pair Spark rejects never reaches a
             // runtime cast that would silently null, parse, or reinterpret values (#5671).
-            match check_conversion(
-                physical_type,
+            match check_field_conversion(
+                &input_field,
                 target_type,
                 input_field.name(),
                 &self.parquet_options,
@@ -1628,6 +1663,11 @@ impl SparkPhysicalExprAdapter {
 /// Private, in-memory hint used only while checking the raw footer's LIST encoding.
 pub(crate) const REPEATED_PRIMITIVE_KEY: &str = "comet.parquet.repeated_primitive";
 
+/// Private, in-memory hint the raw footer check puts on a leaf the file declares
+/// `TIMESTAMP(NANOS)`, so the conversion check can tell it from an INT96 leaf of the same Arrow
+/// type. Like [`REPEATED_PRIMITIVE_KEY`], it never reaches the decoder or the shared footer cache.
+pub(crate) const NANOS_TIMESTAMP_KEY: &str = "comet.parquet.nanos_timestamp";
+
 /// Check only requested columns, using the same resolver and conversion rules as projection
 /// adaptation. Return the first deferred failure, but continue to let open-time errors win.
 pub(crate) fn check_file_conversions(
@@ -1766,10 +1806,12 @@ impl PhysicalExpr for RejectOnNonEmpty {
 #[cfg(test)]
 pub(crate) mod test {
     use crate::parquet::cast_column::CometCastColumnExpr;
+    use crate::parquet::field_resolver::FieldResolver;
+    use crate::parquet::name_fold::fold_schema_names;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::{
-        check_conversion, is_pure_structural_narrowing, ConversionCheck,
-        SparkPhysicalExprAdapterFactory,
+        check_conversion, check_field_conversion, is_pure_structural_narrowing, ConversionCheck,
+        SparkPhysicalExprAdapterFactory, NANOS_TIMESTAMP_KEY,
     };
     use arrow::array::cast::AsArray;
     use arrow::array::UInt32Array;
@@ -1777,7 +1819,7 @@ pub(crate) mod test {
         new_null_array, Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array,
         DictionaryArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array,
         LargeListArray, ListArray, MapArray, StringArray, StructArray, TimestampMicrosecondArray,
-        TimestampMillisecondArray,
+        TimestampMillisecondArray, TimestampNanosecondArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::SchemaRef;
@@ -2069,6 +2111,36 @@ pub(crate) mod test {
         Ok(err.to_string())
     }
 
+    /// Spark allows a Parquet column named `""`, and reading one goes through the same conversion
+    /// check as any other column: an `INT64` column named `""` read as `int` is rejected, whether or
+    /// not type promotion is allowed, even when every value would fit.
+    #[tokio::test]
+    async fn empty_named_column_long_read_as_int_errors() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&file_schema),
+            vec![Arc::new(Int64Array::from(vec![1i64, 2]))],
+        )?;
+        let required_schema = Arc::new(Schema::new(vec![Field::new("", DataType::Int32, true)]));
+        for allow_type_promotion in [false, true] {
+            let mut options = default_options();
+            options.allow_type_promotion = allow_type_promotion;
+            let mut stream = scan_parquet(&batch, Arc::clone(&required_schema), options)?;
+            let msg = match stream.next().await {
+                Some(Err(e)) => e.to_string(),
+                other => panic!(
+                    "allow_type_promotion={allow_type_promotion}: expected ParquetSchemaConvert, \
+                     got {other:?}"
+                ),
+            };
+            assert!(
+                msg.contains("Found: INT64") && msg.contains("Expected: int"),
+                "allow_type_promotion={allow_type_promotion}: {msg}"
+            );
+        }
+        Ok(())
+    }
+
     /// `INT64 -> INT32` truncates to the lower 32 bits in DataFusion's cast.
     /// Spark's vectorized reader rejects this. See #4297.
     #[tokio::test]
@@ -2195,6 +2267,422 @@ pub(crate) mod test {
             msg.contains("Found: INT32") && msg.contains("Expected: timestamp"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    /// `TIMESTAMP(NANOS)` read as `timestamp` or `timestamp_ntz`: Spark reads nanosecond
+    /// timestamps only as `bigint` (`nanosAsLong`), so the cast to microseconds is rejected
+    /// whether or not the file column is UTC-adjusted, at the top level and below a list. See
+    /// #7034. The JVM test `native scan rejects TIMESTAMP(NANOS) read as timestamp like Spark`
+    /// covers the same reads against Spark; this one pins the leaf path in the error.
+    #[tokio::test]
+    async fn parquet_nanos_timestamp_read_as_timestamp_errors() -> Result<(), DataFusionError> {
+        for file_tz in [Some("UTC"), None] {
+            for read_tz in [Some("UTC"), None] {
+                let values = Arc::new(
+                    TimestampNanosecondArray::from(vec![1_600_000_000_123_456_789i64])
+                        .with_timezone_opt(file_tz),
+                ) as Arc<dyn arrow::array::Array>;
+                let msg = assert_rejected_conversion(
+                    Field::new(
+                        "t",
+                        DataType::Timestamp(TimeUnit::Nanosecond, file_tz.map(Into::into)),
+                        false,
+                    ),
+                    values,
+                    DataType::Timestamp(TimeUnit::Microsecond, read_tz.map(Into::into)),
+                )
+                .await?;
+                assert!(
+                    msg.contains("Column: [[t]]")
+                        && msg.contains("Found: INT64")
+                        && msg.contains("Expected: timestamp"),
+                    "file tz {file_tz:?}, read tz {read_tz:?}: unexpected error: {msg}"
+                );
+            }
+            // Below a list, the error names the full leaf path.
+            let values = TimestampNanosecondArray::from(vec![1_600_000_000_123_456_789i64])
+                .with_timezone_opt(file_tz);
+            let element = Arc::new(Field::new("element", values.data_type().clone(), true));
+            let list = Arc::new(ListArray::new(
+                Arc::clone(&element),
+                OffsetBuffer::from_lengths([1]),
+                Arc::new(values),
+                None,
+            )) as Arc<dyn arrow::array::Array>;
+            let msg = assert_rejected_conversion(
+                Field::new("a", DataType::List(element), false),
+                list,
+                list_type(DataType::Timestamp(
+                    TimeUnit::Microsecond,
+                    Some("UTC".into()),
+                )),
+            )
+            .await?;
+            assert!(
+                msg.contains("Column: [[a, list, element]]")
+                    && msg.contains("Found: INT64")
+                    && msg.contains("Expected: timestamp"),
+                "array, file tz {file_tz:?}: unexpected error: {msg}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The `TIMESTAMP(NANOS)` rejection keys on the footer check's marker, not on the Arrow
+    /// type: a marked leaf is rejected at any depth and with or without a timezone, and an
+    /// unmarked nanosecond leaf, which may be INT96, is accepted. Reading nanoseconds as `bigint`
+    /// stays allowed.
+    #[test]
+    fn nanos_timestamp_rejection_keys_on_the_parquet_type() -> Result<(), DataFusionError> {
+        let options = default_options();
+        let nanos_field = |name: &str, tz: Option<&str>, marked: bool| {
+            let field = Field::new(
+                name,
+                DataType::Timestamp(TimeUnit::Nanosecond, tz.map(Into::into)),
+                true,
+            );
+            if marked {
+                field.with_metadata(std::collections::HashMap::from([(
+                    NANOS_TIMESTAMP_KEY.to_string(),
+                    "true".to_string(),
+                )]))
+            } else {
+                field
+            }
+        };
+        let micros_utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let micros_ntz = DataType::Timestamp(TimeUnit::Microsecond, None);
+        for tz in [None, Some("UTC")] {
+            for marked in [true, false] {
+                let leaf = || Arc::new(nanos_field("t", tz, marked));
+                let element = || Arc::new(nanos_field("element", tz, marked));
+                let map_of = |value: Field| {
+                    DataType::Map(
+                        Arc::new(Field::new(
+                            "key_value",
+                            DataType::Struct(Fields::from(vec![
+                                Field::new("key", DataType::Utf8, false),
+                                value,
+                            ])),
+                            false,
+                        )),
+                        false,
+                    )
+                };
+                for (physical, target) in [
+                    (leaf().as_ref().clone(), micros_utc.clone()),
+                    (leaf().as_ref().clone(), micros_ntz.clone()),
+                    (
+                        Field::new("a", DataType::List(element()), true),
+                        list_type(micros_utc.clone()),
+                    ),
+                    (
+                        Field::new("a", DataType::Struct(Fields::from(vec![leaf()])), true),
+                        struct_type(vec![("t", micros_utc.clone())]),
+                    ),
+                    (
+                        Field::new(
+                            "a",
+                            DataType::List(Arc::new(Field::new(
+                                "element",
+                                DataType::Struct(Fields::from(vec![leaf()])),
+                                true,
+                            ))),
+                            true,
+                        ),
+                        list_type(struct_type(vec![("t", micros_utc.clone())])),
+                    ),
+                    (
+                        Field::new("a", map_of(nanos_field("value", tz, marked)), true),
+                        map_of(Field::new("value", micros_utc.clone(), true)),
+                    ),
+                ] {
+                    // Reading a UTC-adjusted timestamp as `timestamp_ntz` is rejected anyway
+                    // with the default (Spark 3.x) options; see SPARK-36182.
+                    let expected = marked || (tz.is_some() && target == micros_ntz);
+                    let check = check_field_conversion(&physical, &target, "a", &options)?;
+                    assert_eq!(
+                        matches!(check, ConversionCheck::RejectOnNonEmpty { .. }),
+                        expected,
+                        "{physical:?} (marked: {marked}) read as {target}"
+                    );
+                }
+                let check = check_field_conversion(
+                    &leaf().as_ref().clone(),
+                    &DataType::Int64,
+                    "t",
+                    &options,
+                )?;
+                assert!(matches!(check, ConversionCheck::Accept), "{tz:?} as bigint");
+            }
+        }
+        Ok(())
+    }
+
+    /// An INT96 array in the legacy `bag` list layout reaches the conversion check as a
+    /// timezone-free nanosecond leaf below a list (#7029), the same Arrow type as a
+    /// `TIMESTAMP(NANOS)` leaf, so the `TIMESTAMP(NANOS)` rejection must leave it alone. Write
+    /// such a file and read it through the scan.
+    #[tokio::test]
+    async fn legacy_int96_array_still_reads_as_timestamp() -> Result<(), DataFusionError> {
+        use parquet::data_type::{Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let schema = Arc::new(parse_message_type(
+            "message spark_schema {
+                OPTIONAL GROUP a (LIST) {
+                    REPEATED GROUP bag { OPTIONAL INT96 array; }
+                }
+            }",
+        )?);
+        // 1970-01-02 00:00:00.001 and 1970-01-03 00:00:00: INT96 holds the nanoseconds of the
+        // day (low word first) and then the Julian day.
+        const UNIX_EPOCH_JULIAN_DAY: u32 = 2_440_588;
+        let mut first = Int96::new();
+        first.set_data(1_000_000, 0, UNIX_EPOCH_JULIAN_DAY + 1);
+        let mut second = Int96::new();
+        second.set_data(0, 0, UNIX_EPOCH_JULIAN_DAY + 2);
+
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer =
+            SerializedFileWriter::new(File::create(&filename)?, schema, Default::default())?;
+        let mut row_group = writer.next_row_group()?;
+        let mut a = row_group.next_column()?.unwrap();
+        a.typed::<Int96Type>()
+            .write_batch(&[first, second], Some(&[3, 3]), Some(&[0, 1]))?;
+        a.close()?;
+        row_group.close()?;
+        writer.close()?;
+
+        let micros_utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let required = Arc::new(Schema::new(vec![Field::new(
+            "a",
+            list_type(micros_utc),
+            true,
+        )]));
+        let mut stream = scan_parquet_file(filename, required, default_options(), None, false)?;
+        let batch = stream.next().await.unwrap()?;
+        assert!(stream.next().await.is_none());
+
+        let list = batch.column(0).as_list::<i32>();
+        assert_eq!(list.len(), 1);
+        let values = list.value(0);
+        let expected = TimestampMicrosecondArray::from(vec![86_400_001_000i64, 172_800_000_000])
+            .with_timezone("UTC");
+        assert_eq!(
+            values
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .expect("timestamp(us, UTC) values"),
+            &expected
+        );
+        Ok(())
+    }
+
+    /// Write `id INT32 = 1` and `t INT96 = 1970-01-02 00:00:00.001` with the low-level Parquet
+    /// writer, adding `arrow_schema` to the footer as the `ARROW:schema` hint when given.
+    fn write_int96_file(arrow_schema: Option<&Schema>) -> Result<String, DataFusionError> {
+        use parquet::arrow::{encode_arrow_schema, ARROW_SCHEMA_META_KEY};
+        use parquet::data_type::{Int32Type as ParquetInt32, Int96, Int96Type};
+        use parquet::file::metadata::KeyValue;
+        use parquet::file::properties::WriterProperties;
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let schema = Arc::new(parse_message_type(
+            "message spark_schema { REQUIRED INT32 id; OPTIONAL INT96 t; }",
+        )?);
+        let properties = WriterProperties::builder()
+            .set_key_value_metadata(arrow_schema.map(|arrow_schema| {
+                vec![KeyValue::new(
+                    ARROW_SCHEMA_META_KEY.to_string(),
+                    encode_arrow_schema(arrow_schema),
+                )]
+            }))
+            .build();
+        let mut t = Int96::new();
+        t.set_data(1_000_000, 0, 2_440_589);
+
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer =
+            SerializedFileWriter::new(File::create(&filename)?, schema, Arc::new(properties))?;
+        let mut row_group = writer.next_row_group()?;
+        let mut id = row_group.next_column()?.unwrap();
+        id.typed::<ParquetInt32>().write_batch(&[1], None, None)?;
+        id.close()?;
+        let mut column = row_group.next_column()?.unwrap();
+        column
+            .typed::<Int96Type>()
+            .write_batch(&[t], Some(&[1]), None)?;
+        column.close()?;
+        row_group.close()?;
+        writer.close()?;
+        Ok(filename)
+    }
+
+    /// Read `id` and `t` of [`write_int96_file`] as `int` and `timestamp` with the filter
+    /// `id > 0`, with or without row filters, and check that `t` comes back.
+    async fn assert_int96_reads_as_timestamp(filename: &str) -> Result<(), DataFusionError> {
+        let micros_utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let required = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("t", micros_utc, true),
+        ]));
+        for row_filters in [false, true] {
+            let id_positive: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("id", 0)),
+                Operator::Gt,
+                Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+            ));
+            let mut stream = scan_parquet_file(
+                filename.to_string(),
+                Arc::clone(&required),
+                default_options(),
+                Some(id_positive),
+                row_filters,
+            )?;
+            let batch = stream.next().await.unwrap()?;
+            assert!(stream.next().await.is_none());
+            assert_eq!(
+                batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .expect("timestamp(us, UTC) values"),
+                &TimestampMicrosecondArray::from(vec![86_400_001_000i64]).with_timezone("UTC"),
+                "row filters: {row_filters}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A plain INT96 column reads as `timestamp`, also with row filters, where the footer
+    /// check sees it before INT96 coercion, as a timezone-free nanosecond timestamp.
+    #[tokio::test]
+    async fn int96_reads_as_timestamp_with_row_filters() -> Result<(), DataFusionError> {
+        assert_int96_reads_as_timestamp(&write_int96_file(None)?).await
+    }
+
+    /// An INT96 column whose `ARROW:schema` hint says `timestamp('ns', tz='UTC')`, as PyArrow
+    /// writes with `use_deprecated_int96_timestamps=True`, keeps that timezone through INT96
+    /// coercion, and still reads as `timestamp`.
+    #[tokio::test]
+    async fn int96_with_arrow_timezone_hint_reads_as_timestamp() -> Result<(), DataFusionError> {
+        let hint = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "t",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                true,
+            ),
+        ]);
+        assert_int96_reads_as_timestamp(&write_int96_file(Some(&hint))?).await
+    }
+
+    /// `mark_parquet_leaves` counts Parquet leaves while walking the Arrow schema, so every
+    /// nested Arrow type must advance the count once per leaf below it. Write leaves
+    /// `a.list.element.x INT32`, `a.list.element.n TIMESTAMP(NANOS)` and `t INT96`, with an
+    /// `ARROW:schema` hint that restores `a` as a `ListView` or `LargeListView` of the struct,
+    /// and read only `t` as `timestamp`: a miscount would put `n`'s marker on `t`.
+    #[tokio::test]
+    async fn int96_after_list_view_with_nanos_leaf_reads_as_timestamp(
+    ) -> Result<(), DataFusionError> {
+        use parquet::arrow::{encode_arrow_schema, ARROW_SCHEMA_META_KEY};
+        use parquet::data_type::{Int32Type as ParquetInt32, Int64Type, Int96, Int96Type};
+        use parquet::file::metadata::KeyValue;
+        use parquet::file::properties::WriterProperties;
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let element = Arc::new(Field::new(
+            "element",
+            DataType::Struct(Fields::from(vec![
+                Field::new("x", DataType::Int32, true),
+                Field::new("n", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            ])),
+            true,
+        ));
+        for list_view in [
+            DataType::ListView(Arc::clone(&element)),
+            DataType::LargeListView(Arc::clone(&element)),
+        ] {
+            let hint = Schema::new(vec![
+                Field::new("a", list_view.clone(), true),
+                Field::new(
+                    "t",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                    true,
+                ),
+            ]);
+            let schema = Arc::new(parse_message_type(
+                "message spark_schema {
+                    OPTIONAL GROUP a (LIST) {
+                        REPEATED GROUP list {
+                            OPTIONAL GROUP element {
+                                OPTIONAL INT32 x;
+                                OPTIONAL INT64 n (TIMESTAMP(NANOS, false));
+                            }
+                        }
+                    }
+                    OPTIONAL INT96 t;
+                }",
+            )?);
+            let properties = WriterProperties::builder()
+                .set_key_value_metadata(Some(vec![KeyValue::new(
+                    ARROW_SCHEMA_META_KEY.to_string(),
+                    encode_arrow_schema(&hint),
+                )]))
+                .build();
+            let mut t = Int96::new();
+            t.set_data(1_000_000, 0, 2_440_589);
+
+            let filename = get_temp_filename().to_str().unwrap().to_string();
+            let mut writer =
+                SerializedFileWriter::new(File::create(&filename)?, schema, Arc::new(properties))?;
+            let mut row_group = writer.next_row_group()?;
+            let mut x = row_group.next_column()?.unwrap();
+            x.typed::<ParquetInt32>()
+                .write_batch(&[1], Some(&[4]), Some(&[0]))?;
+            x.close()?;
+            let mut n = row_group.next_column()?.unwrap();
+            n.typed::<Int64Type>().write_batch(
+                &[1_600_000_000_123_456_789],
+                Some(&[4]),
+                Some(&[0]),
+            )?;
+            n.close()?;
+            let mut column = row_group.next_column()?.unwrap();
+            column
+                .typed::<Int96Type>()
+                .write_batch(&[t], Some(&[1]), None)?;
+            column.close()?;
+            row_group.close()?;
+            writer.close()?;
+
+            let required = Arc::new(Schema::new(vec![Field::new(
+                "t",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            )]));
+            let mut stream = scan_parquet_file(filename, required, default_options(), None, false)?;
+            let batch = stream
+                .next()
+                .await
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{list_view}: {e}"));
+            assert!(stream.next().await.is_none());
+            assert_eq!(
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .expect("timestamp(us, UTC) values"),
+                &TimestampMicrosecondArray::from(vec![86_400_001_000i64]).with_timezone("UTC"),
+                "{list_view}"
+            );
+        }
         Ok(())
     }
 
@@ -2350,6 +2838,173 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// `replace_with_spark_cast` tells the casts DataFusion's default adapter inserts apart from the
+    /// casts Comet's planner puts in a predicate by `CastExpr::has_explicit_metadata()`. This pins
+    /// what that relies on: `new_with_target_field` sets it, also for a field named `""`, which
+    /// Spark allows as a column name. `CastExpr::new` doesn't set it, and `with_new_children` keeps
+    /// it.
+    #[test]
+    fn schema_casts_are_told_apart_by_explicit_target() -> Result<(), DataFusionError> {
+        use datafusion::physical_expr::expressions::CastExpr;
+
+        // Built by the planner, from a bare type.
+        let planner_cast = CastExpr::new(
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+            DataType::Int64,
+            None,
+        );
+        assert!(!planner_cast.has_explicit_metadata());
+
+        // Built by the default adapter, from the table schema's field.
+        for name in ["a", ""] {
+            let adapter_cast: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new_with_target_field(
+                Arc::new(Column::new(name, 0)),
+                Arc::new(Field::new(name, DataType::Int64, true)),
+                None,
+            ));
+            let rebuilt = Arc::clone(&adapter_cast)
+                .with_new_children(vec![Arc::new(Column::new(name, 0))])?;
+            for cast in [adapter_cast, rebuilt] {
+                let cast = cast.downcast_ref::<CastExpr>().expect("a CastExpr");
+                assert!(cast.has_explicit_metadata(), "target field {name:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The pushed-down `substring(s, 1, 2) = 'ab'` data filter over `schema`, the way
+    /// `CometNativeScan` sends it: built by the real planner from the proto `CometSubstring` emits,
+    /// with Int32 literals for the position and length. `SparkSubstring` takes Int64 positions, so
+    /// the planner coerces those literals with `CastExpr::new`.
+    fn substring_filter(schema: SchemaRef) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+        use crate::execution::planner::PhysicalPlanner;
+        use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+        use datafusion::logical_expr::ScalarUDF;
+        use datafusion::physical_expr::expressions::CastExpr;
+        use datafusion::prelude::SessionContext;
+        use datafusion_comet_proto::spark_expression::{self, expr::ExprStruct, literal, Expr};
+        use datafusion_spark::function::string::substring::SparkSubstring;
+
+        let session_ctx = Arc::new(SessionContext::new());
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
+        let planner = PhysicalPlanner::new(Arc::clone(&session_ctx), 0);
+
+        let proto_type = |type_id: i32| spark_expression::DataType {
+            type_id,
+            type_info: None,
+        };
+        let proto_expr = |expr_struct: ExprStruct| Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        };
+        let int_literal = |value: i32| {
+            proto_expr(ExprStruct::Literal(spark_expression::Literal {
+                value: Some(literal::Value::IntVal(value)),
+                datatype: Some(proto_type(3)), // Int32
+                is_null: false,
+            }))
+        };
+        let substring = proto_expr(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+            func: "substring".to_string(),
+            args: vec![
+                proto_expr(ExprStruct::Bound(spark_expression::BoundReference {
+                    index: 0,
+                    datatype: Some(proto_type(7)), // String
+                })),
+                int_literal(1),
+                int_literal(2),
+            ],
+            return_type: None,
+            fail_on_error: false,
+            null_short_circuit: false,
+        }));
+        let predicate = planner.create_expr(
+            &proto_expr(ExprStruct::Eq(Box::new(spark_expression::BinaryExpr {
+                left: Some(Box::new(substring)),
+                right: Some(Box::new(proto_expr(ExprStruct::Literal(
+                    spark_expression::Literal {
+                        value: Some(literal::Value::StringVal("ab".to_string())),
+                        datatype: Some(proto_type(7)),
+                        is_null: false,
+                    },
+                )))),
+            }))),
+            schema,
+        )?;
+
+        // Guard the premise: the planner really does leave DataFusion `CastExpr`s in the predicate.
+        let mut casts = 0;
+        predicate.apply(|e| {
+            if e.downcast_ref::<CastExpr>().is_some() {
+                casts += 1;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        assert!(casts >= 2, "expected planner-inserted casts in {predicate}");
+        Ok(predicate)
+    }
+
+    /// The casts Comet's planner puts in a pushed-down predicate are not Parquet read conversions.
+    /// The file's schema equals the requested schema, so there is no schema evolution of any kind.
+    #[tokio::test]
+    async fn pushed_substring_filter_keeps_planner_casts() -> Result<(), DataFusionError> {
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(StringArray::from(vec![
+                "abc", "xyz", "abd", "qrs",
+            ]))],
+        )?;
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer = ArrowWriter::try_new(File::create(&filename)?, Arc::clone(&schema), None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+        let predicate = substring_filter(Arc::clone(&schema))?;
+
+        let every_row: &[&str] = &["abc", "xyz", "abd", "qrs"];
+        let matching: &[&str] = &["abc", "abd"];
+        for (row_filters, allow_type_promotion, expected) in [
+            // Control: without row-level filter pushdown (the default) the predicate is only used
+            // for row-group and page pruning, so the scan returns every row and leaves the
+            // filtering to the Spark `Filter` above it.
+            (false, false, every_row),
+            // With `spark.comet.parquet.rowFilterPushdown.enabled=true` the predicate is evaluated
+            // on every decoded batch. On Spark 3.x (`allow_type_promotion = false`) the planner's
+            // Int32 -> Int64 coercion was taken for a disallowed `INT32 -> bigint` promotion, which
+            // failed the scan with `ParquetSchemaConvert { column: "[]", .. }`.
+            (true, false, matching),
+            // Control: Spark 4.x allows that promotion, so this case passed before the fix too.
+            (true, true, matching),
+        ] {
+            let mut options = default_options();
+            options.allow_type_promotion = allow_type_promotion;
+            let mut stream = scan_parquet_file(
+                filename.clone(),
+                Arc::clone(&schema),
+                options,
+                Some(Arc::clone(&predicate)),
+                row_filters,
+            )?;
+            let mut values: Vec<String> = vec![];
+            while let Some(batch) = stream.next().await {
+                let column = arrow::compute::cast(batch?.column(0), &DataType::Utf8)?;
+                values.extend(
+                    column
+                        .as_string::<i32>()
+                        .iter()
+                        .flatten()
+                        .map(str::to_string),
+                );
+            }
+            assert_eq!(
+                values, expected,
+                "row_filters={row_filters} allow_type_promotion={allow_type_promotion}"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn parquet_roundtrip_unsigned_int() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::UInt32, false)]));
@@ -2420,7 +3075,12 @@ pub(crate) mod test {
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
             Arc::new(SparkPhysicalExprAdapterFactory::new(options, None));
 
+        // INT96 coercion as `parquet_exec::get_options` hardcodes it for every native scan.
+        let mut table_options = datafusion::config::TableParquetOptions::new();
+        table_options.global.coerce_int96 = Some("us".to_string());
+        table_options.global.coerce_int96_tz = Some("UTC".to_string());
         let mut parquet_source = ParquetSource::new(required_schema)
+            .with_table_parquet_options(table_options)
             .with_pushdown_filters(row_filters)
             .with_enable_page_index(true)
             .with_parquet_file_reader_factory(Arc::new(reader_factory));
@@ -3682,6 +4342,7 @@ pub(crate) mod test {
         let fields = vec![
             Arc::new(Field::new("dup", DataType::Int64, true)),
             Arc::new(Field::new("dup", DataType::Int64, true)),
+            Arc::new(Field::new("Dup", DataType::Int64, true)),
         ];
         let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
@@ -3690,6 +4351,11 @@ pub(crate) mod test {
             .to_string();
         assert!(error.contains("duplicate"), "{error}");
         assert!(!error.contains("case-insensitive"), "{error}");
+        // A case-sensitive read compares exact names, so `Dup` resolves to itself alone.
+        assert_eq!(
+            super::match_struct_fields(&fields, &fields[2..], &options).unwrap(),
+            vec![Some(2)]
+        );
     }
 
     #[test]
@@ -4007,6 +4673,27 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// Resolve `logical` against `physical` with the adapter's fold and remap the physical
+    /// root, as `create` does.
+    fn remap(
+        logical: &SchemaRef,
+        physical: &SchemaRef,
+        case_sensitive: bool,
+        use_field_id: bool,
+    ) -> (SchemaRef, HashMap<String, String>) {
+        let logical_folded = fold_schema_names(logical, case_sensitive).unwrap();
+        let physical_folded = fold_schema_names(physical, case_sensitive).unwrap();
+        let resolver = FieldResolver::new(
+            logical.fields(),
+            &logical_folded,
+            physical.fields(),
+            &physical_folded,
+            case_sensitive,
+            use_field_id,
+        );
+        super::remap_physical_schema(&resolver).unwrap()
+    }
+
     /// Crate-level check of the case-insensitive remap. Under `cargo test` there is no attached
     /// JVM, but ASCII names use the inline fast path; ASCII casing still distinguishes match from
     /// no-match, so this documents that `remap_physical_schema` renames the physical field to the
@@ -4015,8 +4702,7 @@ pub(crate) mod test {
     fn remap_physical_schema_case_insensitive_renames_to_logical() {
         let logical = Arc::new(Schema::new(vec![Field::new("Name", DataType::Int32, true)]));
         let physical = Arc::new(Schema::new(vec![Field::new("NAME", DataType::Int32, true)]));
-        let (remapped, name_map) =
-            super::remap_physical_schema(&logical, &physical, false, false).unwrap();
+        let (remapped, name_map) = remap(&logical, &physical, false, false);
         assert_eq!(remapped.field(0).name(), "Name");
         assert_eq!(name_map.get("Name").map(String::as_str), Some("NAME"));
     }
@@ -4032,8 +4718,7 @@ pub(crate) mod test {
             Field::new("foo", DataType::Int32, true).with_metadata(id_meta("99"))
         ]));
         let physical = Arc::new(Schema::new(vec![Field::new("FOO", DataType::Int32, true)]));
-        let (remapped, _name_map) =
-            super::remap_physical_schema(&logical, &physical, false, true).unwrap();
+        let (remapped, _name_map) = remap(&logical, &physical, false, true);
         assert!(
             remapped
                 .field(0)
@@ -4060,9 +4745,57 @@ pub(crate) mod test {
         let physical = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("9"))
         ]));
-        let (remapped, _name_map) =
-            super::remap_physical_schema(&logical, &physical, true, true).unwrap();
+        let (remapped, _name_map) = remap(&logical, &physical, true, true);
         assert_eq!(remapped.field(0).name(), "a");
+    }
+
+    fn field_names(schema: &SchemaRef) -> Vec<&str> {
+        schema.fields().iter().map(|f| f.name().as_str()).collect()
+    }
+
+    /// A file column that several requested fields claim takes the strongest claim: an id match
+    /// over a shadow, and a shadow over a name match. `A` is selected by id 1 and also by the
+    /// name of `a`, so it takes the name `x`. `B` has the name of `b`, whose id 2 the file lacks,
+    /// and of `B`, which carries no id, so it hides behind a placeholder. `c` is selected by name
+    /// only, and nothing selects `d`.
+    #[test]
+    fn root_resolution_takes_the_strongest_claim() {
+        let logical = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int32, true).with_metadata(id_meta("1")),
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true).with_metadata(id_meta("2")),
+            Field::new("B", DataType::Int32, true),
+            Field::new("C", DataType::Int32, true),
+        ]));
+        let physical = Arc::new(Schema::new(vec![
+            Field::new("A", DataType::Int32, true).with_metadata(id_meta("1")),
+            Field::new("B", DataType::Int32, true),
+            Field::new("c", DataType::Int32, true),
+            Field::new("d", DataType::Int32, true),
+        ]));
+        let (remapped, _name_map) = remap(&logical, &physical, false, true);
+        assert_eq!(
+            field_names(&remapped),
+            ["x", "__comet_unmatched_field_id_1", "C", "d"]
+        );
+    }
+
+    /// Between equal claims the earliest requested field wins, for an id match and for a name
+    /// match alike.
+    #[test]
+    fn root_resolution_earliest_requested_field_wins_a_tie() {
+        let logical = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int32, true).with_metadata(id_meta("1")),
+            Field::new("y", DataType::Int32, true).with_metadata(id_meta("1")),
+            Field::new("Ab", DataType::Int32, true),
+            Field::new("aB", DataType::Int32, true),
+        ]));
+        let physical = Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Int32, true).with_metadata(id_meta("1")),
+            Field::new("AB", DataType::Int32, true),
+        ]));
+        let (remapped, _name_map) = remap(&logical, &physical, false, true);
+        assert_eq!(field_names(&remapped), ["x", "Ab"]);
     }
 
     /// Field-id precedence in the case-insensitive duplicate check: an explicit `ω` (id 2)

@@ -88,7 +88,13 @@ public abstract class CometVector extends ColumnVector {
   @Override
   public Decimal getDecimal(int i, int precision, int scale) {
     if (isNullAt(i)) return null;
-    if (precision <= Decimal.MAX_LONG_DIGITS()) {
+    // A negative scale is excluded from the unscaled-long path deliberately. `createDecimal` on a
+    // long produces a `Decimal` whose `decimalVal` is null, and Spark's conversions then index
+    // `Decimal.POW_10(scale)`, which throws for a negative scale. That is reachable whenever a
+    // projection falls back to Spark over a negative-scale decimal column, which
+    // `spark.sql.legacy.allowNegativeScaleOfDecimal=true` allows. The `BigDecimal` branch below
+    // carries the scale in the value itself and has no such assumption.
+    if (precision <= Decimal.MAX_LONG_DIGITS() && scale >= 0) {
       return createDecimal(getLongDecimal(i), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);

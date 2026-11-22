@@ -23,10 +23,10 @@ import java.util.{Collections, IdentityHashMap, Locale}
 
 import scala.collection.mutable
 
-import org.apache.spark.sql.ExtendedExplainGenerator
+import org.apache.spark.sql.{DataFrame, ExtendedExplainGenerator}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
@@ -62,6 +62,29 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {
     fallbackReasons(plan).toSeq.sorted
+  }
+
+  /**
+   * The fallback reasons in the executed plan of `df`, as returned by `getFallbackReasons(plan)`.
+   * This does not run the query. For an adaptive query that has not run yet, the executed plan is
+   * the initial plan, so run the query first (for example with `collect()`) to get the reasons
+   * for the final plan and its query stages.
+   */
+  def getFallbackReasons(df: DataFrame): Seq[String] = {
+    getFallbackReasons(df.queryExecution.executedPlan)
+  }
+
+  /**
+   * Whether the executed plan of `df` is fully accelerated: Comet is enabled for its session and
+   * reports no fallback reasons for the plan. A plan with partial fallback, where some operators
+   * run in Comet and others fall back to Spark, is not fully accelerated. Enabled means the check
+   * the Comet planner rules make, so this is false when Comet disabled itself, for example
+   * because Spark is not in off-heap mode or the Comet shuffle manager is not set, even if
+   * `spark.comet.enabled` is true. Like `getFallbackReasons(df)`, this does not run the query.
+   */
+  def isFullyAccelerated(df: DataFrame): Boolean = {
+    val conf = df.queryExecution.sparkSession.sessionState.conf
+    CometSparkSessionExtensions.isCometLoaded(conf) && getFallbackReasons(df).isEmpty
   }
 
   /**
@@ -167,7 +190,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       // is pure reuse bookkeeping: the subquery it points at is counted where that subquery is
       // shown, so counting the wrapper too would invent an un-accelerated Spark operator.
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
-          _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+          _: CometSparkToColumnarExec =>
         stats.transitions += 1
       case _: CometPlan =>
         stats.cometOperators += 1
@@ -317,6 +340,43 @@ object CometCoverageStats {
 
 object CometExplainInfo {
   val FALLBACK_REASONS = new TreeNodeTag[Set[String]]("CometFallbackReasons")
+
+  // Planning is synchronous on the calling thread. Keep the journal scoped to a conversion,
+  // rather than trusting mutable tags which Catalyst can copy onto shared expression instances.
+  // Identity keys distinguish equal expressions. This is deliberately not inheritable: planning
+  // a subquery on another thread must not retain or share its parent's mutable journal.
+  private val fallbackJournal = new ThreadLocal[IdentityHashMap[Expression, Set[String]]]
+
+  private[comet] def withFallbackReasonScope[T](body: => T): T = {
+    val previous = fallbackJournal.get()
+    fallbackJournal.set(new IdentityHashMap[Expression, Set[String]]())
+    try body
+    finally {
+      if (previous == null) fallbackJournal.remove() else fallbackJournal.set(previous)
+    }
+  }
+
+  private[comet] def withExpressionFallbackReasonScope[T](body: => T): T = {
+    if (fallbackJournal.get() != null) body else withFallbackReasonScope(body)
+  }
+
+  private[comet] def recordFallbackReasons(
+      node: Expression,
+      reasons: Set[String]): Option[Set[String]] = {
+    Option(fallbackJournal.get()).map { journal =>
+      val previous = Option(journal.get(node)).getOrElse(Set.empty[String])
+      val current = previous ++ reasons
+      journal.put(node, current)
+      current
+    }
+  }
+
+  private[comet] def currentFallbackReasons(node: Expression): Set[String] = {
+    Option(fallbackJournal.get())
+      .flatMap(journal => Option(journal.get(node)))
+      .getOrElse(Set.empty)
+  }
+
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 
   // Expression names the serde routed through the JVM codegen dispatcher. Set on each such

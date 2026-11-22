@@ -294,7 +294,7 @@ impl Accumulator for RegrCovAccumulator {
 /// swapped by SPARK-55969, which shipped in 3.5.9, 4.0.3, 4.1.2 and 4.2.0. In
 /// both eras one degenerate case returns `null` and the other returns `1.0` (a
 /// perfect fit), but which is which differs:
-/// - before SPARK-55969 (Spark 3.4 and earlier patches of 3.5, 4.0 and 4.1):
+/// - before SPARK-55969 (earlier patches of Spark 3.5, 4.0 and 4.1):
 ///   constant dependent `y` (`m2(y) == 0`) -> `null`; constant independent `x`
 ///   (`m2(x) == 0`) -> `1.0`.
 /// - after: constant dependent `y` -> `1.0`; constant independent `x` -> `null`.
@@ -429,8 +429,8 @@ struct RegrLineAccumulator {
     covar: CovarianceAccumulator,
     var_x: VarianceAccumulator,
     intercept: bool,
-    /// When `true` (Spark 3.5+), `var_x` counts only rows where both `y` and `x`
-    /// are non-null. When `false` (Spark 3.4), `var_x` counts every row where `x`
+    /// When `true` (SPARK-48719), `var_x` counts only rows where both `y` and `x`
+    /// are non-null. When `false` (earlier Spark patches), `var_x` counts every row where `x`
     /// is non-null, even if `y` is null.
     filter_var_by_pair_nulls: bool,
 }
@@ -462,12 +462,12 @@ impl Accumulator for RegrLineAccumulator {
             self.covar.update_batch(&cov_input)?;
         }
         if self.filter_var_by_pair_nulls {
-            // Spark 3.5+: VariancePop(x) only over rows where both y and x are non-null.
+            // SPARK-48719: VariancePop(x) only over rows where both y and x are non-null.
             if !pairs[0].is_empty() {
                 self.var_x.update_batch(&pairs[1..2])?;
             }
         } else {
-            // Spark 3.4: VariancePop(x) over every row where x is non-null (the
+            // Before SPARK-48719: VariancePop(x) over every row where x is non-null (the
             // VarianceAccumulator itself skips x nulls), regardless of y.
             self.var_x.update_batch(&values[1..2])?;
         }
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn r2_degenerate_cases_swapped_by_spark_55969() {
-        // SPARK-55969 swapped the two degenerate cases relative to Spark 3.4.
+        // SPARK-55969 swapped the two degenerate cases relative to earlier Spark patches.
         let const_y = (
             vec![Some(7.0), Some(7.0), Some(7.0), Some(7.0)],
             vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
@@ -866,7 +866,7 @@ mod tests {
         // A row where x is non-null but y is null: (1,2), (2,4), (3,6), (null,10).
         // The co-moment ck = 4 is the same either way (only paired rows contribute).
         // Spark 3.5+ excludes x=10 from VariancePop(x) (m2 over {2,4,6} = 8) -> 0.5.
-        // Spark 3.4 includes x=10 (m2 over {2,4,6,10} = 35) -> 4/35.
+        // Before SPARK-48719, x=10 is included (m2 over {2,4,6,10} = 35) -> 4/35.
         let y = vec![Some(1.0), Some(2.0), Some(3.0), None];
         let x = vec![Some(2.0), Some(4.0), Some(6.0), Some(10.0)];
 

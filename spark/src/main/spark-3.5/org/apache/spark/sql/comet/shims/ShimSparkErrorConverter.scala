@@ -220,6 +220,14 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, sqlCtx(context)))
 
+      case "InvalidInputInCastToDatetime" if params("fromType").toString == "DOUBLE" =>
+        val targetType = getDataType(params("toType").toString)
+        Some(
+          QueryExecutionErrors.invalidInputInCastToDatetimeError(
+            parseDoubleLiteral(params("value").toString),
+            targetType,
+            sqlCtx(context)))
+
       case "InvalidInputInCastToDatetime" =>
         val expression =
           s"'${params("value").toString.replace("\\", "\\\\").replace("'", "\\'")}'"
@@ -379,6 +387,17 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
+
+      case "ParquetTimestampOverflow" =>
+        // Spark 3.5's FileScanRDD wraps a reader error in cannotReadFilesError only while
+        // nextIterator reads the first batch of a file split; an overflow in a later batch
+        // reaches the user as the bare ArithmeticException. Comet wraps the overflow from every
+        // batch, as Spark 4.x does, instead of mirroring those batch boundaries. The difference
+        // is declared in the Parquet compatibility guide (compatibility/scans.md).
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(
+          QueryExecutionErrors
+            .cannotReadFilesError(new ArithmeticException("long overflow"), filePath))
 
       case "ReadAncientDatetime" =>
         // Spark raises this unwrapped, not as FAILED_READ_FILE. The helper picks the rebase

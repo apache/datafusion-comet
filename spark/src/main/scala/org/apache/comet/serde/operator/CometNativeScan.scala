@@ -28,14 +28,14 @@ import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
-import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
@@ -105,15 +105,15 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
    * The data schema the native scan actually serializes.
    *
    * Spark's required schema can prune a Variant column, including a Variant nested under an
-   * unrequested struct, while the complete relation schema still contains it. Keep ordinary
-   * fields unchanged and retain the pruned required field for a requested Variant-bearing root,
+   * unrequested struct, while the complete relation schema still contains it. Keep ordinary field
+   * types unchanged and retain the pruned required field for a requested Variant-bearing root,
    * including a struct whose Variant child was pruned. Entirely unread Variant roots never enter
    * the native schema.
    */
   private def nativeDataSchema(
       dataSchema: StructType,
       requiredSchema: StructType,
-      resolver: Resolver): StructType =
+      resolver: Resolver): StructType = {
     StructType(dataSchema.fields.flatMap { field =>
       if (containsVariantType(field.dataType)) {
         requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
@@ -121,6 +121,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         Some(field)
       }
     })
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -137,18 +138,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     }
 
     // AQE DPP (SubqueryAdaptiveBroadcastExec) is converted to CometSubqueryBroadcastExec
-    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, Spark 3.5+).
+    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule).
     // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is converted by
     // CometExecRule.convertSubqueryBroadcasts. Both are resolved through the lazy
     // partition serialization path in CometNativeScanExec.
-    //
-    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the AQE DPP conversion
-    // rule can't run. CometScanRule.transformV1Scan rejects AQE DPP on 3.4, so this check
-    // is a safety net: if the scan somehow reached here with AQE DPP on 3.4, reject it.
-    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
-    }
-
     if (SQLConf.get.ignoreCorruptFiles ||
       scanExec.relation.options
         .get("ignorecorruptfiles") // Spark sets this to lowercase.
@@ -221,13 +214,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     // the scan is supported if no fallback reasons were added to the node
     !hasFallbackReason(scanExec)
   }
-
-  /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
-  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
-    e.exists {
-      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
-      case _ => false
-    }
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -422,16 +408,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
     commonBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
-    // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
-    // missing in the Parquet file, the new default preserves the parent struct's
-    // nullness from the file (so non-null parents materialize as a struct of all-null
-    // fields). Pre-4.1 Spark hardcodes the legacy behavior (whole struct null), which
-    // matches the Comet default we use as fallback.
+    // SPARK-53535 (Spark 4.1+): when none of the requested leaves of a struct, list or
+    // map exist in the Parquet file, the new default preserves the parent's nullness
+    // from the file (so non-null parents keep their structure with all-null leaves).
+    // Older Spark versions always use legacy behavior and ignore this key.
     val returnNullStructConfKey =
       "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
-    val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
     commonBuilder.setReturnNullStructIfAllFieldsMissing(
-      conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
+      !isSpark41Plus || conf.getConfString(returnNullStructConfKey, "false").toBoolean)
 
     // Field-ID matching: only ask the native side to do extra work when the conf is on AND
     // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same

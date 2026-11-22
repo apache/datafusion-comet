@@ -27,7 +27,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{DirectColumnarToRowConverter, NativeColumnarToRowConverter}
+import org.apache.comet.DirectColumnarToRowConverter
 
 /**
  * Isolated columnar-to-row microbenchmark that excludes the parquet scan entirely. Batches are
@@ -35,10 +35,9 @@ import org.apache.comet.{DirectColumnarToRowConverter, NativeColumnarToRowConver
  * conversion itself is what gets measured.
  *
  * The schema scenarios exist because the implementations have very different per-value costs by
- * data type. The JVM path allocates a Decimal object per non-null decimal value (and a
- * BigInteger/BigDecimal chain for precision > 18), while the native path writes the unscaled
- * value directly. The native path also has a column-wise fast path that only engages when every
- * column in the schema is fixed-width.
+ * data type. The `rowIterator` path allocates a Decimal object per non-null decimal value (and a
+ * BigInteger/BigDecimal chain for precision > 18), while the direct converter writes the unscaled
+ * value directly.
  */
 object CometC2RIsolatedBench {
 
@@ -58,12 +57,12 @@ object CometC2RIsolatedBench {
       .add("c", DoubleType)
       .add("d", StringType),
     i => InternalRow(i.toLong, i, i.toDouble, UTF8String.fromString(s"value_$i")),
-    // All three converters return UnsafeRow, so reading a raw fixed slot avoids allocating a
+    // Both converters return UnsafeRow, so reading a raw fixed slot avoids allocating a
     // UTF8String in the benchmark sink.
     row => row.getLong(0) + row.getLong(3))
 
   // The columns a TPC-H lineitem aggregation reaches C2R with: four compact decimals, a date,
-  // and two short flag strings. The strings force the native general (row-at-a-time) path.
+  // and two short flag strings. The strings force the direct converter's row-at-a-time path.
   private val tpchDecimalsWithStrings = Scenario(
     "4 x decimal(12,2), date, 2 x string (tpch-like)",
     new StructType()
@@ -86,7 +85,8 @@ object CometC2RIsolatedBench {
     // A compact decimal is stored directly as an unscaled long in UnsafeRow.
     row => row.getLong(0) + row.getInt(4))
 
-  // Same decimals without any var-length column, so the native column-wise fast path engages.
+  // Same decimals without any var-length column, so the direct converter's column-wise fast
+  // path engages.
   private val decimalsAllFixedWidth = Scenario(
     "4 x decimal(12,2), date, long (all fixed-width)",
     new StructType()
@@ -107,7 +107,7 @@ object CometC2RIsolatedBench {
     row => row.getLong(0) + row.getLong(5))
 
   // Precision > 18: the JVM accessor allocates byte[] -> BigInteger -> java BigDecimal ->
-  // scala BigDecimal -> Decimal per value; the native side writes 16 bytes.
+  // scala BigDecimal -> Decimal per value; the direct converter writes 16 bytes.
   private val highPrecisionDecimals = Scenario(
     "2 x decimal(38,10), long (high precision)",
     new StructType()
@@ -192,29 +192,10 @@ object CometC2RIsolatedBench {
       if (sink == Long.MinValue) println(sink)
     }
 
-    benchmark.addCase("Native converter") { _ =>
-      val converter = new NativeColumnarToRowConverter(scenario.schema, batchSize)
-      var sink = 0L
-      try {
-        var b = 0
-        while (b < batches.length) {
-          val it = converter.convert(batches(b))
-          while (it.hasNext) {
-            sink += scenario.consume(it.next())
-          }
-          b += 1
-        }
-      } finally {
-        converter.close()
-      }
-      if (sink == Long.MinValue) println(sink)
-    }
-
     benchmark.run()
 
     // GC pressure comparison: the JVM path allocates per object-typed value (Decimal,
-    // UTF8String) but reuses its output row buffer, while the native path allocates a
-    // byte[] + UnsafeRow per row for the defensive copy in NativeRowIterator.
+    // UTF8String) but reuses its output row buffer.
     val jvmAlloc = measureAllocatedBytes {
       val proj = UnsafeProjection.create(scenario.schema.fields.map(_.dataType))
       var sink = 0L
@@ -240,25 +221,9 @@ object CometC2RIsolatedBench {
       }
       if (sink == Long.MinValue) println(sink)
     }
-    val nativeAlloc = measureAllocatedBytes {
-      val converter = new NativeColumnarToRowConverter(scenario.schema, batchSize)
-      var sink = 0L
-      try {
-        for (batch <- batches) {
-          val it = converter.convert(batch)
-          while (it.hasNext) {
-            sink += scenario.consume(it.next())
-          }
-        }
-      } finally {
-        converter.close()
-      }
-      if (sink == Long.MinValue) println(sink)
-    }
     println(
       f"JVM heap allocation per row: JVM path ${jvmAlloc.toDouble / totalRows}%.1f bytes, " +
-        f"direct path ${directAlloc.toDouble / totalRows}%.1f bytes, " +
-        f"native path ${nativeAlloc.toDouble / totalRows}%.1f bytes%n")
+        f"direct path ${directAlloc.toDouble / totalRows}%.1f bytes%n")
 
     batches.foreach(_.close())
   }

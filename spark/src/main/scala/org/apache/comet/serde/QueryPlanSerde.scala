@@ -58,7 +58,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
     // RuntimeReplaceable and rewrites it to ArrayInsert before serde, so this entry is
-    // unreachable there and is kept solely for Spark 3.4/3.5.
+    // unreachable there and is kept solely for Spark 3.5.
     classOf[ArrayAppend] -> CometArrayAppend,
     // ArrayCompact is RuntimeReplaceable in all supported Spark versions (rewritten to
     // ArrayFilter(arr, IsNotNull(...))), so it never reaches serde directly; dispatch flows
@@ -87,6 +87,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Size] -> CometSize,
     classOf[ArraysZip] -> CometArraysZip,
     classOf[ArrayTransform] -> CometArrayTransform,
+    classOf[NamedLambdaVariable] -> CometNamedLambdaVariable,
     classOf[ArrayExists] -> CometArrayExists,
     classOf[ArrayForAll] -> CometArrayForAll,
     classOf[ArrayAggregate] -> CometArrayAggregate,
@@ -100,6 +101,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private val predicateExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[And] -> CometAnd,
+    classOf[AtLeastNNonNulls] -> CometAtLeastNNonNulls,
     classOf[EqualTo] -> CometEqualTo,
     classOf[EqualNullSafe] -> CometEqualNullSafe,
     classOf[GreaterThan] -> CometGreaterThan,
@@ -259,7 +261,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Overlay] -> CometOverlay,
       classOf[SoundEx] -> CometSoundEx,
       classOf[StringLocate] -> CometStringLocate,
-      classOf[Base64] -> CometBase64,
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,
@@ -935,22 +936,50 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def exprToProto(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean = true): Option[Expr] = {
-
-    val newExpr = DecimalPrecision.promote(expr)
-    val result = exprToProtoInternal(newExpr, inputs, binding)
-    if (!(newExpr eq expr)) {
-      // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
-      // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
-      // expressions, still see them. Skipped in the common case where `promote` returned the same
-      // tree and there is nothing to lift.
-      liftCoverageTags(newExpr, expr)
-      if (result.isEmpty) {
-        liftFallbackReasons(newExpr, expr)
+      binding: Boolean = true): Option[Expr] =
+    CometExplainInfo.withExpressionFallbackReasonScope {
+      CometMakeDate.unsupportedParentReason(expr) match {
+        case Some(reason) =>
+          withFallbackReason(expr, reason)
+          None
+        case None =>
+          val newExpr = DecimalPrecision.promote(expr)
+          val result = exprToProtoInternal(newExpr, inputs, binding)
+          if (!(newExpr eq expr)) {
+            // `promote` rebuilt the tree, so the tags landed on copies that the operator does
+            // not hold. Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk
+            // the operator's own expressions, still see them. Skipped in the common case where
+            // `promote` returned the same tree and there is nothing to lift.
+            liftCoverageTags(newExpr, expr)
+            if (result.isEmpty) {
+              liftFallbackReasons(newExpr, expr)
+            }
+          }
+          result
       }
     }
-    result
-  }
+
+  /**
+   * Convert an independent expression and return its current failure reasons before the scope
+   * closes. Used by planning probes outside operator conversion, such as native range shuffle.
+   * Ignore mutable tags and keep the probe's journal separate from any enclosing conversion.
+   */
+  def exprToProtoWithFallbackReasons(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean = true): (Option[Expr], Set[String]) =
+    CometExplainInfo.withFallbackReasonScope {
+      val result = exprToProto(expr, inputs, binding)
+      val reasons = if (result.isEmpty) {
+        expr
+          .collect { case e: Expression => e }
+          .flatMap(CometExplainInfo.currentFallbackReasons)
+          .toSet
+      } else {
+        Set.empty[String]
+      }
+      (result, reasons)
+    }
 
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
     val exprs = from.collect { case e: Expression => e }
@@ -960,15 +989,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Lift fallback reasons recorded anywhere in the rewritten tree onto the original node, so that
-   * `CometExecRule.rollUpFallbackReasons` and extended explain can see them. Without this the
-   * reason is attached to a copy that is not in the plan and is lost entirely - see
-   * https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that the `Invoke` /
-   * `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
+   * Lift fallback reasons recorded during the current conversion in the rewritten tree onto the
+   * original node, so that `CometExecRule.rollUpFallbackReasons` and extended explain can see
+   * them. Without this the reason is attached to a copy that is not in the plan and is lost
+   * entirely - see https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that
+   * the `Invoke` / `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
    *
    * Callers are the serde paths that rebuild an expression tree before converting it, so the
    * reasons land on copies the operator does not hold: `DecimalPrecision.promote` here, and
    * `CometWindowExec`'s `DecimalAggregates` unwrapping.
+   *
+   * Reads the conversion journal, not tags: a shared literal may carry a tag copied from an
+   * unrelated expression or an earlier query. Callers must run inside a fallback reason scope.
    *
    * Only called when conversion failed: a fallback reason states why an expression could not be
    * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
@@ -977,7 +1009,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def liftFallbackReasons(from: Expression, to: Expression): Unit = {
     val reasons = mutable.Set.empty[String]
     from.foreach { e =>
-      e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+      reasons ++= CometExplainInfo.currentFallbackReasons(e)
     }
     if (reasons.nonEmpty) {
       val _ = withFallbackReasons(to, reasons.toSet)
@@ -991,7 +1023,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * The caller owns decimal promotion: this method serializes children of an already-promoted
    * root without traversing them again. Literals and wrappers that introduce no decimal
    * arithmetic can also use this path. Newly synthesized arithmetic must enter through
-   * [[exprToProto]].
+   * [[exprToProto]]. Callers must run inside a fallback reason scope owned by the outer
+   * [[exprToProto]] call or the enclosing operator conversion.
    *
    * @param expr
    *   The input expression
@@ -1008,7 +1041,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
       if (!CometConf.isExprEnabled(exprConfName)) {
@@ -1049,9 +1081,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           } else {
             // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
             // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
-            // pipeline) so the projection stays native while still matching Spark. Everything else
-            // falls back to Spark. Falling back is also the result when the dispatcher cannot
-            // handle the expression.
+            // pipeline) so the projection stays native while still matching Spark. Everything
+            // else falls back to Spark, as does a dispatcher that cannot handle the expression.
             val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
               case (h, proto) =>
                 val key = h.nativeOptInConfigKeyOverride
@@ -1106,8 +1137,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
-        // Passthrough serdes such as Alias return an already-identified child expression. Preserve
-        // that child's context instead of replacing it with the structural wrapper's origin.
+        // Passthrough serdes such as Alias return an already-identified child expression.
+        // Preserve that child's context instead of replacing it with the wrapper's origin.
         if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
       }
   }
@@ -1308,19 +1339,71 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
    * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
    * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * `None` outside `withSharedSubexpressions`, where they are unknown. Only those that can raise
+   * are kept, see `cannotRaise`.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
-    lazy val common: Seq[Expression] =
+    // The shared subexpressions that can raise. Find shared nodes in Spark's original trees, then
+    // compare them after decimal promotion. Promotion wraps decimal arithmetic in CheckOverflow,
+    // which `cannotRaise` does not list, so that arithmetic is always kept.
+    lazy val raising: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
         expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions
+        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote).filterNot(cannotRaise)
       } else {
         Nil
       }
+  }
+
+  /**
+   * Whether evaluating `expr` on a row cannot raise, whatever the row holds. This fails closed:
+   * an expression is assumed to raise unless it is listed. Numeric arithmetic and casts between
+   * the types `plainCastType` lists raise only in the ANSI eval mode they carry, but some
+   * expressions raise in any mode, such as `element_at` with the index 0, the arithmetic of
+   * intervals and a date cast to a timestamp, so those stay out.
+   */
+  private def cannotRaise(expr: Expression): Boolean =
+    !expr.exists(!nodeCannotRaise(_))
+
+  private def nodeCannotRaise(node: Expression): Boolean = {
+    def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    node match {
+      case _: Literal | _: AttributeReference | _: BoundReference | _: GetStructField => true
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+          _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
+        true
+      case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
+          _: Contains =>
+        true
+      case c: Cast =>
+        evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
+        plainCastType(c.dataType)
+      case a: Add => plainArithmetic(a, a.evalMode)
+      case a: Subtract => plainArithmetic(a, a.evalMode)
+      case a: Multiply => plainArithmetic(a, a.evalMode)
+      case a: Divide => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
+      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case _ => false
+    }
+  }
+
+  /**
+   * Whether a cast to or from `dataType` outside the ANSI eval mode cannot raise. This fails
+   * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
+   * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
+   * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
+   * too, since a cast key can become NULL.
+   */
+  private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
+    case ArrayType(elementType, _) => plainCastType(elementType)
+    case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
+    case _ => false
   }
 
   /**
@@ -1338,16 +1421,27 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
    * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
-   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
-   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
-   * share is unknown.
+   * `TernaryExpression` does. Not if one of them holds a subexpression that can raise and that
+   * the operator's expressions share and Spark eliminates: Spark evaluates that for every row,
+   * and raises if it fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`,
+   * where what they share is unknown.
    */
-  def canShortCircuitNulls(expr: Expression): Boolean = {
-    val later = expr.children.tail
+  def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
+
+  /**
+   * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
+   * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
+   * can raise and that the operator's expressions share and Spark eliminates, nor outside
+   * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
+   * promotion so callers may pass either original or already-promoted trees.
+   */
+  def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Subexpression elimination never shares a leaf, such as a column or a literal
-    later.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      !later.exists(_.exists(e => s.common.exists(_.semanticEquals(e))))
+    skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
+      // Avoid decimal promotion when Spark shares nothing.
+      s.raising.isEmpty || !skippable.exists { expr =>
+        DecimalPrecision.promote(expr).exists(e => s.raising.exists(_.semanticEquals(e)))
+      }
     }
   }
 

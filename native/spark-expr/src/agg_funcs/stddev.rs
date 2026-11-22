@@ -201,7 +201,7 @@ impl Accumulator for StddevAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::align_of_val(self) - std::mem::align_of_val(&self.variance) + self.variance.size()
+        std::mem::size_of_val(self) - std::mem::size_of_val(&self.variance) + self.variance.size()
     }
 }
 
@@ -366,5 +366,11 @@ mod groups_tests {
             .iter()
             .collect();
         assert_eq!(result[0], None);
+    }
+
+    #[test]
+    fn scalar_size_covers_struct() {
+        let acc = StddevAccumulator::try_new(StatsType::Sample, true).unwrap();
+        assert!(acc.size() >= size_of::<StddevAccumulator>());
     }
 }
