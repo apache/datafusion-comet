@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -77,15 +78,24 @@ case class CometNativeScanExec(
     with CometScanWithPlanData {
 
   private[comet] def canCheckFilteredTimestampOverflow: Boolean = {
+    val common = nativeOp.getNativeScan.getCommon
+    // Spark builds the Parquet reader with the relation's session, which can differ from
+    // the one planning the scan (for example, through a global temporary view).
+    lazy val readerConf = relation.sparkSession.sessionState.conf
     // Spark 3.5 can cache a translated nested filter when displaying metadata, before the
     // reader is constructed. Its nested pushdown setting may have changed since then.
     lazy val nested = !isSpark40Plus || DataSourceUtils.supportNestedPredicatePushdown(relation)
     lazy val hasSubquery = dataFilters.exists(_.exists(_.isInstanceOf[ExecScalarSubquery]))
     lazy val mayPushFilter = hasSubquery ||
       dataFilters.exists(f => DataSourceStrategy.translateFilter(f, nested).isDefined)
-    (nativeOp.getNativeScan.getCommon.getHasDataFilters || hasSubquery) &&
+    // With field IDs, Spark can select a physical column by ID but decode it by name.
+    // Check only when both readers resolve the requested columns by name with the same casing rules.
+    (common.getHasDataFilters || hasSubquery) &&
     requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
-    (!conf.parquetFilterPushDown || !mayPushFilter)
+    !ParquetUtils.hasFieldIds(requiredSchema) &&
+    common.getCaseSensitive == readerConf.caseSensitiveAnalysis &&
+    !new FileSourceOptions(relation.options).ignoreCorruptFiles &&
+    (!readerConf.parquetFilterPushDown || !mayPushFilter)
   }
 
   override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {

@@ -301,10 +301,11 @@ for production, so do not turn it off to avoid an entry on this page.
 - **`TIMESTAMP_MILLIS` values that overflow when converted to microseconds.** Spark raises
   `ArithmeticException: long overflow` when its reader decodes such a value. Comet checks the
   conversion in a V1 Parquet query such as `SELECT s.ts FROM t WHERE id <=> match_id` when
-  collecting the full result. Spark evaluates that comparison after decoding the timestamps.
-  Other filtered scans can still return NULL on overflow. Examples include queries with a
-  `LIMIT` or a predicate that Spark can push into Parquet, such as `WHERE s.k >= 0` with
-  nested filter pushdown enabled ([#5739](https://github.com/apache/datafusion-comet/issues/5739)).
+  you call `collect()` and both readers match fields by name. Spark evaluates that comparison
+  after decoding the timestamps. Other filtered scans can still return NULL on overflow.
+  Examples include read schemas with Parquet field IDs, queries with a `LIMIT`, and predicates
+  that Spark can push into Parquet, such as `WHERE s.k >= 0` with nested filter pushdown
+  enabled ([#5739](https://github.com/apache/datafusion-comet/issues/5739)).
   A nested timestamp stored as an Arrow dictionary can also return NULL on overflow
   ([#5553](https://github.com/apache/datafusion-comet/issues/5553)).
 - **Reads that Spark rejects.** Comet returns rows where Spark fails the read for `INT` columns

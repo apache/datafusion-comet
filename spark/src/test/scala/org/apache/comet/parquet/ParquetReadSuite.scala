@@ -741,6 +741,19 @@ abstract class ParquetReadSuite extends CometTestBase {
             assert(filtered.collect().isEmpty)
           }
         }
+
+        val owner = spark.newSession()
+        val pushdown = SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key
+        owner.conf.set(SQLConf.USE_V1_SOURCE_LIST.key, "parquet")
+        owner.conf.set(pushdown, "true")
+        withGlobalTempView("millis_overflow") {
+          owner.read.parquet(path.toString).createGlobalTempView("millis_overflow")
+          withSQLConf(pushdown -> "false") {
+            val shared = spark.table("global_temp.millis_overflow")
+            val filtered = shared.where("id <=> (SELECT min(id) FROM range(2, 4))").select("s.ts")
+            checkSparkAnswerAndOperator(filtered, Seq(classOf[CometNativeScanExec]))
+          }
+        }
       }
     }
   }
@@ -2702,6 +2715,45 @@ abstract class ParquetReadSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  test("filtered TIMESTAMP_MILLIS with swapped nested field ids") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int64 id;
+        |  optional int64 match_id;
+        |  optional group s {
+        |    optional int64 a (TIMESTAMP_MILLIS) = 1;
+        |    optional int64 b (TIMESTAMP_MILLIS) = 2;
+        |  }
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      val record = new SimpleGroup(schema)
+      record.add(0, 1L)
+      record.add(1, 0L)
+      val nested = record.addGroup(2)
+      nested.add(0, Long.MaxValue / 1000 + 1)
+      nested.add(1, 0L)
+      writer.write(record)
+      writer.close()
+
+      // Spark selects the leaves by id, then uses the physical name to choose the decoder.
+      // It reads s.a as a raw long before the residual filter discards the row.
+      val swapped = new StructType()
+        .add("a", LongType, true, withId(2))
+        .add("b", TimestampType, true, withId(1))
+      val readSchema =
+        new StructType().add("id", LongType).add("match_id", LongType).add("s", swapped)
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        checkSparkAnswerAndOperator(
+          df.where("id <=> match_id").select("s"),
+          Seq(classOf[CometNativeScanExec]))
       }
     }
   }
