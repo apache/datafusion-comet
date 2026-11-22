@@ -196,6 +196,6 @@ The Rust builders accept array columns, including arrays with variable-width val
 accept directly supported array literals and simple constructors with fixed-width fields.
 `arrays_zip` can combine array columns and these constructors. If Spark folds one zip argument
 to an array literal, Comet dispatches the whole builder to avoid broadcasting the list across
-the batch. Comet also uses [codegen dispatch](expressions/map.md) for literals whose NaN bits
+the batch. Comet also uses [codegen dispatch](expressions/spark-4.1/map.md) for literals whose NaN bits
 Spark canonicalizes, other computed inputs, and struct or array keys containing a `FLOAT` or
 `DOUBLE`.

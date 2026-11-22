@@ -149,6 +149,8 @@ impl SparkFloatMap {
             }
 
             positions.clear();
+            // Bound the cost of clearing the table on subsequent rows after a large map.
+            positions.shrink_to(count);
             for (i, value_index) in key_range.zip(value_range) {
                 if keys.is_null(i) {
                     return Err(SparkError::NullMapKey.into());

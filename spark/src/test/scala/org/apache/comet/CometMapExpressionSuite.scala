@@ -302,6 +302,7 @@ class CometMapExpressionSuite extends CometTestBase {
       val generated = SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "2"
       val limit = SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT
       val lowerLimitAfterPlanning = limit.key -> limit.defaultValueString
+      val fittingLimit = limit.defaultValue.get - 1
       val dispatchModes = Seq(limit.key -> "1", SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN")
       val nativeModes = Seq(
         generated,
@@ -311,11 +312,15 @@ class CometMapExpressionSuite extends CometTestBase {
       for {
         comet <- Seq(false, true)
         mode <- nativeModes ++ dispatchModes
+        loweredLimit <-
+          (if (mode == lowerLimitAfterPlanning) Seq(Some(1), Some(fittingLimit))
+           else Seq(None))
       } {
         // Spark captures the policy on the driver when this two-column projection runs in
         // a whole-stage subtree. Otherwise each task creates its own builder.
+        val retainsPolicy = mode == generated || loweredLimit.contains(fittingLimit)
         val (firstPolicy, secondPolicy) =
-          if (mode == generated) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
+          if (retainsPolicy) ("LAST_WIN", "EXCEPTION") else ("EXCEPTION", "LAST_WIN")
         withSQLConf(
           CometConf.COMET_ENABLED.key -> comet.toString,
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -326,7 +331,7 @@ class CometMapExpressionSuite extends CometTestBase {
             "SELECT map_values(map_from_arrays(k, v)), " +
               "map_values(map_from_entries(arrays_zip(k, v))) FROM map_normalization")
           val plan = df.queryExecution.executedPlan
-          if (mode == lowerLimitAfterPlanning) spark.conf.set(limit.key, "1")
+          loweredLimit.foreach(n => spark.conf.set(limit.key, n.toString))
           assert(df.collect().toSeq == Seq(Row(Seq(1, 2), Seq(1, 2))))
           if (firstPolicy == "LAST_WIN") {
             // The RDD action reads the task's default normalization when it consumes the row.

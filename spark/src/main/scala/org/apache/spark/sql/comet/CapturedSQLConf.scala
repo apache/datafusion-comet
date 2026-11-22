@@ -68,9 +68,12 @@ object CapturedSQLConf {
     new CapturedSQLConf(SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX)))
 
   def captureDriverMapKeyDedupPolicy(): Option[String] = {
-    // Spark checks the generated method size when building the RDD. If the limit was
-    // lowered after planning, use the task policy as dispatch does for a low planning limit.
-    if (SQLConf.get.hugeMethodLimit < SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get) None
+    // A limit changed after planning can force Spark to build its projection in the task.
+    // WholeStageCodegenExec.generate returns new Iterator(references), requiring at least
+    // 9 bytes (new, dup, aload_1, invokespecial, areturn). Above this bound the decision
+    // depends on the original stage's bytecode, so retain the planned policy.
+    val minimumGenerateMethodSize = 9
+    if (SQLConf.get.hugeMethodLimit < minimumGenerateMethodSize) None
     else Some(currentMapKeyDedupPolicy)
   }
 
