@@ -64,7 +64,11 @@ use super::{
     PlanCreationResult,
 };
 use crate::{
-    execution::{operators::ExecutionError, serde::to_arrow_datatype, spark_plan::SparkPlan},
+    execution::{
+        operators::{ExecutionError, MinMaxReaderFilterExec},
+        serde::to_arrow_datatype,
+        spark_plan::SparkPlan,
+    },
     extract_op,
 };
 
@@ -175,7 +179,9 @@ impl OperatorBuilder for HashAggBuilder {
         let agg_exprs: PhyAggResult = agg
             .agg_exprs
             .iter()
-            .map(|expr| planner.create_agg_expr(expr, Arc::clone(&schema)))
+            .map(|expr| {
+                planner.create_agg_expr(expr, Arc::clone(&schema), agg.dynamic_filter_enabled)
+            })
             .collect();
 
         let aggr_expr: Vec<Arc<AggregateFunctionExpr>> = if has_partial_merge {
@@ -253,10 +259,10 @@ impl OperatorBuilder for HashAggBuilder {
         // runs an OrderedFinalAggregateStream there, which spills, and which the fair pool exempts
         // from that limit (`limited_to_its_share`). MergeAsPartial evaluates to its state under
         // Final as under Single.
-        // Only partially sorted input switches: with fully sorted input Final has no spill path
-        // and would halve the limit of a sort below it. Final also reads states from the columns
-        // after the keys, so the input must be the keys followed by native states (Spark's binary
-        // collect buffers keep Single, and arrive unordered anyway).
+        // Only partially sorted input switches: with fully sorted input Final has no spill path.
+        // Final also reads states from the columns after the keys, so the input must be the keys
+        // followed by native states (Spark's binary collect buffers keep Single, and arrive
+        // unordered anyway).
         // Drop this on DataFusion 56, where the stream is ClusteredFinalAggregateStream
         // (apache/datafusion#24697), and update the name prefix in `spill_replay.rs` (#6410).
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
@@ -276,16 +282,25 @@ impl OperatorBuilder for HashAggBuilder {
             mode
         };
 
-        let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
-            datafusion::physical_plan::aggregates::AggregateExec::try_new(
-                mode,
-                group_by,
-                aggr_expr,
-                filter_exprs?,
-                Arc::clone(&child.native_plan),
-                Arc::clone(&schema),
-            )?,
-        );
+        let aggregate = datafusion::physical_plan::aggregates::AggregateExec::try_new(
+            mode,
+            group_by,
+            aggr_expr,
+            filter_exprs?,
+            Arc::clone(&child.native_plan),
+            Arc::clone(&schema),
+        )?;
+        let aggregate: Arc<dyn ExecutionPlan> = if agg.dynamic_filter_enabled {
+            match MinMaxReaderFilterExec::try_new(
+                &aggregate,
+                planner.session_ctx.copied_config().options(),
+            )? {
+                Some(wrapper) => Arc::new(wrapper),
+                None => Arc::new(aggregate),
+            }
+        } else {
+            Arc::new(aggregate)
+        };
 
         let mut output = aggregate;
         let mut additional_native_plans = vec![];
@@ -375,6 +390,7 @@ impl PhysicalPlanner {
         &self,
         spark_expr: &AggExpr,
         schema: SchemaRef,
+        dynamic_filter_enabled: bool,
     ) -> Result<AggregateFunctionExpr, ExecutionError> {
         self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
@@ -399,7 +415,8 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, false);
-                let child = Self::cast_min_max_child(child, &datatype, &schema)?;
+                let child =
+                    Self::cast_min_max_child(child, &datatype, &schema, dynamic_filter_enabled)?;
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -413,7 +430,8 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, true);
-                let child = Self::cast_min_max_child(child, &datatype, &schema)?;
+                let child =
+                    Self::cast_min_max_child(child, &datatype, &schema, dynamic_filter_enabled)?;
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -877,7 +895,20 @@ impl PhysicalPlanner {
         child: Arc<dyn PhysicalExpr>,
         datatype: &DataType,
         schema: &SchemaRef,
+        dynamic_filter_enabled: bool,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        // Keep the identity cast when disabled: exposing the column makes DataFusion
+        // maintain per-batch bounds even without an attached reader filter.
+        if dynamic_filter_enabled
+            && child.is::<Column>()
+            && matches!(
+                datatype,
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
+            )
+            && child.data_type(schema.as_ref())? == *datatype
+        {
+            return Ok(child);
+        }
         if !matches!(datatype, DataType::Struct(_)) {
             return Ok(Arc::new(CastExpr::new(child, datatype.clone(), None)));
         }

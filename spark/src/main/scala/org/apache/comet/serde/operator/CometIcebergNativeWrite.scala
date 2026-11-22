@@ -27,6 +27,7 @@ import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, IcebergWriteExec}
+import org.apache.spark.sql.types.NullType
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -81,11 +82,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   private val EncryptionPropertyPrefix = "encryption."
-  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType and `unknown`
-  // as NullType, neither of which the native writer handles; Spark cannot plan a write to
-  // `timestamp_ns`, `geometry` or `geography` today, so those are declined in case it learns to.
+  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType, which the
+  // native writer does not handle; Spark cannot plan a write to `timestamp_ns`, `geometry` or
+  // `geography` today, so those are declined in case it learns to. `unknown` is checked below.
   private val UnsupportedWriteTypeIds: Set[String] =
-    Set("UUID", "VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
+    Set("UUID", "VARIANT", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
   // Loaded from the native storage factory: `builtin_storage_schemes` in
   // `native/core/src/execution/operators/iceberg_common.rs` is the single point of change and
   // explains why `oss` is read-only and `memory` write-only. Lazy so constructing the serde does
@@ -557,11 +558,13 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNoMetadataColumns,
     requireSupportedColumnTypes,
     requireNoVoidFieldWithDroppedSource,
+    requireNoUnknownPartitionSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
+    requireNativeSupportedCompressionCodec,
     requireNativeSupportedCompressionLevel,
     requireLoadableBrotliCodec,
     requireOnlyVettedParquetWriteProperties,
@@ -664,10 +667,18 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case Some(schema) =>
         IcebergReflection
           .findFieldWithTypeIds(schema, UnsupportedWriteTypeIds)
+          // Only top-level `unknown` fields are pruned, so a nested one would still
+          // get a Parquet column that iceberg-java does not write.
+          .orElse(
+            IcebergReflection.findFieldWithTypeIds(schema, Set("UNKNOWN"), nestedOnly = true))
           .map { case (name, typeId) =>
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"
           }
+          // Pruning would leave no columns, which iceberg-java cannot write either.
+          .orElse(if (IcebergReflection.toSparkSchema(schema).forall(_.dataType == NullType)) {
+            Some("every column has Iceberg type unknown")
+          } else None)
     }
 
   // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source
@@ -676,17 +687,32 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // decline and let the write fail the way iceberg-java fails it. An all-`void` spec stays
   // eligible, since the native writer writes it unpartitioned.
   // https://github.com/apache/datafusion-comet/issues/6141
-  private val requireNoVoidFieldWithDroppedSource: TriggerRule = ctx =>
+  private val requireNoVoidFieldWithDroppedSource: TriggerRule =
+    requireOutputPartitionSpec { spec =>
+      IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
+        s"partition field $name is a void transform whose source column was dropped, " +
+          "beside a live partition field"
+      }
+    }
+
+  // Top-level `unknown` columns are pruned from the native schema, so a partition field sourced
+  // from one would fail the native partition calculator with `Field not found`.
+  private val requireNoUnknownPartitionSource: TriggerRule =
+    requireOutputPartitionSpec { spec =>
+      IcebergReflection.partitionFieldsWithUnknownSource(spec).headOption.map { name =>
+        s"partition field $name is sourced from a column of Iceberg type unknown"
+      }
+    }
+
+  // Applies `check` to the output partition spec, declining if it cannot be resolved or inspected.
+  private def requireOutputPartitionSpec(check: Any => Option[String]): TriggerRule = ctx =>
     IcebergReflection
       .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
       .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
-      case None => Some("could not resolve the output partition spec for void field checking")
+      case None => Some("could not resolve the output partition spec")
       case Some(spec) =>
         try {
-          IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
-            s"partition field $name is a void transform whose source column was dropped, " +
-              "beside a live partition field"
-          }
+          check(spec)
         } catch {
           case e: Exception =>
             Some(s"could not inspect the output partition spec: ${e.getMessage}")
@@ -710,11 +736,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .map { case (k, _) => s"$k=true: bloom filters unsupported" }
   }
 
+  // Compared exactly: Iceberg 1.11 rejects `V1` ("must be v1 or v2"), so a trimmed or
+  // lowercased match would write natively a table whose iceberg-java write fails. Earlier
+  // versions ignore the property and always write v1 pages, so there a fallback only gives up
+  // a native write that would have been safe.
   private val requireParquetPageVersionDefault: TriggerRule = ctx => {
     val key = PropertyKeys.ParquetPageVersion
     ctx.properties
       .get(key)
-      .filter(_.trim.toLowerCase(Locale.ROOT) != PropertyKeys.ParquetPageVersionDefault)
+      .filter(_ != PropertyKeys.ParquetPageVersionDefault)
       .map(v => s"$key=$v unsupported")
   }
 
@@ -722,6 +752,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // ParquetFormatModel), and requireSupportedColumnTypes declines a `variant` column at any depth.
   // Spark 4.x on Iceberg 1.11 resolves `write.parquet.shred-variants` into every Parquet write, so
   // gating it would make every write fall back in a session that turns shredding on.
+
+  // iceberg-java resolves the codec name with `valueOf(name.toUpperCase(Locale.ENGLISH))`, so it
+  // rejects `none`, a name with stray whitespace and a typo. A native write must not succeed
+  // where that write fails, so those fall back and fail as they do without Comet.
+  private val requireNativeSupportedCompressionCodec: TriggerRule = ctx =>
+    IcebergWriteProtoTranslation.compressionCodecRejection(ctx.properties)
 
   // iceberg-java never validates the level -- the raw string flows into a codec-specific
   // parquet-mr writer property -- while parquet-rs enforces per-codec ranges when the native
@@ -1182,7 +1218,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       default: Int,
       reason: String): TriggerRule = ctx =>
     ctx.properties.get(key).flatMap { raw =>
-      scala.util.Try(raw.trim.toInt).toOption match {
+      // `Integer.parseInt` on the raw value, as iceberg-java does: ' 100' fails there.
+      scala.util.Try(java.lang.Integer.parseInt(raw)).toOption match {
         case Some(v) if v != default => Some(s"$key=$v (default=$default; $reason)")
         case Some(_) => None
         case None => Some(s"$key=$raw is not an int ($reason)")
@@ -1386,8 +1423,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       return None
     }
     // Iceberg's Spark `SparkWrite$WriterFactory` does NOT wire the table sort order into the
-    // per-file writer factory for batch appends in any Iceberg version Comet targets (1.5.2 /
-    // 1.8.1 / 1.10.0): it builds `SparkFileWriterFactory` without `.dataSortOrder(...)`, so every
+    // per-file writer factory for batch appends in Iceberg 1.8.1 / 1.10.0: it builds
+    // `SparkFileWriterFactory` without `.dataSortOrder(...)`, so every
     // committed data file is stamped `sort_order_id = 0` (unsorted) even when the table itself has
     // a non-default sort order. We match that exactly. The
     // `SparkWriteConf.outputSortOrderId(writeRequirements)` resolver (explicit option / table order

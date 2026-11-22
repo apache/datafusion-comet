@@ -81,7 +81,7 @@ spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
 
 ### Which one, and which Spark version
 
-Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
+Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.5 build, v2 on 4.0+), so you configure one name and get the right implementation.
 
 ## Enabling a bridge
 
@@ -210,7 +210,7 @@ public interface CometS3CredentialProvider extends AutoCloseable {
 
     CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) throws Exception;
 
-    /** Invoked from the dispatcher's JVM shutdown hook. Default is a no-op. */
+    /** Invoked when Comet retires the instance, or at JVM shutdown. Default is a no-op. */
     @Override default void close() throws Exception {}
 }
 ```
@@ -219,11 +219,13 @@ The class must have a public no-arg constructor. `getCredentialsForPath` may be 
 
 ### Lifecycle
 
-Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
+Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` once, and keeps the instance while some reader uses it. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
 
 `initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. On the Parquet path it carries the `fs.s3a.*` config subset (including static keys such as `fs.s3a.access.key`); in Comet 1.0 this map was empty on the Parquet path. The map may contain secrets, so do not log it.
 
-`close()` is invoked from a JVM shutdown hook installed by the dispatcher. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
+Comet calls `close()` once no reader uses an instance any more, and at JVM shutdown for instances still in use. On the Iceberg path an instance is retired when the table's next `FileIO` replaces the one built on it, and when an executor's cache of 64 `FileIO`s evicts it. A new `FileIO` replaces the old one when the catalog vends new credentials for the table and both sets carry `s3.session-token-expires-at-ms`, the new one later. New credentials without a later expiry don't replace the old `FileIO`, so its instance stays open until the 64-entry bound evicts it. A later read with the same key then gets a new instance, with its own `initialize` call. On the Parquet path Comet keeps each object store, and so its provider, for the executor's lifetime.
+
+So `close()` can run while the job is still running. Comet calls it at most once per instance, on a dispatcher thread rather than a reader's, and possibly while a new instance for the same key runs `initialize`. Release only the instance's own resources, never state that other instances share. A `close()` that blocks delays only the closes queued behind it. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
 
 ### Caching, refresh, and distribution
 
