@@ -3819,9 +3819,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI division in filters with partial readers and shared predicates") {
+  test("ANSI division with partial readers and shared expressions") {
     withTempPath { dir =>
-      sql("SELECT * FROM VALUES (1L, true, true), (0L, NULL, false) AS t(x, p, q)")
+      sql(
+        "SELECT * FROM VALUES (1L, true, true, 2e20D), (0L, NULL, false, 1e20D) AS t(x, p, q, v)")
         .coalesce(1)
         .write
         .parquet(dir.getCanonicalPath)
@@ -3849,6 +3850,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             sql("SELECT x FROM divisors WHERE (p OR (q AND 10 DIV x > 0)) AND 10 DIV x < 100")
           if (isSpark42Plus) checkSparkError(shared, "DIVIDE_BY_ZERO")
           else checkSparkAnswerAndOperator(shared)
+
+          // For v = 1e20, Spark reuses the first sum (1.0) as the divisor.
+          // Computing the divisor in its written order rounds it to zero.
+          val sum = "(v + (-1e20D)) + 1D"
+          val quotient = "1D / ((v + 1D) + (-1e20D))"
+          checkSparkAnswerAndOperator(
+            s"SELECT $sum, p IS NOT NULL AND $quotient + $quotient > 0D FROM divisors")
+          if (isSpark42Plus) {
+            checkSparkAnswerAndOperator(
+              s"SELECT v FROM divisors WHERE p IS NOT NULL AND $sum > 0D AND $quotient > 0D")
+          }
         }
       }
     }

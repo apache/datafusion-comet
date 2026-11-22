@@ -70,6 +70,15 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
     case _ => false
   }
 
+  // Spark can reuse (x + a) + b for (x + b) + a. Computing the latter independently
+  // before a guard can turn a nonzero floating-point divisor into zero.
+  private def canMoveWith(shared: Seq[Expression]): Expression => Boolean = {
+    val representatives = shared.iterator.map(e => ExpressionEquals(e) -> e).toMap
+    expr =>
+      hasMatchingOperandGuards(expr) && (representatives.isEmpty ||
+        !expr.exists(e => representatives.get(ExpressionEquals(e)).exists(_ != e)))
+  }
+
   private def codegenFactoryEnabled(op: SparkPlan): Boolean =
     !op.conf
       .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
@@ -105,7 +114,7 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
         .trim
         .toBoolean
     val canReorder = QueryPlanSerde.withSharedSubexpressions(if (filterCse) predicates else Nil) {
-      conjuncts.forall(hasMatchingOperandGuards)
+      conjuncts.forall(canMoveWith(QueryPlanSerde.sharedExpressionsBeforePromotion))
     }
     if (!canReorder) return op.condition
 
@@ -149,9 +158,10 @@ private[comet] object SparkExpressionEvaluation extends PredicateHelper {
     op.projectList.foreach(visit)
     if (guarded.isEmpty) return Nil
 
-    QueryPlanSerde.sharedExpressionsBeforePromotion.filter { e =>
-      guarded.contains(ExpressionEquals(e)) && containsAnsiDivision(e) &&
-      hasMatchingOperandGuards(e)
+    val shared = QueryPlanSerde.sharedExpressionsBeforePromotion
+    val canMove = canMoveWith(shared)
+    shared.filter { e =>
+      guarded.contains(ExpressionEquals(e)) && containsAnsiDivision(e) && canMove(e)
     }
   }
 }
