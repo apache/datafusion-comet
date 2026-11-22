@@ -34,9 +34,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
-# Ballista and DataFusion are pinned to git refs because neither has released 56.0.0 yet: Ballista
-# at a commit of its main branch, which is on DataFusion's 56.0.0-rc1 tag, the same tag as
-# native/Cargo.toml. Move back to releases once both ship.
+# Ballista and DataFusion are pinned to git refs because Ballista has not released 56.0.0 yet:
+# Ballista at a commit of its main branch, which is on DataFusion's 56.0.0-rc1 tag. native/Cargo.toml
+# is on the 56.0.0 tag, so this workspace does not build until Ballista is on that tag too (its CI
+# job is turned off). Move both pins to the 56.0.0 tag, or to releases, then.
 arrow-flight = "60.0.0"
 ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e" }
 ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "a882d9d8a2642dde6a499b0ad3a9992ca71a228e", default-features = false, features = ["arrow-ipc-optimizations"] }

@@ -45,13 +45,14 @@ arrow-select = { version = "60.1.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "60.1.0", default-features = false, features = ["experimental"] }
-# Tracking the DataFusion branch-56 revision ahead of the 56.0.0 release. The same revision is used
-# by the `datafusion-functions-nested` dev-dependency in core and by the contrib crates.
-datafusion = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
-datafusion-functions = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1", default-features = false, features = ["datetime_expressions"] }
-datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
-datafusion-spark = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1", features = ["core"] }
+# DataFusion 56.0.0 is tagged but not yet published to crates.io, so it is pinned by its git tag.
+# Move to the crates.io release once it is published. The same tag is used by the
+# `datafusion-functions-nested` dev-dependency in core and by the contrib crates.
+datafusion = { git = "https://github.com/apache/datafusion", tag = "56.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion", tag = "56.0.0" }
+datafusion-functions = { git = "https://github.com/apache/datafusion", tag = "56.0.0", default-features = false, features = ["datetime_expressions"] }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", tag = "56.0.0" }
+datafusion-spark = { git = "https://github.com/apache/datafusion", tag = "56.0.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
