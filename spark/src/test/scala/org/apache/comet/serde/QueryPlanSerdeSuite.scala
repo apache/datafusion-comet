@@ -255,6 +255,23 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     assert(shortCircuit.contains(false))
   }
 
+  test("an uncertain scope still skips a shared subexpression that cannot raise") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val length = Length(AttributeReference("s", StringType)())
+    val contains = ArrayContains(array, length)
+    val position = ArrayPosition(array, length)
+    val proto =
+      scalarFunctionExprToProto("array_contains", Some(ExprOuterClass.Expr.newBuilder().build()))
+    def shortCircuit: Option[Boolean] =
+      withNullShortCircuit(contains, proto).map(_.getScalarFunc.getNullShortCircuit)
+
+    withSharedSubexpressions(Seq(contains, position), certain = false) {
+      assert(canShortCircuitNulls(contains))
+      assert(!skipsUncertainSharedSubexpression(canShortCircuitNulls(contains)))
+      assert(shortCircuit.contains(true))
+    }
+  }
+
   test("canShortCircuitNulls follows subexpression elimination except in aggregates") {
     val risky = ElementAt(AttributeReference("other", ArrayType(IntegerType))(), Literal(0))
     val array = AttributeReference("ai", ArrayType(IntegerType))()

@@ -1339,11 +1339,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * `spark.sql.subexpressionElimination.enabled` is on. A sort compares its later keys one by one
    * and never shares among them. In a filter's or a join's condition, a join's keys or an
    * aggregation's results, whether Spark shares depends on how it runs the operator (see
-   * `certain`), so a function that would skip a shared subexpression there falls back rather than
-   * guess. They are found on the first `canShortCircuitNulls` call for the operator (or
-   * `skipsSharedSubexpression`), so an operator without an argument to skip never runs
-   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
-   * `canSkipEvaluation` counts only those that can raise, see `cannotRaise`.
+   * `certain`), so a function that would skip a shared subexpression that can raise falls back
+   * there rather than guess. They are found on the first `canShortCircuitNulls` call for the
+   * operator (or `skipsSharedSubexpression`), so an operator without an argument to skip never
+   * runs `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are
+   * unknown. `canSkipEvaluation` counts only those that can raise, see `cannotRaise`.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1447,9 +1447,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   /**
    * Whether an expression whose `canShortCircuitNulls` is `shortCircuit` must fall back to Spark:
-   * it would skip an argument holding a subexpression the operator's expressions share, in an
-   * operator where Spark may or may not evaluate that subexpression for every row, so neither
-   * skipping it nor evaluating it is sure to match Spark.
+   * it would skip an argument holding a subexpression that can raise and that the operator's
+   * expressions share, in an operator where Spark may or may not evaluate that subexpression for
+   * every row, so neither skipping it nor evaluating it is sure to match Spark.
    */
   def skipsUncertainSharedSubexpression(shortCircuit: Boolean): Boolean =
     !shortCircuit && sharedSubexpressions.value.exists(!_.certain)
