@@ -46,8 +46,8 @@ SELECT
   CAST(CAST(s AS TIMESTAMP) AS STRING)
 FROM cast_timestamp_labels
 
--- DATE → TIMESTAMP. The cast dispatches in Los Angeles (see cast_date_to_timestamp.sql).
-query expect_native(equalto, lessthan, hour)
+-- DATE → TIMESTAMP.
+query expect_native(cast, equalto, lessthan, hour)
 SELECT
   CAST(dt AS TIMESTAMP) = ts,
   CAST(dt AS TIMESTAMP) < ts,

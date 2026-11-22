@@ -319,7 +319,7 @@ fn parquet_primitive_name(dt: &DataType) -> &'static str {
         DataType::Float64 => "DOUBLE",
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary => "BINARY",
         // Spark stores DATE as INT32 with a DATE logical-type annotation.
-        DataType::Date32 | DataType::Date64 => "INT32",
+        DataType::Date32 => "INT32",
         // Spark stores TIMESTAMP as INT64 with a timestamp annotation, or as
         // INT96 (legacy nanos). arrow-rs surfaces both as `Timestamp`; without
         // the original physical name we report INT64, which matches the
@@ -551,10 +551,7 @@ fn spark_has_updater(
             (DataType::Int32, DataType::Int64)
                 | (DataType::Float32, DataType::Float64)
                 | (DataType::Int32, DataType::Float64)
-                | (
-                    DataType::Date32 | DataType::Date64,
-                    DataType::Timestamp(_, None)
-                )
+                | (DataType::Date32, DataType::Timestamp(_, None))
         );
         if is_disallowed_promotion {
             return false;
@@ -2665,48 +2662,6 @@ pub(crate) mod test {
             msg.contains("Found: INT64") && msg.contains("Expected: date"),
             "unexpected error: {msg}"
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn parquet_date64_hint_read_as_ntz_checks_physical_type() -> Result<(), DataFusionError> {
-        use arrow::array::Date64Array;
-        use parquet::file::properties::WriterProperties;
-
-        let days = i64::MAX / 86_400_000_000 + 1;
-        let values: ArrayRef = Arc::new(Date64Array::from(vec![days * 86_400_000]));
-        let batch = RecordBatch::try_from_iter([("d", values)])?;
-        let ntz = DataType::Timestamp(TimeUnit::Microsecond, None);
-        let required = Arc::new(Schema::new(vec![Field::new("d", ntz, false)]));
-        // Coercion writes INT32 DATE, otherwise the writer stores INT64.
-        // The Arrow footer hint says Date64 in both files.
-        for coerce in [true, false] {
-            let props = WriterProperties::builder().set_coerce_types(coerce).build();
-            let filename = get_temp_filename().to_str().unwrap().to_string();
-            let mut writer =
-                ArrowWriter::try_new(File::create(&filename)?, batch.schema(), Some(props))?;
-            writer.write(&batch)?;
-            writer.close()?;
-
-            for promote in [true, false] {
-                let mut options = default_options();
-                options.allow_type_promotion = promote;
-                let mut stream = scan_parquet_file(
-                    filename.clone(),
-                    Arc::clone(&required),
-                    options,
-                    None,
-                    false,
-                )?;
-                let expected = match (coerce, promote) {
-                    (true, true) => "long overflow",
-                    (true, false) => "Found: INT32",
-                    (false, _) => "Found: INT64",
-                };
-                let error = stream.next().await.unwrap().unwrap_err().to_string();
-                assert!(error.contains(expected), "unexpected error: {error}");
-            }
-        }
         Ok(())
     }
 

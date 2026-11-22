@@ -35,16 +35,16 @@ use crate::conversion_funcs::string::{
 };
 use crate::conversion_funcs::temporal::{
     cast_date_to_timestamp, is_df_cast_from_date_spark_compatible,
-    is_df_cast_from_timestamp_spark_compatible,
+    is_df_cast_from_timestamp_spark_compatible, DateOffsets,
 };
 use crate::conversion_funcs::utils::spark_cast_postprocess;
 use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
-use crate::{EvalMode, SparkError};
+use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, BooleanArray, Date32Array, GenericByteArray, GenericStringArray,
+    make_array, new_null_array, BinaryBuilder, BooleanArray, GenericByteArray, GenericStringArray,
     ListArray, MapArray, StringArray, StructArray,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
@@ -58,7 +58,7 @@ use arrow::{
         cast::AsArray, types::Decimal128Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
         Int8Array, OffsetSizeTrait,
     },
-    compute::{cast_with_options, kernels::zip::zip, rescale_decimal, CastOptions},
+    compute::{cast_with_options, nullif, rescale_decimal, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -171,6 +171,8 @@ pub struct SparkCastOptions {
     /// session local timezone by an analyzer in Spark.
     // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
+    /// JVM start-of-day offsets for DATE to TIMESTAMP in a region time zone.
+    pub date_offsets: Option<Arc<DateOffsets>>,
     /// True when running against Spark 4.0+. Enables version-specific cast behaviour
     /// such as the handling of leading whitespace before T-prefixed time-only strings.
     pub is_spark4_plus: bool,
@@ -201,6 +203,7 @@ impl SparkCastOptions {
         Self {
             eval_mode,
             timezone: timezone.to_string(),
+            date_offsets: None,
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
@@ -216,6 +219,7 @@ impl SparkCastOptions {
         Self {
             eval_mode,
             timezone: "".to_string(),
+            date_offsets: None,
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
@@ -401,11 +405,16 @@ fn cast_array_impl(
         (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
             cast_int_to_decimal128(&array, eval_mode, &from_type, to_type, *precision, *scale)
         }
-        (Utf8, Int8 | Int16 | Int32 | Int64) => {
-            cast_string_to_int::<i32>(to_type, &array, eval_mode)
-        }
-        (LargeUtf8, Int8 | Int16 | Int32 | Int64) => {
-            cast_string_to_int::<i64>(to_type, &array, eval_mode)
+        (Utf8 | LargeUtf8, Int8 | Int16 | Int32 | Int64) => {
+            let visible = if eval_mode == EvalMode::Ansi {
+                parent_visibility.as_ref()
+            } else {
+                None
+            };
+            cast_visible(&array, visible, |strings| match from_type {
+                Utf8 => cast_string_to_int::<i32>(to_type, strings, eval_mode),
+                _ => cast_string_to_int::<i64>(to_type, strings, eval_mode),
+            })
         }
         (Float64, Utf8) => spark_cast_float64_to_utf8::<i32>(&array, eval_mode),
         (Float64, LargeUtf8) => spark_cast_float64_to_utf8::<i64>(&array, eval_mode),
@@ -489,18 +498,9 @@ fn cast_array_impl(
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
-        (Date32, Timestamp(_, tz)) => {
-            // An invisible date can still be required, e.g. a map key. Use the epoch as its
-            // placeholder so both checked and TRY casts preserve required child validity.
-            let dates =
-                if let Some(visible) = parent_visibility.as_ref().filter(|n| n.null_count() != 0) {
-                    let visible = BooleanArray::new(visible.inner().clone(), None);
-                    zip(&visible, &array, &Date32Array::new_scalar(0))?
-                } else {
-                    array
-                };
-            Ok(cast_date_to_timestamp(&dates, cast_options, tz)?)
-        }
+        (Date32, Timestamp(_, tz)) => cast_visible(&array, parent_visibility.as_ref(), |dates| {
+            cast_date_to_timestamp(dates, cast_options, tz)
+        }),
         (Int8, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int8Array, 1),
         (Int16, Binary) if (eval_mode == Legacy) => {
             cast_whole_num_to_binary!(&array, Int16Array, 2)
@@ -554,6 +554,25 @@ fn cast_array_impl(
     };
 
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
+}
+
+fn cast_visible(
+    array: &ArrayRef,
+    visible: Option<&NullBuffer>,
+    cast: impl FnOnce(&ArrayRef) -> SparkResult<ArrayRef>,
+) -> SparkResult<ArrayRef> {
+    let Some(visible) = visible.filter(|v| v.null_count() != 0) else {
+        return cast(array);
+    };
+    let hidden = BooleanArray::new(!visible.inner(), None);
+    let output = cast(&nullif(array, &hidden)?)?;
+    // These kernels write zero in skipped slots. Mark those placeholders valid for
+    // required children such as map keys, preserving any visible nulls from TRY.
+    let nulls = output
+        .nulls()
+        .map(|n| NullBuffer::new(n.inner() | hidden.values()));
+    let data = output.to_data().into_builder().nulls(nulls).build()?;
+    Ok(make_array(data))
 }
 
 /// Determines if DataFusion supports the given cast in a way that is

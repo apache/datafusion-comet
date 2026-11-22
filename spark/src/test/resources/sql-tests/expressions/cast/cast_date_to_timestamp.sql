@@ -23,11 +23,12 @@
 statement
 CREATE TABLE wide_dates(y INT, m INT, d INT) USING parquet
 
--- The first two years exceed chrono's range but fit in timestamp microseconds.
--- July 2101 is beyond chrono-tz's last DST transition for Los Angeles.
+-- Check both winter and summer beyond chrono's calendar, and summer just
+-- beyond chrono-tz's last DST transition for Los Angeles.
 statement
 INSERT INTO wide_dates VALUES
-  (262143, 1, 1), (-262144, 1, 1), (2101, 7, 4), (1970, 1, 1), (NULL, 1, 1)
+  (262143, 1, 1), (262143, 7, 4), (-262144, 1, 1),
+  (2101, 7, 4), (1970, 1, 1), (1919, 3, 31), (NULL, 1, 1)
 
 query expect_native(cast, make_date)
 SELECT CAST(make_date(y, m, d) AS TIMESTAMP),
@@ -37,14 +38,9 @@ FROM wide_dates
 statement
 SET spark.sql.session.timeZone=America/Los_Angeles
 
-query expect_dispatch(cast)
-SELECT CAST(make_date(y, m, d) AS TIMESTAMP) FROM wide_dates
-
 query expect_native(cast, make_date)
-SELECT CAST(make_date(y, m, d) AS TIMESTAMP_NTZ) FROM wide_dates
-
-statement
-SET spark.sql.session.timeZone=UTC
+SELECT CAST(make_date(y, m, d) AS TIMESTAMP),
+       CAST(make_date(y, m, d) AS TIMESTAMP_NTZ) FROM wide_dates
 
 statement
 INSERT INTO wide_dates VALUES (300000, 6, 15), (-300000, 6, 15)
@@ -88,11 +84,10 @@ FROM nested_dates
 query expect_fallback(null map key)
 SELECT TRY_CAST(k AS MAP<TIMESTAMP, INT>) FROM nested_dates
 
+-- The clocks jumped from 23:30 to 00:30 in Toronto. The date starts at
+-- the transition instant (04:30 UTC).
 statement
-SET spark.sql.session.timeZone=America/Los_Angeles
+SET spark.sql.session.timeZone=America/Toronto
 
-statement
-SET spark.comet.exec.scalaUDF.codegen.enabled=false
-
-query expect_fallback(cast: spark.comet.exec.scalaUDF.codegen.enabled=false)
-SELECT CAST(make_date(y, m, d) AS TIMESTAMP) FROM wide_dates WHERE y = 262143
+query expect_native(cast)
+SELECT CAST(make_date(y, m, d) AS TIMESTAMP) FROM wide_dates WHERE y = 1919

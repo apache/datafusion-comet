@@ -173,6 +173,13 @@ with the JVM's and logs a warning if they differ. The user guide describes the e
 "Timezone Database Versions" on the datetime
 [expression compatibility](../user-guide/latest/compatibility/expressions/index.md) page.
 
+For `CAST(date AS TIMESTAMP)`, the planner derives the start of each local date from
+`LocalDate.atStartOfDay`. For region zones it records the days around transitions when
+the offset from UTC midnight changes. After the historical transitions, recurring rules
+repeat every 400 Gregorian years. Rust uses that cycle to look up the offset, applies it
+to the original epoch day in seconds, then checks the conversion to microseconds.
+Fixed offsets in whole minutes use the same arithmetic with a constant offset.
+
 ## Scans
 
 Parquet stores timestamps either as `INT64` annotated `TIMESTAMP(MICROS or MILLIS, isAdjustedToUTC)`,
@@ -222,13 +229,6 @@ path cannot handle through the JVM codegen dispatcher, as they do for a session 
 `CometTimeZone.nativeId` cannot express. The dispatcher runs Spark's generated code with the
 `timeZoneId` stamped on the expression, so the results match Spark, and its Arrow output is
 labelled `"UTC"` like everything else.
-
-`CAST(date AS TIMESTAMP)` uses codegen dispatch for region zones and offsets with seconds.
-Spark's `LocalDate.atStartOfDay` applies the JVM's transition rules even for years beyond
-chrono's calendar. This also covers implicit casts when comparing a date with a timestamp or
-passing a date to `hour` or `date_trunc`. For a fixed offset in whole minutes, the Rust kernel
-subtracts the offset from the start of the epoch day in seconds before converting to
-microseconds. This order preserves instants that fit only after applying the offset.
 
 ## Guidelines
 

@@ -2341,10 +2341,10 @@ class CometNativeCastSuite
 
   test("cast DateType to timestamps checks microsecond overflow") {
     withParquetTable(Seq(Tuple1(300000)), "wide_year") {
-      for (ansi <- Seq("false", "true")) {
+      for (ansi <- Seq("false", "true"); zone <- Seq("UTC", "America/Los_Angeles")) {
         withSQLConf(
           SQLConf.ANSI_ENABLED.key -> ansi,
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> zone) {
           checkLongOverflow("SELECT CAST(make_date(_1, 6, 15) AS TIMESTAMP_NTZ) FROM wide_year")
           checkLongOverflow("SELECT CAST(make_date(-_1, 6, 15) AS TIMESTAMP) FROM wide_year")
         }

@@ -100,3 +100,18 @@ query expect_error(CAST_OVERFLOW)
 SELECT cast(array_value as array<tinyint>)
 FROM test_cast_complex_ansi
 WHERE id = 4
+
+statement
+CREATE TABLE test_cast_hidden_strings USING parquet AS
+SELECT keep, named_struct('a', s) AS payload, map(s, 1) AS keyed
+FROM VALUES (true, '42'), (false, 'bad') AS t(keep, s)
+
+-- Reusing each gated column keeps the cast outside IF. The null struct and map
+-- still carry 'bad' in their child buffers, including a required map key.
+query expect_native(cast)
+SELECT payload, cast(payload AS struct<a:int>), keyed, cast(keyed AS map<int,int>)
+FROM (SELECT IF(keep, payload, NULL) AS payload, IF(keep, keyed, NULL) AS keyed
+      FROM test_cast_hidden_strings)
+
+query expect_error_class(CAST_INVALID_INPUT)
+SELECT cast(payload AS struct<a:int>) FROM test_cast_hidden_strings

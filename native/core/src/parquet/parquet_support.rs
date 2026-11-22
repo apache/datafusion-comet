@@ -24,7 +24,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::{can_cast_types, take};
-use arrow::datatypes::{ArrowPrimitiveType, Date32Type, Date64Type, FieldRef, Fields};
+use arrow::datatypes::{ArrowPrimitiveType, Date32Type, FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -325,15 +325,6 @@ fn parquet_convert_array_impl(
                 None,
             )
         }
-        (Date64, Timestamp(TimeUnit::Microsecond, None)) => {
-            // ARROW:schema can restore a physical INT32 DATE as milliseconds.
-            checked_micros(
-                array.as_primitive::<Date64Type>(),
-                parent_nulls.as_ref(),
-                1_000,
-                None,
-            )
-        }
         (Dictionary(_, values), _) if may_read_date_as_ntz(values, to_type) => {
             // An ARROW:schema dictionary can include days no row references.
             let dictionary = array.as_any_dictionary();
@@ -481,31 +472,24 @@ where
 
 pub(super) fn may_read_date_as_ntz(physical_type: &DataType, target_type: &DataType) -> bool {
     match (physical_type, target_type) {
-        (DataType::Date32 | DataType::Date64, DataType::Timestamp(TimeUnit::Microsecond, None)) => {
-            true
-        }
+        (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, None)) => true,
         (DataType::Dictionary(_, value), _) => may_read_date_as_ntz(value, target_type),
         _ => false,
     }
 }
 
 pub(super) fn contains_ntz(data_type: &DataType) -> bool {
-    contains_type(data_type, &DataType::Timestamp(TimeUnit::Microsecond, None))
-}
-
-pub(super) fn contains_type(data_type: &DataType, leaf: &DataType) -> bool {
     match data_type {
-        DataType::Struct(fields) => fields
-            .iter()
-            .any(|field| contains_type(field.data_type(), leaf)),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => true,
+        DataType::Struct(fields) => fields.iter().any(|field| contains_ntz(field.data_type())),
         DataType::List(field)
         | DataType::LargeList(field)
         | DataType::FixedSizeList(field, _)
         | DataType::ListView(field)
         | DataType::LargeListView(field)
-        | DataType::Map(field, _) => contains_type(field.data_type(), leaf),
-        DataType::Dictionary(_, values) => contains_type(values, leaf),
-        _ => data_type == leaf,
+        | DataType::Map(field, _) => contains_ntz(field.data_type()),
+        DataType::Dictionary(_, values) => contains_ntz(values),
+        _ => false,
     }
 }
 

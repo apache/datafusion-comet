@@ -19,7 +19,8 @@
 
 package org.apache.comet.serde
 
-import java.time.ZoneOffset
+import java.time.{Instant, LocalDate, ZoneId, ZoneOffset}
+import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.Try
 
@@ -51,8 +52,62 @@ object CometTimeZone {
       }
   }
 
-  private[comet] def hasNativeFixedOffset(timeZoneId: Option[String]): Boolean =
-    nativeId(timeZoneId).exists(id => id == "UTC" || id.startsWith("+") || id.startsWith("-"))
+  private val dateOffsetCache = new ConcurrentHashMap[ZoneId, ExprOuterClass.DateOffsets]()
+
+  /** Start-of-day offsets for DATE to TIMESTAMP casts in the region returned by nativeId. */
+  private[comet] def dateOffsets(id: String): Option[ExprOuterClass.DateOffsets] = {
+    val zone = ZoneId.of(id)
+    if (zone.getRules.isFixedOffset) {
+      None
+    } else {
+      Some(dateOffsetCache.computeIfAbsent(zone, z => buildDateOffsets(z)))
+    }
+  }
+
+  private def buildDateOffsets(zone: ZoneId): ExprOuterClass.DateOffsets = {
+    val rules = zone.getRules
+    val history = rules.getTransitions
+    // Beyond the historical transitions, the annual rules repeat every Gregorian 400 years.
+    // Start the cycle a full year after the last transition so it contains only annual rules.
+    val repeatFrom = if (history.isEmpty || rules.getTransitionRules.isEmpty) {
+      Int.MaxValue
+    } else {
+      val lastDay = history.get(history.size - 1).getDateTimeAfter.toLocalDate.toEpochDay
+      math.max(Int.MinValue.toLong, math.min(Int.MaxValue.toLong, lastDay + 366)).toInt
+    }
+    val endDay = math.min(Int.MaxValue.toLong + 1, repeatFrom.toLong + 146097)
+    val offsets = ExprOuterClass.DateOffsets.newBuilder().setRepeatFromDay(repeatFrom)
+    val secondsPerDay = 86400L
+
+    def record(day: Long): Unit = {
+      // Spark's atStartOfDay chooses the earlier instant on overlaps and the first valid
+      // instant on gaps. The latter can be on the next date when a whole day was skipped.
+      val start = LocalDate.ofEpochDay(day).atStartOfDay(zone).toEpochSecond
+      val offset = (day * secondsPerDay - start).toInt
+      val count = offsets.getOffsetsCount
+      if (count == 0 || offsets.getOffsets(count - 1) != offset) {
+        offsets.addStarts(day.toInt)
+        offsets.addOffsets(offset)
+      }
+    }
+
+    val firstDay = Int.MinValue.toLong
+    record(firstDay)
+    var nextDay = firstDay + 1
+    var transition = rules.nextTransition(Instant.ofEpochSecond((firstDay - 1) * secondsPerDay))
+    while (transition != null && transition.toEpochSecond < endDay * secondsPerDay) {
+      // Zone offsets are within +/-18 hours. A transition on UTC day t can span the
+      // midnights of local dates t and t+1. By t+2 the new offset applies.
+      val utcDay = Math.floorDiv(transition.toEpochSecond, secondsPerDay)
+      nextDay = math.max(nextDay, utcDay)
+      while (nextDay <= utcDay + 2 && nextDay < endDay) {
+        record(nextDay)
+        nextDay += 1
+      }
+      transition = rules.nextTransition(transition.getInstant)
+    }
+    offsets.build()
+  }
 
   /** Whether `timeZoneId` has a zero offset at every instant. */
   def isUtc(timeZoneId: Option[String]): Boolean = nativeId(timeZoneId).contains("UTC")

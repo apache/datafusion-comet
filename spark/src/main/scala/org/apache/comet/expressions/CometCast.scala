@@ -204,6 +204,12 @@ object CometCast
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setTimezone(timeZone)
+        expr match {
+          case cast: Cast
+              if hasDateToTimestampCast(cast)((target, _) => target == TimestampType) =>
+            CometTimeZone.dateOffsets(timeZone).foreach(castBuilder.setDateOffsets)
+          case _ =>
+        }
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         castBuilder.setDecimalZeroAnyExponent(
           SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
@@ -340,11 +346,6 @@ object CometCast
               isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode),
               isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)))
         }
-      case (DataTypes.DateType, DataTypes.TimestampType)
-          if !CometTimeZone.hasNativeFixedOffset(timeZoneId) =>
-        // Spark's rules apply beyond chrono's date range and its last DST transition.
-        Unsupported(
-          Some("Native date-to-timestamp casts require a fixed whole-minute timezone offset"))
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
     }
@@ -584,27 +585,25 @@ object CometCast
   // TRY the result can then be null where Spark's nullability metadata says it cannot be.
   private[comet] def mayNullRequiredTimestamp(expr: Expression): Boolean = expr match {
     case cast: Cast if evalMode(cast) == CometEvalMode.TRY =>
-      castsDateToRequiredTimestamp(cast.child.dataType, cast.dataType, cast.nullable)
+      hasDateToTimestampCast(cast)((_, nullable) => !nullable)
     case _ => false
   }
 
-  private def castsDateToRequiredTimestamp(
-      fromType: DataType,
-      toType: DataType,
-      nullable: Boolean): Boolean =
-    (fromType, toType) match {
-      case (DataTypes.DateType, TimestampType | TimestampNTZType) => !nullable
-      case (ArrayType(from, _), ArrayType(to, containsNull)) =>
-        castsDateToRequiredTimestamp(from, to, containsNull)
-      case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, valueContainsNull)) =>
-        castsDateToRequiredTimestamp(fromKey, toKey, nullable = false) ||
-        castsDateToRequiredTimestamp(fromValue, toValue, valueContainsNull)
-      case (StructType(from), StructType(to)) =>
-        from.zip(to).exists { case (a, b) =>
-          castsDateToRequiredTimestamp(a.dataType, b.dataType, b.nullable)
-        }
-      case _ => false
-    }
+  private def hasDateToTimestampCast(cast: Cast)(
+      accept: (DataType, Boolean) => Boolean): Boolean = {
+    def visit(fromType: DataType, toType: DataType, nullable: Boolean): Boolean =
+      (fromType, toType) match {
+        case (DataTypes.DateType, TimestampType | TimestampNTZType) => accept(toType, nullable)
+        case (ArrayType(from, _), ArrayType(to, containsNull)) =>
+          visit(from, to, containsNull)
+        case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, valueContainsNull)) =>
+          visit(fromKey, toKey, nullable = false) || visit(fromValue, toValue, valueContainsNull)
+        case (StructType(from), StructType(to)) =>
+          from.zip(to).exists { case (a, b) => visit(a.dataType, b.dataType, b.nullable) }
+        case _ => false
+      }
+    visit(cast.child.dataType, cast.dataType, cast.nullable)
+  }
 
   /**
    * Whether evaluating `cast` can produce a map with a null key. Under TRY a key cast that throws

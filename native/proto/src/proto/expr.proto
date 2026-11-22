@@ -481,6 +481,17 @@ message Cast {
   // True when Spark does not apply the 38 integral-digit limit when it casts a string to
   // decimal, as it does not with spark.sql.legacy.allowNegativeScaleOfDecimal.
   bool decimal_skip_integral_digit_limit = 9;
+  // Present for DATE to TIMESTAMP casts that use a region's start-of-day rules.
+  DateOffsets date_offsets = 10;
+}
+
+message DateOffsets {
+  // From this epoch day, the offsets repeat every 400 Gregorian years.
+  sint32 repeat_from_day = 1;
+  // Inclusive epoch days, starting at INT32_MIN, and the corresponding seconds to
+  // subtract from UTC midnight to get the start of the local date.
+  repeated sint32 starts = 2;
+  repeated sint32 offsets = 3;
 }
 
 // Spark's internal PreciseTimestampConversion, used by time-window grouping to convert

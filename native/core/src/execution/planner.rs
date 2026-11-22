@@ -124,10 +124,10 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
     jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
-    CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero, NormalizeNestedFloats,
-    NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    CreateNamedStruct, DateOffsets, DecimalRescaleCheckOverflow, FloatOperands,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero,
+    NormalizeNestedFloats, NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn,
+    WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -853,6 +853,15 @@ impl PhysicalPlanner {
                 cast_options.decimal_tiny_to_zero = expr.decimal_tiny_to_zero;
                 cast_options.decimal_skip_integral_digit_limit =
                     expr.decimal_skip_integral_digit_limit;
+                if let Some(table) = &expr.date_offsets {
+                    let offsets = DateOffsets::try_new(
+                        table.repeat_from_day,
+                        table.starts.clone(),
+                        table.offsets.clone(),
+                    )
+                    .map_err(|err| GeneralError(err.to_string()))?;
+                    cast_options.date_offsets = Some(Arc::new(offsets));
+                }
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
