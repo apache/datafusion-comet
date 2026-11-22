@@ -454,11 +454,12 @@ class CometMapExpressionSuite extends CometTestBase {
   test("float map builders use dispatch when AQE prepares a shuffle") {
     val adaptive = SQLConf.ADAPTIVE_EXECUTION_ENABLED.key
     val builder = Seq("map_from_arrays")
+    val query = "SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys"
     withParquetTable(Seq((Seq(1.0, 1.0), Seq(7, 8))), "duplicate_keys") {
       withSQLConf(adaptive -> "true", SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
-        val projected = sql("SELECT size(map_from_arrays(_1, _2)) AS s FROM duplicate_keys")
-        assertExpressionImpl(projected.queryExecution.executedPlan, builder, Seq.empty)
-        val shuffled = projected.repartition(2, col("s"))
+        assertExpressionImpl(sql(query).queryExecution.executedPlan, builder, Seq.empty)
+        // A fresh query keeps the expression coverage tags of the two plans independent.
+        val shuffled = sql(query).repartition(2, col("s"))
         val plan = shuffled.queryExecution.executedPlan
         // The adaptive plan needs its exchange to remain the stage root when the action runs.
         spark.conf.set(adaptive, "false")
