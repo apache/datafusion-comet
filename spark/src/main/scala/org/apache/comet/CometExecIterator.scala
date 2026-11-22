@@ -103,7 +103,7 @@ class CometExecIterator(
     outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
     outputTypes: Seq[DataType] = Seq.empty,
-    driverMapKeyDedupPolicy: Option[String] = None)
+    driverMapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -894,7 +894,8 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  def serializeCometSQLConfs(driverMapKeyDedupPolicy: Option[String] = None): Array[Byte] = {
+  def serializeCometSQLConfs(
+      driverMapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
@@ -914,12 +915,18 @@ object CometExecIterator extends Logging {
     // SQLExecutionRDD.compute has restored the task-local properties as the active SQLConf.
     val normalizationKey = "spark.sql.legacy.disableMapKeyNormalization"
     val taskConf = Option(TaskContext.get()).map(new ReadOnlySQLConf(_)).getOrElse(SQLConf.get)
-    val disableNormalization = !CometSparkSessionExtensions.isSpark40Plus ||
-      taskConf.getConfString(normalizationKey, "false").trim.toBoolean
-    builder.putEntries(normalizationKey, disableNormalization.toString)
-    val policy = CapturedSQLConf.currentMapKeyDedupPolicy
-    builder.putEntries(SQLConf.MAP_KEY_DEDUP_POLICY.key, policy)
-    builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy.getOrElse(policy))
+    def disableNormalization(conf: SQLConf): String = {
+      val disabled = !CometSparkSessionExtensions.isSpark40Plus ||
+        conf.getConfString(normalizationKey, "false").trim.toBoolean
+      disabled.toString
+    }
+    val activeConf = CapturedSQLConf.activeMapBuilderConf
+    builder.putEntries(normalizationKey, disableNormalization(taskConf))
+    builder.putEntries("comet.eagerDisableMapKeyNormalization", disableNormalization(activeConf))
+    builder.putEntries(
+      SQLConf.MAP_KEY_DEDUP_POLICY.key,
+      activeConf.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString)
+    builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy)
 
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were

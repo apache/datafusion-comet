@@ -25,8 +25,8 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.comet.CapturedSQLConf
-import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode, SparkPlan}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometNativeExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -41,13 +41,13 @@ private[local] case class LocalQuerySpec(
 
 /**
  * A whole query run as one native graph by the single Spark task of its result. `block` is the
- * Comet native block the graph is created from, kept for explain only.
+ * Comet native block the graph is created from.
  */
 case class CometLocalExec private[local] (
     override val output: Seq[Attribute],
     spec: LocalQuerySpec,
     ordering: Seq[SortOrder],
-    block: SparkPlan)
+    block: CometNativeExec)
     extends LeafExecNode {
   override def supportsColumnar: Boolean = true
 
@@ -70,7 +70,8 @@ case class CometLocalExec private[local] (
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val rows = longMetric("numOutputRows")
     val batches = longMetric("numOutputBatches")
-    new LocalQueryRDD(sparkContext, spec).mapPartitions { input =>
+    val resolved = spec.copy(plan = block.executionSerializedPlan)
+    new LocalQueryRDD(sparkContext, resolved).mapPartitions { input =>
       input.map { batch =>
         rows += batch.numRows().toLong
         batches += 1L
@@ -82,7 +83,7 @@ case class CometLocalExec private[local] (
 
 private[local] class LocalQueryRDD(sc: SparkContext, spec: LocalQuerySpec)
     extends RDD[ColumnarBatch](sc, Nil) {
-  private val driverMapKeyDedupPolicy = CapturedSQLConf.captureDriverMapKeyDedupPolicy()
+  private val driverMapKeyDedupPolicy = CapturedSQLConf.currentMapKeyDedupPolicy
 
   override protected def getPartitions: Array[Partition] = Array(new Partition {
     override def index: Int = 0

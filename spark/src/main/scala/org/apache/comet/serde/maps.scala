@@ -26,14 +26,14 @@ import scala.util.DynamicVariable
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.execution.{CollectLimitExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, SortExec, SparkPlan}
+import org.apache.spark.sql.comet.{CometNativeExec, MapCodegenStage, MapCodegenStagePolicy => Policy}
+import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, InputAdapter, LocalLimitExec, ProjectExec, RowToColumnarExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.Exchange
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.rules.CometRule
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.CometTypeShim
@@ -144,59 +144,92 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 }
 
 private[comet] object MapBuilderKeySupport {
-  private type Builder = Option[CometScalarFunction[Expression]]
-  private val taskPolicy = CometScalarFunction[Expression]("spark_float_map")
-  private val driverPolicy = CometScalarFunction[Expression]("spark_float_map_driver")
-  private val select = new DynamicVariable[Expression => Builder](_ => None)
+  private val taskPolicy = CometScalarFunction[Expression](Policy.Task)
+  private val driverPolicy = CometScalarFunction[Expression](Policy.Driver)
 
-  def withPlan[T](plan: SparkPlan)(f: => T): T = {
-    lazy val policies = builderPolicies(plan)
-    select.withValue(expr => policies.getOrDefault(expr, None))(f)
+  private type Policies = IdentityHashMap[Expression, Option[Policy]]
+  private class Context(plan: SparkPlan) {
+    var used: Option[Policy] = None
+    lazy val policies: Policies = builderPolicies(plan)
+  }
+  private val context = new DynamicVariable[Option[Context]](None)
+
+  def withPlan[T](plan: SparkPlan)(f: => T): T =
+    context.withValue(Some(new Context(plan)))(f)
+
+  private def select(expr: Expression): Option[Policy] =
+    context.value.flatMap(_.policies.getOrDefault(expr, None))
+
+  // Every admitted builder belonging to one operator has the same stage and consumers.
+  def record(f: => Option[CometNativeExec]): Option[CometNativeExec] = context.value match {
+    case None => f
+    case Some(ctx) =>
+      val outer = ctx.used
+      ctx.used = None
+      try {
+        val result = f
+        result.foreach(exec => ctx.used.foreach(_.record(exec)))
+        result
+      } finally {
+        ctx.used = outer
+      }
   }
 
-  // The original consumers determine whether a builder inserts its first key under task-local
-  // properties or SQLExecutionRDD's temporary SQLConf. Only model known lazy paths. Index by
-  // identity: a rewritten expression with unknown consumers takes the existing dispatch path.
-  private def builderPolicies(plan: SparkPlan): IdentityHashMap[Expression, Builder] = {
-    val policies = new IdentityHashMap[Expression, Builder]
+  private def builderPolicies(plan: SparkPlan): Policies = {
+    val policies = new Policies
     val conf = SQLConf.get
     if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return policies
     val defaultLimit =
       conf.hugeMethodLimit >= SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.defaultValue.get
 
-    def visit(node: SparkPlan, lazyConsumers: Boolean): Unit = {
-      lazy val eligible =
-        conf.wholeStageEnabled && CometRule.supportsWholeStageCodegen(node, conf)
-      lazy val generated = eligible && defaultLimit
-      lazy val policy = node match {
-        case _: ProjectExec | _: FilterExec if lazyConsumers && !eligible => Some(taskPolicy)
-        case _: ProjectExec | _: FilterExec | _: HashAggregateExec | _: ExpandExec
-            if lazyConsumers && generated =>
-          Some(driverPolicy)
-        case _ => None
-      }
-      def record(expr: Expression, interpreted: Boolean): Unit = {
-        expr match {
-          case _: MapFromArrays | _: MapFromEntries =>
-            val selected = if (interpreted) None else policy
-            val previous = policies.getOrDefault(expr, selected)
-            val _ = policies.put(expr, if (previous == selected) selected else None)
+    // Walk the stages Spark would form before Comet replaces scans or fuses operators.
+    // None for consumers means the first insertion can happen in an unknown scope.
+    def visit(
+        node: SparkPlan,
+        stage: Option[MapCodegenStage],
+        consumers: Option[List[MapCodegenStage]]): Unit = node match {
+      case generated: WholeStageCodegenExec =>
+        val probe = if (defaultLimit) MapCodegenStage.probe(generated) else None
+        visit(generated.child, probe, consumers.filter(_ => probe.isDefined))
+      case adapter: InputAdapter => visit(adapter.child, None, consumers)
+      case _ =>
+        val inputConsumers = node match {
+          case _: Exchange => Some(Nil)
+          case _: ProjectExec | _: FilterExec | _: DeserializeToObjectExec | _: LocalLimitExec |
+              _: GlobalLimitExec | _: CollectLimitExec | _: ExpandExec | _: ColumnarToRowExec |
+              _: RowToColumnarExec =>
+            consumers
+          case _: HashAggregateExec | _: SortExec =>
+            for (outer <- consumers; current <- stage) yield current :: outer
+          case _ => None
+        }
+        val policy = node match {
+          case _: ProjectExec | _: FilterExec => consumers.map(Policy(stage, _))
+          case _: ExpandExec if stage.isDefined => consumers.map(Policy(stage, _))
+          case _: HashAggregateExec => inputConsumers.map(Policy(stage, _))
+          case _ => None
+        }
+        def recordExpression(expr: Expression, interpreted: Boolean): Unit = {
+          expr match {
+            case _: MapFromArrays | _: MapFromEntries =>
+              val selected = if (interpreted) None else policy
+              val previous = policies.getOrDefault(expr, selected)
+              val _ = policies.put(expr, if (previous == selected) selected else None)
+            case _ =>
+          }
+          expr.children.foreach(
+            recordExpression(_, interpreted || expr.isInstanceOf[CodegenFallback]))
+        }
+        node.expressions.foreach(recordExpression(_, interpreted = false))
+        node match {
+          case agg: HashAggregateExec =>
+            // A fallback aggregate evaluates result expressions eagerly only for empty input.
+            agg.resultExpressions.foreach(recordExpression(_, interpreted = true))
           case _ =>
         }
-        expr.children.foreach(record(_, interpreted || expr.isInstanceOf[CodegenFallback]))
-      }
-      node.expressions.foreach(record(_, interpreted = false))
-      val lazyInput = node match {
-        case _: Exchange => true
-        case _: ProjectExec | _: FilterExec | _: DeserializeToObjectExec | _: LocalLimitExec |
-            _: GlobalLimitExec | _: CollectLimitExec =>
-          lazyConsumers
-        case _: HashAggregateExec | _: ExpandExec | _: SortExec => lazyConsumers && generated
-        case _ => false
-      }
-      node.children.foreach(visit(_, lazyInput))
+        node.children.foreach(visit(_, stage, inputConsumers))
     }
-    visit(plan, lazyConsumers = true)
+    visit(MapCodegenStage.prepare(plan), None, Some(Nil))
     policies
   }
 
@@ -204,8 +237,11 @@ private[comet] object MapBuilderKeySupport {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val native = select.value(expr).getOrElse(taskPolicy)
-    withNullShortCircuit(expr, native.convert(expr, inputs, binding)).orElse {
+    val policy = select(expr)
+    val native = if (policy.exists(_.stage.isDefined)) driverPolicy else taskPolicy
+    val result = withNullShortCircuit(expr, native.convert(expr, inputs, binding))
+    if (result.isDefined && policy.isDefined) context.value.foreach(_.used = policy)
+    result.orElse {
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -271,7 +307,7 @@ private[comet] object MapBuilderKeySupport {
     if (isFloatingPoint(keyType)) {
       if (!expr.children.forall(safeInput)) {
         Incompatible(Some(computedInputReason))
-      } else if (select.value(expr).isEmpty) {
+      } else if (select(expr).isEmpty) {
         Incompatible(Some(policyReason))
       } else {
         Compatible()

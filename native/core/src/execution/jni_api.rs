@@ -148,7 +148,8 @@ use crate::execution::spark_config::{
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
     COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
     COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, DRIVER_MAP_KEY_DEDUP_POLICY,
-    SPARK_DISABLE_MAP_KEY_NORMALIZATION, SPARK_EXECUTOR_CORES, SPARK_MAP_KEY_DEDUP_POLICY,
+    EAGER_DISABLE_MAP_KEY_NORMALIZATION, SPARK_DISABLE_MAP_KEY_NORMALIZATION, SPARK_EXECUTOR_CORES,
+    SPARK_MAP_KEY_DEDUP_POLICY,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::CometParquetScanOptions;
@@ -1186,9 +1187,28 @@ pub(crate) fn comet_session_context(
     datafusion::functions_nested::register_all(&mut session_ctx)?;
     register_datafusion_spark_function(&session_ctx);
     let normalize_keys = !spark_config.get_bool(SPARK_DISABLE_MAP_KEY_NORMALIZATION);
-    for (name, policy_key) in [
-        ("spark_float_map", SPARK_MAP_KEY_DEDUP_POLICY),
-        ("spark_float_map_driver", DRIVER_MAP_KEY_DEDUP_POLICY),
+    let eager_normalize = !spark_config.get_bool(EAGER_DISABLE_MAP_KEY_NORMALIZATION);
+    for (name, policy_key, normalize_keys) in [
+        (
+            "spark_float_map",
+            SPARK_MAP_KEY_DEDUP_POLICY,
+            normalize_keys,
+        ),
+        (
+            "spark_float_map_driver",
+            DRIVER_MAP_KEY_DEDUP_POLICY,
+            normalize_keys,
+        ),
+        (
+            "spark_float_map_eager",
+            SPARK_MAP_KEY_DEDUP_POLICY,
+            eager_normalize,
+        ),
+        (
+            "spark_float_map_driver_eager",
+            DRIVER_MAP_KEY_DEDUP_POLICY,
+            eager_normalize,
+        ),
     ] {
         let dedup_policy = spark_config
             .get(policy_key)

@@ -35,7 +35,7 @@ class CapturedSQLConf private (configs: Map[String, String]) extends Serializabl
 
   // Whole-stage codegen constructs ArrayBasedMapBuilder on the driver when building the RDD.
   // The builder eagerly reads this policy, retaining it across actions that reuse the RDD.
-  val mapKeyDedupPolicy: Option[String] = CapturedSQLConf.captureDriverMapKeyDedupPolicy()
+  val mapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy
 
   @transient private lazy val executorSideConf: SQLConf = {
     val conf = new CapturedSQLConf.CometOnlyConf
@@ -67,23 +67,15 @@ object CapturedSQLConf {
   def capture(): CapturedSQLConf =
     new CapturedSQLConf(SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX)))
 
-  def captureDriverMapKeyDedupPolicy(): Option[String] = {
-    // A limit changed after planning can force Spark to build its projection in the task.
-    // WholeStageCodegenExec.generate returns new Iterator(references), requiring at least
-    // 9 bytes (new, dup, aload_1, invokespecial, areturn). Above this bound the decision
-    // depends on the original stage's bytecode, so retain the planned policy.
-    val minimumGenerateMethodSize = 9
-    if (SQLConf.get.hugeMethodLimit < minimumGenerateMethodSize) None
-    else Some(currentMapKeyDedupPolicy)
-  }
+  def currentMapKeyDedupPolicy: String =
+    activeMapBuilderConf.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
 
-  def currentMapKeyDedupPolicy: String = {
+  def activeMapBuilderConf: SQLConf = {
     // withConf installs CometOnlyConf over a task's ReadOnlySQLConf. Spark's map builder
     // would see that task's local properties, or the active conf when SQLExecutionRDD sets one.
-    val conf = SQLConf.get match {
+    SQLConf.get match {
       case _: CometOnlyConf => new ReadOnlySQLConf(TaskContext.get())
       case active => active
     }
-    conf.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
   }
 }

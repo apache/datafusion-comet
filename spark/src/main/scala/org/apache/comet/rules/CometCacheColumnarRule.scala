@@ -19,9 +19,11 @@
 
 package org.apache.comet.rules
 
+import org.apache.spark.sql.catalyst.expressions.LeafExpression
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
-import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowExec, ColumnarToRowTransition, SparkPlan}
+import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowExec, ColumnarToRowTransition, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.internal.SQLConf
@@ -66,8 +68,15 @@ case class CometCacheColumnarRule(preview: Boolean = false) extends Rule[SparkPl
 
     plan.transformUp {
       case parent: CodegenSupport
-          if !parent.supportsColumnar && !parent.isInstanceOf[ColumnarToRowTransition] &&
-            CometRule.supportsWholeStageCodegen(parent, conf) =>
+          if parent.supportCodegen && !parent.supportsColumnar &&
+            !parent.isInstanceOf[ColumnarToRowTransition] &&
+            !WholeStageCodegenExec.isTooManyFields(conf, parent.schema) &&
+            !parent.children.exists(p => WholeStageCodegenExec.isTooManyFields(conf, p.schema)) &&
+            !parent.expressions.exists(_.exists {
+              case _: LeafExpression => false
+              case _: CodegenFallback => true
+              case _ => false
+            }) =>
         // Match the consuming edge rather than every scan: an existing columnar consumer (or a
         // cache stage being materialized by AQE) must keep receiving batches. Spark inserts an
         // InputAdapter around the scan later, while this transition fuses with the row consumer.

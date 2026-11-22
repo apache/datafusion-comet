@@ -23,11 +23,9 @@ import scala.collection.mutable
 import scala.util.control.NonFatal
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.LeafExpression
-import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
-import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, CodegenSupport, ColumnarToRowExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, InsertAdaptiveSparkPlan, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
@@ -36,19 +34,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
 import org.apache.comet.local.CometLocalRule
+import org.apache.comet.serde.MapBuilderKeySupport
 import org.apache.comet.shims.ShimCometStreaming
 
 object CometRule {
-
-  /** Mirrors the per-operator eligibility check in Spark's CollapseCodegenStages. */
-  private[comet] def supportsWholeStageCodegen(op: SparkPlan, conf: SQLConf): Boolean = op match {
-    case plan: CodegenSupport =>
-      plan.supportCodegen && !WholeStageCodegenExec.isTooManyFields(conf, plan.schema) &&
-      !plan.children.exists(c => WholeStageCodegenExec.isTooManyFields(conf, c.schema)) &&
-      !plan.expressions.exists(_.exists(e =>
-        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
-    case _ => false
-  }
 
   /**
    * Comet's post-columnar rules, shared by `CometColumnar` and the plan-only preview.
@@ -187,7 +176,10 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
   }
 
-  private def convert(plan: SparkPlan): SparkPlan = execRule.apply(scanRule.apply(plan))
+  private def convert(plan: SparkPlan): SparkPlan =
+    MapBuilderKeySupport.withPlan(plan) {
+      execRule.apply(scanRule.apply(plan))
+    }
 
   /** Logs the Comet plan for `plan` unless already reported. Never fails the query. */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {

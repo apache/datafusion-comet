@@ -921,6 +921,17 @@ abstract class CometNativeExec extends CometExec {
   /** The Comet native operator */
   def nativeOp: Operator
 
+  private[comet] def executionNativeOp: Operator = MapCodegenStagePolicy.resolve(this)
+
+  private[apache] def executionSerializedPlan: Array[Byte] = {
+    val bytes = serializedPlanOpt.plan.getOrElse(
+      throw new CometRuntimeException(
+        s"CometNativeExec should not be executed directly without a serialized plan: $this"))
+    val op = executionNativeOp
+    if (op eq nativeOp) bytes
+    else CometExec.serializeNativePlan(QueryContextInterner.intern(op))
+  }
+
   override protected def doPrepare(): Unit = prepareSubqueries(this)
 
   override lazy val metrics: Map[String, SQLMetric] =
@@ -959,9 +970,7 @@ abstract class CometNativeExec extends CometExec {
   private[comet] def executeColumnarWithContext(
       ctx: NativeExecContext,
       nativeMetrics: CometMetricNode): RDD[ColumnarBatch] = {
-    val serializedPlan = serializedPlanOpt.plan.getOrElse(
-      throw new CometRuntimeException(
-        s"CometNativeExec should not be executed directly without a serialized plan: $this"))
+    val serializedPlan = executionSerializedPlan
 
     new CometExecRDD(
       sparkContext,
