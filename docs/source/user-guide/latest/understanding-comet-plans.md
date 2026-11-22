@@ -249,6 +249,11 @@ val info = new ExtendedExplainInfo()
 
 // Sorted, deduplicated list of fallback reasons across the whole plan.
 val reasons: Seq[String] = info.getFallbackReasons(plan)
+// The same for a DataFrame's executed plan. It does not run the query, so for
+// an adaptive query, run it first to get the reasons for the final plan.
+val dfReasons: Seq[String] = info.getFallbackReasons(df)
+// True when Comet is enabled for the session and the plan has no fallback reasons.
+val fullyAccelerated: Boolean = info.isFullyAccelerated(df)
 
 // Sorted, deduplicated names of the expressions Comet accelerated, split by how
 // they run. Structural nodes (attribute references, literals, aliases) are not
@@ -286,6 +291,30 @@ Project [COMET: from_unixtime(eventTime#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is n
 Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 0 codegen dispatch.
 ```
 
+### Checking That a Query Is Fully Accelerated
+
+`isFullyAccelerated(df)` returns `true` when both of the following hold:
+
+- Comet is enabled for the DataFrame's session. This is the same check Comet's
+  planner rules make, so it is `false` when Comet disables itself, for example
+  because Spark is not in off-heap mode or the Comet shuffle manager is not set,
+  even if `spark.comet.enabled` is `true`.
+- `getFallbackReasons(df)` is empty.
+
+The check is a plan-wide yes or no. A plan with partial fallback, where some
+operators run in Comet and others fall back to Spark, is not fully accelerated.
+Use `getFallbackReasons(df)` to see what fell back. Codegen dispatch is not a
+fallback, so a plan whose expressions use it can still be fully accelerated.
+
+Like `getFallbackReasons(df)`, it reads the executed plan and does not run the
+query. With AQE, run the query first so the check covers the final plan:
+
+```scala
+val df = spark.sql("SELECT ...")
+df.collect()
+assert(new ExtendedExplainInfo().isFullyAccelerated(df), "query fell back to Spark")
+```
+
 ## Comet Operator Reference
 
 The following sections describe the Comet nodes you will see in plans, grouped
@@ -299,6 +328,7 @@ by role. Names match what is shown in the plan output.
 | `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                     |
 | `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                             |
 | `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                          |
+| `CometTextNativeScan`    | Text scan (single `value` string column) that runs entirely in Rust via DataFusion (experimental).          |
 | `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                |
 | `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                              |
 | `CometEmptyRelation`     | Empty input to a Rust plan that replaces `EmptyRelationExec` (Spark 4.0 and later).                         |
@@ -368,12 +398,14 @@ use:
   batches are serialized via the Arrow IPC writer.
 - **`CometColumnarExchange`** is the **JVM columnar shuffle** path. It accepts
   either Spark row-based input or Comet columnar input, which makes it the
-  fallback when the child is not a Comet operator or when a hash/range key
+  fallback when the child is not a Comet operator, when a hash/range key
   type is not supported by native shuffle (for example, a struct or array
-  hash key while nested hash keys are disabled). It is still preferred over
-  Spark's built-in shuffle when Comet shuffle is enabled. Keys with a
-  non-default string collation are supported by neither path and use Spark's
-  shuffle.
+  hash key while nested hash keys are disabled), or when native shuffle
+  cannot serialize the key expression (for example the `mapsort` wrapper
+  Spark 4.0 and later adds around an array or struct map key). It is still
+  preferred over Spark's built-in shuffle when Comet shuffle is enabled. Keys
+  with a non-default string collation are supported by neither path and use
+  Spark's shuffle.
 
 Both paths support the same set of partitioning schemes
 (`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning`,

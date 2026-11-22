@@ -305,8 +305,8 @@ object CometCachedBatchHelper {
    * The whole payload is rewritten, frame header included, so every zstd release rejects it
    * outright. Corrupting only a frame's tail is not enough: whether that is detected depends on
    * the zstd-jni each Spark version ships -- Comet takes it from Spark rather than from
-   * arrow-compression, and 1.5.5 (Spark 3.4, 3.5) decodes a frame whose last bytes have been
-   * zeroed that 1.5.7 (Spark 4.x) reports as corrupt.
+   * arrow-compression, and 1.5.5 (Spark 3.5) decodes a frame whose last bytes have been zeroed
+   * that 1.5.7 (Spark 4.x) reports as corrupt.
    */
   private def scramble(batch: CachedBatch, start: Long, length: Long): Unit = {
     val from = start + 8

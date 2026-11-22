@@ -46,6 +46,7 @@ AI-Assisted Contributions <ai_assisted_contributions>
 :hidden:
 
 Comet Plugin Overview <plugin_overview>
+Local Execution <local-execution>
 Arrow FFI <ffi>
 Timezone Handling <timezones>
 Floating-Point Semantics <floating_point>
@@ -110,6 +111,7 @@ Documentation Style Guide <style_guide>
 
 Bug Triage <bug_triage>
 Backporting <backporting>
+Upgrading DataFusion <upgrading_datafusion>
 Release Process <release_process>
 Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
