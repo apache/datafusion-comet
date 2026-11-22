@@ -1360,8 +1360,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         Nil
       }
 
-    // The shared subexpressions that can raise. Promotion wraps decimal arithmetic in
-    // CheckOverflow, which `cannotRaise` does not list, so that arithmetic is always kept.
     lazy val raising: Seq[Expression] = common.filterNot(cannotRaise)
   }
 
@@ -1377,10 +1375,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   /**
    * Whether evaluating `expr` on a row cannot raise, whatever the row holds. This fails closed:
-   * an expression is assumed to raise unless it is listed. Numeric arithmetic and casts between
-   * the types `plainCastType` lists raise only in the ANSI eval mode they carry, but some
-   * expressions raise in any mode, such as `element_at` with the index 0, the arithmetic of
-   * intervals and a date cast to a timestamp, so those stay out.
+   * an expression is assumed to raise unless it is listed. Casts between the types
+   * `plainCastType` lists and numeric addition, subtraction, multiplication and division raise
+   * only in the ANSI eval mode they carry. Integral division, remainder and `pmod` are kept to
+   * the LEGACY eval mode and to operands that are not decimals: on a zero divisor they raise in
+   * the TRY eval mode too, except a remainder on Spark 4, and a decimal quotient past 39 integral
+   * digits raises in every mode. A decimal overflow check raises where it does not return NULL. A
+   * cast Spark calls an up-cast raises only into a target `safeUpCastTarget` does not list, and a
+   * cast of a literal only if evaluating it does. Some expressions raise in any mode, such as
+   * `element_at` with the index 0, arithmetic that returns an interval, a date cast to a
+   * timestamp and a string `concat` past the size limit, so those stay out.
    */
   private def cannotRaise(expr: Expression): Boolean =
     !expr.exists(!nodeCannotRaise(_))
@@ -1388,23 +1392,37 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private def nodeCannotRaise(node: Expression): Boolean = {
     def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
       mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    def legacyArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode == EvalMode.LEGACY && a.dataType.isInstanceOf[NumericType] &&
+        !a.children.exists(_.dataType.isInstanceOf[DecimalType])
     node match {
       case _: Literal | _: AttributeReference | _: BoundReference | _: GetStructField => true
+      case _: CreateArray | _: CreateNamedStruct | _: Murmur3Hash | _: XxHash64 => true
       case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
           _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
         true
       case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
-          _: Contains =>
+          _: Contains | _: StringTrim | _: StringTrimLeft | _: StringTrimRight =>
+        true
+      case _: Year | _: Month | _: DayOfMonth => true
+      case c: Cast if c.child.isInstanceOf[Literal] => evaluates(c)
+      // An up-cast raises in no eval mode, except into a target outside the allow-list
+      case c: Cast
+          if Cast.canUpCast(c.child.dataType, c.dataType) && safeUpCastTarget(c.dataType) =>
         true
       case c: Cast =>
         evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
         plainCastType(c.dataType)
+      case c: CheckOverflow => c.nullOnOverflow
       case a: Add => plainArithmetic(a, a.evalMode)
       case a: Subtract => plainArithmetic(a, a.evalMode)
       case a: Multiply => plainArithmetic(a, a.evalMode)
       case a: Divide => plainArithmetic(a, a.evalMode)
-      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
-      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => legacyArithmetic(a, a.evalMode)
+      case a: Remainder => legacyArithmetic(a, a.evalMode)
+      case a: Pmod => legacyArithmetic(a, a.evalMode)
+      case u: UnaryMinus => !u.failOnError && u.dataType.isInstanceOf[NumericType]
+      case a: Abs => !a.failOnError && a.dataType.isInstanceOf[NumericType]
       case _ => false
     }
   }
@@ -1414,14 +1432,44 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
    * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
    * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
-   * too, since a cast key can become NULL.
+   * too, since a cast key can become NULL, and so are a CHAR or VARCHAR, whose length a cast
+   * checks.
    */
   private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: CharType | _: VarcharType => false
     case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
     case ArrayType(elementType, _) => plainCastType(elementType)
     case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
     case _ => false
   }
+
+  /**
+   * Whether an up-cast to `dataType` cannot raise in any eval mode. This fails closed by listing
+   * the target types known to be safe. A timestamp is left out: widening a date to one overflows
+   * `Math.multiplyExact` for a date past about the year 294247. So are a CHAR or VARCHAR, whose
+   * length a cast checks.
+   */
+  private def safeUpCastTarget(dataType: DataType): Boolean = dataType match {
+    case _: CharType | _: VarcharType => false
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType | DateType |
+        _: DayTimeIntervalType | _: YearMonthIntervalType =>
+      true
+    case ArrayType(elementType, _) => safeUpCastTarget(elementType)
+    case MapType(keyType, valueType, _) =>
+      safeUpCastTarget(keyType) && safeUpCastTarget(valueType)
+    case StructType(fields) => fields.forall(f => safeUpCastTarget(f.dataType))
+    case _ => false
+  }
+
+  /** Whether evaluating `expr`, which has no input, succeeds. */
+  private def evaluates(expr: Expression): Boolean =
+    try {
+      expr.eval()
+      true
+    } catch {
+      // Failing here, even for want of a time zone, counts as able to fail
+      case NonFatal(_) => false
+    }
 
   /**
    * Runs `f`, which serializes an operator whose expressions are `expressions`. Code that
@@ -1492,80 +1540,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Skipping what cannot fail is unobservable, and subexpression elimination never shares a
     // leaf, such as a column or a literal
-    skippable.forall(e => e.isInstanceOf[LeafExpression] || !canFail(e)) ||
+    skippable.forall(e => e.isInstanceOf[LeafExpression] || cannotRaise(e)) ||
     sharedSubexpressions.value.exists { s =>
       !holdsSharedSubexpression(skippable, s.raising)
     }
-  }
-
-  private def canFail(expr: Expression): Boolean = expr.exists(canFailNode)
-
-  /**
-   * Whether evaluating the node `expr`, apart from its children, may raise an error.
-   * Conservative: only columns, literals, comparisons, NULL checks, boolean logic, conditionals,
-   * array and struct constructors, struct field access, hashes, case conversion, trim, substring
-   * and length of a string, the year, month and day of a date, widening casts other than to a
-   * timestamp, casts of a literal that evaluate, decimal overflow checks that return NULL, and
-   * casts and numeric arithmetic that return NULL instead of failing cannot. A string `concat`
-   * can exceed the size limit, so it is not on the list.
-   */
-  private def canFailNode(expr: Expression): Boolean = expr match {
-    case _: Attribute | _: BoundReference | _: Literal => false
-    case _: CreateArray | _: CreateNamedStruct => false
-    case _: EqualTo | _: EqualNullSafe | _: LessThan | _: LessThanOrEqual | _: GreaterThan |
-        _: GreaterThanOrEqual =>
-      false
-    case _: IsNull | _: IsNotNull | _: And | _: Or | _: Not => false
-    case _: Coalesce | _: If | _: CaseWhen | _: GetStructField | _: Murmur3Hash | _: XxHash64 =>
-      false
-    case _: Lower | _: Upper | _: Substring | _: StringTrim | _: StringTrimLeft |
-        _: StringTrimRight | _: Length | _: Year | _: Month | _: DayOfMonth =>
-      false
-    case c: Cast if c.child.isInstanceOf[Literal] => !evaluates(c)
-    // Widening a date or timestamp to a timestamp overflows on extreme values in any mode
-    case c: Cast if Cast.canUpCast(c.child.dataType, c.dataType) => holdsTimestamp(c.dataType)
-    case c: Cast =>
-      c.evalMode == EvalMode.ANSI || !castsWithoutFailing(c.child.dataType) ||
-      !castsWithoutFailing(c.dataType)
-    case c: CheckOverflow => !c.nullOnOverflow
-    // Each class's own `evalMode`, as `BinaryArithmetic.evalMode` is protected before Spark 4.1
-    case a: Add => arithmeticCanFail(a, a.evalMode)
-    case a: Subtract => arithmeticCanFail(a, a.evalMode)
-    case a: Multiply => arithmeticCanFail(a, a.evalMode)
-    case a: Divide => arithmeticCanFail(a, a.evalMode)
-    case a: IntegralDivide => arithmeticCanFail(a, a.evalMode)
-    case a: Remainder => arithmeticCanFail(a, a.evalMode)
-    case a: Pmod => arithmeticCanFail(a, a.evalMode)
-    case u: UnaryMinus => u.failOnError || !u.dataType.isInstanceOf[NumericType]
-    case a: Abs => a.failOnError || !a.dataType.isInstanceOf[NumericType]
-    case _ => true
-  }
-
-  private def arithmeticCanFail(expr: Expression, evalMode: EvalMode.Value): Boolean =
-    evalMode == EvalMode.ANSI || !expr.dataType.isInstanceOf[NumericType]
-
-  private def holdsTimestamp(dataType: DataType): Boolean = dataType match {
-    case TimestampType | TimestampNTZType => true
-    case a: ArrayType => holdsTimestamp(a.elementType)
-    case m: MapType => holdsTimestamp(m.keyType) || holdsTimestamp(m.valueType)
-    case s: StructType => s.fields.exists(f => holdsTimestamp(f.dataType))
-    case _ => false
-  }
-
-  /** Whether evaluating `expr`, which has no input, succeeds. */
-  private def evaluates(expr: Expression): Boolean =
-    try {
-      expr.eval()
-      true
-    } catch {
-      // Failing here, even for want of a time zone, counts as able to fail
-      case NonFatal(_) => false
-    }
-
-  /** Types a cast outside ANSI mode converts between without failing, returning NULL instead. */
-  private def castsWithoutFailing(dataType: DataType): Boolean = dataType match {
-    case _: NumericType | _: StringType | BooleanType => true
-    case _ => false
   }
 
   /**
@@ -1598,7 +1576,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         holdsSharedSubexpression(
           skippable,
           s.common,
-          e => canFail(e) && !repeated.exists(_.semanticEquals(e)))
+          e => !cannotRaise(e) && !repeated.exists(_.semanticEquals(e)))
       }
     }
 

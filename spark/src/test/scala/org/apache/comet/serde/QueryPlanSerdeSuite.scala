@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, Concat, CreateNamedStruct, Divide, ElementAt, EqualTo, EvalMode, Expression, GetStructField, If, In, Length, Literal, Lower, MakeDate, Not, Slice, Substring, UnaryMinus, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CheckOverflow, Concat, CreateArray, CreateNamedStruct, DayOfMonth, Divide, ElementAt, EqualTo, EvalMode, Expression, GetStructField, If, In, IntegralDivide, IsNull, Length, Literal, Lower, MakeDate, Month, Murmur3Hash, Not, Pmod, Remainder, Slice, StartsWith, StringTrim, StringTrimLeft, StringTrimRight, Substring, UnaryMinus, UnsafeProjection, XxHash64, Year}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -32,7 +32,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsSharedSubexpression, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -287,7 +287,7 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     }
   }
 
-  test("canFail follows eval mode and the allowlist") {
+  test("cannotRaise follows eval mode and the allowlist") {
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val text = AttributeReference("s", StringType)()
     val value = AttributeReference("i", IntegerType)()
@@ -324,6 +324,100 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     // A literal cast fails only if evaluating it fails
     assert(canSkipEvaluation(Seq(Cast(Literal(0), DecimalType(1, 0), None, ansiEnabled = true))))
     assert(!canSkipEvaluation(Seq(Cast(Literal("x"), IntegerType, None, ansiEnabled = true))))
+  }
+
+  test("cannotRaise lists each node it clears and keeps each guard") {
+    val text = AttributeReference("s", StringType)()
+    val value = AttributeReference("i", IntegerType)()
+    val long = AttributeReference("l", LongType)()
+    val decimal = AttributeReference("d", DecimalType(10, 2))()
+    val date = AttributeReference("dt", DateType)()
+    val ts = AttributeReference("ts", TimestampType)()
+    val interval = AttributeReference("di", DayTimeIntervalType())()
+    val nulls = AttributeReference("n", NullType)()
+    val wide = AttributeReference("w", DecimalType(38, 0))()
+    val fraction = AttributeReference("f", DecimalType(18, 18))()
+    def ansiCast(child: Expression, to: DataType): Cast =
+      Cast(child, to, Some("UTC"), EvalMode.ANSI)
+    def legacyCast(child: Expression, to: DataType): Cast =
+      Cast(child, to, Some("UTC"), EvalMode.LEGACY)
+    val cannotRaise = Seq(
+      CreateArray(Seq(value, value)),
+      CreateNamedStruct(Seq(Literal("f"), value)),
+      new Murmur3Hash(Seq(value)),
+      new XxHash64(Seq(value)),
+      StringTrim(text),
+      StringTrimLeft(text),
+      StringTrimRight(text),
+      Year(date),
+      Month(date),
+      DayOfMonth(date),
+      Pmod(value, value, EvalMode.LEGACY),
+      IntegralDivide(long, long, EvalMode.LEGACY),
+      Remainder(value, value, EvalMode.LEGACY),
+      Abs(value, failOnError = false),
+      UnaryMinus(value, failOnError = false),
+      CheckOverflow(decimal, DecimalType(10, 2), nullOnOverflow = true),
+      ansiCast(
+        AttributeReference("mi", MapType(IntegerType, IntegerType))(),
+        MapType(LongType, LongType)),
+      ansiCast(ts, LongType),
+      ansiCast(date, StringType),
+      ansiCast(nulls, DateType),
+      ansiCast(nulls, BooleanType),
+      ansiCast(nulls, BinaryType),
+      ansiCast(
+        AttributeReference("dd", DayTimeIntervalType(DayTimeIntervalType.DAY))(),
+        DayTimeIntervalType()))
+    val canRaise = Seq(
+      Pmod(value, value, EvalMode.ANSI),
+      Pmod(value, value, EvalMode.TRY),
+      IntegralDivide(long, long, EvalMode.TRY),
+      Remainder(value, value, EvalMode.TRY),
+      // The integral part of the quotient exceeds the 39 digits Spark's `Decimal` divides to
+      Remainder(wide, fraction, EvalMode.LEGACY),
+      Pmod(wide, fraction, EvalMode.LEGACY),
+      IntegralDivide(wide, fraction, EvalMode.LEGACY),
+      Abs(value, failOnError = true),
+      UnaryMinus(interval, failOnError = false),
+      Abs(interval, failOnError = false),
+      CheckOverflow(decimal, DecimalType(10, 2), nullOnOverflow = false),
+      ansiCast(
+        AttributeReference("md", MapType(IntegerType, DateType))(),
+        MapType(IntegerType, TimestampType)),
+      ansiCast(
+        AttributeReference("dm", MapType(DateType, IntegerType))(),
+        MapType(TimestampType, IntegerType)),
+      legacyCast(
+        AttributeReference("sd", StructType(Seq(StructField("f", DateType))))(),
+        StructType(Seq(StructField("f", TimestampType)))),
+      ansiCast(long, IntegerType),
+      legacyCast(text, VarcharType(1)),
+      ansiCast(nulls, VarcharType(1)))
+    assert(cannotRaise.filterNot(e => canSkipEvaluation(Seq(e))).isEmpty)
+    assert(canRaise.filter(e => canSkipEvaluation(Seq(e))).isEmpty)
+  }
+
+  test("canSkipEvaluation and the dispatcher agree on which shared subexpressions can raise") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val decimal = AttributeReference("d", DecimalType(10, 2))()
+    val failing = Cast(text, IntegerType, None, ansiEnabled = true)
+    // Whether the key of a lookup can be skipped, and whether the dispatcher declines the lookup,
+    // when the key holds `shared`, which the operator also evaluates on its own
+    def skipped(shared: Expression): (Boolean, Boolean) = {
+      val key = If(shared, failing, Literal(1))
+      val contains = ArrayContains(array, key)
+      withSharedSubexpressions(Seq(contains, shared), certain = true) {
+        (canSkipEvaluation(Seq(key)), skipsSharedSubexpression(contains))
+      }
+    }
+    val prefix = StartsWith(text, Literal("a"))
+    val widened = Cast(decimal, DecimalType(12, 2), None, ansiEnabled = true)
+    val legacySum = Add(AttributeReference("a", DecimalType(38, 0))(), decimal, EvalMode.LEGACY)
+    val subexpressions =
+      Seq(prefix, EqualTo(widened, Literal(Decimal(0), DecimalType(12, 2))), IsNull(legacySum))
+    assert(subexpressions.map(skipped) == Seq.fill(subexpressions.length)((true, false)))
   }
 
   test("an uncertain scope still skips a shared subexpression that cannot raise") {
