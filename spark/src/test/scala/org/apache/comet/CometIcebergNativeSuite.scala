@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.IcebergScanPlanData.{fileScanTaskCount, partitionPools, partitionScans, storedPools}
+import org.apache.comet.IcebergScanPlanData.{distinctResiduals, fileScanTaskCount, partitionPools, partitionScans, storedPools}
 import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.rules.CometScanRule
@@ -5031,8 +5031,7 @@ class CometIcebergNativeSuite
               val (_, cometPlan) = checkSparkAnswer(s"SELECT id FROM $table WHERE $predicate")
               val scans = collectIcebergNativeScans(cometPlan)
               assert(scans.length == 1, s"$cometPlan")
-              val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
-              assert(common.getResidualPoolCount == (if (pushed) 1 else 0), s"$predicate")
+              assert(distinctResiduals(scans.head).size == (if (pushed) 1 else 0), s"$predicate")
             }
           }
         } finally {
