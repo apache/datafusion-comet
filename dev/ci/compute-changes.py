@@ -675,10 +675,11 @@ def release_branch_allows(job, event):
 
 def compute(files, event):
     """Return {job: bool}, folding the path filter and the event policy."""
-    # A sync of a fork's main adds nothing to upstream, so it has nothing to
-    # test, but only caches written on the fork's main reach its branches. Run
-    # the Linux build's cache refresh, as a push to main does upstream, or every
-    # fork branch run downloads each Maven dependency from Central.
+    # A push to a fork's main that adds nothing to upstream, such as a sync, has
+    # nothing to test, but only caches written on the fork's main reach its
+    # branches. Run the Linux build's cache refresh, as a push to main does
+    # upstream, or every fork branch run downloads each Maven dependency from
+    # Central.
     if not files and is_fork_push(event) and event.get("ref") == "refs/heads/main":
         return {name: name == "build_linux" for name in FILTERS}
     return {

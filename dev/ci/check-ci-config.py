@@ -541,6 +541,10 @@ COMPUTE_CASES = [
     # Only a push refreshes, and only to main itself.
     ({"name": "schedule", "repository": FORK, "ref": "refs/heads/main"}, [], set()),
     ({"name": "push", "repository": FORK, "ref": "refs/heads/fix/main"}, [], set()),
+    # A push with a missing or empty ref never refreshes. event_from_env gives
+    # an empty one when REF is unset.
+    ({"name": "push", "repository": FORK}, [], set()),
+    ({"name": "push", "repository": FORK, "ref": ""}, [], set()),
 ]
 
 
