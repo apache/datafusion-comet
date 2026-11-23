@@ -84,9 +84,9 @@ use datafusion::{
 };
 use datafusion_comet_operators::{range_exec, range_sort_expr, ExpandExec, SampleExec};
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    Subquery, ToCsv,
+    create_comet_physical_fun_with_config, create_comet_physical_fun_with_eval_mode,
+    BinaryOutputStyle, BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode,
+    SparkArraysZipFunc, Subquery, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -136,7 +136,7 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 pub type PlanCreationResult =
@@ -2282,11 +2282,23 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = create_comet_physical_fun(
+        static LEGACY_CONFIG: LazyLock<Arc<ConfigOptions>> =
+            LazyLock::new(|| Arc::new(ConfigOptions::default()));
+        static ANSI_CONFIG: LazyLock<Arc<ConfigOptions>> = LazyLock::new(|| {
+            let mut config = ConfigOptions::default();
+            config.execution.enable_ansi_mode = true;
+            Arc::new(config)
+        });
+        let config = if expr.fail_on_error {
+            Arc::clone(&ANSI_CONFIG)
+        } else {
+            Arc::clone(&LEGACY_CONFIG)
+        };
+        let fun_expr = create_comet_physical_fun_with_config(
             fun_name,
             data_type.clone(),
             &self.session_ctx.state(),
-            Some(expr.fail_on_error),
+            &config,
         )?;
 
         let args = args
@@ -2313,7 +2325,7 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
-            Arc::new(ConfigOptions::default()),
+            config,
         ));
         let scalar_expr = if expr.null_short_circuit {
             NullShortCircuit::wrap(scalar_expr, &input_schema)?

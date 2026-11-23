@@ -92,11 +92,10 @@ classOf[Cos] -> CometScalarFunction("cos")
 `CometScalarFunction` uses `scalarFunctionExprToProto`, which always serializes
 `fail_on_error=false`.
 
-On the native side, `create_comet_physical_fun` delegates to
-`create_comet_physical_fun_with_eval_mode`, whose registry catch-all **fails
-closed**. If `fail_on_error=Some(true)` reaches a UDF that can only be resolved
-from the function registry—including functions registered by
-`datafusion-spark`—Comet returns an error instead of silently ignoring the flag.
+The Rust planner sets `ConfigOptions.execution.enable_ansi_mode` from
+`ScalarFunc.fail_on_error`. The resolver accepts `fail_on_error=true` for a
+registry function only when it recognizes an ANSI-aware implementation and the
+caller supplies the execution config.
 
 Follow these rules when wiring scalar expressions:
 
@@ -113,10 +112,9 @@ Follow these rules when wiring scalar expressions:
 
 - If a function must receive `fail_on_error` through the proto, use
   `scalarFunctionExprToProtoWithReturnType(..., failOnError, ...)`. The function
-  must also have a dedicated match arm in
-  `create_comet_physical_fun_with_eval_mode` that actually consumes the flag;
-  it must not fall through to registry lookup. Existing native consumers
-  include `make_decimal`, `make_date`, `make_time`, and `next_day`.
+  must honor the flag in its Rust implementation. For a registry function, verify
+  that it reads ANSI mode from `ConfigOptions` and add its implementation type
+  to the resolver’s check.
 
 #### When to set the return type explicitly
 

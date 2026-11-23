@@ -41,12 +41,14 @@ use crate::{
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use datafusion::config::ConfigOptions;
 use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
     ScalarFunctionArgs, ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature,
     Volatility,
 };
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_spark::function::string::elt::SparkElt;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -122,7 +124,41 @@ pub fn create_comet_physical_fun_with_eval_mode(
     fail_on_error: Option<bool>,
     eval_mode: EvalMode,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
-    let fail_on_error = fail_on_error.unwrap_or(false);
+    resolve_comet_physical_fun(
+        fun_name,
+        data_type,
+        registry,
+        fail_on_error.unwrap_or(false),
+        eval_mode,
+        false,
+    )
+}
+
+/// Resolve a scalar function that will use the supplied execution config.
+pub fn create_comet_physical_fun_with_config(
+    fun_name: &str,
+    data_type: DataType,
+    registry: &dyn FunctionRegistry,
+    config: &ConfigOptions,
+) -> Result<Arc<ScalarUDF>, DataFusionError> {
+    resolve_comet_physical_fun(
+        fun_name,
+        data_type,
+        registry,
+        config.execution.enable_ansi_mode,
+        EvalMode::Legacy,
+        true,
+    )
+}
+
+fn resolve_comet_physical_fun(
+    fun_name: &str,
+    data_type: DataType,
+    registry: &dyn FunctionRegistry,
+    fail_on_error: bool,
+    eval_mode: EvalMode,
+    has_execution_config: bool,
+) -> Result<Arc<ScalarUDF>, DataFusionError> {
     match fun_name {
         "spark_concat_ws" => Ok(Arc::new(ScalarUDF::new_from_impl(
             crate::string_funcs::CometConcatWs::default(),
@@ -326,18 +362,25 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "greatest" | "least" if SparkGreatestLeast::handles(&data_type) => Ok(Arc::new(
             ScalarUDF::new_from_impl(SparkGreatestLeast::new(fun_name == "greatest")),
         )),
-        // Registry UDFs (including datafusion-spark) cannot receive fail_on_error.
-        _ if fail_on_error => Err(DataFusionError::Execution(format!(
-            "Function '{fun_name}' is resolved from the UDF registry and cannot \
-             honor fail_on_error=true. Use a name-based ANSI/try variant \
-             (e.g. parse_url / try_parse_url) or a dedicated match arm that \
-             consumes the flag."
-        ))),
-        _ => registry.udf(fun_name).map_err(|e| {
-            DataFusionError::Execution(format!(
-                "Function {fun_name} not found in the registry: {e}",
-            ))
-        }),
+        _ => {
+            let udf = registry.udf(fun_name);
+            if fail_on_error
+                && !(has_execution_config
+                    && udf.as_ref().is_ok_and(|udf| udf.inner().is::<SparkElt>()))
+            {
+                return Err(DataFusionError::Execution(format!(
+                    "Function '{fun_name}' is resolved from the UDF registry and cannot \
+                     honor fail_on_error=true. Use a name-based ANSI/try variant \
+                     (e.g. parse_url / try_parse_url) or a dedicated match arm that \
+                     consumes the flag."
+                )));
+            }
+            udf.map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "Function {fun_name} not found in the registry: {e}",
+                ))
+            })
+        }
     }
 }
 
