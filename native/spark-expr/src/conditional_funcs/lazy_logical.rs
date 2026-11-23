@@ -17,9 +17,10 @@
 
 use super::case_when::cannot_fail;
 use super::null_short_circuit::{evaluate_projected, project};
+use crate::float_semantics::is_nested_with_float_leaf;
 use crate::{
-    spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckedBinaryExpr, FloatOperands, IfExpr,
-    NormalizeNaNAndZero, SparkComparison, WideDecimalBinaryExpr,
+    spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckedBinaryExpr, FloatOperands,
+    GetStructField, IfExpr, NormalizeNaNAndZero, SparkComparison, WideDecimalBinaryExpr,
 };
 use arrow::array::{Array, BooleanArray};
 use arrow::compute::{and_kleene, or_kleene};
@@ -105,17 +106,28 @@ impl LazyLogical {
 /// Spark's `In` returns true at the first candidate that equals the value, and NULL if none does
 /// and one is NULL, which is that of `value = c1 OR value = c2 OR ...`. A candidate that can fail
 /// is then evaluated only for the rows that the ones before it have not matched, and no candidate
-/// is evaluated for a row whose value is NULL, which Spark returns NULL for at once. The value is
-/// evaluated once per term, so this requires it to be deterministic.
-/// This returns `None` when no candidate after the first can fail, when the value is not
-/// deterministic, and when a candidate has another type than the value.
+/// is evaluated at all for a row whose value is NULL, which Spark returns NULL for at once: the
+/// first candidate is assumed always evaluated only when the value cannot be NULL. The value is
+/// evaluated once per term, so this requires it to be a cheap expression: a column, a struct
+/// field, a literal, or arithmetic over them, however it can fail.
+/// This returns `None` when no candidate after the first can fail (the first included when the
+/// value can be NULL), when the value is not one of those cheap expressions, when a candidate has
+/// another type than the value, and when the value is a list or struct with a float leaf, which
+/// has its own membership check (`spark_in_list`'s `NestedPredicate`) that this chain would
+/// otherwise bypass along with the constant-folding and dynamic-candidate handling it does.
 pub fn lazy_in_list(
     value: &Arc<dyn PhysicalExpr>,
     candidates: &[Arc<dyn PhysicalExpr>],
     negated: bool,
     schema: &Schema,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
-    if candidates.iter().skip(1).all(|c| cannot_fail(c, schema)) || !is_deterministic(value) {
+    if is_nested_with_float_leaf(&value.data_type(schema)?) {
+        return Ok(None);
+    }
+    let nullable = value.nullable(schema)?;
+    // Spark evaluates no candidate for a row whose value is NULL
+    let mut skipped = candidates.iter().skip(usize::from(!nullable));
+    if skipped.all(|c| cannot_fail(c, schema)) || !is_cheap(value) {
         return Ok(None);
     }
     let value_type = value.data_type(schema)?;
@@ -149,7 +161,7 @@ pub fn lazy_in_list(
         });
     }
     let mut chain = balanced_or(&terms, schema)?;
-    if value.nullable(schema)? {
+    if nullable {
         let value_is_set: Arc<dyn PhysicalExpr> = Arc::new(IsNotNullExpr::new(Arc::clone(value)));
         chain = Arc::new(CaseWhenExpr::try_new(vec![(value_is_set, chain)], None)?);
     }
@@ -195,10 +207,30 @@ fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
         || expr.is::<IsNotNullExpr>()
         || expr.is::<CaseWhenExpr>()
         || expr.is::<IfExpr>()
+        // A field of a struct is deterministic, the same as `infallible` in `case_when.rs`
+        || expr.is::<GetStructField>()
         || expr
             .downcast_ref::<ScalarFunctionExpr>()
             .is_some_and(|f| f.fun().signature().volatility == Volatility::Immutable);
     node_is_deterministic && expr.children().into_iter().all(is_deterministic)
+}
+
+/// Whether `expr` is cheap enough for [`lazy_in_list`] to evaluate once per term rather than
+/// once: a column, a struct field, a literal, or arithmetic over them, however it can fail.
+///
+/// [`is_deterministic`] alone would also admit a `Cast` that parses a string and any immutable
+/// scalar function, either of which can cost much more than reading or computing from a column,
+/// and the chain would pay that cost once per term instead of the once the eager `InListExpr` it
+/// replaces pays.
+fn is_cheap(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    let node_is_cheap = expr.is::<Column>()
+        || expr.is::<LambdaVariable>()
+        || expr.is::<Literal>()
+        || expr.is::<GetStructField>()
+        || expr.is::<BinaryExpr>()
+        || expr.is::<CheckedBinaryExpr>()
+        || expr.is::<WideDecimalBinaryExpr>();
+    node_is_cheap && expr.children().into_iter().all(is_cheap)
 }
 
 impl Hash for LazyLogical {
@@ -301,7 +333,7 @@ impl PhysicalExpr for LazyLogical {
 mod tests {
     use super::*;
     use crate::{Cast, EvalMode, SparkCastOptions};
-    use arrow::array::{ArrayRef, Float64Array, Int32Array, StringArray};
+    use arrow::array::{ArrayRef, Float64Array, Int32Array, StringArray, StructArray};
     use arrow::datatypes::Field;
     use datafusion::common::ScalarValue;
     use datafusion::physical_expr::expressions::{col, lit, Literal};
@@ -469,10 +501,11 @@ mod tests {
 
     #[test]
     fn in_list_evaluates_a_candidate_for_unmatched_rows() -> Result<()> {
-        // v IN (0, CAST(s AS INT)): the second candidate is skipped where v = 0
+        // v IN (0, CAST(s AS INT)): the second candidate is skipped where v = 0, and also where
+        // v is NULL, so CAST(s AS INT) never runs on a 'bad' string on either of those rows
         let batch = batch(
             vec![Some(0), Some(5), None, Some(7)],
-            vec!["bad", "5", "1", "8"],
+            vec!["bad", "5", "bad", "8"],
         );
         let schema = batch.schema();
         let candidates = vec![lit(0), ansi_cast(col("s", &schema)?, DataType::Int32)];
@@ -491,12 +524,14 @@ mod tests {
     }
 
     #[test]
-    fn in_list_skips_candidates_for_a_null_value() -> Result<()> {
-        // Spark returns NULL for a NULL value without evaluating CAST(s AS INT)
-        let batch = batch(vec![Some(0), None, Some(2)], vec!["bad", "bad", "2"]);
+    fn in_list_skips_every_candidate_for_a_null_value_even_the_first() -> Result<()> {
+        // v IN (CAST(s AS INT), 1): the only candidate that can fail is the first one, so
+        // `skip(1)` used to see no candidate left to protect and fall back to the eager list,
+        // which cast a 'bad' string on the row Spark never evaluates it for because v is NULL
+        let batch = batch(vec![Some(0), None, Some(2)], vec!["0", "bad", "2"]);
         let schema = batch.schema();
-        let candidates = vec![lit(0), ansi_cast(col("s", &schema)?, DataType::Int32)];
         let value = col("v", &schema)?;
+        let candidates = vec![ansi_cast(col("s", &schema)?, DataType::Int32), lit(1)];
         let expr = crate::spark_in_list(Arc::clone(&value), candidates.clone(), false, &schema)?;
         assert_eq!(evaluate(&expr, &batch)?, vec![Some(true), None, Some(true)]);
         let expr = crate::spark_in_list(value, candidates, true, &schema)?;
@@ -508,18 +543,68 @@ mod tests {
     }
 
     #[test]
-    fn in_list_of_a_checked_arithmetic_value() -> Result<()> {
-        // (v + 1) IN (1, CAST(s AS INT)), where v + 1 is planned as a CheckedBinaryExpr
-        let batch = batch(vec![Some(0), None, Some(2)], vec!["bad", "bad", "2"]);
+    fn in_list_of_a_struct_field_value() -> Result<()> {
+        // s.x IN (0, CAST(t AS INT)): row 0 matches the first candidate, so a correct lazy chain
+        // never evaluates CAST(t) there, even though `t` holds a string CAST cannot parse.
+        // `is_deterministic` used to reject a `GetStructField` value, which fell back to the
+        // eager list and evaluated CAST(t) for every row instead.
+        let x = Int32Array::from(vec![0, 5]);
+        let s = StructArray::from(vec![(
+            Arc::new(Field::new("x", DataType::Int32, false)),
+            Arc::new(x) as ArrayRef,
+        )]);
+        let t = StringArray::from(vec!["bad", "5"]);
+        let schema = Schema::new(vec![
+            Field::new("s", s.data_type().clone(), false),
+            Field::new("t", DataType::Utf8, false),
+        ]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(s), Arc::new(t)])?;
         let schema = batch.schema();
-        let plus_one = Arc::new(BinaryExpr::new(col("v", &schema)?, Operator::Plus, lit(1)));
-        let value: Arc<dyn PhysicalExpr> = Arc::new(CheckedBinaryExpr::new(plus_one, None));
-        let candidates = vec![lit(1), ansi_cast(col("s", &schema)?, DataType::Int32)];
+        let value: Arc<dyn PhysicalExpr> = Arc::new(GetStructField::new(col("s", &schema)?, 0));
+        let candidates = vec![lit(0), ansi_cast(col("t", &schema)?, DataType::Int32)];
         let expr = crate::spark_in_list(value, candidates, false, &schema)?;
-        assert_eq!(
-            evaluate(&expr, &batch)?,
-            vec![Some(true), None, Some(false)]
-        );
+        assert_eq!(evaluate(&expr, &batch)?, vec![Some(true), Some(true)]);
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_of_a_cast_value_falls_back_to_the_eager_list() -> Result<()> {
+        // CAST(s AS INT) IN (0, 1): the value is a Cast that parses a string, which is
+        // deterministic but not cheap (see `is_cheap_accepts_...`), so lazy_in_list declines it
+        // rather than evaluating the cast once per term, and the eager InListExpr runs it once
+        // instead, exactly as it did before this PR's `is_deterministic` gate existed
+        let batch = batch(vec![Some(0), Some(1)], vec!["0", "1"]);
+        let schema = batch.schema();
+        let value: Arc<dyn PhysicalExpr> = ansi_cast(col("s", &schema)?, DataType::Int32);
+        let candidates = vec![lit(0), lit(1)];
+        let expr = crate::spark_in_list(value, candidates, false, &schema)?;
+        assert!(expr.is::<datafusion::physical_expr::expressions::InListExpr>());
+        assert_eq!(evaluate(&expr, &batch)?, vec![Some(true), Some(true)]);
+        Ok(())
+    }
+
+    #[test]
+    fn is_cheap_accepts_columns_struct_fields_and_arithmetic_but_not_parsing_or_functions(
+    ) -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("v", DataType::Int32, true),
+            Field::new("s", DataType::Utf8, false),
+        ]);
+        let v = col("v", &schema)?;
+        // A column, a struct field, and checked arithmetic over them are cheap
+        assert!(is_cheap(&v));
+        assert!(is_cheap(
+            &(Arc::new(GetStructField::new(Arc::clone(&v), 0)) as _)
+        ));
+        let plus_one = Arc::new(BinaryExpr::new(Arc::clone(&v), Operator::Plus, lit(1)));
+        assert!(is_cheap(&(Arc::clone(&plus_one) as Arc<dyn PhysicalExpr>)));
+        assert!(is_cheap(
+            &(Arc::new(CheckedBinaryExpr::new(plus_one, None)) as _)
+        ));
+        // A Cast that parses a string is deterministic, but not cheap
+        let parsed = ansi_cast(col("s", &schema)?, DataType::Int32);
+        assert!(is_deterministic(&parsed));
+        assert!(!is_cheap(&parsed));
         Ok(())
     }
 
