@@ -452,9 +452,10 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     // bounds skip the arithmetic and stay native.
     //
     // For DATE, Spark computes the bound with DateAdd, an Int addition that
-    // wraps silently on overflow. Over dates in Spark's supported range the two
-    // only disagree when the offset is large enough to wrap, so fall back for
-    // those offsets.
+    // wraps silently on overflow, so fall back for offsets large enough to
+    // wrap. Arrow's Date32 arithmetic already overflows once the bound leaves
+    // chrono's date range, about year 262142, so a smaller offset can still
+    // take NULL keys into the frame.
     //
     // For DECIMAL, Spark's DecimalAddNoOverflowCheck keeps the exact bound,
     // while DataFusion adds in Decimal128 and overflows past i128.
