@@ -129,6 +129,11 @@ class CometNativeCastSuite
   }
 
   test("non-collect LIMIT preserves projection input caps with AQE") {
+    // Spark 3.5 puts no LocalLimit below the shuffle for LIMIT with OFFSET, so Spark itself
+    // evaluates the projection on every row.
+    assume(
+      CometSparkSessionExtensions.isSpark40Plus,
+      "Spark 3.5 plans LIMIT with OFFSET without a LocalLimit")
     withTempPath { path =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
