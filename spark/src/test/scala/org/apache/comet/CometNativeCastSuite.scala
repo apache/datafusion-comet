@@ -190,7 +190,12 @@ class CometNativeCastSuite
         val localLimit = collect(plan) {
           case p: CometLocalLimitExec if p.child.isInstanceOf[CometProjectExec] => p
         }.head
-        assert(localLimit.executeColumnar().getNumPartitions == 2)
+        // Each partition starts with a valid row, followed by an invalid one.
+        val rowsPerPartition = localLimit
+          .executeColumnar()
+          .mapPartitions(batches => Iterator(batches.map(_.numRows()).sum))
+          .collect()
+        assert(rowsPerPartition.toSeq == Seq(1, 1))
       }
     }
   }
