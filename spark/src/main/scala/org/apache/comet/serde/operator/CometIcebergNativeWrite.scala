@@ -565,6 +565,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
+    requireNativeSupportedCompressionCodec,
     requireNativeSupportedCompressionLevel,
     requireLoadableBrotliCodec,
     requireOnlyVettedParquetWriteProperties,
@@ -764,11 +765,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .map { case (k, _) => s"$k=true: bloom filters unsupported" }
   }
 
+  // Compared exactly: Iceberg 1.11 rejects `V1` ("must be v1 or v2"), so a trimmed or
+  // lowercased match would write natively a table whose iceberg-java write fails. Earlier
+  // versions ignore the property and always write v1 pages, so there a fallback only gives up
+  // a native write that would have been safe.
   private val requireParquetPageVersionDefault: TriggerRule = ctx => {
     val key = PropertyKeys.ParquetPageVersion
     ctx.properties
       .get(key)
-      .filter(_.trim.toLowerCase(Locale.ROOT) != PropertyKeys.ParquetPageVersionDefault)
+      .filter(_ != PropertyKeys.ParquetPageVersionDefault)
       .map(v => s"$key=$v unsupported")
   }
 
@@ -776,6 +781,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // ParquetFormatModel), and requireSupportedColumnTypes declines a `variant` column at any depth.
   // Spark 4.x on Iceberg 1.11 resolves `write.parquet.shred-variants` into every Parquet write, so
   // gating it would make every write fall back in a session that turns shredding on.
+
+  // iceberg-java resolves the codec name with `valueOf(name.toUpperCase(Locale.ENGLISH))`, so it
+  // rejects `none`, a name with stray whitespace and a typo. A native write must not succeed
+  // where that write fails, so those fall back and fail as they do without Comet.
+  private val requireNativeSupportedCompressionCodec: TriggerRule = ctx =>
+    IcebergWriteProtoTranslation.compressionCodecRejection(ctx.properties)
 
   // iceberg-java never validates the level -- the raw string flows into a codec-specific
   // parquet-mr writer property -- while parquet-rs enforces per-codec ranges when the native
@@ -1236,7 +1247,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       default: Int,
       reason: String): TriggerRule = ctx =>
     ctx.properties.get(key).flatMap { raw =>
-      scala.util.Try(raw.trim.toInt).toOption match {
+      // `Integer.parseInt` on the raw value, as iceberg-java does: ' 100' fails there.
+      scala.util.Try(java.lang.Integer.parseInt(raw)).toOption match {
         case Some(v) if v != default => Some(s"$key=$v (default=$default; $reason)")
         case Some(_) => None
         case None => Some(s"$key=$raw is not an int ($reason)")

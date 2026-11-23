@@ -63,6 +63,7 @@ jobs:
   build-native:
     name: Build Native Library
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     outputs:
       shard-matrix: ${{ steps.shards.outputs.matrix }}
       shard-count: ${{ steps.shards.outputs.count }}
@@ -126,6 +127,7 @@ jobs:
       matrix: ${{ fromJSON(needs.build-native.outputs.shard-matrix) }}
     name: iceberg-spark/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}/shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
       image: amd64/rust
     env:
@@ -142,6 +144,19 @@ jobs:
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
+      # Restore only: main saves these entries. `spark-sql-` (setup-spark-builder)
+      # is the fallback when `java-maven-` has been evicted. See "Large caches
+      # are written on main only" in README.md.
+      - name: Restore Maven dependencies
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+            ${{ runner.os }}-spark-sql-
       - name: Build Comet
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
@@ -185,6 +200,7 @@ jobs:
     if: ${{ !cancelled() }}
     name: iceberg-spark-shard-coverage/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Download Iceberg shard inventories
@@ -208,6 +224,7 @@ jobs:
     needs: build-native
     name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
       image: amd64/rust
     env:
@@ -224,6 +241,19 @@ jobs:
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
+      # Restore only: main saves these entries. `spark-sql-` (setup-spark-builder)
+      # is the fallback when `java-maven-` has been evicted. See "Large caches
+      # are written on main only" in README.md.
+      - name: Restore Maven dependencies
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+            ${{ runner.os }}-spark-sql-
       - name: Build Comet
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
@@ -257,6 +287,7 @@ jobs:
     needs: build-native
     name: iceberg-spark-runtime/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: amd64/rust
     env:
@@ -273,6 +304,19 @@ jobs:
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
+      # Restore only: main saves these entries. `spark-sql-` (setup-spark-builder)
+      # is the fallback when `java-maven-` has been evicted. See "Large caches
+      # are written on main only" in README.md.
+      - name: Restore Maven dependencies
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+            ${{ runner.os }}-spark-sql-
       - name: Build Comet
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
