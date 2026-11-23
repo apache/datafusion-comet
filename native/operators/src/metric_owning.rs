@@ -219,6 +219,9 @@ impl<T: UnaryExec> ExecutionPlan for MetricOwningExec<T> {
         Some(self.rebuild(inner, ExecutionPlanMetricsSet::new()))
     }
 
+    // DataFusion 56 deprecates `with_preserve_order` because it no longer calls it, but the
+    // method stays on the trait, so keep forwarding it to the wrapped operator.
+    #[allow(deprecated)]
     fn with_preserve_order(&self, preserve_order: bool) -> Option<Arc<dyn ExecutionPlan>> {
         let inner = self.inner.with_preserve_order(preserve_order)?;
         let inner = inner.downcast_ref::<T>()?.clone();
@@ -359,7 +362,9 @@ mod tests {
             rewrites.push(limited);
         }
         // The memory source does not support order-preserving rewrites for either operator.
-        assert!(owner.with_preserve_order(true).is_none());
+        #[allow(deprecated)]
+        let preserved = owner.with_preserve_order(true);
+        assert!(preserved.is_none());
         for rewritten in rewrites {
             assert!(rewritten.downcast_ref::<MetricOwningExec<T>>().is_some());
             assert_eq!(rewritten.metrics().unwrap().iter().count(), 0);
