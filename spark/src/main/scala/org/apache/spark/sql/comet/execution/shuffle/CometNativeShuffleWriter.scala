@@ -156,7 +156,7 @@ class CometNativeShuffleWriter[K, V](
         shuffleId,
         unifiedPlan,
         ctx.commonByKey,
-        shuffleInputIter.planDataByKey)
+        shuffleInputIter.planDataByKey.map { case (key, data) => key -> data.bytes })
     } else {
       unifiedPlan
     }

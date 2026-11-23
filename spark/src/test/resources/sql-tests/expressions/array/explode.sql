@@ -328,7 +328,7 @@ CREATE TABLE test_explode_empty(id int, arr array<int>) USING parquet
 query
 SELECT id, explode_outer(arr) FROM test_explode_empty
 
--- ===== TIMESTAMP_NTZ (Spark 3.4+): distinct Arrow layout (no tz) from LTZ =====
+-- ===== TIMESTAMP_NTZ: distinct Arrow layout (no tz) from LTZ =====
 
 statement
 CREATE TABLE test_explode_ts_ntz(id int, arr array<timestamp_ntz>) USING parquet

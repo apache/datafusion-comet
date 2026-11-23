@@ -27,8 +27,7 @@ import org.apache.spark.sql.execution.window.WindowGroupLimitExec
 import org.apache.comet.serde.OperatorOuterClass.RankLikeFunction
 
 /**
- * Spark 3.5+ shim exposing `WindowGroupLimitExec` (SPARK-37099) to the shared Comet code without
- * causing the 3.4 build to fail on a missing class reference.
+ * Spark 3.5 shim exposing `WindowGroupLimitExec` (SPARK-37099) to the shared Comet code.
  */
 object ShimCometWindowGroupLimit {
 
