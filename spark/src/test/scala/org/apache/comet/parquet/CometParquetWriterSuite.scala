@@ -1717,30 +1717,65 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
       withClue(s"$sourceType -> $targetType: ")(f)
     }
 
+  private def narrowingInsert(select: String): String =
+    s"INSERT INTO comet_narrow_target SELECT $select FROM comet_narrow_source"
+
+  private def sparkThrowable(e: Throwable): SparkThrowable with Throwable =
+    causeChain(e)
+      .collect { case t: SparkThrowable with Throwable => t }
+      .lastOption
+      .getOrElse(fail("the INSERT did not raise a SparkThrowable", e))
+
+  /** Runs `select` into the target in Spark, and returns its error. */
+  private def sparkInsertError(select: String): SparkThrowable with Throwable = {
+    var error: SparkThrowable with Throwable = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      error = sparkThrowable(intercept[Exception](sql(narrowingInsert(select))))
+    }
+    error
+  }
+
+  /**
+   * Runs `select` into the target in Comet, and returns its error. The check runs natively, or
+   * through the JVM codegen dispatcher when `dispatched`, as inside the lambda of the `transform`
+   * that narrows array elements and map keys and values.
+   */
+  private def cometInsertError(
+      select: String,
+      nativeWriter: Boolean,
+      dispatched: Boolean = false): SparkThrowable with Throwable = {
+    var error: SparkThrowable with Throwable = null
+    withInsertWriter(nativeWriter) {
+      val (plan, e) = captureFailedWritePlan(sql(narrowingInsert(select)))
+      assertCometInsert(plan, nativeWriter)
+      val check = Seq("checkoverflowintableinsert")
+      if (dispatched) {
+        assertExpressionImpl(plan, native = Nil, dispatched = check)
+      } else {
+        assertExpressionImpl(plan, native = check, dispatched = Nil)
+      }
+      assert(!causeChain(e).exists(_.isInstanceOf[CometNativeException]), e)
+      error = sparkThrowable(e)
+    }
+    error
+  }
+
+  private def assertSameError(
+      actual: SparkThrowable with Throwable,
+      expected: SparkThrowable with Throwable): Unit = {
+    assert(actual.getClass == expected.getClass)
+    assert(actual.getErrorClass == expected.getErrorClass)
+    assert(actual.getSqlState == expected.getSqlState)
+    assert(actual.getMessage == expected.getMessage)
+  }
+
   /** Runs `select` into the target in Spark and in Comet, and returns Spark's error. */
   private def assertInsertFailsAsSpark(
       select: String,
-      nativeWriter: Boolean): SparkThrowable with Throwable = {
-    val insert = s"INSERT INTO comet_narrow_target SELECT $select FROM comet_narrow_source"
-    def sparkError(e: Throwable): SparkThrowable with Throwable =
-      causeChain(e)
-        .collect { case t: SparkThrowable with Throwable => t }
-        .lastOption
-        .getOrElse(fail(s"$insert did not raise a SparkThrowable", e))
-    var expected: SparkThrowable with Throwable = null
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = sparkError(intercept[Exception](sql(insert)))
-    }
-    withInsertWriter(nativeWriter) {
-      val (plan, e) = captureFailedWritePlan(sql(insert))
-      assertCometInsert(plan, nativeWriter)
-      assert(!causeChain(e).exists(_.isInstanceOf[CometNativeException]), e)
-      val actual = sparkError(e)
-      assert(actual.getClass == expected.getClass)
-      assert(actual.getErrorClass == expected.getErrorClass)
-      assert(actual.getSqlState == expected.getSqlState)
-      assert(actual.getMessage == expected.getMessage)
-    }
+      nativeWriter: Boolean,
+      dispatched: Boolean = false): SparkThrowable with Throwable = {
+    val expected = sparkInsertError(select)
+    assertSameError(cometInsertError(select, nativeWriter, dispatched), expected)
     expected
   }
 
@@ -1793,7 +1828,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         ("map<bigint, bigint>", "map<int, int>", "map(1, 3000000000)"))
       overflows.foreach { case (sourceType, targetType, value) =>
         withNarrowingTables(sourceType, targetType, Seq(value)) {
-          val error = assertInsertFailsAsSpark("c", nativeWriter)
+          val inLambda = sourceType.startsWith("array") || sourceType.startsWith("map")
+          val error = assertInsertFailsAsSpark("c", nativeWriter, dispatched = inLambda)
           assert(error.getErrorClass == "CAST_OVERFLOW_IN_TABLE_INSERT", error)
         }
       }
@@ -1834,6 +1870,25 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
             val error = assertInsertFailsAsSpark("c, c", nativeWriter)
             assert(error.getErrorClass == errorClass, s"$confs: $error")
           }
+        }
+      }
+    }
+
+    test(
+      "a narrowing INSERT that shares an expression below the cast differs from Spark " +
+        s"(native writer: $nativeWriter)") {
+      // Spark evaluates the shared `c div 0` before the checks and reports DIVIDE_BY_ZERO. Comet
+      // wraps both casts, so it reports what Spark does without subexpression elimination.
+      withNarrowingTables("bigint", "int, d smallint", Seq("1")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          val shared = sparkInsertError("c div 0, c div 0")
+          assert(shared.getErrorClass == "DIVIDE_BY_ZERO", shared)
+          var expected: SparkThrowable with Throwable = null
+          withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+            expected = sparkInsertError("c div 0, c div 0")
+          }
+          assert(expected.getErrorClass == "CAST_OVERFLOW_IN_TABLE_INSERT", expected)
+          assertSameError(cometInsertError("c div 0, c div 0", nativeWriter), expected)
         }
       }
     }

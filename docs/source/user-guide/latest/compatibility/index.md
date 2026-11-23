@@ -181,11 +181,11 @@ divergence:
 
 - Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
   not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
-- An `INSERT` that narrows a numeric column reports an overflow as `CAST_OVERFLOW_IN_TABLE_INSERT`,
-  whatever `spark.sql.ansi.enabled` is. When an expression below that cast occurs more than once in
-  the projection, Spark's subexpression elimination evaluates it outside the check and reports its
-  own error, such as `DIVIDE_BY_ZERO`. Comet still reports `CAST_OVERFLOW_IN_TABLE_INSERT`, as Spark
-  does with `spark.sql.subexpressionElimination.enabled=false`.
+- In an `INSERT` that narrows a numeric column, when an expression below the column's cast occurs
+  more than once in the projection and raises an arithmetic error, Spark's generated code evaluates
+  it once, outside the overflow check, and reports its own error, such as `DIVIDE_BY_ZERO`. Comet
+  reports `CAST_OVERFLOW_IN_TABLE_INSERT`, as Spark does with
+  `spark.sql.subexpressionElimination.enabled=false`.
 
 ## Known result-value divergences
 
