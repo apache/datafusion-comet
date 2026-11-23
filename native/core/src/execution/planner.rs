@@ -5709,6 +5709,49 @@ mod tests {
         }))
     }
 
+    #[test]
+    fn registered_spark_elt_respects_fail_on_error() -> Result<(), ExecutionError> {
+        use arrow::array::Int64Array;
+        use datafusion_spark::function::string::elt::SparkElt;
+
+        let session = SessionContext::new();
+        session.register_udf(ScalarUDF::new_from_impl(SparkElt::new()));
+        let planner = PhysicalPlanner::new(Arc::new(session), 0);
+        let batch = RecordBatch::try_from_iter([
+            (
+                "idx",
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), None])) as ArrayRef,
+            ),
+            (
+                "value",
+                Arc::new(StringArray::from(vec!["x", "x", "x"])) as ArrayRef,
+            ),
+        ])?;
+        let elt = |fail_on_error| {
+            expr(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                func: "elt".to_string(),
+                args: vec![bound(0), bound(1)],
+                fail_on_error,
+                ..Default::default()
+            }))
+        };
+
+        let legacy = planner.create_expr(&elt(false), batch.schema())?;
+        let values = legacy.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = Arc::new(StringArray::from(vec![Some("x"), None, None])) as ArrayRef;
+        assert_eq!(&values, &expected);
+
+        let ansi = planner
+            .create_expr(&elt(true), batch.schema())
+            .expect("ANSI elt should reach the registered function");
+        let error = ansi.evaluate(&batch).unwrap_err();
+        assert!(
+            error.to_string().contains("index 2 is out of bounds"),
+            "{error}"
+        );
+        Ok(())
+    }
+
     /// A higher-order function as the right operand of OR or AND: DataFusion evaluates the right
     /// operand over only the rows the left operand leaves open.
     #[test]
