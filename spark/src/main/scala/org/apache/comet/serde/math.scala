@@ -19,10 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Cast, Ceil, CheckOverflow, CheckOverflowInTableInsert, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isSharedSubexpression, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
   override def convert(
@@ -304,6 +304,37 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
           .build())
     } else {
       None
+    }
+  }
+}
+
+/**
+ * Converts the check that an `INSERT` wraps around the cast narrowing a numeric column, which
+ * reports an arithmetic error of the cast as `CAST_OVERFLOW_IN_TABLE_INSERT`.
+ *
+ * Spark rethrows the child's error unchanged when the optimizer has replaced the cast
+ * (SPARK-42286), and never sees the error of a cast that subexpression elimination evaluates
+ * before it. So only a `Cast` child that the operator does not share is wrapped.
+ */
+object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflowInTableInsert] {
+
+  override def convert(
+      expr: CheckOverflowInTableInsert,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.child match {
+      case cast: Cast if !isSharedSubexpression(cast) =>
+        exprToProtoInternal(cast, inputs, binding).map { child =>
+          val builder = ExprOuterClass.CheckOverflowInTableInsert
+            .newBuilder()
+            .setChild(child)
+            .setFromType(cast.child.dataType.sql)
+            .setToType(cast.dataType.sql)
+            .setColumnName(expr.columnName)
+          ExprOuterClass.Expr.newBuilder().setCheckOverflowInTableInsert(builder).build()
+        }
+      case child =>
+        exprToProtoInternal(child, inputs, binding)
     }
   }
 }
