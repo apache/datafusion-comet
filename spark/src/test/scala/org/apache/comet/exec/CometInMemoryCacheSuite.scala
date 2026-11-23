@@ -353,7 +353,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "id + 1 AS id1, a, s",
           Seq(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true"),
           false),
-        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, false))
+        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, true),
+        // The cache serializer takes an empty struct, which the conversion still declines.
+        ("empty struct", "id + 1 AS id1, a, named_struct() AS e", Nil, false))
       for ((name, projection, confs, converted) <- cases) {
         withSQLConf(
           Seq(
@@ -2985,6 +2987,47 @@ class CometInMemoryCacheSuite extends CometTestBase {
     val (_, plainSize, _) = sizes(1)
     assert(zstdPayload * 2 < zstdSize, s"zstd should compress this relation: $sizes")
     assert(zstdSize == plainSize, s"the relation size should not depend on the codec: $sizes")
+  }
+
+  test("Comet in-memory cache is built from rows under AQE before Spark 4.0") {
+    // Spark builds a cache from the batches of its plan only when the plan reports that it
+    // supports columnar output. A cached AdaptiveSparkPlanExec does not before Spark 4.0, so there
+    // a relation cached under AQE goes native plan, columnar-to-row, UnsafeRow and back to Arrow
+    // before it is compressed. Without AQE, or from 4.0 on, it is written from the Arrow batches.
+    // The user guide's build timings are from Spark 4.1 and say so.
+    Seq(true, false).foreach { adaptive =>
+      withConversions(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "3",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        spark.catalog.clearCache()
+        try {
+          spark
+            .range(0, 100, 1, 2)
+            .selectExpr("id % 7 AS k", "id AS v")
+            .groupBy("k")
+            .agg(sum("v").as("s"))
+            .createOrReplaceTempView("rows_build_cache")
+          spark.catalog.cacheTable("rows_build_cache")
+          assert(spark.table("rows_build_cache").count() == 7)
+          val cachedPlan = spark.sharedState.cacheManager
+            .lookupCachedData(spark.table("rows_build_cache"))
+            .get
+            .cachedRepresentation
+            .cacheBuilder
+            .cachedPlan
+          assert(
+            cachedPlan.isInstanceOf[AdaptiveSparkPlanExec] == adaptive,
+            s"AQE is $adaptive:\n$cachedPlan")
+          assert(
+            cachedPlan.supportsColumnar == (!adaptive || isSpark40Plus),
+            s"AQE is $adaptive:\n$cachedPlan")
+        } finally {
+          spark.catalog.clearCache()
+        }
+      }
+    }
   }
 
   test("Comet in-memory cache does not store the bytes before a sliced aggregate output") {
