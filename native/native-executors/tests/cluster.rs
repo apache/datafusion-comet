@@ -233,6 +233,24 @@ async fn runs_a_query_across_a_range_exchange() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn refuses_a_query_larger_than_the_request_limit() {
+    let cluster = Cluster::start_with(&[(
+        "COMET_SCHEDULER_FLIGHT_MAX_REQUEST_BYTES",
+        "4096".to_string(),
+    )]);
+    cluster.run(&query(vec![range_stage(10, 1)])).await;
+    let mut large = query(vec![range_stage(10, 1)]);
+    large.conf.insert("padding".to_string(), "x".repeat(8192));
+    match cluster.get_flight_info(&large).await {
+        Err(FlightError::Tonic(status)) => assert!(
+            matches!(status.code(), Code::OutOfRange | Code::ResourceExhausted),
+            "{status}"
+        ),
+        other => panic!("Expected the query to be refused, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn refuses_a_query_from_another_build() {
     let cluster = Cluster::start();
     let mut request = query(vec![range_stage(10, 1)]);

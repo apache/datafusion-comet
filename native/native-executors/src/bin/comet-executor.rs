@@ -38,6 +38,10 @@
 //!   memory, or no limit when neither can be found. Memory outside the pools, such as batches in
 //!   flight between stages, comes on top of it.
 //! - `COMET_EXECUTOR_WORK_DIR`: where shuffle and spill files go (default: a temporary directory)
+//!
+//! The executor's Flight service and its gRPC connection with the scheduler don't authenticate
+//! their callers or use TLS, and a query names the files and object stores the executor reads.
+//! Run a cluster only on a trusted network.
 
 use std::sync::Arc;
 
