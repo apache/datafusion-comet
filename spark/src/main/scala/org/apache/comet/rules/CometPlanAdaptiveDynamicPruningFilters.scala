@@ -369,7 +369,6 @@ case object CometPlanAdaptiveDynamicPruningFilters
    */
   private def isNativeBuildSide(plan: SparkPlan): Boolean = {
     val stripped = stripAQEPlan(plan) match {
-      case c2r: CometNativeColumnarToRowExec => c2r.child
       case c2r: CometColumnarToRowExec => c2r.child
       case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
         c2r.child match {

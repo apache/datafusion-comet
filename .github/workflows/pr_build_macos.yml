@@ -50,6 +50,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: amd64/rust
     steps:
@@ -69,6 +70,7 @@ jobs:
     needs: lint
     name: Build Native Library (macOS)
     runs-on: macos-15
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -173,6 +175,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergHdfsSuite
               org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
@@ -184,6 +187,7 @@ jobs:
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
+              org.apache.comet.text.CometTextNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.DataGeneratorSuite
@@ -191,7 +195,6 @@ jobs:
             value: |
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
-              org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometDirectColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleInputConversionSuite
@@ -219,10 +222,11 @@ jobs:
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
-              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecCompatibilitySuite
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometMergeRowsSuite
               org.apache.comet.exec.CometTopKSuite
+              org.apache.comet.exec.CometMinMaxSuite
               org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometRangeExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
@@ -251,16 +255,19 @@ jobs:
               org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
+              org.apache.comet.local.CometLocalExecutionSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
-              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
+              org.apache.spark.CometPluginsDeprecatedConfigWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
+              org.apache.spark.CometDriverPluginShuffleManagerSuite
               org.apache.spark.CometPluginsEventLogSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
+              org.apache.comet.cloud.s3.CometS3CredentialReleaseSuite
               org.apache.comet.rules.CometMultiStoreScanSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
@@ -353,6 +360,7 @@ jobs:
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
 
