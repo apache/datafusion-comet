@@ -42,6 +42,7 @@ import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOu
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, TableIdentifier}
+import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
 import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometProjectExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
@@ -1817,14 +1818,21 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
     test(
       s"a narrowing INSERT with a shared cast fails as Spark does (native writer: $nativeWriter)") {
-      // Subexpression elimination evaluates the cast that both columns share before the checks,
-      // so Spark reports the cast's own error unless it is off.
-      val cases = Seq(true -> "CAST_OVERFLOW", false -> "CAST_OVERFLOW_IN_TABLE_INSERT")
-      cases.foreach { case (eliminate, errorClass) =>
+      // Spark's generated code evaluates the cast that both columns share before the checks, so
+      // it reports the cast's own error. Without subexpression elimination, or without generated
+      // code, where the shared cast is evaluated inside the first check, it reports the column.
+      val noCodegen = CodegenObjectFactoryMode.NO_CODEGEN.toString
+      val cases = Seq(
+        Seq.empty[(String, String)] -> "CAST_OVERFLOW",
+        Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") -> "CAST_OVERFLOW",
+        Seq(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") ->
+          "CAST_OVERFLOW_IN_TABLE_INSERT",
+        Seq(SQLConf.CODEGEN_FACTORY_MODE.key -> noCodegen) -> "CAST_OVERFLOW_IN_TABLE_INSERT")
+      cases.foreach { case (confs, errorClass) =>
         withNarrowingTables("bigint", "int, d int", Seq("3000000000")) {
-          withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> eliminate.toString) {
+          withSQLConf(confs: _*) {
             val error = assertInsertFailsAsSpark("c, c", nativeWriter)
-            assert(error.getErrorClass == errorClass, error)
+            assert(error.getErrorClass == errorClass, s"$confs: $error")
           }
         }
       }

@@ -19,7 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Cast, Ceil, CheckOverflow, CheckOverflowInTableInsert, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Cast, Ceil, CheckOverflow, CheckOverflowInTableInsert, CodegenObjectFactoryMode, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isSharedSubexpression, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -313,8 +314,10 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
  * reports an arithmetic error of the cast as `CAST_OVERFLOW_IN_TABLE_INSERT`.
  *
  * Spark rethrows the child's error unchanged when the optimizer has replaced the cast
- * (SPARK-42286), and never sees the error of a cast that subexpression elimination evaluates
- * before it. So only a `Cast` child that the operator does not share is wrapped.
+ * (SPARK-42286). Its generated code also evaluates a cast that subexpression elimination shares
+ * before the check, which then never sees the cast's error, while interpreted Spark evaluates
+ * that cast inside the check. So a `Cast` child is wrapped unless the operator shares it and
+ * Spark generates code.
  */
 object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflowInTableInsert] {
 
@@ -323,7 +326,7 @@ object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflo
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     expr.child match {
-      case cast: Cast if !isSharedSubexpression(cast) =>
+      case cast: Cast if !(isSharedSubexpression(cast) && generatesCode) =>
         exprToProtoInternal(cast, inputs, binding).map { child =>
           val builder = ExprOuterClass.CheckOverflowInTableInsert
             .newBuilder()
@@ -337,6 +340,11 @@ object CometCheckOverflowInTableInsert extends CometExpressionSerde[CheckOverflo
         exprToProtoInternal(child, inputs, binding)
     }
   }
+
+  private def generatesCode: Boolean =
+    !SQLConf.get
+      .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+      .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
 }
 
 object CometHypot extends CometCodegenDispatch[Hypot]
