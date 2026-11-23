@@ -98,8 +98,9 @@ reads that fail where Spark succeeds are listed in
   query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
   By contrast, Comet decodes non-UTF-8 bytes at the JVM-to-native Arrow FFI boundaries using
   JVM-compatible replacement semantics. This covers native query input from the JVM-exported Arrow
-  stream (including JVM scans, shuffle reads, and `mapInArrow`), columnar-to-row conversion, and JVM
-  UDF results. It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
+  stream (including JVM scans, shuffle reads, and `mapInArrow`), columnar-to-row conversion, JVM
+  UDF results, and the native text scan (which replaces invalid bytes in each line's `value` with
+  U+FFFD). It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
   Gap A of [#4764](https://github.com/apache/datafusion-comet/issues/4764). See
   [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes),
   [#4121](https://github.com/apache/datafusion-comet/issues/4121), and the tracking issue above.
@@ -113,8 +114,8 @@ reads that fail where Spark succeeds are listed in
 
 ### Missing Nested Fields
 
-When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.4
-through 4.0 return NULL for the entire missing subtree, including nested arrays and maps. Comet
+When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.5
+and 4.0 return NULL for the entire missing subtree, including nested arrays and maps. Comet
 follows this behavior. On Spark 4.1+, the default (`false`) preserves the file's parent nullness.
 Set `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true` for legacy behavior.
 A field that exists in the file but contains only NULL values is not a missing field.
@@ -172,7 +173,7 @@ SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark'
 
 - **Spark 3.x: `TIMESTAMP_MILLIS` overflow past the first batch is wrapped in a file-read error**.
   When a Parquet `TIMESTAMP_MILLIS` value overflows on conversion to microseconds, Spark's reader
-  throws `ArithmeticException: long overflow`. Spark 3.4 and 3.5 wrap a reader error in a
+  throws `ArithmeticException: long overflow`. Spark 3.5 wraps a reader error in a
   `SparkException` that names the file only while reading the first batch of each file split. For
   the vectorized reader, that batch is the first `spark.sql.parquet.columnarReaderBatchSize` rows
   (4096 by default), or the first row group if that is smaller. An overflow in a later batch fails
@@ -297,10 +298,6 @@ for production, so do not turn it off to avoid an entry on this page.
   differ only in such bytes distinct: they match Spark in a release build, and a debug build
   panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
-- **Field-id reads where one file column matches a field by id and a sibling by name.** With
-  `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
-  level. Inside a struct, it returns the values of the field matched by id. Spark's own readers
-  disagree here ([#6994](https://github.com/apache/datafusion-comet/issues/6994)).
 - **`TIMESTAMP_MILLIS` values that overflow when converted to microseconds.** In nested fields, and
   in every column of a scan that has data filters, Comet returns NULL where Spark fails with
   `ArithmeticException: long overflow`
@@ -315,21 +312,27 @@ for production, so do not turn it off to avoid an entry on this page.
 
 With `spark.comet.write.parquet.enabled=true`:
 
-- **The datetime rebase modes are ignored.** On Spark 3.4 and 3.5, whose default rebase mode is
-  `EXCEPTION`, the native writer writes dates and timestamps before October 15, 1582 that Spark
-  refuses to write, and Spark then fails to read them back under its default read mode. With
-  `spark.sql.parquet.datetimeRebaseModeInRead=LEGACY`, Spark reads them shifted by several days, on
-  every version. The files lack the `org.apache.spark.version` footer key that tells Spark they need
-  no rebasing ([#7047](https://github.com/apache/datafusion-comet/issues/7047),
-  [#3427](https://github.com/apache/datafusion-comet/issues/3427)).
+- **The `EXCEPTION` rebase mode is ignored.** On Spark 3.5, whose default rebase mode is
+  `EXCEPTION`, the native writer writes dates before October 15, 1582 and timestamps before
+  January 1, 1900 that Spark refuses to write
+  ([#7047](https://github.com/apache/datafusion-comet/issues/7047)). With
+  `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (or
+  `spark.sql.parquet.int96RebaseModeInWrite=LEGACY` for a timestamp column) Comet falls back to
+  Spark, because the native writer cannot rebase values to the hybrid calendar. Each file the
+  native writer does produce carries the `org.apache.spark.version` footer key, so Spark treats it
+  as written by Spark 3.0 or later and reads the values back unchanged under every
+  `spark.sql.parquet.datetimeRebaseModeInRead` setting. Files written by a Comet build that
+  predates that key have no version, and Spark then fails to read their pre-1582 values under its
+  default read mode on 3.5, or reads them shifted by several days under `LEGACY`.
 - **`spark.sql.parquet.outputTimestampType` and `spark.sql.parquet.writeLegacyFormat` are
   ignored.** Timestamps are always written as `INT64` microseconds, never as Spark's default
   `INT96`, so with `TIMESTAMP_MILLIS` they keep the sub-millisecond digits that Spark drops. Spark's
-  schema footer key is not written either, so a path-based read loses column metadata such as
-  comments, and with `spark.sql.parquet.inferTimestampNTZ.enabled=false` it reads `TIMESTAMP_NTZ`
-  columns as `TIMESTAMP` ([#7048](https://github.com/apache/datafusion-comet/issues/7048),
+  schema footer key, `org.apache.spark.sql.parquet.row.metadata`, is not written either, so a
+  path-based read loses column metadata such as comments, and with
+  `spark.sql.parquet.inferTimestampNTZ.enabled=false` it reads `TIMESTAMP_NTZ` columns as
+  `TIMESTAMP` ([#7048](https://github.com/apache/datafusion-comet/issues/7048),
   [#3425](https://github.com/apache/datafusion-comet/issues/3425)).
-- **Spark 3.4 and 3.5: `INSERT INTO` leaves the target stale.** Comet skips the steps Spark runs
+- **Spark 3.5: `INSERT INTO` leaves the target stale.** Comet skips the steps Spark runs
   after a write: file index refresh, cache refresh, partition refresh and statistics update. Later
   queries can return the table's previous contents until `REFRESH TABLE`
   ([#6315](https://github.com/apache/datafusion-comet/issues/6315)).
@@ -386,6 +389,13 @@ With `spark.comet.write.parquet.enabled=true`:
 
 ### Differences that are not Comet bugs
 
+- **Field-id reads where one file column matches a field by id and a sibling by name.** With
+  `spark.sql.parquet.fieldId.read.enabled=true`, when both siblings are requested and their types
+  are compatible with the file column, Comet's native reader gives the value to the id match and
+  returns NULL for the name match, both at the top level and inside structs. Spark's parquet-mr
+  reader does the same. Spark's vectorized reader can return zeros for the losing sibling with
+  on-heap column vectors, or uninitialized memory values with off-heap column vectors
+  ([#6994](https://github.com/apache/datafusion-comet/issues/6994)).
 - **Field-id reads with a read schema that swaps two nested field names.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Spark's vectorized reader pairs the file's columns
   with the read fields by the file's names, so it fails with a type mismatch or returns no rows.

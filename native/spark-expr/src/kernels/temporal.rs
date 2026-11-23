@@ -39,6 +39,7 @@ use datafusion::{
     common::{config::ConfigOptions, ScalarValue},
     logical_expr::{ColumnarValue, ScalarFunctionArgs},
 };
+use datafusion_comet_common::{civil_from_days, days_from_civil};
 use datafusion_functions::datetime;
 
 use crate::SparkError;
@@ -397,39 +398,6 @@ fn fits_datafusion_coarse_trunc_range(micros: i64) -> bool {
 
     fits_timestamp_nanosecond(micros)
         && micros >= LOWER_NANOSECOND_MICROS + COARSE_TRUNC_MARGIN_MICROS
-}
-
-// Integer proleptic Gregorian calendar conversion, adapted from DataFusion 55.1.0's
-// datetime/date_trunc.rs (Howard Hinnant's algorithms):
-// https://howardhinnant.github.io/date_algorithms.html
-// These helpers only receive days derived from i64 microseconds (about +/-107 million),
-// so the calendar intermediates fit in i64 even outside chrono's year range.
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let day_of_era = z.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
-
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = year - i64::from(month <= 2);
-    let era = year.div_euclid(400);
-    let year_of_era = year.rem_euclid(400);
-    let month_index = if month > 2 { month - 3 } else { month + 9 };
-    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
 }
 
 /// Truncate UTC/NTZ coarse units directly in microseconds, avoiding both DataFusion's

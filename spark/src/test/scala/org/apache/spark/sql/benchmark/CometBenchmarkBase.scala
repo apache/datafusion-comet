@@ -24,10 +24,14 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 
 import scala.collection.mutable
+import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.fs.Path
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
@@ -39,6 +43,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, QueryExecution, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 import org.apache.spark.sql.util.QueryExecutionListener
@@ -301,6 +306,49 @@ trait CometBenchmarkBase
 
   protected def isComet(plan: SparkPlan): Boolean = plan.nodeName.startsWith("Comet")
 
+  protected val rowGroupPruningScanConfigs: Seq[(String, String)] = Seq(
+    CometConf.COMET_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_ENABLED.key -> "true",
+    CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+    CometConf.COMET_BATCH_SIZE.key -> "4096",
+    CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "false",
+    CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+    "spark.comet.datafusion.execution.parquet.enable_page_index" -> "false",
+    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+    SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+    SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "4194304")
+
+  protected def inspectParquetFixture(directory: String, expectedFiles: Int): (Long, Seq[Int]) = {
+    val path = new Path(directory)
+    val files = path
+      .getFileSystem(spark.sessionState.newHadoopConf())
+      .listStatus(path)
+      .filter(_.getPath.getName.endsWith(".parquet"))
+    require(
+      files.length == expectedFiles,
+      s"Expected $expectedFiles files, found ${files.length}")
+    val rowGroups = files.toSeq.map { file =>
+      val reader = ParquetFileReader.open(
+        HadoopInputFile.fromPath(file.getPath, spark.sessionState.newHadoopConf()))
+      try reader.getFooter.getBlocks.asScala.size
+      finally reader.close()
+    }
+    require(rowGroups.forall(_ > 1), s"Expected multiple row groups per file: $rowGroups")
+    (files.map(_.getLen).max, rowGroups)
+  }
+
+  protected def formatParquetReaderMetrics(metrics: Map[String, SQLMetric]): Seq[String] =
+    Seq(
+      "output_rows",
+      "bytes_scanned",
+      "scan_io_data_bytes",
+      "scan_io_metadata_bytes",
+      "row_groups_pruned_dynamic_filter",
+      "row_groups_pruned_statistics",
+      "page_index_rows_pruned",
+      "pushdown_rows_pruned")
+      .map(name => s"$name=${metrics(name).value}")
+
   protected def addParquetScanCases(
       benchmark: Benchmark,
       query: String,
@@ -453,6 +501,14 @@ trait CometBenchmarkBase
 }
 
 object CometBenchmarkBase {
+
+  private[benchmark] def onOffModes(onFirst: Boolean): Seq[(String, Boolean)] = {
+    if (onFirst) {
+      Seq("ON" -> true, "OFF" -> false, "ON (repeat)" -> true)
+    } else {
+      Seq("OFF" -> false, "ON" -> true, "OFF (repeat)" -> false)
+    }
+  }
 
   /**
    * SplitMix64 finalizer, used to turn a row id into a well distributed pseudo-random value.

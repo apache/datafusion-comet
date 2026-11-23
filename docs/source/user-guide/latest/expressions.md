@@ -281,7 +281,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `hour` | ✅ | Native |  |
 | `last_day` | ✅ | Native |  |
 | `localtimestamp` | ✅ | — |  |
-| `make_date` | ✅ | Native | Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions or a parent could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. Operator-level safeguards and their opt-out are described in [make_date evaluation](#make_date-evaluation). |
+| `make_date` | ✅ | Native | Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions that can raise, or a parent, could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. Operator-level safeguards and their opt-out are described in [make_date evaluation](#make_date-evaluation). |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -337,8 +337,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 ## generator_funcs
 
 `explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
-`CometExplodeExec` (operator-level, not expression-level) for array input; map input falls back
-to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
+`CometExplodeExec` for array and map inputs (operator-level, not expression-level). Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
@@ -387,8 +386,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | --- | --- | --- | --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
 | `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
-| `exists` | ✅ | Codegen dispatch |  |
-| `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
+| `exists` | ✅ | Native | A one-parameter lambda whose body is natively supported and cannot raise runs natively; other lambdas, and `exists` with `spark.sql.legacy.followThreeValuedLogicInArrayExists=false`, use the JVM codegen dispatcher. See [Expression Tuning](tuning/expressions.md#lambdas-and-higher-order-functions) |
+| `filter` | ✅ | Native | A one-parameter lambda whose body is natively supported runs natively, as does the `array_compact` form; other lambdas use the JVM codegen dispatcher. See [Expression Tuning](tuning/expressions.md#lambdas-and-higher-order-functions) |
 | `forall` | ✅ | Codegen dispatch |  |
 | `map_filter` | ✅ | Codegen dispatch |  |
 | `map_zip_with` | ✅ | Codegen dispatch |  |
@@ -769,4 +768,4 @@ still falls back when needed.
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.
-- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.
+- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.5 / 4.0 / 4.1) audit notes for audited expressions.

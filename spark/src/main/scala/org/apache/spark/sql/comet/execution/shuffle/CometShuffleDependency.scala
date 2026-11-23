@@ -28,7 +28,7 @@ import org.apache.spark.shuffle.ShuffleWriteProcessor
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
@@ -44,6 +44,8 @@ case class NativeShuffleSpec(
     childNativeOp: OperatorOuterClass.Operator,
     childMetricNode: CometMetricNode,
     execContext: NativeExecContext,
+    /** The session's Comet configs, captured on the driver; see [[CapturedSQLConf]]. */
+    sqlConf: CapturedSQLConf,
     /**
      * Set when round-robin placement is positional rather than content-hashed. Both the decision
      * and the group size are resolved once on the driver: the decision because it depends on the
@@ -97,6 +99,10 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
       aggregator,
       mapSideCombine,
       shuffleWriterProcessor) {
+
+  /** The Comet settings used by JVM shuffle writers on executor task threads. */
+  private[shuffle] val writerSQLConf: CapturedSQLConf =
+    nativeShuffleSpec.map(_.sqlConf).getOrElse(CapturedSQLConf.capture())
 
   @transient @volatile private var materializationInstance
       : CometCelebornShuffleMaterialization[K, V, C] = _

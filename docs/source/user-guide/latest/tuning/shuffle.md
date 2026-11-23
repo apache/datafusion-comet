@@ -29,8 +29,9 @@ spark.comet.shuffle.enabled=true
 ```
 
 `spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
-It must be set before the Spark context is created. You can enable or disable Comet shuffle
-at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
+It must be set before the Spark context is created, except that on Spark 4.0 and later `CometPlugin`
+sets it to `CometShuffleManager` if the application leaves it unset. You can enable or disable
+Comet shuffle at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
 Once it is disabled, the configured shuffle manager handles ordinary Spark shuffle dependencies
 without Comet's shuffle implementation.
 
@@ -53,6 +54,20 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
+### Batching shuffle inputs to broadcast
+
+The experimental `spark.comet.exec.broadcastExchange.producerCoalesce.enabled` setting combines small
+local native shuffle batches before broadcast serialization. It is disabled by default. It
+can reduce Arrow export, serialization, and driver assembly work when a broadcast build reads
+many small shuffle blocks.
+
+The broadcast must read directly from a local Comet native shuffle, including an AQE shuffle
+read, and have only INT, BIGINT, BOOLEAN, STRING, or BINARY columns. Grouping preserves the
+selected shuffle partitions and row order. Large batches pass through without a merge copy.
+
+Reader buffers are outside Spark's execution memory pool. The contributor guide describes the
+[grouping limits and memory lifetime](../../../contributor-guide/memory_management.md).
+
 ### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
@@ -70,10 +85,9 @@ Setting `spark.comet.convert.shuffleInput.enabled=true` makes such a shuffle use
 converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do for Spark scans, and shuffles the
 batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
-all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
-`map<string,string>`. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
-that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet's memory pools.
-The setting is disabled by default.
+all of the child's columns, which rules out calendar intervals. A shuffle that hashes a string or a value computed
+from a string stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated
+on the JVM outside Comet's memory pools. The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 
