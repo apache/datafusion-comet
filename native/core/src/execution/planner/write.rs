@@ -33,6 +33,7 @@ use crate::{
     },
     extract_op,
     jvm_bridge::OutputStreamSink,
+    parquet::timestamp_write::millis_schema,
 };
 
 /// Builder for native Iceberg writes.
@@ -105,6 +106,21 @@ impl OperatorBuilder for ParquetWriterBuilder {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        let timestamp_millis = match writer.output_timestamp_type.as_str() {
+            "" | "TIMESTAMP_MICROS" => false,
+            "INT96"
+                if millis_schema(&child.native_plan.schema()) == *child.native_plan.schema() =>
+            {
+                false
+            }
+            "TIMESTAMP_MILLIS" => true,
+            other => {
+                return Err(ExecutionError::GeneralError(format!(
+                    "Unsupported Parquet output timestamp type: {other}"
+                )))
+            }
+        };
+
         let parquet_writer = Arc::new(
             ParquetWriterExec::try_new(
                 Arc::clone(&child.native_plan),
@@ -117,6 +133,8 @@ impl OperatorBuilder for ParquetWriterBuilder {
                 object_store_options,
             )?
             .with_spark_version(writer.spark_version.clone())
+            .with_spark_schema_json(writer.spark_schema_json.clone())
+            .with_timestamp_millis(timestamp_millis)
             .with_output_stream(jvm_output_stream(
                 writer.jvm_output_stream,
                 planner.output_stream.as_ref(),

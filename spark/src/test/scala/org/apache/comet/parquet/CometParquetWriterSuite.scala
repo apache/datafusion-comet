@@ -95,6 +95,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           nativeWriteAllowIncompatKey -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -117,6 +118,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           nativeWriteAllowIncompatKey -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -149,6 +151,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           val nativeOutput = new File(dir, "native-output").getAbsolutePath
           val commonConf = Seq(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
             CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -305,6 +308,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
           withSQLConf(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
             "spark.sql.adaptive.enabled" -> adaptive.toString,
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
             nativeWriteAllowIncompatKey -> "true",
@@ -442,7 +446,11 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           }
         }
 
-        checkAnswer(spark.read.parquet(outputPath), data)
+        withSQLConf(
+          SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> writeFieldIds.toString,
+          SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> (!writeFieldIds).toString) {
+          checkAnswer(spark.read.parquet(outputPath), data)
+        }
       }
     }
   }
@@ -702,6 +710,150 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         checkAnswer(spark.read.parquet(outputPath), expected.toSeq)
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           checkAnswer(spark.read.parquet(outputPath), expected.toSeq)
+        }
+      }
+    }
+  }
+
+  for (encoding <- Seq("TIMESTAMP_MICROS", "TIMESTAMP_MILLIS")) {
+    test(s"parquet output matches Spark for $encoding including schema footer") {
+      withTempPath { dir =>
+        withNativeWriter {
+          withSQLConf(
+            SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+            SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> encoding,
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+            val day = -171664
+            val ts = -2208988800000001L
+            val input = spark
+              .range(0, 4, 1, 1)
+              .selectExpr(
+                "id",
+                s"date_add(DATE'1970-01-01', CAST($day + id AS INT)) as d",
+                s"timestamp_micros($ts + id * 1001) as ts",
+                "timestamp_micros(-1001 + id * 1001) as negative_ts",
+                "CAST('1500-01-01 01:02:03.123456' AS TIMESTAMP_NTZ) as ntz",
+                "CAST(1.25 AS DECIMAL(9,2)) as decimal_value")
+            val tagged = input.select(input.columns.map { name =>
+              input
+                .col(name)
+                .as(name, new MetadataBuilder().putString("comment", s"column $name").build())
+            }: _*)
+            val nested = tagged.selectExpr(
+              "*",
+              "named_struct('d', d, 'ts', ts, 'ntz', ntz) as s",
+              "array(ts, negative_ts, cast(null as timestamp)) as a",
+              "map(d, array(named_struct('ts', ts, 'ntz', ntz))) as m")
+            val source = new File(dir, "source").getAbsolutePath
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS") {
+              nested.write.parquet(source)
+            }
+            val df = spark.read.parquet(source)
+            val reference = new File(dir, "reference").getAbsolutePath
+            val output = new File(dir, "output").getAbsolutePath
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") { df.write.parquet(reference) }
+            assertHasCometNativeWriteExec(
+              captureWritePlan(path => df.write.parquet(path), output))
+            assert(parquetFieldSignatures(output) == parquetFieldSignatures(reference))
+            val conf = spark.sparkContext.hadoopConfiguration
+            val file = new File(output).listFiles().find(_.getName.startsWith("part-")).get
+            Using.resource(ParquetFileReader.open(
+              HadoopInputFile.fromPath(new Path(file.getAbsolutePath), conf))) { reader =>
+              val footer = reader.getFooter.getFileMetaData
+              val metadata = footer.getKeyValueMetaData
+              assert(metadata.get("org.apache.spark.sql.parquet.row.metadata") == df.schema.json)
+              assert(metadata.get("org.apache.spark.version") == SPARK_VERSION_SHORT)
+              assert(!metadata.containsKey("org.apache.spark.legacyDateTime"))
+              assert(!metadata.containsKey("org.apache.spark.legacyINT96"))
+              val timestamp =
+                footer.getSchema.getFields.asScala.find(_.getName == "ts").get.asPrimitiveType()
+              assert(timestamp.getPrimitiveTypeName.toString() == "INT64")
+              assert(
+                timestamp.getLogicalTypeAnnotation.toString.toUpperCase
+                  .contains(if (encoding == "TIMESTAMP_MILLIS") "MILLIS" else "MICROS"))
+            }
+            for (readMode <- Seq("CORRECTED", "EXCEPTION", "LEGACY")) {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> "false",
+                SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> readMode,
+                "spark.sql.parquet.inferTimestampNTZ.enabled" -> "false") {
+                val expected = spark.read.parquet(reference)
+                val actual = spark.read.parquet(output)
+                assert(actual.schema == expected.schema)
+                checkAnswer(actual, expected)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("parquet output keeps NTZ microseconds under every timestamp encoding setting") {
+    withTempPath { dir =>
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          spark
+            .range(2)
+            .selectExpr(
+              "id",
+              "CAST('1500-01-01 01:02:03.123456' AS TIMESTAMP_NTZ) as t",
+              "array(named_struct('t', CAST('1500-01-01 01:02:03.123456' AS TIMESTAMP_NTZ))) as a"),
+          new File(dir, "source").getAbsolutePath)
+        for (mode <- Seq("CORRECTED", "EXCEPTION", "LEGACY");
+          encoding <- Seq("INT96", "TIMESTAMP_MICROS", "TIMESTAMP_MILLIS")) {
+          withSQLConf(
+            SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode,
+            SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> mode,
+            SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> encoding) {
+            val output = new File(dir, s"$mode-$encoding").getAbsolutePath
+            assertHasCometNativeWriteExec(
+              captureWritePlan(path => df.write.parquet(path), output))
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              "spark.sql.parquet.inferTimestampNTZ.enabled" -> "false") {
+              assert(spark.read.parquet(output).schema == df.schema)
+              checkAnswer(spark.read.parquet(output), df)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  Seq("INT96", "legacy layout").foreach { setting =>
+    test(s"parquet write falls back for unsupported $setting") {
+      withTempPath { dir =>
+        withNativeWriter {
+          val df = materializeAsCometSource(
+            spark
+              .range(2)
+              .selectExpr(
+                "id",
+                "named_struct('ts', timestamp_micros(id * 1001)) as s",
+                "CAST(id AS DECIMAL(9,2)) as d9",
+                "CAST(id AS DECIMAL(18,2)) as d18",
+                "array(CAST(id AS DECIMAL(12,2))) as a",
+                "map('key', CAST(id AS DECIMAL(12,2))) as m"),
+            new File(dir, "source").getAbsolutePath)
+          val key =
+            if (setting == "INT96") SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key
+            else SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key
+          val value = if (setting == "INT96") "INT96" else "true"
+          withSQLConf(key -> value) {
+            val output = new File(dir, "output").getAbsolutePath
+            val reference = new File(dir, "reference").getAbsolutePath
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              df.write.parquet(reference)
+            }
+            assertNoCometNativeWriteExec(captureWritePlan(path => df.write.parquet(path), output))
+            assert(parquetFieldSignatures(output) == parquetFieldSignatures(reference))
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              checkAnswer(spark.read.parquet(output), df)
+            }
+          }
         }
       }
     }
@@ -2745,6 +2897,16 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     metadata.build()
   }
 
+  private def parquetFieldSignatures(outputPath: String): Seq[String] = {
+    val file = new File(outputPath).listFiles().find(_.getName.startsWith("part-")).get
+    val input = HadoopInputFile.fromPath(
+      new Path(file.getAbsolutePath),
+      spark.sparkContext.hadoopConfiguration)
+    Using.resource(ParquetFileReader.open(input)) { reader =>
+      reader.getFooter.getFileMetaData.getSchema.getFields.asScala.map(_.toString).toSeq
+    }
+  }
+
   private def assertParquetSchemas(outputPath: String)(verify: MessageType => Unit): Unit = {
     val conf = spark.sparkContext.hadoopConfiguration
     val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
@@ -2800,6 +2962,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
       // read the generated Parquet file and write with Comet native writer
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
         // enable experimental native writes
         nativeWriteAllowIncompatKey -> "true",
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",

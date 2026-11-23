@@ -105,6 +105,10 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     }
 
     NativeWriteUtils
+      .unsupportedParquetWriteSettings(op.child.output, op.session.sessionState.conf)
+      .foreach(reason => return Unsupported(Some(reason)))
+
+    NativeWriteUtils
       .legacyDatetimeRebaseWriteReason(op.child.output)
       .foreach(reason => return Unsupported(Some(reason)))
 
@@ -142,6 +146,8 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
       .newBuilder()
       .setCompression(codec)
       .setSparkVersion(SPARK_VERSION_SHORT)
+      .setOutputTimestampType(
+        op.session.sessionState.conf.getConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE).toString)
 
     // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
     // Only a native writer creating its own files reads the options: the files of any other

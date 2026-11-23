@@ -42,6 +42,19 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  */
 object NativeWriteUtils {
 
+  def unsupportedParquetWriteSettings(output: Seq[Attribute], conf: SQLConf): Option[String] = {
+    if (conf.getConf(SQLConf.PARQUET_WRITE_LEGACY_FORMAT)) {
+      Some("Native Parquet write does not support spark.sql.parquet.writeLegacyFormat=true")
+    } else if (conf.getConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE).toString == "INT96" &&
+      output.exists(a => SupportLevel.containsType(a.dataType, classOf[TimestampType]))) {
+      Some(
+        "Native Parquet write does not support INT96 timestamps; use TIMESTAMP_MICROS or " +
+          "TIMESTAMP_MILLIS for spark.sql.parquet.outputTimestampType")
+    } else {
+      None
+    }
+  }
+
   /**
    * Hadoop's `FileOutputFormat.BASE_OUTPUT_NAME`, which is `protected` there. Spelled out for the
    * same reason Spark spells it out in `HadoopMapReduceCommitProtocol.getFilename`, which is
@@ -339,7 +352,9 @@ object NativeWriteUtils {
     val datetimeLegacy = (hasDate || hasTimestamp) &&
       isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE))
     val int96Legacy =
-      hasTimestamp && isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE))
+      hasTimestamp &&
+        SQLConf.get.getConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE).toString == "INT96" &&
+        isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE))
     val legacyModeKeys =
       (if (datetimeLegacy) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key) else Nil) ++
         (if (int96Legacy) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key) else Nil)
