@@ -1061,6 +1061,57 @@ skipping more likely. These settings only tune eligible plans. They cannot enabl
 while <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.aggregate.skipPartial.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code>, or for unsupported
 accumulators and modes.</p>
 </section>
+<section id="min-max-reader-filtering">
+<h2>MIN/MAX Reader Filtering<a class="headerlink" href="#min-max-reader-filtering" title="Link to this heading">#</a></h2>
+<p>For a Parquet table <code class="docutils literal notranslate"><span class="pre">events</span></code> with a <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code> column <code class="docutils literal notranslate"><span class="pre">event_id</span></code>, enable reader filtering before
+planning the query:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="k">exec</span><span class="p">.</span><span class="k">aggregate</span><span class="p">.</span><span class="n">dynamicFilter</span><span class="p">.</span><span class="n">enabled</span><span class="o">=</span><span class="k">true</span><span class="p">;</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">MIN</span><span class="p">(</span><span class="n">event_id</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">events</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>This experimental option is disabled by default. Once a task has observed a non-null minimum,
+its native Parquet reader can skip later row groups whose statistics prove that no value is
+smaller. <code class="docutils literal notranslate"><span class="pre">MAX</span></code> works the same way with an improving maximum. Each task starts with a fresh bound;
+bounds are not shared across Spark partitions or exchanges, or retained for later executions.
+The aggregate still computes the result from the rows the reader emits.</p>
+<p>Reader filtering applies only to these plans:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Requirement</p></th>
+<th class="head"><p>Supported scope</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Aggregate</p></td>
+<td><p>One unfiltered, non-distinct <code class="docutils literal notranslate"><span class="pre">MIN</span></code> or <code class="docutils literal notranslate"><span class="pre">MAX</span></code>, without grouping. Multiple aggregates, including <code class="docutils literal notranslate"><span class="pre">MIN</span></code> and <code class="docutils literal notranslate"><span class="pre">MAX</span></code> together, are excluded.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Argument</p></td>
+<td><p>A direct <code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code> column.</p></td>
+</tr>
+<tr class="row-even"><td><p>Stage</p></td>
+<td><p>A partial aggregate consuming input rows. <code class="docutils literal notranslate"><span class="pre">Final</span></code> and <code class="docutils literal notranslate"><span class="pre">PartialMerge</span></code> stages do not produce reader filters.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Input</p></td>
+<td><p>A direct native Parquet scan in the same Comet pipeline. Expressions, filters, limits, standalone projections, Spark exchanges, and JVM/Arrow boundaries between the aggregate and scan stop attachment. Column projection within the reader remains supported.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Unsupported plans retain ordinary aggregation. Scans with supplied file statistics or encryption
+also skip attachment. Before reading rows, Comet inspects the task’s file footers. If any file has
+more than 64 row groups, or retained decoded footer metadata exceeds 8 MiB, the whole task uses
+ordinary aggregation. This inspection adds startup work even when filtering saves no data reads.
+For each file, schema adaptation disables pruning if it could hide a conversion error. Missing
+statistics, including unknown null counts, can prevent pruning.</p>
+<p>Ascending data can establish a useful <code class="docutils literal notranslate"><span class="pre">MIN</span></code> bound early; descending data can do the same for <code class="docutils literal notranslate"><span class="pre">MAX</span></code>.
+The opposite ordering can keep improving the bound until the end, leaving few or no row groups to
+skip. Random data and constant values exercise different pruning opportunities. Compare filtering
+enabled and disabled for your layout and partition count, including query elapsed time, emitted
+scan rows, bytes read, and row groups pruned. An attached filter alone does not demonstrate a saving.
+See <a class="reference internal" href="../metrics.html#min-max-reader-filtering"><span class="std std-ref">MIN/MAX metrics</span></a> for how to interpret these counters.</p>
+<p>Existing Parquet page-index and decoder-filter options can also use the bound. This feature adds
+no separate filter over decoded scan batches.</p>
+</section>
 <section id="local-topk-fusion">
 <h2>Local TopK Fusion<a class="headerlink" href="#local-topk-fusion" title="Link to this heading">#</a></h2>
 <p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.fusion.enabled=true</span></code> to run an eligible local TopK in the same native
@@ -1186,6 +1237,7 @@ array with a non-default string collation continues through the JVM codegen disp
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-reader-filtering">MIN/MAX Reader Filtering</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk-fusion">Local TopK Fusion</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#topk-reader-pruning">TopK Reader Pruning</a></li>
 </ul>

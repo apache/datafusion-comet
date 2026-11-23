@@ -583,6 +583,37 @@ under the License.
 These can also be run as a suite on a dedicated machine, see
 <a class="reference internal" href="benchmarking_micro_ec2.html"><span class="std std-doc">Micro Benchmarking on AWS EC2</span></a>. Published results are in
 <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/benchmarks/results/micro">benchmarks/results/micro</a>.</p>
+</section>
+<section id="min-max-reader-filtering">
+<h2>MIN/MAX Reader Filtering<a class="headerlink" href="#min-max-reader-filtering" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometMinMaxBenchmark</span></code> compares one <code class="docutils literal notranslate"><span class="pre">MIN(k)</span></code> or <code class="docutils literal notranslate"><span class="pre">MAX(k)</span></code> over an <code class="docutils literal notranslate"><span class="pre">INT</span></code> Parquet column with
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.aggregate.dynamicFilter.enabled</span></code> disabled (<code class="docutils literal notranslate"><span class="pre">off</span></code>) and enabled (<code class="docutils literal notranslate"><span class="pre">on</span></code>). Run it
+with a release build; the make target builds and packages the native library:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>benchmark-org.apache.spark.sql.benchmark.CometMinMaxBenchmark<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">1048576</span><span class="w"> </span><span class="m">1</span>,4<span class="w"> </span>ascending,descending,random,constant<span class="w"> </span><span class="m">5</span><span class="w"> </span>off,on
+</pre></div>
+</div>
+<p>The arguments are total rows, scan partition counts, layouts, minimum measured iterations, and
+mode order. The example uses one million rows, one or four files/tasks, and at least five measured iterations per
+case. Use <code class="docutils literal notranslate"><span class="pre">16384</span> <span class="pre">1,4</span> <span class="pre">ascending,descending,random,constant</span> <span class="pre">3</span> <span class="pre">off,on</span></code> for a smoke run. The Spark master
+is <code class="docutils literal notranslate"><span class="pre">local[1]</span></code> by default; set <code class="docutils literal notranslate"><span class="pre">COMET_BENCHMARK_MASTER</span></code> to change task concurrency and record it
+alongside results.</p>
+<p>Files use uncompressed Parquet v1 pages with dictionary encoding disabled, so even constant
+values reach the row-group size target. Each file has multiple row groups. Ascending input favors
+<code class="docutils literal notranslate"><span class="pre">MIN</span></code> and descending input favors <code class="docutils literal notranslate"><span class="pre">MAX</span></code>; the opposite combinations measure overhead when the bound keeps improving. Random input
+uses deterministic hashed keys, while constant input measures repeated values. Page-index pruning
+and decoder row filtering are disabled to isolate row-group pruning. Only the key is scanned.</p>
+<p>Before timing, the suite checks results against Spark, verifies the direct scan/partial aggregate
+plan and task count, and requires attachment in every enabled task. It prints scan output rows,
+requested data bytes, reader data and metadata bytes, pruned row groups, and attachment counters
+from this untimed execution. The timed cases include query planning and result collection, but
+exclude data generation and validation.</p>
+<p>Repeat with <code class="docutils literal notranslate"><span class="pre">on,off</span></code> to check case-order effects, including JVM warmup and metadata-cache warmth.
+Compare elapsed time as well as scan metrics: fewer rows or data bytes do not guarantee a faster
+query, especially for small files or when footer inspection and scheduling dominate. Record the
+Comet revision, build flags, Spark/JDK versions, machine, master, arguments, and both mode orders
+with any reported results. See <a class="reference internal" href="../user-guide/latest/tuning/operators.html#min-max-reader-filtering"><span class="std std-ref">MIN/MAX reader filtering</span></a>
+for supported plans and fallback limits.</p>
 <div class="toctree-wrapper compound">
 </div>
 </section>
@@ -637,6 +668,7 @@ These can also be run as a suite on a dedicated machine, see
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-benchmark-results">Current Benchmark Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking-guides">Benchmarking Guides</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-reader-filtering">MIN/MAX Reader Filtering</a></li>
 </ul>
   </nav></div>
 

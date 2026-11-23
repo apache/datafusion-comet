@@ -1036,6 +1036,39 @@ the value would always be 0.</p>
 </div>
 <p>Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark’s task-level
 <code class="docutils literal notranslate"><span class="pre">diskBytesSpilled</span></code> metric in every stage, not only in shuffle stages.</p>
+<section id="min-max-reader-filtering">
+<h4>MIN/MAX Reader Filtering<a class="headerlink" href="#min-max-reader-filtering" title="Link to this heading">#</a></h4>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.aggregate.dynamicFilter.enabled=true</span></code> is captured in an ungrouped partial
+aggregate’s plan, its metric map includes these counters. See
+<a class="reference internal" href="tuning/operators.html#min-max-reader-filtering"><span class="std std-ref">MIN/MAX reader filtering</span></a> for eligibility and limits.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_minmax_filters_attached</span></code></p></td>
+<td><p>Executions that attach their improving MIN/MAX bound to a native Parquet reader.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_minmax_filters_skipped</span></code></p></td>
+<td><p>Executions of an eligible MIN/MAX aggregate that skip reader attachment, including those exceeding the footer limits or using encryption.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Plans rejected before reader attachment is attempted do not increment either counter. An attached
+filter can still prune nothing, including when a file’s schema adaptation disables pruning.</p>
+<p>Reader work remains on the scan. Compare <code class="docutils literal notranslate"><span class="pre">output_rows</span></code>, <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code>,
+<code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code>, and <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code> with filtering disabled.
+<code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> measures requested data/Bloom-filter ranges, excluding footer and page-index reads;
+use <code class="docutils literal notranslate"><span class="pre">scan_io_metadata_bytes</span></code> to include the metadata work of inspecting footers. Row groups pruned
+while reading a file increment <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code>; pruning when later files open
+can instead increment <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code>. The statistics counter also includes other
+predicates, so neither counter alone measures MIN/MAX savings. Page-index and decoder filtering
+retain their existing <code class="docutils literal notranslate"><span class="pre">page_index_rows_pruned</span></code> and <code class="docutils literal notranslate"><span class="pre">pushdown_rows_pruned</span></code> counters. There are no
+separate evaluated/pruned row counters on the aggregate.</p>
+</section>
 </section>
 <section id="hash-joins">
 <h3>Hash Joins<a class="headerlink" href="#hash-joins" title="Link to this heading">#</a></h3>
@@ -1297,7 +1330,7 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 <td><p>Opens that used a load which read storage ahead of them, started when the previous file opened (<code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.prefetchNextFileMetadata.enabled</span></code>). Each also counts as a cache miss.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code></p></td>
-<td><p>Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.</p></td>
+<td><p>Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold or MIN/MAX bound.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1434,7 +1467,10 @@ filesystem or network traffic accounting.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-metrics">Spark SQL Metrics</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometbatchscan">CometBatchScan</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometicebergnativescan">CometIcebergNativeScan</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#comethashaggregate">CometHashAggregate</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#comethashaggregate">CometHashAggregate</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-reader-filtering">MIN/MAX Reader Filtering</a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-joins">Hash Joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk">Local TopK</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
