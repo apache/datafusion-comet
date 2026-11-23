@@ -213,8 +213,8 @@ INSERT INTO test_regr_special VALUES
   (1, 1.0, cast('NaN' as double), true), (1, 2.0, 2.0, true), (1, 4.0, 3.0, true),
   (2, cast('Infinity' as double), 1.0, true), (2, 2.0, 2.0, true), (2, 4.0, 3.0, true),
   (3, 1.0, cast('-Infinity' as double), true), (3, 2.0, 2.0, true), (3, 4.0, 3.0, true),
-  (4, -0.0, 1.0, true), (4, -0.0, 2.0, true), (4, -0.0, 3.0, true),
-  (5, 1.0, -0.0, true), (5, 2.0, -0.0, true), (5, 4.0, -0.0, true),
+  (4, -0.0D, 1.0, true), (4, -0.0D, 2.0, true), (4, -0.0D, 3.0, true),
+  (5, 1.0, -0.0D, true), (5, 2.0, -0.0D, true), (5, 4.0, -0.0D, true),
   (6, 1.0, 1.0, true), (6, 2.0, 2.0, true), (6, 4.0, 3.0, true),
   (6, cast('NaN' as double), 4.0, false), (6, 5.0, cast('Infinity' as double), NULL)
 
