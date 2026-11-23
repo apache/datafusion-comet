@@ -4988,11 +4988,8 @@ class CometIcebergNativeSuite
             assert(disabledScan.metrics("bytes_scanned").value == fullBytes)
             // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
             if (icebergVersionAtLeast(1, 8)) {
-              val disabled =
-                OperatorOuterClass.IcebergScanCommon.parseFrom(disabledScan.commonData)
-              val enabled = OperatorOuterClass.IcebergScanCommon.parseFrom(partialScan.commonData)
-              assert(disabled.getResidualPoolCount == 0)
-              assert(enabled.getResidualPoolCount == 1)
+              assert(distinctResiduals(disabledScan).isEmpty)
+              assert(distinctResiduals(partialScan).size == 1)
             }
 
             val wholeScan = checkAndGetScan("id BETWEEN 1000 AND 1099")
@@ -5002,11 +4999,9 @@ class CometIcebergNativeSuite
               wholeScan.metrics("output_rows").value ==
                 enabledWholeScan.metrics("output_rows").value)
             if (icebergVersionAtLeast(1, 8)) {
-              val whole = OperatorOuterClass.IcebergScanCommon.parseFrom(wholeScan.commonData)
-              val enabledWhole =
-                OperatorOuterClass.IcebergScanCommon.parseFrom(enabledWholeScan.commonData)
-              assert(whole.getResidualPoolCount == 1)
-              assert(whole.getResidualPoolList == enabledWhole.getResidualPoolList)
+              val whole = distinctResiduals(wholeScan)
+              assert(whole.size == 1)
+              assert(whole == distinctResiduals(enabledWholeScan))
             }
           }
 
@@ -5205,9 +5200,9 @@ class CometIcebergNativeSuite
             val scans = collectIcebergNativeScans(partialPlan)
             assert(scans.length == 1, s"$partialPlan")
             val scan = scans.head
-            val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
-            assert(common.getResidualPoolCount == 1)
-            val residual = common.getResidualPool(0)
+            val residuals = distinctResiduals(scan)
+            assert(residuals.size == 1)
+            val residual = residuals.head
             assert(residual.hasAnd, s"$residual")
             assert(
               Seq(residual.getAnd.getLeft, residual.getAnd.getRight).exists { child =>
