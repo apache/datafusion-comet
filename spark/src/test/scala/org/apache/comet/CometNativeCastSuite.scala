@@ -31,7 +31,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -40,6 +40,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, SparkFixes, Unsupported}
+import org.apache.comet.serde.literals.CometLiteral
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -2549,6 +2550,35 @@ class CometNativeCastSuite
       // testTry=false: try_cast uses SQL string interpolation (toType.sql → "DECIMAL(10,-4)")
       // which the SQL parser rejects regardless of allowNegativeScaleOfDecimal.
       castTest(values, DataTypes.createDecimalType(10, -4), testTry = false)
+    }
+  }
+
+  test("decimal scales outside Arrow's signed-byte range fall back to Spark") {
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+      val decimalType = DataTypes.createDecimalType(10, -256)
+      val schema = StructType(Seq(StructField("d", decimalType)))
+      val row = Row(new java.math.BigDecimal("1E+256"))
+      val input = spark.createDataFrame(spark.sparkContext.parallelize(Seq(row), 1), schema)
+
+      val fallbackReasons = ListBuffer.empty[String]
+      assert(!CometSparkToColumnarExec.isSchemaSupported(schema, fallbackReasons))
+      assert(
+        fallbackReasons.exists(_.contains("scale is outside Arrow's supported range")),
+        fallbackReasons.toString)
+      assert(input.collect().toSeq == Seq(row))
+
+      val literal = Literal.create(new java.math.BigDecimal("1E+256"), decimalType)
+      assert(CometLiteral.getSupportLevel(literal).isInstanceOf[Unsupported])
+
+      Seq(-129, -128, 0, 38).foreach { scale =>
+        val dataType = DataTypes.createDecimalType(38, scale)
+        assert(
+          QueryPlanSerde.supportedDataType(dataType) ==
+            (scale >= Byte.MinValue && scale <= Byte.MaxValue),
+          s"Unexpected support decision for $dataType")
+      }
     }
   }
 
