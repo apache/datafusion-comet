@@ -65,6 +65,23 @@ private[comet] object SparkFixes {
     }
 
   /**
+   * SPARK-60119: `Decimal.changePrecision` skips `BigDecimal.setScale` when the value's magnitude
+   * already decides the result, so a string far below the target scale's ulp casts to 0 where
+   * `setScale` used to throw a raw `ArithmeticException`. That includes a scale difference that
+   * does not fit in an int, such as `'1e-2147483647'` to `DECIMAL(10,-2)`.
+   */
+  def castsTinyStringToDecimalZero(sparkVersion: String): Boolean =
+    // On branch-4.0, branch-4.1, branch-4.2 and master, and in the 4.0.5-rc3, 4.1.4-rc4 and
+    // 4.2.1-rc3 release candidates, so the first releases that carry it are 4.0.5, 4.1.4 and
+    // 4.2.1.
+    Utils.majorMinorPatchVersion(sparkVersion).exists {
+      case (4, 0, patch) => patch >= 5
+      case (4, 1, patch) => patch >= 4
+      case (4, 2, patch) => patch >= 1
+      case (major, minor, _) => major > 4 || (major == 4 && minor >= 3)
+    }
+
+  /**
    * SPARK-54918 and SPARK-59602: Spark 4.2.0 normalizes the arguments of the array set functions
    * in the plan (SPARK-54918), and 4.0.5, 4.1.4 and 4.2.1 normalize while evaluating them
    * (SPARK-59602). Either way, Spark treats -0.0 and 0.0, and every NaN, as one value at any
@@ -84,8 +101,8 @@ private[comet] object SparkFixes {
 
   /**
    * SPARK-48719 made regr_slope and regr_intercept count VariancePop(x) only over rows where both
-   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches and 3.4 count every
-   * row where x is non-null.
+   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches count every row where
+   * x is non-null.
    */
   def slopeFiltersVarByPairNulls(sparkVersion: String): Boolean =
     Utils.majorMinorPatchVersion(sparkVersion).exists {
@@ -96,7 +113,7 @@ private[comet] object SparkFixes {
   /**
    * SPARK-55969 swapped regr_r2's degenerate cases: a constant dependent variable yields 1.0 (was
    * null) and a constant independent variable yields null (was 1.0). Present from 3.5.9, 4.0.3,
-   * 4.1.2 and 4.2.0; earlier patches of those lines and 3.4 keep the old cases.
+   * 4.1.2 and 4.2.0; earlier patches of those lines keep the old cases.
    */
   def r2DegenerateCasesSwapped(sparkVersion: String): Boolean =
     Utils.majorMinorPatchVersion(sparkVersion).exists {

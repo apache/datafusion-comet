@@ -84,7 +84,8 @@ make release-nogit PROFILES="-Pspark-4.1"
 The native library allocates its memory with the system allocator, which is glibc malloc on Linux.
 In a long-running executor, glibc can keep several GiB of freed native memory resident (see
 [#7108](https://github.com/apache/datafusion-comet/issues/7108)). The published jars use the system
-allocator. To build Comet with [jemalloc](https://jemalloc.net/) instead, add the `jemalloc` profile:
+allocator, and each release also publishes a jar with the `jemalloc` classifier that uses
+[jemalloc](https://jemalloc.net/). To build Comet with jemalloc yourself, add the `jemalloc` profile:
 
 ```console
 make release PROFILES="-Pspark-4.1 -Pjemalloc"
@@ -107,6 +108,13 @@ with `spark.executorEnv._RJEM_MALLOC_CONF`, for example
 `--conf spark.executorEnv._RJEM_MALLOC_CONF=background_thread:true`.
 
 jemalloc fails every allocation on a kernel whose memory pages are larger than those of the machine
-it was built on. Some arm64 distributions use 64 KiB pages. When the executors may run on one, build
-with `JEMALLOC_SYS_WITH_LG_PAGE=16` set in the environment, which builds jemalloc for 64 KiB pages.
-That also works on kernels with smaller pages, but can raise memory use there.
+it was built on. The jemalloc jars that Comet publishes are built for 4 KiB pages, which is what
+x86_64 always uses and what the default arm64 kernels of Ubuntu, Debian, Fedora, RHEL 9 and 10 and
+Oracle Linux use. Some arm64 kernels use 64 KiB pages: RHEL 8 and its rebuilds, RHEL 9 and 10 when
+the optional `kernel-64k` is installed, and NVIDIA Grace systems running the 64 KiB kernel that NVIDIA
+recommends, for example Ubuntu's `linux-nvidia-64k`.
+
+`getconf PAGESIZE` prints the page size of a machine. On executors with 64 KiB pages, use the jar with
+the system allocator, or build Comet from source with `JEMALLOC_SYS_WITH_LG_PAGE=16` set in the
+environment, which builds jemalloc for 64 KiB pages. That library works on kernels with 4 KiB and
+64 KiB pages, but can raise memory use on the smaller ones.

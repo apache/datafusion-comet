@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::comet_partitioning::positional_runs;
+use crate::comet_partitioning::{hash_partition_ids, positional_runs};
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::{
     BufferedRun, PartitionIndices, PartitionedBatchesProducer,
 };
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::PartitionWriter;
-use crate::{comet_partitioning, CometPartitioning, RoundRobinStrategy};
+use crate::{CometPartitioning, RoundRobinStrategy};
 use arrow::array::{Array, ArrayData, RecordBatch};
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::{DataFusionError, HashSet};
@@ -299,13 +299,8 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                     {
                         // Hash arrays and compute partition ids based on number of partitions.
                         let partition_ids = &mut scratch.partition_ids[..num_rows];
-                        create_murmur3_hashes(&arrays, hashes_buf)?
-                            .iter()
-                            .enumerate()
-                            .for_each(|(idx, hash)| {
-                                partition_ids[idx] =
-                                    comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                            });
+                        let hashes = create_murmur3_hashes(&arrays, hashes_buf)?;
+                        hash_partition_ids(hashes, *num_output_partitions, partition_ids);
                     }
 
                     // We now have partition ids for every input row, map that to partition starts
@@ -435,10 +430,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
 
                     // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
-                        partition_ids[idx] =
-                            comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                    });
+                    hash_partition_ids(hashes_buf, *num_output_partitions, partition_ids);
 
                     // We now have partition ids for every input row, map that to partition
                     // starts and partition indices to eventually write these rows to

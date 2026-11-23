@@ -69,7 +69,7 @@ impl PartialMergeStateDecoder {
 /// mixed Spark-Partial -> Comet-PartialMerge plans must materialize those unsafe bytes into an
 /// Arrow `ListArray` before calling the inner accumulator's `merge_batch`. The single-field
 /// `UnsafeRow` and nested `UnsafeArrayData` layouts used here, and the buffer element types, are
-/// unchanged across Spark 3.4-4.2.
+/// unchanged across Spark 3.5-4.2.
 #[derive(Clone, Debug)]
 pub(crate) struct SparkCollectStateDecoder {
     item_field: FieldRef,

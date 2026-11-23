@@ -69,7 +69,7 @@ SELECT uuid(42) FROM (SELECT id FROM test_uuid_parts DISTRIBUTE BY id)
 -- cannot be asserted here: this suite compares Comet against Spark, so if the plan ever collapsed
 -- to one partition both engines would collapse identically and any check would still pass. The
 -- partition count is asserted directly in CometUuidExpressionSuite ("across multiple partitions"),
--- which checks getNumPartitions > 1 before comparing, and covers 3.4/3.5 as well.
+-- which checks getNumPartitions > 1 before comparing.
 
 -- Aliased seeded projections: both nodes carry the same explicit seed, so freshCopyIfContainsStatefulExpression
 -- must not accidentally hoist a shared instance -- each row must satisfy uuid(0) = uuid(0).
