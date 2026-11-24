@@ -25,7 +25,7 @@ import scala.util.{Failure, Success, Try}
 
 import org.scalatest.exceptions.TestFailedException
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{Abs, CreateArray, Literal}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -239,6 +239,60 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
         }
       }
+    }
+  }
+
+  // `query tolerance=...` fixtures route through `checkAnswerWithTolerance`, which must treat
+  // NaN the way Spark does: two NaNs match, and a NaN against a number does not. See #7672.
+  test("tolerance comparison: both sides NaN") {
+    Seq(Row(Float.NaN) -> Row(Float.NaN), Row(Double.NaN) -> Row(Double.NaN)).foreach {
+      case (actual, expected) =>
+        checkAnswerWithTolerance(actual, expected, 1e-6)
+    }
+  }
+
+  test("tolerance comparison: one-sided NaN") {
+    val cases = Seq(
+      Row(Float.NaN) -> Row(1.0f),
+      Row(1.0f) -> Row(Float.NaN),
+      Row(Double.NaN) -> Row(1.0),
+      Row(1.0) -> Row(Double.NaN))
+    cases.foreach { case (actual, expected) =>
+      val error = intercept[TestFailedException] {
+        checkAnswerWithTolerance(actual, expected, 1e-6)
+      }
+      assert(
+        error.getMessage.contains("only one side is NaN"),
+        s"message should explain the NaN mismatch: ${error.getMessage}")
+      assert(
+        error.getMessage.contains(s"actual answer ${actual.get(0)}") &&
+          error.getMessage.contains(s"correct answer ${expected.get(0)}"),
+        s"message should name both operands: ${error.getMessage}")
+    }
+  }
+
+  test("tolerance comparison: finite values") {
+    // A difference of 5e-7 is within absTol; 1e-3 is not.
+    checkAnswerWithTolerance(Row(1.0), Row(1.0 + 5e-7), 1e-6)
+    checkAnswerWithTolerance(Row(1.0f), Row(1.0f + 5e-7f), 1e-6)
+    intercept[TestFailedException] {
+      checkAnswerWithTolerance(Row(1.0), Row(1.001), 1e-6)
+    }
+  }
+
+  // Infinities compare like any other value, so the sign is part of the comparison: +Infinity
+  // against -Infinity is a mismatch, as it is in Spark.
+  test("tolerance comparison: infinities") {
+    checkAnswerWithTolerance(Row(Double.PositiveInfinity), Row(Double.PositiveInfinity), 1e-6)
+    checkAnswerWithTolerance(Row(Float.NegativeInfinity), Row(Float.NegativeInfinity), 1e-6)
+    intercept[TestFailedException] {
+      checkAnswerWithTolerance(Row(Double.PositiveInfinity), Row(1.0), 1e-6)
+    }
+    intercept[TestFailedException] {
+      checkAnswerWithTolerance(Row(Double.PositiveInfinity), Row(Double.NegativeInfinity), 1e-6)
+    }
+    intercept[TestFailedException] {
+      checkAnswerWithTolerance(Row(Float.NegativeInfinity), Row(Float.PositiveInfinity), 1e-6)
     }
   }
 

@@ -639,8 +639,10 @@ abstract class CometTestBase
 
   /**
    * Compares two answers and makes sure the answer is within absTol of the expected result.
+   *
+   * Protected so that suites consuming the tolerance path can assert its contract directly.
    */
-  private def checkAnswerWithTolerance(
+  protected def checkAnswerWithTolerance(
       actualAnswer: Row,
       expectedAnswer: Row,
       absTol: Double): Unit = {
@@ -653,16 +655,24 @@ abstract class CometTestBase
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
       case (actual: Float, expected: Float) =>
         if (actual.isInfinity || expected.isInfinity) {
-          assert(actual.isInfinity == expected.isInfinity, s"actual answer $actual != $expected")
-        } else if (!actual.isNaN && !expected.isNaN) {
+          assert(actual == expected, s"actual answer $actual != $expected")
+        } else if (actual.isNaN || expected.isNaN) {
+          assert(
+            actual.isNaN && expected.isNaN,
+            s"actual answer $actual and correct answer $expected differ: only one side is NaN")
+        } else {
           assert(
             math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
         }
       case (actual: Double, expected: Double) =>
         if (actual.isInfinity || expected.isInfinity) {
-          assert(actual.isInfinity == expected.isInfinity, s"actual answer $actual != $expected")
-        } else if (!actual.isNaN && !expected.isNaN) {
+          assert(actual == expected, s"actual answer $actual != $expected")
+        } else if (actual.isNaN || expected.isNaN) {
+          assert(
+            actual.isNaN && expected.isNaN,
+            s"actual answer $actual and correct answer $expected differ: only one side is NaN")
+        } else {
           assert(
             math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
