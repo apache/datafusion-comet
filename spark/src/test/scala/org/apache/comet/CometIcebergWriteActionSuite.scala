@@ -1718,7 +1718,7 @@ class CometIcebergWriteActionSuite
 
   Seq(false, true).foreach { partitioned =>
     test(
-      "native acceleration: a top-level unknown column matches iceberg-java " +
+      "native acceleration: a top-level unknown column followed by uuid matches iceberg-java " +
         s"(partitioned = $partitioned)") {
       assumeNativeAcceleration()
       assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
@@ -1726,42 +1726,58 @@ class CometIcebergWriteActionSuite
         val nativeTable = s"unknown_native_$partitioned"
         val jvmTable = s"unknown_jvm_$partitioned"
         Seq(nativeTable, jvmTable).foreach { t =>
-          createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
-          addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+          createTable(
+            t,
+            partitionSpec = "",
+            properties = Some("'format-version'='3', 'write.metadata.metrics.default'='full'"))
+          val table = loadIcebergTable(spark, catalog, ns, t)
+          addIcebergColumn(table, "u", icebergUnknownType())
+          addIcebergColumn(table, "v", org.apache.iceberg.types.Types.UUIDType.get())
           spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD COLUMN tail STRING")
           // `tail` sits after `u`, so its partition source index shifts once `u` is pruned.
           if (partitioned) spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD PARTITION FIELD tail")
           spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
         }
         def insert(t: String): Unit =
-          spark.sql(
-            s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL, 'a'), (2, 'eu', 2.0, NULL, NULL)")
-        assertNativeWriteEngages(nativeTable, Seq(1, 2))(insert(nativeTable))
+          spark.sql(s"""INSERT INTO $catalog.$ns.$t VALUES
+              (1, 'us', 1.0, NULL, 'f47ac10b-58cc-4372-a567-0e02b2c3d479', 'a'),
+              (2, 'eu', 2.0, NULL, '1-1-1-1-1', 'a'),
+              (3, 'ap', 3.0, NULL, NULL, NULL)""")
+        assertNativeWriteEngages(nativeTable, Seq(1, 2, 3))(insert(nativeTable))
         insert(jvmTable)
         def rows(t: String): Seq[Row] =
           spark.sql(s"SELECT * FROM $catalog.$ns.$t ORDER BY id").collect().toSeq
-        assert(rows(nativeTable) == rows(jvmTable))
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          assert(rows(nativeTable) == rows(jvmTable))
+        }
         // Neither writer puts `u` in the data file or its metrics.
-        def footerColumns(t: String): Set[String] =
-          spark
-            .sql(s"SELECT file_path FROM $catalog.$ns.$t.files")
-            .collect()
-            .flatMap { r =>
-              val reader = ParquetFileReader.open(HadoopInputFile
-                .fromPath(new HadoopPath(r.getString(0)), spark.sessionState.newHadoopConf()))
-              try reader.getFooter.getFileMetaData.getSchema.getPaths.asScala.map(_.mkString("."))
-              finally reader.close()
-            }
+        def footerFields(t: String): Set[Seq[org.apache.parquet.schema.Type]] =
+          dataFileFooters(t).values
+            .map(_.getFileMetaData.getSchema.getFields.asScala.toSeq)
             .toSet
-        assert(footerColumns(nativeTable) == Set("id", "region", "amount", "tail"))
-        assert(footerColumns(jvmTable) == footerColumns(nativeTable))
-        def metricIds(t: String): Seq[Row] =
+        val nativeFields = footerFields(nativeTable)
+        assert(nativeFields == footerFields(jvmTable))
+        assert(nativeFields.size == 1)
+        val fields = nativeFields.head
+        assert(fields.map(_.getName) == Seq("id", "region", "amount", "v", "tail"))
+        val uuid = fields(3).asPrimitiveType()
+        assert(uuid.getPrimitiveTypeName == PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY)
+        assert(uuid.getTypeLength == 16)
+        assert(uuid.getLogicalTypeAnnotation == LogicalTypeAnnotation.uuidType())
+        val table = loadIcebergTable(spark, catalog, ns, nativeTable)
+          .asInstanceOf[org.apache.iceberg.Table]
+        assert(uuid.getId.intValue() == table.schema().findField("v").fieldId())
+        def metrics(t: String): Seq[Row] =
           spark
-            .sql("SELECT map_keys(column_sizes), map_keys(value_counts), " +
-              s"map_keys(null_value_counts) FROM $catalog.$ns.$t.files")
+            .sql(s"""SELECT ${if (partitioned) "partition" else "NULL"} AS part,
+              record_count, sort_array(map_keys(column_sizes)), value_counts, null_value_counts,
+              transform_values(lower_bounds, (k, v) -> hex(v)),
+              transform_values(upper_bounds, (k, v) -> hex(v))
+              FROM $catalog.$ns.$t.files""")
             .collect()
             .toSeq
-        assert(metricIds(nativeTable) == metricIds(jvmTable))
+            .sortBy(_.toString)
+        assert(metrics(nativeTable) == metrics(jvmTable))
       }
     }
   }

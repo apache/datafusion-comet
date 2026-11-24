@@ -690,23 +690,23 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     if (IcebergReflection.findFieldWithTypeIds(schema, Set("UUID")).isEmpty) {
       None
     } else {
-      requireOutputPartitionSpec { spec =>
-        IcebergReflection
-          .uuidTransformSource(schema, spec)
-          .map(name =>
-            s"UUID column $name is a partition or sort source requiring UUID normalization")
-      }(ctx).orElse {
-        val order = IcebergReflection
-          .getOutputSortOrderIdFromSparkWrite(ctx.sparkWrite)
-          .flatMap(IcebergReflection.getSortOrderById(ctx.table, _))
-          .getOrElse {
-            IcebergReflection.getMethod(ctx.table.getClass, "sortOrder").invoke(ctx.table)
-          }
-        IcebergReflection
-          .uuidTransformSource(schema, order)
-          .map(name =>
-            s"UUID column $name is a partition or sort source requiring UUID normalization")
-      }
+      val spec = IcebergReflection
+        .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+        .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _))
+        .getOrElse {
+          throw new IllegalStateException("could not resolve the output partition spec")
+        }
+      val order = IcebergReflection
+        .getOutputSortOrderIdFromSparkWrite(ctx.sparkWrite)
+        .flatMap(IcebergReflection.getSortOrderById(ctx.table, _))
+        .getOrElse {
+          IcebergReflection.getMethod(ctx.table.getClass, "sortOrder").invoke(ctx.table)
+        }
+      Seq(spec, order).iterator
+        .flatMap(IcebergReflection.uuidTransformSource(schema, _))
+        .collectFirst { case name =>
+          s"UUID column $name is a partition or sort source requiring UUID normalization"
+        }
     }
   }
 

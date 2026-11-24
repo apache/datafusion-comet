@@ -185,6 +185,7 @@ object IcebergReflection extends Logging {
    */
   object TypeNames {
     val UNKNOWN = "unknown"
+    val UUID = "uuid"
   }
 
   /** Loads a class, returning `None` when it's absent (e.g. Iceberg not on the classpath). */
@@ -910,13 +911,10 @@ object IcebergReflection extends Logging {
       .filter(c => fieldTypeOf(c).toString == TypeNames.UNKNOWN)
       .map(fieldIdOf)
       .toSet
-    getMethod(spec.getClass, "fields")
-      .invoke(spec)
-      .asInstanceOf[java.util.List[_]]
-      .asScala
-      .toSeq
-      .filter(f => unknownIds(getMethod(f.getClass, "sourceId").invoke(f).asInstanceOf[Int]))
-      .map(f => getMethod(f.getClass, "name").invoke(f).asInstanceOf[String])
+    transformFieldsWithSource(schema, spec)(source => unknownIds(fieldIdOf(source))).map {
+      case (field, _) =>
+        getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
+    }.toSeq
   }
 
   /**
@@ -1739,34 +1737,33 @@ object IcebergReflection extends Logging {
   }
 
   /** UUID source whose Spark string ordering/distribution precedes native UUID normalization. */
-  def uuidTransformSource(schema: Any, specOrOrder: Any): Option[String] = {
+  def uuidTransformSource(schema: Any, specOrOrder: Any): Option[String] =
+    transformFieldsWithSource(schema, specOrOrder)(source =>
+      fieldTypeOf(source).toString == TypeNames.UUID)
+      .filter { case (field, _) =>
+        getMethod(field.getClass, "transform").invoke(field).toString != "void"
+      }
+      .collectFirst { case (_, id) =>
+        getMethod(schema.getClass, "findColumnName", classOf[Int])
+          .invoke(schema, Int.box(id))
+          .asInstanceOf[String]
+      }
+
+  private def transformFieldsWithSource(schema: Any, specOrOrder: Any)(
+      matchesSource: Any => Boolean): Iterator[(Any, Int)] = {
     import scala.jdk.CollectionConverters._
     val fields = getMethod(specOrOrder.getClass, "fields")
       .invoke(specOrOrder)
       .asInstanceOf[java.util.List[_]]
     fields.asScala.iterator
-      .filter { field =>
-        getMethod(field.getClass, "transform").invoke(field).toString != "void"
-      }
       .flatMap { field =>
         val id = getMethod(field.getClass, "sourceId").invoke(field).asInstanceOf[Int]
         Option(
           getMethod(schema.getClass, "findField", classOf[Int])
-            .invoke(schema, Int.box(id))).flatMap { source =>
-          val tpe = getMethod(source.getClass, "type").invoke(source)
-          val typeIdName =
-            getMethod(tpe.getClass, "typeId").invoke(tpe).asInstanceOf[Enum[_]].name()
-          if (typeIdName == "UUID") {
-            Some(
-              getMethod(schema.getClass, "findColumnName", classOf[Int])
-                .invoke(schema, Int.box(id))
-                .asInstanceOf[String])
-          } else None
-        }
+            .invoke(schema, Int.box(id)))
+          .filter(matchesSource)
+          .map(_ => (field, id))
       }
-      .take(1)
-      .toSeq
-      .headOption
   }
 
   /**

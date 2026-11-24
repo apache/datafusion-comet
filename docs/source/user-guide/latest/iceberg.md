@@ -861,15 +861,15 @@ unchanged.
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-`spark.comet.write.iceberg.enabled` accepts them. They fall into two classes with very
-different blast radius: differences confined to the physical bytes of a data file, and
-differences visible in manifest metadata (these
-outlive the write and feed later readers' pruning decisions, so each one is analyzed
-individually below).
+`spark.comet.write.iceberg.enabled` accepts them. The following sections describe physical
+file layout and file ordering, followed by manifest metrics used by later readers for pruning.
 
 #### Physical file layout
 
-Iceberg readers use the table schema and recover the same values from these layouts.
+Iceberg readers recover the same logical user-column values from these layouts. File counts,
+row-group boundaries and file ordering can still affect read planning, pruning and unordered
+result order. On format-version 3 tables, fanout file ordering can also change assigned
+`_row_id` values, as described below:
 
 - Footer key-value metadata differs: native files carry an `ARROW:schema` entry and no
   `iceberg.schema` entry; iceberg-java files are the opposite.

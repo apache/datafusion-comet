@@ -328,7 +328,8 @@ fn parent_visibility(array: &dyn Array, visible: Option<&NullBuffer>) -> Option<
 mod tests {
     use super::*;
     use arrow::array::{
-        BinaryArray, DictionaryArray, Int32Array, LargeStringArray, StringArray, StringViewArray,
+        BinaryArray, DictionaryArray, Int32Array, LargeStringArray, NullArray, StringArray,
+        StringViewArray,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::{Fields, Int32Type, Schema as ArrowSchema};
@@ -358,6 +359,49 @@ mod tests {
     fn check_uuid(array: &ArrayRef, row: usize, value: &str) {
         let array = array.as_fixed_size_binary();
         assert_eq!(array.value(row), parse_java_uuid(value).unwrap());
+    }
+
+    #[test]
+    fn uuid_after_null_column_preserves_alignment() {
+        let schema = Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                NestedField::optional(3, "uuid", uuid_type()).into(),
+                NestedField::optional(4, "tail", Type::Primitive(PrimitiveType::Int)).into(),
+            ])
+            .build()
+            .unwrap();
+        let (convert, batch, target) = alignment(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec![Some(UUID), Some("1-1-1-1-1"), None])),
+                Arc::new(Int32Array::from(vec![Some(10), None, Some(30)])),
+            ],
+        );
+        let mut fields = batch.schema().fields().to_vec();
+        fields.insert(1, Arc::new(Field::new("unknown", DataType::Null, true)));
+        let mut columns = batch.columns().to_vec();
+        columns.insert(1, Arc::new(NullArray::new(3)));
+        let batch = RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), columns).unwrap();
+
+        let result = convert.convert(batch, &target).unwrap();
+        assert_eq!(result.schema(), target);
+        assert_eq!(
+            result
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .values()
+                .as_ref(),
+            &[1, 2, 3]
+        );
+        check_uuid(result.column(1), 0, UUID);
+        check_uuid(result.column(1), 1, "1-1-1-1-1");
+        assert!(result.column(1).is_null(2));
+        assert_eq!(
+            result.column(2).as_ref(),
+            &Int32Array::from(vec![Some(10), None, Some(30)])
+        );
     }
 
     #[test]
