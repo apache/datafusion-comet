@@ -2180,7 +2180,10 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let input = Arc::clone(&child.native_plan);
+                let input = self.bound_scalar_expansion(
+                    Arc::clone(&child.native_plan),
+                    projections.iter().flatten(),
+                );
                 let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,

@@ -144,6 +144,7 @@ impl OperatorBuilder for HashJoinBuilder {
             PartitionMode::Partitioned
         };
 
+        let filter = join_params.join_filter.clone();
         let hash_join = Arc::new(HashJoinExec::try_new(
             left,
             right,
@@ -168,6 +169,7 @@ impl OperatorBuilder for HashJoinBuilder {
                 join.dynamic_filter_enabled && !join.null_aware_anti_join,
                 planner.session_ctx.copied_config().options(),
             )?;
+            let hash_join = planner.bound_join_filter_expansion(hash_join, filter.as_ref());
             Ok((
                 scans,
                 shuffle_scans,
@@ -190,6 +192,8 @@ impl OperatorBuilder for HashJoinBuilder {
                 // a projection was added to the hash join
                 additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
             }
+            let swapped_hash_join =
+                planner.bound_join_filter_expansion(swapped_hash_join, filter.as_ref());
 
             Ok((
                 scans,
@@ -332,6 +336,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             })
             .collect::<Result<Vec<_>, ExecutionError>>()?;
 
+        let filter = join_params.join_filter.clone();
         let join = Arc::new(SortMergeJoinExec::try_new(
             Arc::clone(&left),
             Arc::clone(&right),
@@ -343,6 +348,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             // `EqualNullSafe`, Spark will rewrite it during planning.
             NullEquality::NullEqualsNothing,
         )?);
+        let join = planner.bound_join_filter_expansion(join, filter.as_ref());
 
         Ok((
             scans,
@@ -384,6 +390,7 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
         let left = Arc::clone(&join_params.left.native_plan);
         let right = Arc::clone(&join_params.right.native_plan);
 
+        let filter = join_params.join_filter.clone();
         let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
             left,
             right,
@@ -398,6 +405,7 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
             if swapped_join.is::<ProjectionExec>() {
                 additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
             }
+            let swapped_join = planner.bound_join_filter_expansion(swapped_join, filter.as_ref());
             Ok((
                 scans,
                 shuffle_scans,
@@ -414,7 +422,7 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
                 shuffle_scans,
                 Arc::new(SparkPlan::new(
                     spark_plan.plan_id,
-                    nested_loop_join,
+                    planner.bound_join_filter_expansion(nested_loop_join, filter.as_ref()),
                     vec![join_params.left, join_params.right],
                 )),
             ))

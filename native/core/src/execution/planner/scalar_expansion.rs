@@ -41,8 +41,9 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::logical_expr::{ColumnarValue, Operator, Volatility};
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
+use datafusion::physical_plan::joins::utils::JoinFilter;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_operators::BatchSplitExec;
+use datafusion_comet_operators::{BatchSizeScopeExec, BatchSplitExec};
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
@@ -76,14 +77,44 @@ impl PhysicalPlanner {
         exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
     ) -> Arc<dyn ExecutionPlan> {
         let schema = input.schema();
+        match self.scalar_expansion_rows(exprs, &schema) {
+            Some(rows) => Arc::new(BatchSplitExec::new(input, rows)),
+            None => input,
+        }
+    }
+
+    /// Runs `join` at a batch size that keeps the string and binary scalars its filter expands
+    /// within `SCALAR_EXPANSION_BYTES`. A join evaluates the filter over up to a batch size of
+    /// the row pairs it matched, however wide its inputs, so a split under it would not bound
+    /// that. Returns `join` as is when the filter expands no scalar or the session's batch size
+    /// already keeps it within the bound.
+    pub(crate) fn bound_join_filter_expansion(
+        &self,
+        join: Arc<dyn ExecutionPlan>,
+        filter: Option<&JoinFilter>,
+    ) -> Arc<dyn ExecutionPlan> {
+        let Some(filter) = filter else {
+            return join;
+        };
+        let batch_size = self.session_ctx.copied_config().batch_size();
+        match self.scalar_expansion_rows([filter.expression()], filter.schema()) {
+            Some(rows) if rows < batch_size => Arc::new(BatchSizeScopeExec::new(join, rows)),
+            _ => join,
+        }
+    }
+
+    /// The most rows per batch at which the string and binary scalars `exprs` expand stay within
+    /// `SCALAR_EXPANSION_BYTES`, or `None` when they expand no scalar.
+    fn scalar_expansion_rows<'a>(
+        &self,
+        exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
+        schema: &Schema,
+    ) -> Option<usize> {
         let bytes: usize = exprs
             .into_iter()
-            .map(|expr| self.expanded_scalar_bytes(expr, &schema))
+            .map(|expr| self.expanded_scalar_bytes(expr, schema))
             .sum();
-        if bytes == 0 {
-            return input;
-        }
-        Arc::new(BatchSplitExec::new(input, scalar_rows_cap(bytes)))
+        (bytes > 0).then(|| scalar_rows_cap(bytes))
     }
 
     /// The bytes of the string and binary scalars that evaluating `expr` expands to the batch's
@@ -439,6 +470,45 @@ mod tests {
         assert_eq!(256 * 1024 * 1024, split_at(&[lit("abcd")]));
         let wide = lit("x".repeat(256 * 1024));
         assert_eq!(2048, split_at(&[Arc::clone(&wide), wide]));
+    }
+
+    #[test]
+    fn runs_a_join_at_the_batch_size_its_filter_scalar_allows() {
+        use datafusion::common::JoinSide;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::joins::utils::ColumnIndex;
+        let planner = PhysicalPlanner::default();
+        let join: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
+        let filter_schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+        let filter = |scalar: Arc<dyn PhysicalExpr>| {
+            let expr = binary(
+                scalar,
+                Operator::StringConcat,
+                col("s", &filter_schema).unwrap(),
+                &filter_schema,
+            )
+            .unwrap();
+            let side = ColumnIndex {
+                index: 1,
+                side: JoinSide::Left,
+            };
+            JoinFilter::new(expr, vec![side], Arc::clone(&filter_schema))
+        };
+        let wide = filter(lit("x".repeat(256 * 1024)));
+        let bounded = planner.bound_join_filter_expansion(Arc::clone(&join), Some(&wide));
+        let scope = bounded
+            .downcast_ref::<BatchSizeScopeExec>()
+            .expect("a batch size scope above the join");
+        assert_eq!(4096, scope.batch_size());
+        // A scalar the session batch size already keeps within the bound, or no filter at all,
+        // leaves the join as it is.
+        let small = filter(lit("abcd"));
+        let unbounded = planner.bound_join_filter_expansion(Arc::clone(&join), Some(&small));
+        assert!(Arc::ptr_eq(&unbounded, &join));
+        assert!(Arc::ptr_eq(
+            &planner.bound_join_filter_expansion(Arc::clone(&join), None),
+            &join
+        ));
     }
 
     #[test]
