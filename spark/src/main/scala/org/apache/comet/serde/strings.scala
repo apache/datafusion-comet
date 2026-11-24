@@ -26,7 +26,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, withNullShortCircuit}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -585,11 +585,12 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDisp
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
 
-    scalarFunctionExprToProto(
+    val scalarFunc = scalarFunctionExprToProto(
       "rpad",
       exprToProtoInternal(expr.str, inputs, binding),
       exprToProtoInternal(expr.len, inputs, binding),
       exprToProtoInternal(expr.pad, inputs, binding))
+    withNullShortCircuit(expr, scalarFunc)
   }
 }
 
@@ -612,11 +613,12 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDisp
       expr: StringLPad,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    scalarFunctionExprToProto(
+    val scalarFunc = scalarFunctionExprToProto(
       "lpad",
       exprToProtoInternal(expr.str, inputs, binding),
       exprToProtoInternal(expr.len, inputs, binding),
       exprToProtoInternal(expr.pad, inputs, binding))
+    withNullShortCircuit(expr, scalarFunc)
   }
 }
 
