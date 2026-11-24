@@ -153,8 +153,10 @@ Some things to know:
   so it warms nothing. In a warm run of the same mode on upstream `main`
   ([45050546538](https://github.com/apache/datafusion-comet/actions/runs/45050546538)), the lint,
   the native build and the two TPC jobs took 16.5 minutes of job time, and about 20 with the
-  preflight and change detection jobs. A cold first refresh takes longer. The refresh warms only the
-  default profile's Maven dependencies. The Celeborn jobs build with
+  preflight and change detection jobs. A cold first refresh takes longer, and if Maven Central
+  throttles it, a job can fail before it saves anything. Re-run that push run's failed jobs once the
+  throttling clears: the run is still on `main`, so the caches save when those jobs pass. The
+  refresh warms only the default profile's Maven dependencies. The Celeborn jobs build with
   `-Pspark-3.5,scala-2.12,celeborn-reflection-compatibility`, so they still download the Spark 3.5
   and Scala 2.12 dependencies from Maven Central, and can still be throttled after a sync. A `main`
   that carries commits of its own runs the PR tier instead, which saves the Maven and cargo caches
