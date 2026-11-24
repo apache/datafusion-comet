@@ -35,9 +35,9 @@
 
 use std::sync::Arc;
 
+use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use datafusion::common::ScalarValue;
 use datafusion::logical_expr::{ColumnarValue, Operator, Volatility};
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
@@ -87,7 +87,8 @@ impl PhysicalPlanner {
     }
 
     /// The bytes of the string and binary scalars that evaluating `expr` expands to the batch's
-    /// length, added up, so that a scalar used twice counts twice.
+    /// length, including those inside a list, struct or map scalar, added up, so that a scalar
+    /// used twice counts twice.
     ///
     /// A scalar is any subtree without a column reference or a volatile function, evaluated
     /// here on a one-row batch: `repeat(<subquery>, 8)` is wider than the subquery result it is
@@ -119,10 +120,10 @@ impl PhysicalPlanner {
                 .map(|child| self.expanded_scalar_bytes(child, schema))
                 .sum();
         }
-        if !matches!(
-            expr.data_type(schema),
-            Ok(DataType::Utf8 | DataType::Binary)
-        ) {
+        if !expr
+            .data_type(schema)
+            .is_ok_and(|data_type| holds_offset_bytes(&data_type))
+        {
             return 0;
         }
         // One row, so that a kernel that expands its scalar arguments still yields one value.
@@ -134,20 +135,14 @@ impl PhysicalPlanner {
             return 0;
         };
         let value = match expr.evaluate(&one_row) {
-            Ok(ColumnarValue::Scalar(value)) => value,
-            Ok(ColumnarValue::Array(array)) if array.len() == 1 => {
-                match ScalarValue::try_from_array(&array, 0) {
-                    Ok(value) => value,
-                    Err(_) => return 0,
-                }
-            }
+            Ok(ColumnarValue::Scalar(value)) => match value.to_array_of_size(1) {
+                Ok(array) => array,
+                Err(_) => return 0,
+            },
+            Ok(ColumnarValue::Array(array)) if array.len() == 1 => array,
             _ => return 0,
         };
-        match value {
-            ScalarValue::Utf8(Some(s)) => s.len(),
-            ScalarValue::Binary(Some(b)) => b.len(),
-            _ => 0,
-        }
+        offset_bytes(&value)
     }
 
     /// The bytes of the scalars inside the `operands` computed per row. An operand that is a
@@ -161,6 +156,40 @@ impl PhysicalPlanner {
             .filter(|operand| !self.is_scalar(operand))
             .map(|operand| self.expanded_scalar_bytes(operand, schema))
             .sum()
+    }
+}
+
+/// Whether a value of `data_type` holds string or binary bytes behind 32-bit offsets, at the
+/// top level or inside a list, struct or map, all of which an expansion repeats.
+fn holds_offset_bytes(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8 | DataType::Binary => true,
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => holds_offset_bytes(field.data_type()),
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| holds_offset_bytes(field.data_type())),
+        _ => false,
+    }
+}
+
+/// The string and binary value bytes in `array`, at the top level and inside its lists, structs
+/// and maps.
+fn offset_bytes(array: &ArrayRef) -> usize {
+    match array.data_type() {
+        DataType::Utf8 => array.as_string::<i32>().value_data().len(),
+        DataType::Binary => array.as_binary::<i32>().value_data().len(),
+        DataType::List(_) => offset_bytes(array.as_list::<i32>().values()),
+        DataType::LargeList(_) => offset_bytes(array.as_list::<i64>().values()),
+        DataType::FixedSizeList(_, _) => offset_bytes(array.as_fixed_size_list().values()),
+        DataType::Map(_, _) => {
+            let entries: ArrayRef = Arc::new(array.as_map().entries().clone());
+            offset_bytes(&entries)
+        }
+        DataType::Struct(_) => array.as_struct().columns().iter().map(offset_bytes).sum(),
+        _ => 0,
     }
 }
 
@@ -244,6 +273,38 @@ mod tests {
         assert_eq!(bytes(lit("abcd")), 4);
         assert_eq!(bytes(lit(7)), 0);
         assert_eq!(bytes(col("s", &schema()).unwrap()), 0);
+    }
+
+    #[test]
+    fn counts_the_strings_inside_a_nested_scalar() {
+        use arrow::array::{Int32Array, StringArray, StructArray};
+        use datafusion::common::ScalarValue;
+        let strings = ScalarValue::new_list_nullable(
+            &[
+                ScalarValue::Utf8(Some("abcd".into())),
+                ScalarValue::Utf8(Some("ef".into())),
+            ],
+            &DataType::Utf8,
+        );
+        assert_eq!(bytes(lit(ScalarValue::List(Arc::clone(&strings)))), 6);
+        let nested = ScalarValue::new_list_nullable(
+            &[ScalarValue::List(strings)],
+            &DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true))),
+        );
+        assert_eq!(bytes(lit(ScalarValue::List(nested))), 6);
+        let ints = ScalarValue::new_list_nullable(&[ScalarValue::Int32(Some(7))], &DataType::Int32);
+        assert_eq!(bytes(lit(ScalarValue::List(ints))), 0);
+        let record = StructArray::from(vec![
+            (
+                Arc::new(Field::new("s", DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec!["abcdefgh"])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("k", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+            ),
+        ]);
+        assert_eq!(bytes(lit(ScalarValue::Struct(Arc::new(record)))), 8);
     }
 
     #[test]

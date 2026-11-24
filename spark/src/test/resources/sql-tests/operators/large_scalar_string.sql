@@ -89,3 +89,7 @@ FROM range(0, 8192, 1, 1)
 -- a sort key evaluated per batch by the TopK under the limit
 query
 SELECT id FROM range(0, 8192, 1, 1) ORDER BY concat(repeat('x', 262144), CAST(id AS STRING)) LIMIT 1
+
+-- a string inside a list scalar, which `IF` expands to the batch length along with its elements
+query
+SELECT sum(size(a)) FROM (SELECT IF(id >= 0, array(repeat('x', 262144)), array(CAST(id AS STRING))) AS a FROM range(0, 8192, 1, 1))
