@@ -973,7 +973,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       val resolution = IcebergReflection
         .getParquetPathResolution(schema)
         .getOrElse(throw new IllegalStateException("Could not resolve Bloom Parquet paths"))
-      bloomFilterParquetPaths(columns, resolution, schema = schema) match {
+      bloomFilterParquetPaths(
+        columns,
+        resolution,
+        IcebergReflection.icebergVersion(),
+        schema) match {
         case Left(reason) => Some(reason)
         case Right(paths) =>
           val properties = interpretedBloomFilterProperties(ctx.properties)
@@ -997,8 +1001,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private[operator] def bloomFilterParquetPaths(
       configuredColumns: Seq[String],
       resolution: IcebergReflection.ParquetPathResolution,
-      icebergVersion: String = IcebergReflection.icebergVersion(),
-      schema: Any = null): Either[String, Map[String, String]] = {
+      icebergVersion: String,
+      schema: Any): Either[String, Map[String, String]] = {
     val paths = bloomFilterVersion(icebergVersion) match {
       case Some((1, minor)) if minor >= 5 && minor < 8 =>
         // ColumnPath.fromDotString uses Java split's trailing-empty-component removal. Keep
@@ -1790,7 +1794,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         val enabledColumns =
           IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties).toSet
         val resolvedPaths =
-          bloomFilterParquetPaths(configuredColumns, resolution, schema = writeSchema) match {
+          bloomFilterParquetPaths(
+            configuredColumns,
+            resolution,
+            IcebergReflection.icebergVersion(),
+            writeSchema) match {
             case Left(reason) =>
               withFallbackReason(op, reason)
               return None

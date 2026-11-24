@@ -35,6 +35,7 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
   import IcebergWriteProtoTranslation._
 
   private val TestCreatedBy = "Apache DataFusion Comet (test)"
+  private val UnusedSchema = new Object
 
   test("Bloom path resolution rejects unidentified Iceberg naming conventions") {
     val resolution = IcebergReflection.ParquetPathResolution(
@@ -45,7 +46,8 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set.empty)
     Seq("unknown", "", "vendor-build", "1.8.bad", "1.10", "2.0.0").foreach { version =>
       assert(
-        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("tags.a"), resolution, version) ==
+        CometIcebergNativeWrite
+          .bloomFilterParquetPaths(Seq("tags.a"), resolution, version, UnusedSchema) ==
           Left(s"Cannot determine Iceberg Bloom column-name convention for version '$version'"))
     }
   }
@@ -63,7 +65,8 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
         CometIcebergNativeWrite.bloomFilterParquetPaths(
           Seq("tags.element.a", "tags.a"),
           resolution,
-          version) == Right(Map("tags.element.a" -> physicalPath)))
+          version,
+          UnusedSchema) == Right(Map("tags.element.a" -> physicalPath)))
     }
   }
 
@@ -87,15 +90,18 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     Seq("id", "id.", "id..").foreach { name =>
       assert(
         CometIcebergNativeWrite
-          .bloomFilterParquetPaths(Seq(name, "missing"), resolution, "1.5.2") == Right(
-          Map(name -> "id")))
+          .bloomFilterParquetPaths(
+            Seq(name, "missing"),
+            resolution,
+            "1.5.2",
+            UnusedSchema) == Right(Map(name -> "id")))
     }
+    assert(CometIcebergNativeWrite
+      .bloomFilterParquetPaths(Seq("tags.list.element.a."), resolution, "1.5.2", UnusedSchema) ==
+      Right(Map("tags.list.element.a." -> "tags.list.element.a")))
     assert(
       CometIcebergNativeWrite
-        .bloomFilterParquetPaths(Seq("tags.list.element.a."), resolution, "1.5.2") ==
-        Right(Map("tags.list.element.a." -> "tags.list.element.a")))
-    assert(
-      CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("id", "id."), resolution, "1.5.2") ==
+        .bloomFilterParquetPaths(Seq("id", "id."), resolution, "1.5.2", UnusedSchema) ==
         Left("Multiple Bloom column names resolve to the same Parquet leaf: id (id, id.)"))
   }
 
@@ -140,7 +146,8 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set.empty)
     Seq("1.8.1", "1.9.1").foreach { version =>
       assert(
-        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq(""), resolution, version) ==
+        CometIcebergNativeWrite
+          .bloomFilterParquetPaths(Seq(""), resolution, version, UnusedSchema) ==
           Left("Empty Bloom column name requires Java validation"))
     }
     class MissingSchema {
