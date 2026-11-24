@@ -752,11 +752,11 @@ case class CometScanRule(session: SparkSession)
               fileIOProperties.contains(
                 s"hadoop.dfs.ha.namenodes.${key.stripPrefix("hdfs.name-node.")}")
             }
-            val catalogProperties =
+            val catalogProperties = CometIcebergNativeScan.withVendedCredentialProvider(
               hadoopDerivedProperties ++ derivedHdfsProperties ++ fileIOProperties ++
                 hadoopS3Options
                   .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
-                  .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
+                  .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _))
 
             val result = CometIcebergNativeScanMetadata.extract(
               scanExec.scan,
