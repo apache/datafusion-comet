@@ -39,6 +39,7 @@ use datafusion::physical_plan::{
     ExecutionPlan, ExecutionPlanProperties, RecordBatchStream, SendableRecordBatchStream,
 };
 use futures::future::poll_fn;
+use futures::task::AtomicWaker;
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -69,14 +70,21 @@ impl LocalQuery {
     /// Takes ownership of a fresh graph and its query-scoped context.
     ///
     /// The root partitions are delivered one after another, in partition order, as Spark returns
-    /// the partitions of a result. Up to `max_running` partitions run at once, and the next one
-    /// starts when the first is delivered, as Spark runs at most as many tasks as it has cores.
-    /// A partition's operators register their memory consumers when it starts, so this also
-    /// bounds how many share the memory pool.
+    /// the partitions of a result. Up to `max_running` partitions run at once, and another one
+    /// starts whenever one finishes, as Spark runs at most as many tasks as it has cores and
+    /// starts the next whenever one ends. A partition's operators register their memory
+    /// consumers when it starts and are dropped when it finishes, so this also bounds how many
+    /// share the memory pool.
+    ///
+    /// A finished partition waits for its turn with the batches it has not delivered. Once
+    /// `max_running` partitions are started and not delivered, another starts only while the
+    /// batches they all hold total less than `read_ahead` bytes, so that partitions which finish
+    /// ahead of a slow one do not pile up their batches.
     ///
     /// A partition starts its operators on its own task, so a start that waits, for instance to
     /// register a memory consumer, does not hold up delivery. A failure to start is reported in
-    /// the partition's turn.
+    /// the partition's turn. Once a partition fails, no other starts, since none after it can be
+    /// delivered.
     ///
     /// The running partitions do not wait for their turn: each runs ahead of delivery while the
     /// batches they all hold total less than `read_ahead` bytes, and up to a few batches beyond
@@ -156,6 +164,8 @@ fn in_partition_order(query: &LocalQuery) -> SendableRecordBatchStream {
             limit: query.read_ahead,
             held: AtomicUsize::new(0),
             delivered: Notify::new(),
+            finished: AtomicWaker::new(),
+            failed: AtomicBool::new(false),
         }),
         running: VecDeque::new(),
     };
@@ -174,6 +184,11 @@ struct ReadAhead {
     held: AtomicUsize,
     /// Notified whenever a batch is delivered.
     delivered: Notify,
+    /// Woken whenever a partition finishes, so that another can start.
+    finished: AtomicWaker,
+    /// Set before `finished` once a partition fails. The partitions after it cannot be
+    /// delivered, so none starts from then on.
+    failed: AtomicBool,
 }
 
 /// One root partition running on its own Tokio task, ahead of delivery.
@@ -186,6 +201,8 @@ struct Partition {
     /// task ends, and a runtime that shuts down cancels its tasks, so only this tells that
     /// every batch arrived.
     ended: Arc<AtomicBool>,
+    /// Set once the task has dropped the partition's stream, however it ended.
+    finished: Arc<AtomicBool>,
     /// The partition's stream. The task locks it only while polling it, so dropping the
     /// partition can take it whenever the task is waiting.
     stream: Arc<Mutex<Slot>>,
@@ -197,7 +214,8 @@ enum Slot {
     /// The task is starting the partition's operators.
     Starting,
     Running(SendableRecordBatchStream),
-    /// The partition was dropped. A task that started the stream afterwards drops it.
+    /// The partition was dropped, or its task finished. A task that started the stream after
+    /// the partition was dropped drops it.
     Closed,
 }
 
@@ -206,9 +224,14 @@ impl Partition {
         let (sender, batches) = tokio::sync::mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
         let ended = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
         let stream = Arc::new(Mutex::new(Slot::Starting));
-        let (task_queued, task_ended, polled) =
-            (Arc::clone(&queued), Arc::clone(&ended), Arc::clone(&stream));
+        let (task_queued, task_ended, task_finished, polled) = (
+            Arc::clone(&queued),
+            Arc::clone(&ended),
+            Arc::clone(&finished),
+            Arc::clone(&stream),
+        );
         let read_ahead = Arc::clone(&order.read_ahead);
         let (start, context) = (Arc::clone(&order.start), Arc::clone(&order.context));
         let task = order.runtime.spawn(async move {
@@ -226,6 +249,7 @@ impl Partition {
                         *slot = Slot::Running(started);
                     }
                     Err(error) => {
+                        read_ahead.failed.store(true, Ordering::Release);
                         let _ = sender.send(Err(error));
                         return;
                     }
@@ -258,6 +282,7 @@ impl Partition {
                             }
                         }
                         Some(Err(error)) => {
+                            read_ahead.failed.store(true, Ordering::Release);
                             let _ = sender.send(Err(error));
                             return;
                         }
@@ -272,15 +297,22 @@ impl Partition {
             .catch_unwind()
             .await;
             if result.is_err() {
+                read_ahead.failed.store(true, Ordering::Release);
                 let _ = sender.send(Err(DataFusionError::Execution(
                     "Local query partition panicked".into(),
                 )));
             }
+            // Release the operators, and their memory, before another partition takes the slot.
+            let stream = std::mem::replace(&mut *lock(&polled), Slot::Closed);
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| drop(stream)));
+            task_finished.store(true, Ordering::Release);
+            read_ahead.finished.wake();
         });
         Self {
             batches,
             queued,
             ended,
+            finished,
             stream,
             task,
         }
@@ -317,14 +349,26 @@ struct PartitionOrder {
 impl PartitionOrder {
     fn start_partitions(&mut self) {
         let partitions = self.partitions;
-        if self.next >= partitions {
+        // Every partition before a failed one has started, so stopping here cannot stall
+        // delivery.
+        if self.next >= partitions || self.read_ahead.failed.load(Ordering::Acquire) {
             return;
         }
         let limit = self
             .running_limit
             .as_ref()
             .map_or(self.max_running, |limit| limit().clamp(1, self.max_running));
-        while self.running.len() < limit && self.next < partitions {
+        let mut running = self
+            .running
+            .iter()
+            .filter(|partition| !partition.finished.load(Ordering::Acquire))
+            .count();
+        while running < limit
+            && self.next < partitions
+            && (self.running.len() < limit
+                || self.read_ahead.held.load(Ordering::Acquire) < self.read_ahead.limit)
+        {
+            running += 1;
             let partition = Partition::spawn(self, self.next);
             self.running.push_back(partition);
             self.next += 1;
@@ -343,6 +387,9 @@ impl Stream for PartitionOrder {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
+            // Registered before the partitions are counted, so a partition that finishes after
+            // they are counted wakes this reader to start another.
+            self.read_ahead.finished.register(cx.waker());
             self.start_partitions();
             let Some(partition) = self.running.front_mut() else {
                 return Poll::Ready(None);

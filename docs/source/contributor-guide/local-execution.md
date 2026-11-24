@@ -69,19 +69,25 @@ single partition. That partition's task creates the native graph:
 - `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
   order, so the result has Spark's row order. Each partition starts its operators on its own
   task, so a start that waits, for instance for a memory grant, does not hold up the pull, and a
-  partition's error, including a failure to start, is reported when its turn comes.
+  partition's error, including a failure to start, is reported when its turn comes. Once a
+  partition fails, no other starts, since none after it can be delivered.
 - At most as many partitions run at once as Spark runs tasks, `spark.executor.cores` divided by
-  `spark.task.cpus`, and the next starts when the first is delivered. A partition's operators
-  register their memory consumers when it starts, so this also bounds how many share the task's
-  memory pool. Whenever another partition would start, the bound is further divided among the
-  executor's tasks running native plans, this one included: Comet's pools give each of those
-  tasks an equal share of Spark's memory, so a partition gets what a task would. Partitions
-  already running keep running, so a job that starts after a local query has started all its
-  partitions still leaves those partitions less than a task's share, until they end.
+  `spark.task.cpus`, and another starts whenever one finishes, as Spark starts a task whenever
+  one ends. A partition's operators register their memory consumers when it starts and are
+  dropped when it finishes, so this also bounds how many share the task's memory pool. A
+  finished partition waits for its turn with the batches it has not delivered, so a slow
+  partition does not hold up the others. Whenever another partition would start, the bound is
+  further divided among the executor's tasks running native plans, this one included: Comet's
+  pools give each of those tasks an equal share of Spark's memory, so a partition gets what a
+  task would. Partitions already running keep running, so a job that starts after a local query
+  has started all its partitions still leaves those partitions less than a task's share, until
+  they end.
 - The running partitions do not wait for their turn to produce batches, so they all make
   progress, as Spark's tasks do. What they hold ahead of delivery is bounded by
   `spark.driver.maxResultSize`, the most a collect may bring to the driver; past it, each holds
-  at most two batches until the earlier partitions are delivered. These batches are not reserved
+  at most two batches until the earlier partitions are delivered. Once as many partitions as
+  run at once are started and not delivered, another starts only below that bound, so finished
+  partitions do not pile up their batches behind a slow one. These batches are not reserved
   in the memory pool: a reservation could not be given back when an operator later needs the
   memory, so it would fail queries that ordinary execution runs. Spark's own collect also holds
   its task results outside the execution pool, on the driver.
@@ -161,8 +167,9 @@ make core
 ```
 
 The native tests cover partition-order delivery, the bound on running partitions and its
-changes, partition starts that wait, read-ahead, errors reported in a partition's turn,
-cancellation with busy workers, the pull that waits on its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
+changes, partitions that finish before their turn, partition starts that wait, read-ahead,
+errors reported in a partition's turn, no starts after a failure, cancellation with busy workers, the pull that waits on
+its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
 AQE, reported orderings, limits left to ordinary execution, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.
