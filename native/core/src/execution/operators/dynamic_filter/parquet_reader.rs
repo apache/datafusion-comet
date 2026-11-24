@@ -32,7 +32,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::parquet::file_error_context::ParquetErrorContext;
-use datafusion_comet_operators::CometFilterExec;
+use datafusion_comet_operators::{BatchSplitExec, CometFilterExec};
 
 mod schema_adapter;
 
@@ -96,6 +96,15 @@ pub(super) fn try_attach_parquet_reader_filter(
         return Ok(
             try_attach_parquet_reader_filter(&filter.input, predicate, config)?
                 .map(|reader| filter.with_execution_input(reader)),
+        );
+    }
+    // The batch split that bounds a scalar expansion only slices batches, so a
+    // reader filter below it discards the same rows.
+    if let Some(split) = input.downcast_ref::<BatchSplitExec>() {
+        return Ok(
+            try_attach_parquet_reader_filter(split.input(), predicate, config)?.map(|reader| {
+                Arc::new(BatchSplitExec::new(reader, split.batch_size())) as Arc<dyn ExecutionPlan>
+            }),
         );
     }
     // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND

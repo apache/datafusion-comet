@@ -1300,12 +1300,11 @@ unsafe fn export_batch(
     Ok(num_rows as i64)
 }
 
-/// Pull the next input from JVM. Note that we cannot pull input batches in
-/// `ScanStream.poll_next` when the execution stream is polled for output.
-/// Because the input source could be another native execution stream, which
-/// will be executed in another tokio blocking thread. It causes JNI throw
-/// Java exception. So we pull input batches here and insert them into scan
-/// operators before polling the stream,
+/// Pulls the next batch from the JVM into every JVM-fed scan whose slot is empty. `next_batch`
+/// calls it only after a poll of the stream returns `Pending`. It cannot run inside
+/// `ScanStream.poll_next`, because the input source can be another native execution stream
+/// running on another tokio blocking thread, and calling into it from there makes JNI throw.
+/// With two JVM inputs, a poll waiting on one also refills the other if its slot is empty.
 #[inline]
 fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometError> {
     exec_context.scans.iter_mut().try_for_each(|scan| {
@@ -1641,10 +1640,10 @@ fn execute_plan(
             exec_context.stream = Some(stream);
         }
         exec_context.root_op = Some(root_op);
-    } else {
-        // Pull input batches
-        pull_input_batches(exec_context)?;
     }
+    // JVM input is pulled only after a poll returns `Pending`, in `next_batch` below, never before
+    // the first poll. An operator above a scan, such as a `BatchSplitExec`, can still hold rows of
+    // the last batch it took, and a limit can finish on them without the JVM producing another.
 
     // Wait no later than when metrics are due, so a plan that runs long before its first batch,
     // such as a native shuffle write, still publishes on the interval. A publish while waiting

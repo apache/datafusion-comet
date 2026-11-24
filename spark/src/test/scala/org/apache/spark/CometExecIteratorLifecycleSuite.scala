@@ -29,18 +29,18 @@ import scala.reflect.ClassTag
 
 import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.BigIntVector
+import org.apache.arrow.vector.{BigIntVector, VarCharVector}
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, PrettyAttribute}
 import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, CometNativeScanExec, CometProjectExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.functions.{col, udf}
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{LongType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.JsonProtocol
 
@@ -287,6 +287,49 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         assert(
           CometArrowStream.inputFailure(stream).isEmpty,
           "a completed task must not keep its input streams' failures")
+      }
+    } finally {
+      allocator.close()
+    }
+  }
+
+  test("a limit met by the first input batch does not pull the next one") {
+    // Native pulls JVM input only when the plan waits for it. An operator above the scan, such as
+    // a batch split, can still hold rows the limit needs, so pulling before each poll would read
+    // the input again, which here throws.
+    val allocator = CometArrowAllocator.newChildAllocator("limit-read-ahead", 0, Long.MaxValue)
+    try {
+      withTaskContext(4650000L) {
+        val vector = new VarCharVector("s", allocator)
+        vector.allocateNew(10)
+        (0 until 10).foreach(i => vector.setSafe(i, s"r$i".getBytes("UTF-8")))
+        vector.setValueCount(10)
+        val first = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(vector)), 10)
+        val input = Iterator.single(first) ++ new Iterator[ColumnarBatch] {
+          override def hasNext: Boolean = throw new IllegalStateException("read ahead")
+          override def next(): ColumnarBatch = throw new IllegalStateException("read ahead")
+        }
+        val stream = CometArrowStream.fromColumnarBatchIter(
+          input,
+          StructType(Seq(StructField("s", StringType, nullable = false))),
+          CometArrowStream.NATIVE_TIMEZONE,
+          "limit-read-ahead")
+        val s = AttributeReference("s", StringType, nullable = false)()
+        val iter = CometExec.getCometIterator(
+          Array(stream.asInstanceOf[Object]),
+          1,
+          CometExecUtils.getLimitNativePlan(Seq(s), 3).get,
+          CometMetricNode(Map.empty),
+          1,
+          0,
+          None,
+          Seq.empty,
+          None)
+        var rows = 0
+        while (iter.hasNext) {
+          rows += iter.next().numRows()
+        }
+        assert(rows == 3)
       }
     } finally {
       allocator.close()
