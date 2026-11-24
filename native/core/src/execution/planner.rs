@@ -2972,11 +2972,7 @@ fn literal_to_array_ref(
             // Using a builder as it is cumbersome to create BinaryArray from a vector with nulls
             // and calculate correct offsets
             let item_capacity = list_literal.bytes_values.len();
-            let data_capacity = list_literal
-                .bytes_values
-                .first()
-                .map(|s| s.len() * item_capacity)
-                .unwrap_or(0);
+            let data_capacity = list_literal.bytes_values.iter().map(|v| v.len()).sum();
             let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
 
             for (i, v) in list_literal.bytes_values.into_iter().enumerate() {
@@ -2993,11 +2989,7 @@ fn literal_to_array_ref(
             // Using a builder as it is cumbersome to create StringArray from a vector with nulls
             // and calculate correct offsets
             let item_capacity = list_literal.string_values.len();
-            let data_capacity = list_literal
-                .string_values
-                .first()
-                .map(|s| s.len() * item_capacity)
-                .unwrap_or(0);
+            let data_capacity = list_literal.string_values.iter().map(String::len).sum();
             let mut arr = StringBuilder::with_capacity(item_capacity, data_capacity);
 
             for (i, v) in list_literal.string_values.into_iter().enumerate() {

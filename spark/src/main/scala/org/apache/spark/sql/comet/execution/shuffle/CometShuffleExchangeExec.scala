@@ -232,7 +232,7 @@ case class CometShuffleExchangeExec(
             serializer,
             metrics,
             NativeShuffleSpec(
-              nativeChild.nativeOp,
+              nativeChild.executionNativeOp,
               nativeChildMetricNode,
               ctx,
               CapturedSQLConf.capture(),

@@ -1295,7 +1295,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] =
     CometExplainInfo.withFallbackReasonScope {
-      val converted = tryConvertToComet(op, handler)
+      val converted = MapBuilderKeySupport.record(tryConvertToComet(op, handler))
       if (converted.isEmpty) {
         // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
         // reasons recorded on its expressions onto the operator itself - see
@@ -1311,7 +1311,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
   private def tryConvertToComet(
       op: SparkPlan,
-      handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+      handler: CometOperatorSerde[_]): Option[CometNativeExec] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
       // Get the actual data-producing children (unwrap WriteFilesExec).

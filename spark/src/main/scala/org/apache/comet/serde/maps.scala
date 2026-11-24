@@ -19,12 +19,24 @@
 
 package org.apache.comet.serde
 
+import java.util.IdentityHashMap
+
+import scala.util.DynamicVariable
+
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
+import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.{CometNativeExec, CometPlan, MapCodegenStage, MapCodegenStagePolicy => Policy}
+import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowExec, DeserializeToObjectExec, ExpandExec, FilterExec, GlobalLimitExec, InputAdapter, LocalLimitExec, ProjectExec, RowToColumnarExec, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.exchange.Exchange
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
+import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -53,8 +65,7 @@ private[serde] object MapKeySupport {
    * disagree:
    *   - `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal and all `NaN`s as equal, so
    *     Spark answers a `-0.0` lookup from a `+0.0` key where native finds nothing, on every
-   *     version. (How `ArrayBasedMapBuilder` treats float keys when it builds a map differs by
-   *     version; see `MapBuilderKeySupport`.)
+   *     version, regardless of how `ArrayBasedMapBuilder` treats the keys during construction.
    *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
    *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
    *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
@@ -133,34 +144,197 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-/**
- * Shared gate for the native map builders, `map_from_arrays` and `map_from_entries`, which tell
- * keys apart by their bits. A key type that holds a float at any depth is `Incompatible` on every
- * Spark version; `floatingPointReason` explains why.
- */
-private object MapBuilderKeySupport {
-  val floatingPointReason: String =
-    "Spark finds duplicate map keys that hold a `FLOAT` or `DOUBLE` by value, so NaNs with " +
-      "different bits are one key, and so are `-0.0` and `0.0` inside a struct or array key. " +
-      "From Spark 4.0, a `-0.0` key is also normalized to `0.0`, unless " +
-      "`spark.sql.legacy.disableMapKeyNormalization` is set. Comet's native map construction " +
-      "compares the keys' bits ([#6549](https://github.com/apache/datafusion-comet/issues/6549))."
+private[comet] object MapBuilderKeySupport {
+  private val taskPolicy = CometScalarFunction[Expression](Policy.Task)
+  private val driverPolicy = CometScalarFunction[Expression](Policy.Driver)
 
-  def hasFloatingPointKey(dataType: MapType): Boolean =
-    SupportLevel.containsType(dataType.keyType, classOf[FloatType], classOf[DoubleType])
+  private type Policies = IdentityHashMap[Expression, Option[Policy]]
+  private class Context(plan: SparkPlan) {
+    var used: Option[Policy] = None
+    lazy val policies: Policies = builderPolicies(plan)
+  }
+  private val context = new DynamicVariable[Option[Context]](None)
+
+  // AQE forms codegen stages after query stage preparation, possibly with different settings.
+  def withPlan(plan: SparkPlan, queryStagePrep: Boolean)(f: => SparkPlan): SparkPlan =
+    context.withValue(if (queryStagePrep) None else Some(new Context(plan)))(f)
+
+  private def select(expr: Expression): Option[Policy] =
+    context.value.flatMap(_.policies.getOrDefault(expr, None))
+
+  // Every admitted builder belonging to one operator has the same stage and consumers.
+  def record(f: => Option[CometNativeExec]): Option[CometNativeExec] = context.value match {
+    case None => f
+    case Some(ctx) =>
+      val outer = ctx.used
+      ctx.used = None
+      try {
+        val result = f
+        result.foreach(exec => ctx.used.foreach(_.record(exec)))
+        result
+      } finally {
+        ctx.used = outer
+      }
+  }
+
+  private def builderPolicies(plan: SparkPlan): Policies = {
+    val policies = new Policies
+    // Converted inputs and materialized stages can hide Spark's original columnar transitions.
+    if (plan.exists(p => p.isInstanceOf[CometPlan] || p.isInstanceOf[QueryStageExec])) {
+      return policies
+    }
+    val conf = SQLConf.get
+    if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return policies
+
+    // Walk the stages Spark would form before Comet replaces scans or fuses operators.
+    // None for consumers means the first insertion can happen in an unknown scope.
+    def visit(
+        node: SparkPlan,
+        stage: Option[MapCodegenStage],
+        consumers: Option[List[MapCodegenStage]]): Unit = node match {
+      case generated: WholeStageCodegenExec =>
+        val probe = MapCodegenStage.probe(generated)
+        visit(generated.child, probe, consumers.filter(_ => probe.isDefined))
+      case adapter: InputAdapter => visit(adapter.child, None, consumers)
+      case _ =>
+        val inputConsumers = node match {
+          case _: Exchange => Some(Nil)
+          case _: ProjectExec | _: FilterExec | _: DeserializeToObjectExec | _: LocalLimitExec |
+              _: GlobalLimitExec | _: CollectLimitExec | _: ExpandExec | _: ColumnarToRowExec |
+              _: RowToColumnarExec =>
+            consumers
+          case _: HashAggregateExec | _: SortExec =>
+            for (outer <- consumers; current <- stage) yield current :: outer
+          case _ => None
+        }
+        val policy = node match {
+          case _: ProjectExec | _: FilterExec => consumers.map(Policy(stage, _))
+          case _: ExpandExec if stage.isDefined => consumers.map(Policy(stage, _))
+          case _: HashAggregateExec => inputConsumers.map(Policy(stage, _))
+          case _ => None
+        }
+        def recordExpression(expr: Expression, interpreted: Boolean): Unit = {
+          expr match {
+            case _: MapFromArrays | _: MapFromEntries =>
+              val selected = if (interpreted) None else policy
+              val previous = policies.getOrDefault(expr, selected)
+              val _ = policies.put(expr, if (previous == selected) selected else None)
+            case _ =>
+          }
+          expr.children.foreach(
+            recordExpression(_, interpreted || expr.isInstanceOf[CodegenFallback]))
+        }
+        node.expressions.foreach(recordExpression(_, interpreted = false))
+        node match {
+          case agg: HashAggregateExec =>
+            // A fallback aggregate evaluates result expressions eagerly only for empty input.
+            agg.resultExpressions.foreach(recordExpression(_, interpreted = true))
+          case _ =>
+        }
+        node.children.foreach(visit(_, stage, inputConsumers))
+    }
+    visit(MapCodegenStage.prepare(plan), None, Some(Nil))
+    policies
+  }
+
+  def convertFloatMap(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val policy = select(expr)
+    val native = if (policy.exists(_.stage.isDefined)) driverPolicy else taskPolicy
+    val result = withNullShortCircuit(expr, native.convert(expr, inputs, binding))
+    if (result.isDefined && policy.isDefined) context.value.foreach(_.used = policy)
+    result.orElse {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+
+  val nestedFloatingPointReason: String =
+    "Spark compares a `FLOAT` or `DOUBLE` inside a struct or array key using SQL ordering, " +
+      "where signed zeros are equal and all NaNs are equal. Comet's native map builders " +
+      "compare their bits for these nested keys."
+
+  def isFloatingPoint(keyType: DataType): Boolean =
+    keyType == FloatType || keyType == DoubleType
+
+  private def isColumn(expr: Expression): Boolean = expr match {
+    case _: AttributeReference | _: BoundReference => true
+    case field: GetStructField => isColumn(field.child)
+    case _ => false
+  }
+
+  // Spark codegen emits canonical NaNs for scalar literals. Java serialization does the same
+  // for the boxed elements of folded GenericArrayData. Protobuf preserves their raw bits.
+  private def sparkPreservesLiteralBits(value: Any): Boolean = value match {
+    case f: Float => java.lang.Float.floatToRawIntBits(f) == java.lang.Float.floatToIntBits(f)
+    case d: Double =>
+      java.lang.Double.doubleToRawLongBits(d) == java.lang.Double.doubleToLongBits(d)
+    case a: GenericArrayData => a.array.forall(sparkPreservesLiteralBits)
+    case _ => true
+  }
+
+  // Constructors evaluate their children across the batch and can broadcast a large value
+  // before LAST_WIN discards it. Only build entries from fixed-width, eagerly evaluable fields.
+  private def safeElement(expr: Expression): Boolean = expr match {
+    case Literal(v, _) if !sparkPreservesLiteralBits(v) => false
+    case s: CreateNamedStruct => s.valExprs.nonEmpty && s.valExprs.forall(safeElement)
+    case _: UnaryMinus | _: Add | _: Subtract | _: Multiply =>
+      isFloatingPoint(expr.dataType) && expr.children.forall(safeElement)
+    case c: Cast if isFloatingPoint(c.dataType) =>
+      (c.child.dataType == NullType || c.child.dataType.isInstanceOf[NumericType]) &&
+      safeElement(c.child)
+    case _ =>
+      (expr.isInstanceOf[Literal] || isColumn(expr)) &&
+      (expr.dataType.isInstanceOf[DecimalType] || UnsafeRow.isFixedLength(expr.dataType))
+  }
+
+  private def simpleArray(expr: Expression): Boolean = expr match {
+    case array: CreateArray => array.children.forall(safeElement)
+    case _ => isColumn(expr)
+  }
+
+  private def safeInput(expr: Expression): Boolean = expr match {
+    case Literal(value, ArrayType(element, _)) =>
+      CometLiteral.listLiteralElementSupported(element) && sparkPreservesLiteralBits(value)
+    case zip: ArraysZip => zip.children.nonEmpty && zip.children.forall(simpleArray)
+    case _ => simpleArray(expr)
+  }
+
+  val computedInputReason: String =
+    "Floating-point map builders use Spark to preserve evaluation of computed inputs."
+
+  val policyReason: String =
+    "Floating-point map builders use Spark when the operator can change when map settings are read."
+
+  def keySupport(keyType: DataType, expr: Expression): SupportLevel = {
+    if (isFloatingPoint(keyType)) {
+      if (!expr.children.forall(safeInput)) {
+        Incompatible(Some(computedInputReason))
+      } else if (select(expr).isEmpty) {
+        Incompatible(Some(policyReason))
+      } else {
+        Compatible()
+      }
+    } else if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
+      Incompatible(Some(nestedFloatingPointReason))
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible()
+    }
+  }
 }
 
 private object MapKeyDedupPolicySupport {
   val incompatibleReason: String =
-    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
-      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
-      "does not implement LAST_WIN dedup semantics."
+    s"Comet's native map builders support `${SQLConf.MAP_KEY_DEDUP_POLICY.key}=" +
+      s"${SQLConf.MapKeyDedupPolicy.LAST_WIN}` only for `FLOAT` and `DOUBLE` keys."
 
   val nullKeyReason: String =
-    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
-      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
-      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
-      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
+    "Spark rejects a `NULL` map key. For key types other than `FLOAT` and `DOUBLE`, " +
+      "Comet's native map builders can produce a map with a `NULL` key " +
+      "([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
 
   def isLastWin: Boolean =
     SQLConf.get
@@ -174,28 +348,28 @@ object CometMapFromArrays
     with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapBuilderKeySupport.floatingPointReason, MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(
+      MapBuilderKeySupport.computedInputReason,
+      MapBuilderKeySupport.policyReason,
+      MapBuilderKeySupport.nestedFloatingPointReason,
+      MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
-  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
-      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else {
-      Compatible(None)
-    }
-  }
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel =
+    MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr)
 
   override def convert(
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    if (MapBuilderKeySupport.isFloatingPoint(keyType)) {
+      return MapBuilderKeySupport.convertFloatMap(expr, inputs, binding)
+    }
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
@@ -239,7 +413,9 @@ object CometMapFromEntries
     Seq(
       keyUnsupportedReason,
       valueUnsupportedReason,
-      MapBuilderKeySupport.floatingPointReason,
+      MapBuilderKeySupport.computedInputReason,
+      MapBuilderKeySupport.policyReason,
+      MapBuilderKeySupport.nestedFloatingPointReason,
       MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getCompatibleNotes(): Seq[String] =
@@ -250,12 +426,19 @@ object CometMapFromEntries
       Incompatible(Some(keyUnsupportedReason))
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
-    } else if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
-      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
-      Compatible(None)
+      MapBuilderKeySupport.keySupport(expr.dataType.keyType, expr)
+    }
+  }
+
+  override def convert(
+      expr: MapFromEntries,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (MapBuilderKeySupport.isFloatingPoint(expr.dataType.keyType)) {
+      MapBuilderKeySupport.convertFloatMap(expr, inputs, binding)
+    } else {
+      super.convert(expr, inputs, binding)
     }
   }
 }

@@ -33,8 +33,12 @@ import org.apache.comet.CometConf
  */
 class CapturedSQLConf private (configs: Map[String, String]) extends Serializable {
 
+  // Whole-stage codegen constructs ArrayBasedMapBuilder on the driver when building the RDD.
+  // The builder eagerly reads this policy, retaining it across actions that reuse the RDD.
+  val mapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy
+
   @transient private lazy val executorSideConf: SQLConf = {
-    val conf = new SQLConf()
+    val conf = new CapturedSQLConf.CometOnlyConf
     configs.foreach { case (key, value) => conf.setConfString(key, value) }
     conf
   }
@@ -57,7 +61,21 @@ class CapturedSQLConf private (configs: Map[String, String]) extends Serializabl
 
 object CapturedSQLConf {
 
+  private final class CometOnlyConf extends SQLConf
+
   /** Captures the active session's Comet configs. Call it on the driver. */
   def capture(): CapturedSQLConf =
     new CapturedSQLConf(SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX)))
+
+  def currentMapKeyDedupPolicy: String =
+    activeMapBuilderConf.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
+
+  def activeMapBuilderConf: SQLConf = {
+    // withConf installs CometOnlyConf over a task's ReadOnlySQLConf. Spark's map builder
+    // would see that task's local properties, or the active conf when SQLExecutionRDD sets one.
+    SQLConf.get match {
+      case _: CometOnlyConf => new ReadOnlySQLConf(TaskContext.get())
+      case active => active
+    }
+  }
 }

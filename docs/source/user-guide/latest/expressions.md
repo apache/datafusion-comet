@@ -408,8 +408,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Hybrid | `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
-| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values, `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Hybrid | Supports [floating-point keys](compatibility/floating-point.md#map-construction) under both deduplication policies. Uses codegen dispatch for other key types under `LAST_WIN` ([details](compatibility/expressions/spark-4.1/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | Same key handling as `map_from_arrays`. Also uses codegen dispatch when the key or value type contains `BINARY` ([details](compatibility/expressions/spark-4.1/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |

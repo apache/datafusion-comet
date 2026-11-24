@@ -100,21 +100,25 @@ object QueryContextInterner {
    */
   private def walk(
       builder: Message.Builder,
-      f: ExprOuterClass.QueryContext => Option[ExprOuterClass.QueryContext]): Unit = {
-    builder match {
+      f: ExprOuterClass.QueryContext => Option[ExprOuterClass.QueryContext]): Unit =
+    ProtoMessageVisitor.visit(builder) {
       case e: ExprOuterClass.Expr.Builder if e.hasQueryContext =>
-        f(e.getQueryContext) match {
+        val _ = f(e.getQueryContext) match {
           case Some(ctx) => e.setQueryContext(ctx)
           case None => e.clearQueryContext()
         }
       case a: ExprOuterClass.AggExpr.Builder if a.hasQueryContext =>
-        f(a.getQueryContext) match {
+        val _ = f(a.getQueryContext) match {
           case Some(ctx) => a.setQueryContext(ctx)
           case None => a.clearQueryContext()
         }
       case _ =>
     }
+}
 
+private[apache] object ProtoMessageVisitor {
+  def visit(builder: Message.Builder)(f: Message.Builder => Unit): Unit = {
+    f(builder)
     val fields = builder.getDescriptorForType.getFields.iterator()
     while (fields.hasNext) {
       val field = fields.next()
@@ -125,11 +129,11 @@ object QueryContextInterner {
           var i = 0
           val count = builder.getRepeatedFieldCount(field)
           while (i < count) {
-            walk(builder.getRepeatedFieldBuilder(field, i), f)
+            visit(builder.getRepeatedFieldBuilder(field, i))(f)
             i += 1
           }
         } else if (builder.hasField(field)) {
-          walk(builder.getFieldBuilder(field), f)
+          visit(builder.getFieldBuilder(field))(f)
         }
       }
     }

@@ -34,9 +34,9 @@ import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
-import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{ReadOnlySQLConf, SQLConf}
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
@@ -84,6 +84,8 @@ import org.apache.comet.vector.NativeUtil
  * @param outputTypes
  *   The Spark types of the plan's output columns, if the caller knows them. Used only to check
  *   timestamp labels under `spark.comet.testing.strictTimestampLabels.enabled`.
+ * @param driverMapKeyDedupPolicy
+ *   Map builder policy captured when the driver constructed the RDD, if applicable.
  */
 class CometExecIterator(
     val id: Long,
@@ -100,7 +102,8 @@ class CometExecIterator(
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
     outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
-    outputTypes: Seq[DataType] = Seq.empty)
+    outputTypes: Seq[DataType] = Seq.empty,
+    driverMapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -120,7 +123,7 @@ class CometExecIterator(
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     // serialize Comet related Spark configs in protobuf format
-    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs(driverMapKeyDedupPolicy)
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -891,7 +894,8 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  def serializeCometSQLConfs(): Array[Byte] = {
+  def serializeCometSQLConfs(
+      driverMapKeyDedupPolicy: String = CapturedSQLConf.currentMapKeyDedupPolicy): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
@@ -906,6 +910,32 @@ object CometExecIterator extends Logging {
     // for tokio runtime thread count
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
+
+    // In a lazy projection the first put initializes Spark's normalizer after
+    // SQLExecutionRDD.compute has restored the task-local properties as the active SQLConf.
+    val normalizationKey = "spark.sql.legacy.disableMapKeyNormalization"
+    val taskConf = Option(TaskContext.get()).map(new ReadOnlySQLConf(_)).getOrElse(SQLConf.get)
+    def disableNormalization(conf: SQLConf): String = {
+      val disabled = !CometSparkSessionExtensions.isSpark40Plus ||
+        conf.getConfString(normalizationKey, "false").trim.toBoolean
+      disabled.toString
+    }
+    val activeConf = CapturedSQLConf.activeMapBuilderConf
+    builder.putEntries(normalizationKey, disableNormalization(taskConf))
+    builder.putEntries("comet.eagerDisableMapKeyNormalization", disableNormalization(activeConf))
+    // Spark picks the projection factory when constructing the task iterator. With NO_CODEGEN,
+    // the interpreted expression creates its builder on first evaluation, like the normalizer.
+    val policy = SQLConf.MAP_KEY_DEDUP_POLICY
+    val activePolicy = activeConf.getConf(policy).toString
+    val lazyPolicy =
+      if (activeConf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") {
+        taskConf.getConf(policy).toString
+      } else {
+        activePolicy
+      }
+    builder.putEntries(policy.key, lazyPolicy)
+    builder.putEntries("comet.eagerMapKeyDedupPolicy", activePolicy)
+    builder.putEntries("comet.driverMapKeyDedupPolicy", driverMapKeyDedupPolicy)
 
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were

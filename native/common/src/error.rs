@@ -136,7 +136,7 @@ pub enum SparkError {
     InvalidIndexOfZero,
 
     #[error("[DUPLICATED_MAP_KEY] Cannot create map with duplicate keys: {key}.")]
-    DuplicatedMapKey { key: String },
+    DuplicatedMapKey { key: String, key_type: String },
 
     #[error("[NULL_MAP_KEY] Cannot use null as map key.")]
     NullMapKey,
@@ -525,9 +525,10 @@ impl SparkError {
                     "bitmapNumBits": bitmap_num_bits,
                 })
             }
-            SparkError::DuplicatedMapKey { key } => {
+            SparkError::DuplicatedMapKey { key, key_type } => {
                 serde_json::json!({
                     "key": key,
+                    "keyType": key_type,
                 })
             }
             SparkError::ExceedMapSizeLimit { size, max_size } => {
@@ -1239,6 +1240,7 @@ mod tests {
     fn test_duplicated_map_key_json() {
         let error = SparkError::DuplicatedMapKey {
             key: "duplicate_key".to_string(),
+            key_type: "Utf8".to_string(),
         };
         let json = error.to_json();
 
@@ -1246,6 +1248,7 @@ mod tests {
         assert_eq!(parsed["errorType"], "DuplicatedMapKey");
         assert_eq!(parsed["errorClass"], "DUPLICATED_MAP_KEY");
         assert_eq!(parsed["params"]["key"], "duplicate_key");
+        assert_eq!(parsed["params"]["keyType"], "Utf8");
     }
 
     #[test]

@@ -206,6 +206,7 @@ class CometNativeShuffleWriter[K, V](
       ctx.encryptedFilePaths,
       shuffleBlockIters,
       shufflePartitionPusher = remoteDestination.map(_.callback),
+      driverMapKeyDedupPolicy = spec.sqlConf.mapKeyDedupPolicy,
       // Only a local destination publishes partition offsets; RSS reports lengths through its
       // pusher instead.
       capturePartitionOffsets = localOutput.isDefined)

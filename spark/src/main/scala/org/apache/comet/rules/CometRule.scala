@@ -34,6 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
 import org.apache.comet.local.CometLocalRule
+import org.apache.comet.serde.MapBuilderKeySupport
 import org.apache.comet.shims.ShimCometStreaming
 
 object CometRule {
@@ -175,7 +176,10 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
   }
 
-  private def convert(plan: SparkPlan): SparkPlan = execRule.apply(scanRule.apply(plan))
+  private def convert(plan: SparkPlan): SparkPlan =
+    MapBuilderKeySupport.withPlan(plan, queryStagePrep) {
+      execRule.apply(scanRule.apply(plan))
+    }
 
   /** Logs the Comet plan for `plan` unless already reported. Never fails the query. */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {

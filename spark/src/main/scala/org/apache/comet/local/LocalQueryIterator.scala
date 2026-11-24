@@ -28,7 +28,10 @@ import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.vector.NativeUtil
 
 /** Task-thread-owned Arrow batches; native close can also interrupt a concurrent result pull. */
-private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskContext)
+private[local] class LocalQueryIterator(
+    spec: LocalQuerySpec,
+    context: TaskContext,
+    driverMapKeyDedupPolicy: String)
     extends Iterator[ColumnarBatch]
     with AutoCloseable {
   private val native = new NativeLocal
@@ -52,7 +55,7 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
     val maxResultSize = SparkEnv.get.conf.getSizeAsBytes("spark.driver.maxResultSize", "1g")
     id = native.createQuery(
       spec.plan,
-      CometExecIterator.serializeCometSQLConfs(),
+      CometExecIterator.serializeCometSQLConfs(driverMapKeyDedupPolicy),
       spec.partitions,
       spec.columns,
       taskMemory.manager,
