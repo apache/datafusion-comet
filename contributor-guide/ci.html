@@ -681,7 +681,7 @@ native build, and only when <code class="docutils literal notranslate"><span cla
 the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
 two stopping before their query passes), plus the short <code class="docutils literal notranslate"><span class="pre">Lint</span></code> job the native build depends on. The
 lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 40. If you add a job to <code class="docutils literal notranslate"><span class="pre">pr_build_linux.yml</span></code>, give it
+runner-minutes a push and about 20. If you add a job to <code class="docutils literal notranslate"><span class="pre">pr_build_linux.yml</span></code>, give it
 <code class="docutils literal notranslate"><span class="pre">if:</span> <span class="pre">${{</span> <span class="pre">!inputs.cache-refresh-only</span> <span class="pre">}}</span></code> unless it writes a cache that <code class="docutils literal notranslate"><span class="pre">main</span></code> needs;
 <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code> fails the build if you forget.</p>
 <p>For a pull request from a fork, the pull request column’s “yes” rows run on your fork rather than
@@ -732,10 +732,28 @@ run for this commit</strong>, see <a class="reference internal" href="#when-the-
 controls the workflow that produced it. A green fork run is a good sign, not a merge gate. The
 queue is the gate, and it tests your change merged with <code class="docutils literal notranslate"><span class="pre">main</span></code> and everything queued ahead of it,
 where the fork run tests your branch head alone.</p></li>
-<li><p><strong>Caches are cold unless <code class="docutils literal notranslate"><span class="pre">main</span></code> builds.</strong> A branch restores caches saved on its own ref or on your
-fork’s default branch, and a run on your fork’s <code class="docutils literal notranslate"><span class="pre">main</span></code> saves them only when it builds. A push to
-<code class="docutils literal notranslate"><span class="pre">main</span></code> that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
-nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
+<li><p><strong>Sync your fork’s <code class="docutils literal notranslate"><span class="pre">main</span></code> to warm its caches.</strong> A branch restores caches saved on its own ref or
+on your fork’s default branch, and only a run on your fork’s <code class="docutils literal notranslate"><span class="pre">main</span></code> saves the Maven and cargo
+caches, so this helps only when <code class="docutils literal notranslate"><span class="pre">main</span></code> is your fork’s default branch. A push to <code class="docutils literal notranslate"><span class="pre">main</span></code> that adds
+nothing to upstream, such as syncing your fork, runs the Linux build in cache-refresh-only mode,
+which saves both and runs no test suites. If your fork’s <code class="docutils literal notranslate"><span class="pre">main</span></code> already matches upstream, a sync
+has nothing to push, so the first refresh comes with the next sync that moves <code class="docutils literal notranslate"><span class="pre">main</span></code>. A sync made
+by a workflow that uses <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code>, such as a scheduled sync action, starts no other workflow
+(see
+<a class="reference external" href="https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow">Triggering a workflow from a workflow</a>),
+so it warms nothing. In a warm run of the same mode on upstream <code class="docutils literal notranslate"><span class="pre">main</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/actions/runs/45050546538">45050546538</a>), the lint,
+the native build and the two TPC jobs took 16.5 minutes of job time, and about 20 with the
+preflight and change detection jobs. A cold first refresh takes longer, and if Maven Central
+throttles it, a job can fail before it saves anything. Re-run that push run’s failed jobs once the
+throttling clears: the run is still on <code class="docutils literal notranslate"><span class="pre">main</span></code>, so the caches save when those jobs pass. The
+refresh warms only the default profile’s Maven dependencies. The Celeborn jobs build with
+<code class="docutils literal notranslate"><span class="pre">-Pspark-3.5,scala-2.12,celeborn-reflection-compatibility</span></code>, so they still download the Spark 3.5
+and Scala 2.12 dependencies from Maven Central, and can still be throttled after a sync. A <code class="docutils literal notranslate"><span class="pre">main</span></code>
+that carries commits of its own runs the PR tier instead, which saves the Maven and cargo caches
+only when it builds, so one with only docs commits stays cold. When your fork’s <code class="docutils literal notranslate"><span class="pre">main</span></code> is cold,
+every branch run downloads its Maven dependencies from Maven Central, which can throttle it, and
+rebuilds the native library. A run of the PR tier on a fork with cold
 caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
 23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run that also
 routes to the Spark SQL and Iceberg suites took 89 minutes and about 650 runner-minutes. Their
