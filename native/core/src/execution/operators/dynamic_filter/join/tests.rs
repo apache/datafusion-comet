@@ -46,7 +46,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 use datafusion::physical_plan::{ChildrenPropertiesMode, Distribution, ReplaceChildrenOptions};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_comet_operators::CometFilterExec;
+use datafusion_comet_operators::{BatchSplitExec, CometFilterExec};
 use datafusion_comet_spark_expr::RandExpr;
 use datafusion_datasource::file::FileSource;
 use parquet::arrow::ArrowWriter;
@@ -1106,6 +1106,54 @@ async fn run_parquet_join(values: Vec<i32>, enabled: bool) -> (usize, usize, usi
         attached,
         filter.metrics().unwrap().output_rows().unwrap_or_default(),
     )
+}
+
+#[tokio::test]
+async fn reader_filter_attaches_through_a_batch_split() {
+    // The planner puts a CometBatchSplitExec under a filter whose predicate expands a string
+    // scalar. It only slices batches, so a reader filter below it discards the same rows.
+    let mut config = SessionConfig::new()
+        .with_target_partitions(1)
+        .with_parquet_page_index_pruning(false);
+    config.options_mut().execution.parquet.pushdown_filters = false;
+    let session = Arc::new(SessionContext::new_with_config(config));
+    let (_file, scan) = parquet_probe((0..400).collect(), &session, 100);
+    let split: Arc<dyn ExecutionPlan> = Arc::new(BatchSplitExec::new(
+        Arc::clone(&scan) as Arc<dyn ExecutionPlan>,
+        7,
+    ));
+    let predicate: Arc<dyn PhysicalExpr> =
+        Arc::new(IsNotNullExpr::new(Arc::new(Column::new("key", 0))));
+    let probe = Arc::new(CometFilterExec::from_datafusion(
+        FilterExec::try_new(predicate, split).unwrap(),
+    ));
+    let join = single_key_join_plans(two_batch_build(), probe, PartitionMode::Partitioned);
+    let wrapper =
+        DynamicFilterJoinExec::new(&join, session.copied_config().options().as_ref().clone())
+            .unwrap();
+    let runtime = wrapper.build_runtime_join().unwrap();
+    assert!(runtime.reader_filter_attached);
+    let consumer = runtime
+        .join
+        .right()
+        .downcast_ref::<DynamicFilterExec>()
+        .unwrap();
+    let filter = consumer.children()[0]
+        .downcast_ref::<CometFilterExec>()
+        .unwrap();
+    let split = filter.input().downcast_ref::<BatchSplitExec>().unwrap();
+    assert_eq!(split.batch_size(), 7);
+    let reader = split.children()[0]
+        .downcast_ref::<DataSourceExec>()
+        .unwrap();
+    let (_, source) = reader.downcast_to_file_source::<ParquetSource>().unwrap();
+    let reader_filter = source.filter().unwrap();
+    let reader_filter = find_dynamic_filter(&reader_filter).unwrap();
+    let join_filter = produced_join_filter(&runtime.join);
+    assert_eq!(
+        reader_filter.expression_id().unwrap(),
+        join_filter.expression_id().unwrap()
+    );
 }
 
 #[tokio::test]

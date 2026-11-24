@@ -25,6 +25,8 @@
 // The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
 #![deny(clippy::clone_on_ref_ptr)]
 
+mod batch_size_scope;
+mod batch_split;
 mod expand;
 mod explode;
 mod filter;
@@ -35,6 +37,8 @@ mod range;
 mod rank_limit;
 mod sample;
 
+pub use batch_size_scope::BatchSizeScopeExec;
+pub use batch_split::BatchSplitExec;
 pub use expand::ExpandExec;
 pub use explode::ExplodeExec;
 pub use filter::CometFilterExec;

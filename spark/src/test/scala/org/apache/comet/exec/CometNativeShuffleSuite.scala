@@ -51,7 +51,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveS
 import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, ShuffledJoin, SortMergeJoinExec}
-import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, lit, spark_partition_id, sum, when}
+import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, expr, lit, spark_partition_id, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -532,6 +532,23 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           }
         }
       }
+    }
+  }
+
+  test("range shuffle bounds a large string scalar in its ordering expression") {
+    // A 256 KiB scalar expanded to an 8192-row batch needs 2 GiB of value bytes, past Arrow's
+    // 32-bit offsets. The expression is evaluated by the exchange itself, with no projection
+    // between it and the range source. See https://github.com/apache/datafusion-comet/issues/7247.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val df = spark
+        .range(0, 8192, 1, 1)
+        .repartitionByRange(2, expr("concat(repeat('x', 262144), cast(id AS string))").asc)
+        .toDF()
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometShuffleExchangeExec]))
     }
   }
 

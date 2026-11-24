@@ -52,6 +52,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, IntegralType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
+import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
@@ -1595,6 +1596,15 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       return None
     }
 
+    val literalBytes = expandedLiteralBytes(op.sortOrder)
+    if (literalBytes > MaxSortKeyLiteralBytes) {
+      withFallbackReason(
+        op,
+        s"A sort key expands a string or binary literal of $literalBytes bytes. The native " +
+          "sort holds every row's key in memory while it merges, and Spark's does not")
+      return None
+    }
+
     val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
 
     if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
@@ -1607,6 +1617,31 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       None
     }
   }
+
+  /**
+   * The largest string or binary literal a native full sort's keys may expand. The native sort
+   * evaluates its keys batch by batch, so the expansion cannot overflow, but its merge holds a
+   * batch of keys for every run at once, and Spark's sort holds none. The limit puts 1 GiB of
+   * keys in a batch at the default batch size, and does not follow the configured batch size,
+   * since a smaller batch only makes more runs.
+   */
+  private val MaxSortKeyLiteralBytes = 128 * 1024
+
+  /**
+   * The bytes of the string and binary literals the sort keys expand to a batch's length. A key
+   * that is itself a literal sorts nothing and expands nothing.
+   */
+  private[comet] def expandedLiteralBytes(sortOrder: Seq[SortOrder]): Int =
+    sortOrder
+      .map(_.child)
+      .filterNot(_.isInstanceOf[Literal])
+      .map { key =>
+        key.collect {
+          case Literal(value: UTF8String, _: StringType) => value.numBytes()
+          case Literal(value: Array[Byte], BinaryType) => value.length
+        }.sum
+      }
+      .sum
 
   override def createExec(nativeOp: Operator, op: SortExec): CometNativeExec = {
     CometSortExec(

@@ -25,6 +25,7 @@ mod literal;
 pub mod macros;
 mod merge_rows;
 pub mod operator_registry;
+mod scalar_expansion;
 mod shuffle;
 mod window;
 mod write;
@@ -82,7 +83,9 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_operators::{range_exec, range_sort_expr, ExpandExec, SampleExec};
+use datafusion_comet_operators::{
+    range_exec, range_sort_expr, BatchSizeScopeExec, BatchSplitExec, ExpandExec, SampleExec,
+};
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
@@ -1810,10 +1813,12 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
+                let input =
+                    self.bound_scalar_expansion(Arc::clone(&child.native_plan), [&predicate]);
                 // FilterExec merges its output up to its own batch size, 8192 rows by default.
                 // Use the session batch size so it doesn't build batches bigger than that.
                 let filter: Arc<dyn ExecutionPlan> = Arc::new(
-                    FilterExecBuilder::new(predicate, Arc::clone(&child.native_plan))
+                    FilterExecBuilder::new(predicate, input)
                         .with_batch_size(self.session_ctx.copied_config().batch_size())
                         .build()?,
                 );
@@ -1904,19 +1909,38 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
-                let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = sort
+                let exprs: Vec<PhysicalSortExpr> = sort
                     .sort_orders
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, child.schema()))
-                    .collect();
+                    .collect::<Result<_, ExecutionError>>()?;
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let sort_plan = SortExec::new(
-                    LexOrdering::new(exprs?).unwrap(),
-                    Arc::clone(&child.native_plan),
-                )
-                .with_fetch(fetch);
+                // A TopK evaluates its keys on each batch it receives. A full sort concatenates
+                // the batches it buffers into runs before evaluating them, so it also runs scoped
+                // to evaluate them batch by batch. Its split copies what it cuts: the sort reserves
+                // each slice of a shared buffer as the whole buffer (apache/datafusion#25804).
+                let full_sort_rows = match fetch {
+                    Some(_) => None,
+                    None => self.scalar_expansion_rows(
+                        exprs.iter().map(|sort| &sort.expr),
+                        &child.schema(),
+                    ),
+                };
+                let input = match (fetch, full_sort_rows) {
+                    (Some(_), _) => self.bound_scalar_expansion(
+                        Arc::clone(&child.native_plan),
+                        exprs.iter().map(|sort| &sort.expr),
+                    ),
+                    (None, Some(rows)) => Arc::new(BatchSplitExec::compacting(
+                        Arc::clone(&child.native_plan),
+                        rows,
+                    )),
+                    (None, None) => Arc::clone(&child.native_plan),
+                };
+                let sort_plan =
+                    SortExec::new(LexOrdering::new(exprs).unwrap(), input).with_fetch(fetch);
                 let mut sort_exec: Arc<dyn ExecutionPlan> = if sort.dynamic_filter_enabled {
                     match TopKReaderFilterExec::try_new(
                         &sort_plan,
@@ -1928,6 +1952,14 @@ impl PhysicalPlanner {
                 } else {
                     Arc::new(sort_plan)
                 };
+
+                if let Some(rows) = full_sort_rows {
+                    let batch_size = self.session_ctx.copied_config().batch_size();
+                    sort_exec = Arc::new(BatchSizeScopeExec::sorting_by_batch(
+                        sort_exec,
+                        rows.min(batch_size),
+                    ));
+                }
 
                 if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
                     sort_exec = Arc::new(GlobalLimitExec::new(sort_exec, skip, None));
@@ -2168,7 +2200,10 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let input = Arc::clone(&child.native_plan);
+                let input = self.bound_scalar_expansion(
+                    Arc::clone(&child.native_plan),
+                    projections.iter().flatten(),
+                );
                 let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
@@ -3289,7 +3324,9 @@ mod tests {
     use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-    use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
+    use datafusion_comet_operators::{
+        BatchSizeScopeExec, BatchSplitExec, PartitionedRankLimitExec, WindowFnKind,
+    };
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -4417,6 +4454,101 @@ mod tests {
             "SortExec",
             planned_hash_join(&planned.native_plan).right().name()
         );
+    }
+
+    #[test]
+    fn sort_bounds_the_scalar_its_keys_expand() {
+        // A TopK evaluates its keys on each batch it inserts, expanding a string scalar in a key
+        // to the batch's length, so the keys get the bound a projection's expressions get. A full
+        // sort gets a split that copies what it cuts, and runs scoped to evaluate its keys over
+        // each of those batches rather than over runs of them.
+        let string_type = spark_expression::DataType {
+            type_id: spark_expression::data_type::DataTypeId::String as i32,
+            type_info: None,
+        };
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![string_type.clone()],
+                source: String::new(),
+            })),
+            ..Default::default()
+        };
+        let wide = Expr {
+            expr_struct: Some(Literal(spark_expression::Literal {
+                value: Some(literal::Value::StringVal("x".repeat(256 * 1024))),
+                datatype: Some(string_type.clone()),
+                is_null: false,
+            })),
+            ..Default::default()
+        };
+        let column = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(string_type.clone()),
+            })),
+            ..Default::default()
+        };
+        let key = Expr {
+            expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
+                func: "concat".to_string(),
+                args: vec![wide, column],
+                return_type: Some(string_type),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        for fetch in [None, Some(1)] {
+            let sort = Operator {
+                children: vec![scan.clone()],
+                op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                    sort_orders: vec![Expr {
+                        expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                            child: Some(Box::new(key.clone())),
+                            direction: spark_expression::SortDirection::Ascending as i32,
+                            null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
+                        }))),
+                        ..Default::default()
+                    }],
+                    fetch,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&sort, &mut vec![], 1)
+                .unwrap();
+            let sort = match fetch {
+                None => {
+                    let scope = planned
+                        .native_plan
+                        .downcast_ref::<BatchSizeScopeExec>()
+                        .expect("a scope over the full sort");
+                    assert!(scope.sorts_by_batch());
+                    assert_eq!(4096, scope.batch_size());
+                    scope.input().downcast_ref::<SortExec>().unwrap()
+                }
+                Some(_) => planned.native_plan.downcast_ref::<SortExec>().unwrap(),
+            };
+            assert_eq!(fetch.map(|n| n as usize), sort.fetch());
+            match fetch {
+                None => {
+                    let split = sort
+                        .input()
+                        .downcast_ref::<BatchSplitExec>()
+                        .expect("a split under the full sort");
+                    assert!(split.is_compacting());
+                    assert_eq!(4096, split.batch_size());
+                }
+                Some(_) => {
+                    let split = sort
+                        .input()
+                        .downcast_ref::<BatchSplitExec>()
+                        .expect("a split under the TopK");
+                    // A 256 KiB scalar expanded to 4096 rows takes 1 GiB.
+                    assert_eq!(4096, split.batch_size());
+                }
+            }
+        }
     }
 
     #[test]
