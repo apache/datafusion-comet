@@ -19,7 +19,7 @@
 # This script freezes generated documentation content onto a release branch.
 # It should be run once when creating a new release branch.
 #
-# On main, docs/source/user-guide/latest/ holds only template markers; CI fills them
+# On main, the user guide source directory holds only template markers; CI fills them
 # at publish time via docs/build.sh. A release branch instead commits the generated
 # content so that the archived docs for the release render real tables (archived
 # versions are served from the frozen branch, not regenerated at publish).
@@ -37,7 +37,7 @@
 # Example workflow when cutting release 0.13.0 (release-branch changes go via PR):
 #   git checkout -b release-0.13-docs branch-0.13
 #   ./dev/generate-release-docs.sh
-#   git add docs/source/user-guide/latest/
+#   git add docs/source/user-guide/<guide>/
 #   git commit -m "Generate docs for 0.13.0 release"
 #   # open a PR targeting branch-0.13
 
@@ -48,8 +48,14 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
-LATEST_USER_GUIDE="${PROJECT_ROOT}/docs/source/user-guide/latest"
-COMPAT_EXPR_DIR="${LATEST_USER_GUIDE}/compatibility/expressions"
+# The user guide lives under `dev` on main and on release branches cut after it was
+# renamed from `latest`, and under `latest` on branch-1.2 and older. Detect it rather
+# than hardcoding one name, so the same script works wherever it runs.
+USER_GUIDE_DIR="${PROJECT_ROOT}/docs/source/user-guide/dev"
+if [ ! -d "${USER_GUIDE_DIR}" ]; then
+  USER_GUIDE_DIR="${PROJECT_ROOT}/docs/source/user-guide/latest"
+fi
+COMPAT_EXPR_DIR="${USER_GUIDE_DIR}/compatibility/expressions"
 TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
 
 # Spark profiles for which we publish per-version compatibility pages. Keep this list
@@ -65,8 +71,39 @@ for profile in "${SPARK_PROFILES[@]}"; do
   mkdir -p "${COMPAT_EXPR_DIR}/${profile}"
   cp "${TEMPLATE_DIR}"/*.md "${COMPAT_EXPR_DIR}/${profile}/"
   ./mvnw package -P"${profile}" -Pgenerate-docs -DskipTests -Dmaven.test.skip=true \
-    -Dexec.arguments="${LATEST_USER_GUIDE},${profile}"
+    -Dexec.arguments="${USER_GUIDE_DIR},${profile}"
 done
+
+# Point the generated guide links at this release instead of the development guide.
+# GenerateDocs derives the links from the version it builds, and this script runs before the
+# release branch's version is bumped, so they come out as user-guide/dev/. Those pages are
+# frozen onto the branch and served as the archived user-guide/<major>.<minor>/ guide, where a
+# link to dev sends readers to the moving snapshot. Take the version from the branch name so a
+# run on main, where dev links are correct, is left alone.
+RELEASE_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+case "${RELEASE_BRANCH}" in
+  branch-[0-9]*.[0-9]*)
+    MAJOR_MINOR="${RELEASE_BRANCH#branch-}"
+    echo "Rewriting guide links to user-guide/${MAJOR_MINOR}/ for ${RELEASE_BRANCH}..."
+    python3 - "${USER_GUIDE_DIR}" "${MAJOR_MINOR}" <<'PY'
+import pathlib
+import sys
+
+root, version = pathlib.Path(sys.argv[1]), sys.argv[2]
+changed = 0
+for page in root.rglob("*.md"):
+    text = page.read_text(encoding="utf-8")
+    if "user-guide/dev/" in text:
+        page.write_text(
+            text.replace("user-guide/dev/", f"user-guide/{version}/"), encoding="utf-8")
+        changed += 1
+print(f"rewrote guide links in {changed} file(s)")
+PY
+    ;;
+  *)
+    echo "Not on a release branch (${RELEASE_BRANCH}), leaving user-guide/dev/ links as they are."
+    ;;
+esac
 
 # Format the generated Markdown. CI runs `prettier --check "**/*.md"`, and unlike
 # docs/build.sh (whose output is a throwaway temp build) this output is committed, so it
@@ -82,14 +119,14 @@ if ! command -v npx >/dev/null 2>&1; then
   exit 1
 fi
 echo "Formatting generated Markdown with prettier..."
-npx --yes prettier@latest "${LATEST_USER_GUIDE}/**/*.md" --write
+npx --yes prettier@latest "${USER_GUIDE_DIR}/**/*.md" --write
 
 echo ""
-echo "Done! Generated documentation content in docs/source/user-guide/latest/"
+echo "Done! Generated documentation content in ${USER_GUIDE_DIR#"${PROJECT_ROOT}/"}/"
 echo "  - configs.md (config reference)"
 echo "  - compatibility/expressions/spark-*/ (per-Spark-version compatibility pages)"
 echo ""
 echo "Next steps (release-branch changes go via PR):"
-echo "  git add docs/source/user-guide/latest/"
+echo "  git add ${USER_GUIDE_DIR#"${PROJECT_ROOT}/"}/"
 echo "  git commit -m 'Generate docs for release'"
 echo "  # push to your fork and open a PR targeting the release branch"

@@ -87,7 +87,7 @@ Both projects target a similar set of Spark releases.
 Comet supports Spark 3.5, 4.0, 4.1, and 4.2 in production builds. See the
 [Spark version compatibility guide] for the exact patch versions and JDK/Scala combinations.
 
-[Spark version compatibility guide]: /user-guide/latest/compatibility/spark-versions.md
+[Spark version compatibility guide]: /user-guide/dev/compatibility/spark-versions.md
 
 Gluten 1.7.0 supports Spark 3.3, 3.4, 3.5, 4.0, and 4.1.
 
@@ -124,9 +124,9 @@ experimental, opt-in scan in a separate contrib module that no release publishes
 [Comet Delta Lake guide]). Comet does not currently provide integrations for Hudi or Paimon. See the
 [Comet Iceberg guide] for the full list of supported features and known limitations.
 
-[Comet Iceberg guide]: /user-guide/latest/iceberg.md
-[Comet Iceberg writes]: /user-guide/latest/iceberg.md#writes
-[Comet Delta Lake guide]: /user-guide/latest/delta.md
+[Comet Iceberg guide]: /user-guide/dev/iceberg.md
+[Comet Iceberg writes]: /user-guide/dev/iceberg.md#writes
+[Comet Delta Lake guide]: /user-guide/dev/delta.md
 
 Gluten ships dedicated modules for Iceberg, Delta Lake (2.3 through 4.1, depending on the Spark version), Hudi, and
 Paimon. Its [Iceberg documentation] says that reads of unpartitioned tables are offloaded, including tables with
@@ -141,7 +141,7 @@ Comet relies on the full Spark SQL test suite (consisting of more than 24,000 te
 integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
 Spark are disabled by default, but users can opt in. See the [Comet Compatibility Guide] for more information.
 
-[Comet Compatibility Guide]: /user-guide/latest/compatibility/index.md
+[Comet Compatibility Guide]: /user-guide/dev/compatibility/index.md
 
 Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
 suite. See the Gluten [Velox backend limitations] page for known gaps, such as differences in the regular expression
@@ -204,7 +204,7 @@ C++ UDFs, and its partial projection (see [Codegen Dispatch](#codegen-dispatch))
 in a projection with vanilla Spark while the rest of the projection runs in Velox. A UDF in a filter makes the filter
 fall back to Spark. See the [Comet Scala and Java UDF guide] for the full list of supported and unsupported cases.
 
-[Comet Scala and Java UDF guide]: /user-guide/latest/scala_java_udfs.md
+[Comet Scala and Java UDF guide]: /user-guide/dev/scala_java_udfs.md
 
 ## Performance
 

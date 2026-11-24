@@ -60,7 +60,7 @@ about the other two.
 | T3  | _Rust-implemented_, _runs in Rust_, _native Rust_ | Work done by Comet's Rust code, usually through DataFusion                                                            | "native" on its own                             |
 | T4  | _JVM-side_, _runs on the JVM_                     | A Comet operator whose own work runs on the JVM, such as `CometBroadcastExchange`                                     | "non-native Comet operator"                     |
 | T5  | _codegen dispatch_                                | Spark's generated JVM code for an expression, run over Arrow batches from inside a Rust-implemented plan              | "falls back" (it does not fall back)            |
-| T6  | _Native_, _Codegen dispatch_, _Hybrid_            | The expression kinds in the [Implementation legend](../user-guide/latest/expressions.md#implementation-legend)        | Any other meaning of "Hybrid"                   |
+| T6  | _Native_, _Codegen dispatch_, _Hybrid_            | The expression kinds in the [Implementation legend](../user-guide/dev/expressions.md#implementation-legend)           | Any other meaning of "Hybrid"                   |
 | T7  | _Arrow-native_, _Arrow batches_, _Arrow columnar_ | Claims about data format: the data is held in Arrow columnar format                                                   | "vectorized" as a synonym for columnar (T10)    |
 | T8  | _Arrow IPC_                                       | The format shuffle and broadcast write                                                                                | —                                               |
 | T9  | _Spark rows_ (`UnsafeRow`), _Spark columnar_      | Spark's row format, or a Spark `ColumnarBatch` that is not backed by Arrow                                            | "row format", "JVM format" without saying which |
@@ -126,9 +126,9 @@ Examples:
 
 ## Operators, Plan Names, and Expressions
 
-[Understanding Comet Plans](../user-guide/latest/understanding-comet-plans.md) describes the nodes
+[Understanding Comet Plans](../user-guide/dev/understanding-comet-plans.md) describes the nodes
 a plan can contain, grouped by role. Its
-[Comet Operator Reference](../user-guide/latest/understanding-comet-plans.md#comet-operator-reference)
+[Comet Operator Reference](../user-guide/dev/understanding-comet-plans.md#comet-operator-reference)
 lists them. Link to it rather than copying it.
 
 Do not infer an operator's kind from its class hierarchy. For example,
@@ -181,10 +181,10 @@ operators too.
   related pages. A new contributor guide page that describes a procedure says how to check that it
   worked.
 - **P15.** A change that adds an operator updates the
-  [Comet Operator Reference](../user-guide/latest/understanding-comet-plans.md#comet-operator-reference)
-  and [Supported Spark Operators](../user-guide/latest/operators.md) in the same pull request. A
+  [Comet Operator Reference](../user-guide/dev/understanding-comet-plans.md#comet-operator-reference)
+  and [Supported Spark Operators](../user-guide/dev/operators.md) in the same pull request. A
   change that adds an expression updates its row in
-  [Spark Expression Support](../user-guide/latest/expressions.md).
+  [Spark Expression Support](../user-guide/dev/expressions.md).
 - **P16.** Describe the code as it is now. Remove text about code that has been removed, keep
   sample output, such as explain output and messages, in step with the code that produces it, and
   keep each page consistent with itself.

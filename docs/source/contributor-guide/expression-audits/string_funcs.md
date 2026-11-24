@@ -286,4 +286,4 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes through the JVM codegen dispatcher by default, so results are byte-exact. The native path (DataFusion `upper`, Rust Unicode default case mapping with no locale awareness) is opt-in via `spark.comet.caseConversion.enabled=true`.
 - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Upper.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`. Comet does not propagate collation or ICU mode; non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even after opting in ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

@@ -46,10 +46,10 @@ import org.apache.comet.shims.ShimCometConf
 object CometConf extends ShimCometConf {
 
   val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)"
+    s"Guide (${CometDocs.userGuideUrl("compatibility/index.html")})"
 
   val TUNING_GUIDE: String = "For more information, refer to the Comet Tuning " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/latest/tuning.html)"
+    s"Guide (${CometDocs.userGuideUrl("tuning.html")})"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"

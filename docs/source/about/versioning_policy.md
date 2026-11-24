@@ -52,9 +52,9 @@ The following are covered by this versioning policy:
   those marked internal; see
   [Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
   Every other key is covered wherever Comet documents it, including keys the
-  [configuration reference](../user-guide/latest/configs.md) does not list in its own right: the
+  [configuration reference](../user-guide/dev/configs.md) does not list in its own right: the
   per-expression `spark.comet.expression.<Name>.allowIncompatible` opt-ins, which the
-  [compatibility guide](../user-guide/latest/compatibility/index.md) documents, and the deprecated
+  [compatibility guide](../user-guide/dev/compatibility/index.md) documents, and the deprecated
   alias a rename leaves behind.
 - **A small, enumerated public Java and Scala API**: the class names users write into Spark config
   properties, and the S3 credential provider SPI that vendors implement. The full list is in
@@ -87,11 +87,11 @@ Two kinds of configuration key sit outside this policy, and what puts a key outs
 mark on its declaration in `CometConf.scala`: **a key is exempt only if it is in the `testing`
 category or is marked `internal()`.** Every other `spark.comet.*` key is covered.
 
-Absence from the [configuration reference](../user-guide/latest/configs.md) is not the test,
+Absence from the [configuration reference](../user-guide/dev/configs.md) is not the test,
 because that page is not an exhaustive list of covered keys. The per-expression
 `spark.comet.expression.<Name>.allowIncompatible` opt-ins are read as plain strings with no
 `ConfigEntry` behind them, so no generated table ever lists them; the
-[compatibility guide](../user-guide/latest/compatibility/index.md) is where they are documented
+[compatibility guide](../user-guide/dev/compatibility/index.md) is where they are documented
 instead. A deprecated alias left behind by a rename has no row of its own either. Both are fully
 covered.
 
@@ -172,7 +172,7 @@ when all three of the following hold:
 
 1. A boolean configuration key under `spark.comet.legacy.*` restores the previous behavior. It
    defaults to `false`, meaning the new behavior is what users get unless they opt out.
-2. The [Upgrade Guide](../user-guide/latest/migration-guide.md) gains an entry that describes the
+2. The [Upgrade Guide](../user-guide/dev/migration-guide.md) gains an entry that describes the
    change and names the configuration key that reverts it.
 3. The release notes for that version call the change out.
 
@@ -243,7 +243,7 @@ guarantees. `Incompatible` items require an explicit per-expression or per-opera
 (for example, `spark.comet.expression.<Name>.allowIncompatible=true`).
 
 For details on per-expression and per-operator support levels, see the
-[compatibility guide](../user-guide/latest/compatibility/index.md).
+[compatibility guide](../user-guide/dev/compatibility/index.md).
 
 ## Public Scala and Java API
 
@@ -288,7 +288,7 @@ Comet also ships two built-in implementations, `HadoopS3ACredentialProviderAdapt
 `fs.s3a.comet.credential.provider.class`, so they are covered by the config-referenced class-name
 table above (name pinned, internal structure not guaranteed) rather than by the SPI's binary
 compatibility contract. See the
-[S3 Credential Providers](../user-guide/latest/s3-credential-providers.md) guide for how to enable
+[S3 Credential Providers](../user-guide/dev/s3-credential-providers.md) guide for how to enable
 them.
 
 Additive changes are allowed in a minor release, for example a new accessor on
@@ -301,7 +301,7 @@ method, such as how `CometS3LocationScopedCredentialProvider` matches a path to 
 `CometS3CredentialDispatcher` is the JNI entry point Comet uses to reach a provider. It is internal
 despite living in the same package, and vendors must not call it.
 
-See the [S3 Credential Providers](../user-guide/latest/s3-credential-providers.md) guide for the
+See the [S3 Credential Providers](../user-guide/dev/s3-credential-providers.md) guide for the
 full vendor contract.
 
 ### Everything Else Is Internal
@@ -333,7 +333,7 @@ annotation, this page, and the suite together in one pull request.
 ## Apache Spark Version Support
 
 The currently supported Spark versions are listed on the
-[Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page. Comet
+[Spark Version Compatibility](../user-guide/dev/compatibility/spark-versions.md) page. Comet
 binaries are published per `(Spark minor × Scala binary version)` combination. Users must select
 the binary that matches their Spark and Scala installation.
 
@@ -378,7 +378,7 @@ Spark project. Once upstream ends maintenance for a Spark minor, Comet removes i
 
 1. **Deprecation.** The next Comet minor release after upstream maintenance ends marks the Spark
    minor as deprecated in the release notes and on the
-   [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page.
+   [Spark Version Compatibility](../user-guide/dev/compatibility/spark-versions.md) page.
    Comet continues to build and publish binaries for the deprecated Spark minor, but stops
    gating merges on Apache Spark's own SQL test suite for that version, so a regression specific
    to it is more likely to reach a release.

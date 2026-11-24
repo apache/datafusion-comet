@@ -76,7 +76,7 @@ Repeat with `on,off` to check case-order effects, including JVM warmup and metad
 Compare elapsed time as well as scan metrics: fewer rows or data bytes do not guarantee a faster
 query, especially for small files or when footer inspection and scheduling dominate. Record the
 Comet revision, build flags, Spark/JDK versions, machine, master, arguments, and both mode orders
-with any reported results. See [MIN/MAX reader filtering](../user-guide/latest/tuning/operators.md#minmax-reader-filtering)
+with any reported results. See [MIN/MAX reader filtering](../user-guide/dev/tuning/operators.md#minmax-reader-filtering)
 for supported plans and fallback limits.
 
 ```{toctree}

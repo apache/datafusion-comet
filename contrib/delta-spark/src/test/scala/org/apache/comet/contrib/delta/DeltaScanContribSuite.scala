@@ -776,9 +776,9 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     // DeltaSparkConfigProvider with the current module layout, so this is the only check tying
     // each entry's key, doc string, and default to the row GenerateDocs would render.
     val file = DeltaScanContribSuite
-      .findRepoFile("docs/source/user-guide/latest/delta.md")
+      .findRepoFile("docs/source/user-guide/dev/delta.md")
       .getOrElse(
-        fail("Could not locate docs/source/user-guide/latest/delta.md from this checkout; " +
+        fail("Could not locate docs/source/user-guide/dev/delta.md from this checkout; " +
           "set -Dcomet.repo.root or run from the repo or module root"))
     val source = scala.io.Source.fromFile(file, "UTF-8")
     val tableRows =

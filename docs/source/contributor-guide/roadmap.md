@@ -31,7 +31,7 @@ Remaining work is to close the gaps that still fall back to Spark: statistical a
 `corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `RANGE` frames with explicit
 decimal offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]), and
 non-literal `lag` / `lead` default values ([#4268]). See the
-[window function compatibility guide](../user-guide/latest/compatibility/operators.md) for the complete list of
+[window function compatibility guide](../user-guide/dev/compatibility/operators.md) for the complete list of
 supported functions, frames, and fallback cases.
 
 [#4268]: https://github.com/apache/datafusion-comet/issues/4268
@@ -60,7 +60,7 @@ bridge covers only scalar expressions, so an aggregate function with no Spark-co
 back to Spark instead. We're exploring closing these gaps so that more expressions run natively by default, which
 would remove JVM round-trips beyond those the lambda work above addresses.
 
-[expression reference]: ../user-guide/latest/expressions.md
+[expression reference]: ../user-guide/dev/expressions.md
 
 ## Iceberg Table Format V3 Support
 

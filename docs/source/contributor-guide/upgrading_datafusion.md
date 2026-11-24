@@ -128,7 +128,7 @@ A test that fails on the new DataFusion revision and passes on `main` is a regre
      [Handling test failures](sql-file-tests.md#handling-test-failures), and for one of Spark's own
      tests see [Running Spark SQL Tests](spark-sql-tests.md). Document the limitation on the
      affected feature's user guide page and in the
-     [Comet Upgrade Guide](../user-guide/latest/migration-guide.md) section for the next release.
+     [Comet Upgrade Guide](../user-guide/dev/migration-guide.md) section for the next release.
    - If a native expression or operator that is enabled by default now returns a different result
      from Spark, an ignored test and a note leave the wrong result enabled. Before the upgrade
      merges, make that path fall back to Spark or move it behind an incompatible opt-in, and then

@@ -96,4 +96,4 @@
 - Spark 4.0.1 (audited 2026-07-24): adds `def this(seed: Expression)`, exposing the `uuid(seed)` SQL form (the seed must be an integer or long literal, validated at analysis time). `RandomUUIDGenerator` and the per-row algorithm are unchanged, so results are identical to 3.4.3 for a given seed.
 - Spark 4.1.1 (audited 2026-07-24): identical to 4.0.1, plus `withShiftedSeed`. No runtime change.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md
