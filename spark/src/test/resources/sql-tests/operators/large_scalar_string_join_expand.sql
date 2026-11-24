@@ -18,7 +18,9 @@
 -- A large string scalar expanded by a join filter or by Expand, which #7316 left unbounded. A join
 -- evaluates its filter over up to a batch size of the row pairs it matched, however wide its
 -- inputs, so the planner runs the join at a smaller batch size. Expand evaluates its projections
--- over its input batch, so the planner splits that batch, as it does under a projection.
+-- over its input batch, so the planner splits that batch, as it does under a projection. A full
+-- sort computes every row's key when it merges and holds them all, so a key with such a literal
+-- falls back to Spark's sort, which compares keys row by row.
 -- See https://github.com/apache/datafusion-comet/issues/7689.
 -- Config: spark.sql.adaptive.enabled=false
 -- Config: spark.sql.autoBroadcastJoinThreshold=-1
@@ -57,3 +59,6 @@ query
 SELECT count(DISTINCT length(concat(repeat('x', 262144), CAST(id AS STRING)))), count(DISTINCT id % 7)
 FROM range(0, 8192, 1, 1)
 
+-- a full sort on a key that expands the literal
+query expect_fallback(A sort key expands a string or binary literal of 262144 bytes)
+SELECT id FROM range(0, 8192, 1, 1) SORT BY concat(repeat('x', 262144), CAST(id AS STRING))

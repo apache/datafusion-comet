@@ -52,6 +52,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, IntegralType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
+import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
@@ -1595,6 +1596,15 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       return None
     }
 
+    val literalBytes = expandedLiteralBytes(op.sortOrder)
+    if (literalBytes.toLong * CometConf.COMET_BATCH_SIZE.get() > MaxExpandedLiteralBytes) {
+      withFallbackReason(
+        op,
+        s"A sort key expands a string or binary literal of $literalBytes bytes. The native " +
+          "sort holds every row's key in memory while it merges, and Spark's does not")
+      return None
+    }
+
     val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
 
     if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
@@ -1607,6 +1617,28 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       None
     }
   }
+
+  /**
+   * The bytes past which a string or binary scalar, expanded to a batch's length, no longer fits
+   * the native planner's bound for one operator's expansion.
+   */
+  private val MaxExpandedLiteralBytes = 1L << 30
+
+  /**
+   * The bytes of the string and binary literals the sort keys expand to a batch's length. A key
+   * that is itself a literal sorts nothing and expands nothing.
+   */
+  private[comet] def expandedLiteralBytes(sortOrder: Seq[SortOrder]): Int =
+    sortOrder
+      .map(_.child)
+      .filterNot(_.isInstanceOf[Literal])
+      .map { key =>
+        key.collect {
+          case Literal(value: UTF8String, _: StringType) => value.numBytes()
+          case Literal(value: Array[Byte], BinaryType) => value.length
+        }.sum
+      }
+      .sum
 
   override def createExec(nativeOp: Operator, op: SortExec): CometNativeExec = {
     CometSortExec(
