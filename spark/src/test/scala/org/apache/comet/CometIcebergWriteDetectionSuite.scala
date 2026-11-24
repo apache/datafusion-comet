@@ -746,6 +746,32 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("renamed Bloom columns report fallback during support detection") {
+    val quoted = if (icebergVersionAtLeast(1, 8)) "order id" else "order_x20id"
+    withDetectionCatalog { _ =>
+      Seq(
+        (s"'write.parquet.bloom-filter-enabled.column.$quoted'='true'", true),
+        ("'write.parquet.bloom-filter-enabled.column.id'='true'", false),
+        (s"'write.parquet.bloom-filter-enabled.column.$quoted'='false'", false),
+        (
+          s"'write.parquet.bloom-filter-enabled.column.$quoted'='false', " +
+            s"'write.parquet.bloom-filter-ndv.column.$quoted'='1000'",
+          icebergSupportsBloomNdv)).zipWithIndex.foreach { case ((properties, renamed), index) =>
+        val table = s"renamed_bloom_$index"
+        spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (id INT, `order id` INT)
+            USING iceberg TBLPROPERTIES ($properties)
+          """)
+        val write = planInsertWriteExec(s"$catalog.$ns.$table", values = "(1, 2)")
+        if (renamed) {
+          assertUnsupportedContains(write, table, "renamed", quoted)
+        } else {
+          assert(CometIcebergNativeWrite.getSupportLevel(write).isInstanceOf[Compatible])
+        }
+      }
+    }
+  }
+
   test("floating-point Bloom detection reports top-level and nested affected leaves") {
     withDetectionCatalog { _ =>
       val columns = Seq(

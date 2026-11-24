@@ -26,6 +26,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, IcebergWriteExec}
 import org.apache.spark.sql.types.NullType
 
@@ -39,6 +40,14 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.util.ClassLoaders
 
 object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
+
+  private case class PreparedBloomPaths(
+      schema: AnyRef,
+      icebergVersion: String,
+      properties: Map[String, String],
+      paths: Map[String, String])
+
+  private val BloomPathsTag = TreeNodeTag[PreparedBloomPaths]("comet.iceberg.bloomPaths")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED)
@@ -429,16 +438,22 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       PropertyKeys.ParquetBloomFilterColumnFppPrefix,
       PropertyKeys.ParquetBloomFilterColumnNdvPrefix)
 
-  override def getSupportLevel(op: IcebergWriteExec): SupportLevel =
+  override def getSupportLevel(op: IcebergWriteExec): SupportLevel = {
+    // Detection may be repeated on the same plan under different settings.
+    op.unsetTagValue(BloomPathsTag)
     try {
       checkTriggers(op) match {
-        case Some(reason) => Unsupported(Some(reason))
+        case Some(reason) =>
+          op.unsetTagValue(BloomPathsTag)
+          Unsupported(Some(reason))
         case None => Compatible(None)
       }
     } catch {
       case NonFatal(e) =>
+        op.unsetTagValue(BloomPathsTag)
         Unsupported(Some(s"Iceberg native write detection failed: ${e.getMessage}"))
     }
+  }
 
   private def checkTriggers(op: IcebergWriteExec): Option[String] = {
     op.dispatch match {
@@ -476,7 +491,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         tableProperties ++ writeProperties,
         sparkWrite,
         hadoopConfs,
-        CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.get(op.conf))
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.get(op.conf),
+        op)
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
 
@@ -485,7 +501,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       properties: Map[String, String],
       sparkWrite: Any,
       hadoopConfs: LazyHadoopConfs,
-      bloomFilterFoldingEnabled: Boolean) {
+      bloomFilterFoldingEnabled: Boolean,
+      op: IcebergWriteExec) {
     def hadoopConf: Configuration = hadoopConfs.session
     def s3HadoopConf: Configuration = hadoopConfs.effective
     lazy val fileIOProperties: Map[String, String] =
@@ -973,11 +990,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       val resolution = IcebergReflection
         .getParquetPathResolution(schema)
         .getOrElse(throw new IllegalStateException("Could not resolve Bloom Parquet paths"))
-      bloomFilterParquetPaths(
-        columns,
-        resolution,
-        IcebergReflection.icebergVersion(),
-        schema) match {
+      val icebergVersion = IcebergReflection.icebergVersion()
+      bloomFilterParquetPaths(columns, resolution, icebergVersion, schema) match {
         case Left(reason) => Some(reason)
         case Right(paths) =>
           val properties = interpretedBloomFilterProperties(ctx.properties)
@@ -985,14 +999,26 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           val affected = enabled.filter { column =>
             paths.get(column).exists(resolution.floatingPointPhysicalPaths.contains)
           }
-          if (affected.isEmpty) {
-            None
-          } else {
+          val renamed = enabled.filter { column =>
+            paths.get(column).exists(resolution.renamedPhysicalPaths.contains)
+          }
+          if (affected.nonEmpty) {
             // SQL-equal NaNs can have different payloads. Preserve Java's writer until the
             // native writer canonicalizes these values before hashing them.
             Some(
               s"Bloom filters on FLOAT/DOUBLE columns ${affected.sorted.mkString(", ")} " +
                 "require the Java writer to preserve NaN equality")
+          } else if (renamed.nonEmpty) {
+            // Iceberg Java sanitizes these names while iceberg-rust preserves them. A Java
+            // path would silently miss the native column until paths travel structurally.
+            Some(
+              "Bloom-filter columns are renamed in Iceberg Java's Parquet schema: " +
+                renamed.sorted.mkString(", "))
+          } else {
+            ctx.op.setTagValue(
+              BloomPathsTag,
+              PreparedBloomPaths(schema.asInstanceOf[AnyRef], icebergVersion, properties, paths))
+            None
           }
       }
     }
@@ -1774,7 +1800,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       specIsUnpartitioned = specIsUnpartitioned,
       useFanoutWriter = useFanoutWriter)
 
-    val createdBy = s"Apache Iceberg ${IcebergReflection.icebergVersion()} (Comet)"
+    val icebergVersion = IcebergReflection.icebergVersion()
+    val createdBy = s"Apache Iceberg $icebergVersion (Comet)"
     // Iceberg's `RegistryBasedFileWriterFactory` merges resolved write properties (codec, level,
     // and other effective settings carried on `SparkWrite`) over the table's properties when
     // building the per-file writer. Mirror that merge here so per-write options (e.g.
@@ -1785,42 +1812,18 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       interpretedBloomFilterProperties(properties ++ resolvedWriteProperties)
     val parquetPathByIcebergColumnName =
       if (IcebergWriteProtoTranslation.hasEnabledBloomFilters(effectiveProperties)) {
-        val resolution = IcebergReflection.getParquetPathResolution(writeSchema).getOrElse {
-          withFallbackReason(op, "Could not resolve physical Parquet paths for Bloom filters")
-          return None
+        op.getTagValue(BloomPathsTag) match {
+          case Some(prepared)
+              if (prepared.schema eq writeSchema.asInstanceOf[AnyRef]) &&
+                prepared.icebergVersion == icebergVersion &&
+                prepared.properties == effectiveProperties =>
+            prepared.paths
+          case _ =>
+            withFallbackReason(
+              op,
+              "Bloom paths were not validated for the current write settings")
+            return None
         }
-        val configuredColumns =
-          IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(effectiveProperties)
-        val enabledColumns =
-          IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties).toSet
-        val resolvedPaths =
-          bloomFilterParquetPaths(
-            configuredColumns,
-            resolution,
-            IcebergReflection.icebergVersion(),
-            writeSchema) match {
-            case Left(reason) =>
-              withFallbackReason(op, reason)
-              return None
-            case Right(paths) => paths
-          }
-        val renamedColumns = resolvedPaths.collect {
-          case (configuredName, path)
-              if enabledColumns.contains(configuredName) &&
-                resolution.renamedPhysicalPaths.contains(path) =>
-            configuredName
-        }
-        if (renamedColumns.nonEmpty) {
-          // Iceberg Java sanitizes these Parquet names, while the pinned iceberg-rust Arrow
-          // conversion preserves them. Passing the Java path to parquet-rs would silently miss
-          // the native writer column, so retain the JVM writer until paths travel structurally.
-          withFallbackReason(
-            op,
-            "Bloom-filter columns are renamed in Iceberg Java's Parquet schema: " +
-              renamedColumns.mkString(", "))
-          return None
-        }
-        resolvedPaths
       } else {
         Map.empty[String, String]
       }
