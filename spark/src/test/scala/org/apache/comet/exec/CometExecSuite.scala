@@ -1366,6 +1366,59 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // A scan Comet bridges into Arrow sits in CometScanWrapper.originalPlan, not among the
+  // children, while the rule converts the operators above it. Its DPP subquery still has to be
+  // wrapped, or Spark's PlanAdaptiveDynamicPruningFilters drops the pruning (#4145).
+  test("AQE DPP: scan bridged by CometSparkToColumnarExec keeps DPP") {
+    withTempDir { dir =>
+      val path = dir.getAbsolutePath
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("cast(id % 10 as int) as store_id", "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_bridged_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_bridged_dim")
+
+        val df = spark.sql("""SELECT f.amount, f.store_id
+            |FROM dpp_bridged_fact f JOIN dpp_bridged_dim d ON f.store_id = d.store_id
+            |WHERE d.country = '3'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val bridged = collect(cometPlan) { case c: CometSparkToColumnarExec =>
+          c.child
+        }.collect {
+          case s: FileSourceScanExec
+              if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+            s
+        }
+        assert(bridged.size == 1, s"Expected one bridged DPP scan:\n${cometPlan.treeString}")
+        assert(
+          collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+          s"Expected a Comet broadcast hash join:\n${cometPlan.treeString}")
+        assertAqeDppShape(cometPlan, expectedCometSubqueryBroadcasts = Some(1))
+        // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 partitions.
+        assert(
+          bridged.head.metrics("numPartitions").value == 1,
+          s"Expected DPP to prune to 1 partition:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
   // A bucketed scan reports its bucket layout, which DPP does not change. The sort-merge join on
   // the bucket column keeps relying on it, so neither join side is shuffled, while DPP from the
   // broadcast dimension join still prunes the fact table's partitions.
