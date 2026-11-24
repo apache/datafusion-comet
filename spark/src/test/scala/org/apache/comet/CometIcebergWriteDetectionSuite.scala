@@ -248,6 +248,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible for a format-version=3 append") {
+    assume(icebergVersionAtLeast(1, 7), "V3 tables require Iceberg 1.7+")
     withDetectionCatalog { _ =>
       createTable("v3", partitionSpec = "", properties = Some("'format-version'='3'"))
       assertSupportLevelIs[Compatible]("v3")

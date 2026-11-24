@@ -2540,6 +2540,7 @@ class CometIcebergWriteActionSuite
   // Iceberg 1.10+. An append or an overwrite writes the data columns alone, and the driver gives
   // the new rows their ids at commit time, so those writes stay native on a v3 table.
   test("native acceleration: format-version=3 appends and overwrites match iceberg-java") {
+    assume(icebergVersionAtLeast(1, 7), "V3 tables require Iceberg 1.7+")
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       Seq("v3_native", "v3_jvm").foreach { t =>
