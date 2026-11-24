@@ -155,6 +155,22 @@ SELECT regexp_extract_all(s, '\\d+', 1) FROM test_regexp_extract_all_one_digit
 query expect_error(regexp_extract_all)
 SELECT regexp_extract_all(s, '(unclosed', 1) FROM test_regexp_extract_all_enabled
 
+-- Spark compiles the pattern only on a row whose subject is non-null, so an invalid pattern
+-- is not an error when every subject row is null. The same holds for a pattern that only
+-- Rust regex rejects.
+statement
+CREATE TABLE test_regexp_extract_all_all_null(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_extract_all_all_null VALUES (NULL), (NULL)
+
+query expect_native(regexp_extract_all)
+SELECT regexp_extract_all(s, '(unclosed', 1), regexp_extract_all(s, '(?=\\d)\\w+', 0)
+FROM test_regexp_extract_all_all_null
+
+query expect_native(regexp_extract_all)
+SELECT regexp_extract_all(s, '(unclosed', 1) FROM test_regexp_extract_all_enabled WHERE s IS NULL
+
 -- Java-only regex feature: lookahead. Rust regex rejects this at compile time;
 -- Spark accepts it. This is one of the documented incompatibilities behind the
 -- Incompatible support level, not an invariant we test for cross-engine equivalence.

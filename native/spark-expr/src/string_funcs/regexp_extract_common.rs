@@ -38,9 +38,9 @@ pub(super) enum ParsedArgs<'a> {
         group_idx: usize,
         subject: &'a ColumnarValue,
     },
-    /// A scalar pattern or idx was null; the result is null for every input row. `len` is
-    /// `Some(n)` when the subject is an array (one null per row) and `None` for a scalar
-    /// subject.
+    /// A scalar pattern or idx was null, or the subject has no non-null row; the result is
+    /// null for every input row. `len` is `Some(n)` when the subject is an array (one null per
+    /// row) and `None` for a scalar subject.
     NullResult { len: Option<usize> },
     /// `idx` is out of range but no non-null row matches, so the caller returns an empty
     /// result for every non-null row and null for every null row. `subject` is a `Utf8` or
@@ -91,6 +91,14 @@ pub(super) fn parse_args<'a>(
             return exec_err!("{fn_name} pattern must be a scalar string");
         }
     };
+
+    // Spark compiles the pattern only on a row whose subject is non-null, so an invalid
+    // pattern is not an error when every subject row is null.
+    if !has_non_null_row(&args[0]) {
+        return Ok(ParsedArgs::NullResult {
+            len: subject_len(&args[0]),
+        });
+    }
 
     // The pattern is a plan-time literal, so the cache makes this compile a one-time cost
     // for the expression instead of a per-batch cost.
@@ -143,6 +151,20 @@ fn any_row_matches(
             Ok(s.as_deref().is_some_and(|s| regex.is_match(s)))
         }
         ColumnarValue::Scalar(_) => exec_err!("{fn_name} subject must be a string"),
+    }
+}
+
+/// Returns `false` only for a `Utf8` or `LargeUtf8` subject whose rows are all null. Other
+/// subject types return `true` so the caller still reports them as unsupported.
+fn has_non_null_row(subject: &ColumnarValue) -> bool {
+    match subject {
+        ColumnarValue::Array(array) => {
+            !matches!(array.data_type(), DataType::Utf8 | DataType::LargeUtf8)
+                || array.null_count() < array.len()
+        }
+        ColumnarValue::Scalar(ScalarValue::Utf8(s))
+        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(s)) => s.is_some(),
+        ColumnarValue::Scalar(_) => true,
     }
 }
 
