@@ -59,7 +59,7 @@ case class CometInMemoryTableScanExec(
     extends CometExec
     with ShimCometInMemoryTableScanExec {
 
-  // Implements InMemoryTableScanLike on Spark 3.5+; Spark 3.4 has no such interface.
+  // Implements InMemoryTableScanLike on supported Spark versions.
   def isMaterialized: Boolean = cacheBuilder.isCachedColumnBuffersLoaded
 
   def baseCacheRDD(): RDD[CachedBatch] = cacheBuilder.cachedColumnBuffers
@@ -223,7 +223,7 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
    * Spark collects those metrics once a query finishes, with `CollectMetricsExec.collect`, and
    * that reaches the ones recorded inside a cached plan only through an `InMemoryTableScanExec`
    * over it. It does not know this node, so replacing the scan of such a relation leaves its
-   * metrics empty, and on Spark 3.4 leaves `Observation.get` waiting for good. The walk mirrors
+   * metrics empty and leaves `Observation.get` waiting for good. The walk mirrors
    * `CollectMetricsExec.collect`, through subqueries, adaptive plans and nested caches.
    */
   def recordsObservedMetrics(relation: InMemoryRelation): Boolean =

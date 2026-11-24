@@ -212,6 +212,55 @@ mod tests {
         test_hashes_with_nulls!(create_murmur3_hashes, T, values, expected, u32);
     }
 
+    /// The length check lives in the shared `create_hashes_internal!`, so one test covers both
+    /// hashers.
+    #[test]
+    fn test_hashes_buffer_length_mismatch_is_error() {
+        use crate::hash_funcs::create_xxhash64_hashes;
+        use arrow::array::{BooleanArray, Decimal128Array, IntervalMonthDayNanoArray};
+        use arrow::datatypes::IntervalMonthDayNano;
+        // Every fixed-width kind the hash loops special-case, plus strings, with and without
+        // nulls.
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
+            Arc::new(Float64Array::from(vec![1.0, -0.0, f64::NAN])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(BooleanArray::from(vec![true, false, true])),
+            Arc::new(IntervalMonthDayNanoArray::from(vec![
+                IntervalMonthDayNano::new(1, 2, 3_000);
+                3
+            ])),
+            Arc::new(
+                Decimal128Array::from(vec![1, 2, 3])
+                    .with_precision_and_scale(10, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Int32Array::from(Vec::<i32>::new())),
+        ];
+        for array in arrays {
+            for len in [array.len().saturating_sub(1), array.len() + 1] {
+                if len == array.len() {
+                    continue;
+                }
+                let columns = [Arc::clone(&array)];
+                let context = format!(
+                    "{} array of length {} with {len} hashes",
+                    array.data_type(),
+                    array.len()
+                );
+                assert!(
+                    create_murmur3_hashes(&columns, &mut vec![42u32; len]).is_err(),
+                    "murmur3: {context}"
+                );
+                assert!(
+                    create_xxhash64_hashes(&columns, &mut vec![42u64; len]).is_err(),
+                    "xxhash64: {context}"
+                );
+            }
+        }
+    }
+
     /// A dictionary array reached through a nested type arrives as the only column of its recursive
     /// call, so deciding the dictionary fast path from column position alone treated it as a first
     /// column and restarted from the seed, discarding the hash accumulated for earlier elements of

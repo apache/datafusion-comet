@@ -81,7 +81,7 @@ spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
 
 ### Which one, and which Spark version
 
-Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
+Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.5 build, v2 on 4.0+), so you configure one name and get the right implementation.
 
 ### `IcebergVendedS3CredentialProvider` (native Iceberg reads, Spark 4.x)
 

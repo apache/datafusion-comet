@@ -50,7 +50,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus}
+import org.apache.comet.CometSparkSessionExtensions.hasFallbackReason
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -905,7 +905,7 @@ class CometJoinSuite extends CometTestBase {
       withParquetTable(Seq((Some(10), 1L), (Some(20), 2L), (None, 3L)), "dynamic_probe") {
         withParquetTable(Seq((Some(10), 4L), (None, 5L)), "dynamic_build") {
           val from = "FROM dynamic_probe p "
-          // Spark 3.4 requires building the left side for a right outer shuffled hash join.
+          // Spark 3.5 requires building the left side for a right outer shuffled hash join.
           val joins = Seq(
             "LEFT JOIN dynamic_build b ON p._1 = b._1" -> "b",
             "RIGHT JOIN dynamic_build b ON p._1 = b._1" -> "p",
@@ -1057,12 +1057,10 @@ class CometJoinSuite extends CometTestBase {
             sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
           checkSparkAnswerAndOperator(df3)
 
-          // TODO: Spark 3.4 returns SortMergeJoin for this query even with SHUFFLE_HASH hint.
-          // Left join with build left and right join with build right in hash join is only supported
-          // in Spark 3.5 or above. See SPARK-36612.
-          //
           // Left join: build left
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          val dfLeftBuildLeft =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(dfLeftBuildLeft)
 
           // Inner join: build right
           val df4 =
@@ -2723,21 +2721,17 @@ class CometJoinSuite extends CometTestBase {
           assertScansShareOneNativePlan(fullOuter)
 
           // Without filter pushdown the scans carry no data filters, and dynamic partition
-          // pruning picks a different partition for each side. Spark 3.4 only runs this with
-          // AQE off: CometScanRule.transformV1Scan leaves a V1 scan with AQE dynamic pruning in
-          // Spark there (case 2 in CometSpark34AqeDppFallbackRule).
-          if (!adaptive || isSpark35Plus) {
-            withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
-              val (_, pruned) = checkSparkAnswer(
-                "SELECT /*+ BROADCAST(d1), BROADCAST(d2) */ a.k, a.v, b.v " +
-                  "FROM bucketed_self a JOIN bucketed_self b ON a.k = b.k " +
-                  "JOIN bucketed_dim d1 ON a.p = d1.p JOIN bucketed_dim d2 ON b.p = d2.p " +
-                  "WHERE d1.x = 'one' AND d2.x = 'two'")
-              assertScansShareOneNativePlan(pruned).foreach { scan =>
-                assert(
-                  scan.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]),
-                  s"Expected each scan to be pruned dynamically:\n$pruned")
-              }
+          // pruning picks a different partition for each side.
+          withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+            val (_, pruned) = checkSparkAnswer(
+              "SELECT /*+ BROADCAST(d1), BROADCAST(d2) */ a.k, a.v, b.v " +
+                "FROM bucketed_self a JOIN bucketed_self b ON a.k = b.k " +
+                "JOIN bucketed_dim d1 ON a.p = d1.p JOIN bucketed_dim d2 ON b.p = d2.p " +
+                "WHERE d1.x = 'one' AND d2.x = 'two'")
+            assertScansShareOneNativePlan(pruned).foreach { scan =>
+              assert(
+                scan.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]),
+                s"Expected each scan to be pruned dynamically:\n$pruned")
             }
           }
         }
