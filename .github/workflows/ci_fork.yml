@@ -36,8 +36,9 @@
 # also triggers on a push to `main`, in a fork as upstream, but its Preflight job
 # skips that run unless it came through this workflow, so a fork push is tested
 # once and the bridge has one workflow to look up. A push that adds nothing to
-# upstream main, such as a sync of the fork, selects no suite; see
-# dev/ci/fork-push-changed-files.sh.
+# upstream main selects no suite (see dev/ci/fork-push-changed-files.sh), but a
+# sync of the fork's main runs the Linux build's cache refresh (see `compute` in
+# dev/ci/compute-changes.py).
 name: Comet CI (fork run)
 
 # No `concurrency` here, and none for a fork push in ci.yml either: see the
