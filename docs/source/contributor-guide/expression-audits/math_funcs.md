@@ -43,7 +43,7 @@
 
 ## CheckOverflow (internal)
 
-Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg` result to null out (non-ANSI) or raise on (ANSI) values that exceed the declared precision. Native impl: `math_funcs/internal/checkoverflow.rs`.
+Internal decimal wrapper emitted around decimal `+ - * /`, `sum`, and `avg` results to null out (non-ANSI) or raise on (ANSI) values that exceed the declared precision. Decimal `+ - *` results that stay on the planner's narrow `Decimal128` path are not wrapped, because the declared result precision is then the exact type bound (issue [#7659](https://github.com/apache/datafusion-comet/issues/7659)). Native impl: `math_funcs/internal/checkoverflow.rs`.
 
 - Performance (tuned 2026-07-15, PR [#4937](https://github.com/apache/datafusion-comet/pull/4937)): both the ANSI and non-ANSI paths share a no-overflow fast path built on `is_valid_decimal_precision`, a small inlined bounds check scanned with `all` (short-circuits at the first overflow). When nothing overflows (the common shape) the input buffers are reused via `to_data()` (cheap Arc metadata clone) instead of allocating through `null_if_overflow_precision` (non-ANSI) or running the heavier per-value `validate_decimal_precision` (ANSI). The ANSI path only falls back to `validate_decimal_precision` when an overflow is present, to build the precise Spark error. ~10% faster on the no-overflow shape, ~17% with nulls, and ~69% faster for ANSI no-overflow (down to parity with non-ANSI); overflow shapes unchanged. Benchmark: `benches/check_overflow.rs`.
 

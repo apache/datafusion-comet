@@ -67,9 +67,11 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
   }
 
   test("issue #5075: DecimalPrecision.promote honours per-expression eval mode") {
-    val left = AttributeReference("a", DecimalType(10, 0))()
-    val right = AttributeReference("b", DecimalType(10, 0))()
-    val third = AttributeReference("c", DecimalType(10, 0))()
+    // DECIMAL(38, 18) keeps +, -, and * on the wide path, where promotion still adds the
+    // CheckOverflow wrapper whose eval mode this test pins.
+    val left = AttributeReference("a", DecimalType(38, 18))()
+    val right = AttributeReference("b", DecimalType(38, 18))()
+    val third = AttributeReference("c", DecimalType(38, 18))()
 
     val operations: Seq[(
         String,

@@ -582,9 +582,10 @@ class CometCodegenSuite
     //
     // `checkoverflow` is the name that pins that lift: `promote` reuses the original `Add`
     // instance as the wrapper's child, so `add` stays reachable from the untouched tree and would
-    // be reported either way. The wrapper exists only on the rebuilt copy.
+    // be reported either way. The wrapper exists only on the rebuilt copy. DECIMAL(38, 18)
+    // operands keep the add on the wide path, where promotion still wraps it (issue #7659).
     withTable("t") {
-      sql("CREATE TABLE t (a DECIMAL(10, 2), b DECIMAL(12, 4)) USING parquet")
+      sql("CREATE TABLE t (a DECIMAL(38, 18), b DECIMAL(38, 18)) USING parquet")
       sql("INSERT INTO t VALUES (1.23, 4.5678)")
 
       withSQLConf(
@@ -601,7 +602,8 @@ class CometCodegenSuite
   }
 
   test("codegen dispatch coverage survives the decimal promotion rewrite") {
-    val decimal = AttributeReference("amount", DecimalType(10, 2), nullable = false)()
+    // DECIMAL(38, 18) keeps the add on the wide path, so promotion still rebuilds the tree.
+    val decimal = AttributeReference("amount", DecimalType(38, 18), nullable = false)()
     val dispatched = Hypot(Cast(Add(decimal, decimal), DoubleType), Literal(4.0d))
     val projection = Alias(dispatched, "value")()
 
@@ -697,9 +699,10 @@ class CometCodegenSuite
     planted.setTagValue(CometExplainInfo.NATIVE_EXPRS, Set("plantedexpr"))
     planted.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, Set("planteddispatch"))
     try {
-      // Decimal promotion rebuilds this projection. Its coverage lift must not copy the
-      // singleton's stale tags onto the Alias, which is a legitimate coverage owner.
-      val decimal = AttributeReference("amount", DecimalType(10, 2), nullable = false)()
+      // Decimal promotion rebuilds this projection (DECIMAL(38, 18) keeps the add on the wide
+      // path, where it still wraps). Its coverage lift must not copy the singleton's stale tags
+      // onto the Alias, which is a legitimate coverage owner.
+      val decimal = AttributeReference("amount", DecimalType(38, 18), nullable = false)()
       val projection = Alias(
         CreateNamedStruct(Seq(Literal("flag"), planted, Literal("sum"), Add(decimal, decimal))),
         "value")()

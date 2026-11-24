@@ -19,26 +19,59 @@
 
 package org.apache.spark.sql.comet
 
+import scala.math.max
+
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.DecimalType
 
 /**
- * Wraps decimal binary arithmetic expressions in [[CheckOverflow]] so the native side has an
- * explicit target type for the result.
+ * Wraps decimal binary arithmetic expressions in [[CheckOverflow]] where the native expression
+ * cannot reproduce Spark's overflow semantics on its own.
+ *
+ * Decimal `+`, `-` and `*` are left unwrapped when the native planner takes its narrow
+ * `Decimal128` path (`addSubFitsDecimal128` / `multiplyFitsDecimal128`). There the Arrow kernel
+ * computes the same result type as Spark, and no value that respects its declared input type can
+ * overflow the declared result precision, so the check can only fire for malformed input. The
+ * wide path is also unwrapped, by the native planner, because `WideDecimalBinaryExpr` reproduces
+ * Spark's precision adjustment and overflow handling. `Divide` and `Remainder` stay wrapped:
+ * native decimal division uses `i128::MAX` as an overflow sentinel, so the wrapper must turn it
+ * into null or an ANSI error.
  *
  * Spark itself stopped wrapping these in `CheckOverflow` in 3.4 (SPARK-39316), but Comet's native
- * `CheckOverflow` only validates precision (it does not rescale), so the target type must equal
- * the child's actual `dataType`. Always using `expr.dataType` is the safe choice: on Spark 3.5 -
- * 4.0 it equals the value the rule would otherwise recompute from `SQLConf`, and on Spark 4.1+
- * (SPARK-53968) it preserves the per-expression `allowDecimalPrecisionLoss` captured at view
- * creation time. Recomputing from the live `SQLConf` would re-label a stored DEC(38, 17) result
- * as DEC(38, 18) (or vice versa) and shift values by 10x (issue #4124).
+ * `CheckOverflow` only validates precision (it does not rescale), so where a wrapper is still
+ * emitted its target type must equal the child's actual `dataType`. Always using `expr.dataType`
+ * is the safe choice: on Spark 3.5 - 4.0 it equals the value the rule would otherwise recompute
+ * from `SQLConf`, and on Spark 4.1+ (SPARK-53968) it preserves the per-expression
+ * `allowDecimalPrecisionLoss` captured at view creation time. Recomputing from the live `SQLConf`
+ * would re-label a stored DEC(38, 17) result as DEC(38, 18) (or vice versa) and shift values by
+ * 10x (issue #4124).
  *
  * The `CheckOverflow` behavior also follows each expression's captured `evalMode`, since TRY
  * arithmetic can be nested inside ANSI arithmetic (or vice versa) independently of the live
  * session ANSI setting.
  */
 object DecimalPrecision {
+
+  /**
+   * Mirrors the native planner's narrow-path decision for decimal `+` and `-`
+   * (`create_binary_expr_with_options` in `native/core/src/execution/planner.rs`, and
+   * `decimal128_add_sub_width` in `native/spark-expr/src/math_funcs/modulo_expr.rs`): the
+   * operation stays on `Decimal128` when `max(s1, s2) + max(p1 - s1, p2 - s2) < 38`. Spark's
+   * result precision is that width plus one, so it is at most 38 and `adjustPrecisionScale` /
+   * `bounded` leave it unchanged. The Arrow kernel's natural result type is then identical to
+   * `expr.dataType`.
+   */
+  private def addSubFitsDecimal128(p1: Int, s1: Int, p2: Int, s2: Int): Boolean =
+    max(s1, s2) + max(p1 - s1, p2 - s2) < DecimalType.MAX_PRECISION
+
+  /**
+   * Mirrors the planner's narrow-path decision for decimal `*`: `p1 + p2 < 38` (the planner
+   * ignores scale for multiply). Spark's result precision is `p1 + p2 + 1`, so it is at most 38
+   * and unchanged; the Arrow kernel's natural result type is then identical to `expr.dataType`.
+   */
+  private def multiplyFitsDecimal128(p1: Int, p2: Int): Boolean =
+    p1 + p2 < DecimalType.MAX_PRECISION
+
   def promote(expr: Expression): Expression = {
     // `transformUp` walks the whole tree and calls `mapChildren` at every node, which allocates
     // through `children.map` / `mapProductIterator` even when no case matches (the specialized
@@ -71,16 +104,18 @@ object DecimalPrecision {
           if inner.dataType == dataType && inner.nullOnOverflow == nullOnOverflow =>
         outer.copy(child = child)
 
-      case add @ Add(DecimalExpression(_, _), DecimalExpression(_, _), _)
-          if add.dataType.isInstanceOf[DecimalType] =>
+      case add @ Add(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _)
+          if add.dataType.isInstanceOf[DecimalType] &&
+            !addSubFitsDecimal128(p1, s1, p2, s2) =>
         CheckOverflow(add, add.dataType.asInstanceOf[DecimalType], add.evalMode != EvalMode.ANSI)
 
-      case sub @ Subtract(DecimalExpression(_, _), DecimalExpression(_, _), _)
-          if sub.dataType.isInstanceOf[DecimalType] =>
+      case sub @ Subtract(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _)
+          if sub.dataType.isInstanceOf[DecimalType] &&
+            !addSubFitsDecimal128(p1, s1, p2, s2) =>
         CheckOverflow(sub, sub.dataType.asInstanceOf[DecimalType], sub.evalMode != EvalMode.ANSI)
 
-      case mul @ Multiply(DecimalExpression(_, _), DecimalExpression(_, _), _)
-          if mul.dataType.isInstanceOf[DecimalType] =>
+      case mul @ Multiply(DecimalExpression(p1, _), DecimalExpression(p2, _), _)
+          if mul.dataType.isInstanceOf[DecimalType] && !multiplyFitsDecimal128(p1, p2) =>
         CheckOverflow(mul, mul.dataType.asInstanceOf[DecimalType], mul.evalMode != EvalMode.ANSI)
 
       // Native decimal division uses i128::MAX as an overflow sentinel, so this wrapper must
