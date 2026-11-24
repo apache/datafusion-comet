@@ -960,6 +960,25 @@ TopK, and ranking window order keys run natively under both default and nondefau
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>). A <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frame that
 searches boundaries over a nullable nested key still runs on Spark
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6477">#6477</a>).</p>
+<p>Spark’s TopK (<code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProject</span></code>, an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> with a <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code>) evaluates a sort key after
+the first only for the rows whose earlier keys tie. Comet evaluates every key over the whole batch,
+so under <code class="docutils literal notranslate"><span class="pre">spark.sql.ansi.enabled=true</span></code> a later key such as <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">+</span> <span class="pre">1</span></code> could raise
+<code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> on a row that Spark never evaluates it for. Under ANSI a TopK therefore runs
+on Spark when Comet cannot show that a later sort key never fails
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7246">#7246</a>). With
+<code class="docutils literal notranslate"><span class="pre">spark.sql.ansi.enabled=false</span></code>, where most invalid inputs give NULL instead of an error, a TopK
+runs on Spark only when a later key uses an expression that Spark can raise for in any mode, such
+as <code class="docutils literal notranslate"><span class="pre">element_at</span></code> on an array with an index that may be 0, <code class="docutils literal notranslate"><span class="pre">slice</span></code> with a start that may be 0 or a
+length that may be negative, <code class="docutils literal notranslate"><span class="pre">array_insert</span></code> with a position that may be 0, <code class="docutils literal notranslate"><span class="pre">sequence</span></code> with bounds
+that are not constants, <code class="docutils literal notranslate"><span class="pre">rlike</span></code> with a pattern that is not a constant, or a user-defined function.
+It also runs on Spark when a later key still evaluates in ANSI mode, such as <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">+</span> <span class="pre">1</span></code> in the
+ordering of a view created with ANSI on. In either mode,
+<code class="docutils literal notranslate"><span class="pre">spark.comet.operator.TakeOrderedAndProjectExec.allowIncompatible=true</span></code> runs such a TopK in
+Comet. With ANSI off, a later key that casts to or from a timestamp runs in Comet, and like any
+other expression it can raise for a year beyond what Comet’s timestamp casts support
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7471">#7471</a>). A sort without a <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> that
+has no exchange beneath it, such as <code class="docutils literal notranslate"><span class="pre">SORT</span> <span class="pre">BY</span></code>, still runs in Comet and can raise such an error
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7470">#7470</a>).</p>
 </section>
 <section id="hash-aggregation">
 <h2>Hash Aggregation<a class="headerlink" href="#hash-aggregation" title="Link to this heading">#</a></h2>
