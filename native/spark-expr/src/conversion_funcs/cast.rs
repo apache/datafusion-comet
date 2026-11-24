@@ -67,7 +67,7 @@ use base64::Engine;
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_common::decode_utf8_spark_lossy;
+use datafusion_comet_common::{decode_utf8_spark_lossy, decoded_utf8_spark_lossy_len};
 use std::{
     fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
@@ -1022,12 +1022,15 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     }
 
     let value_bytes = live_bytes;
-    // Upper bound on the encoded length so the value buffer is allocated once. For the
-    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x and the bytes after the first
-    // ill-formed sequence at up to 3x, since U+FFFD takes three bytes; a batch that was not
-    // checked is sized for valid input. Base64 rounds up to a full 4-char group via div_ceil,
-    // which already covers the group padding.
+    // Estimate UTF-8 capacity at 1x for the validated prefix and up to 3x for the
+    // rest, since U+FFFD takes three bytes. A batch that was not checked is sized
+    // for valid input. Base64 rounds up to a full 4-char group including padding.
     let capacity = match spark_cast_options.binary_output_style {
+        // A code point in the validated prefix can span two rows. Use all live
+        // bytes to bound expansion before deciding whether to count it exactly.
+        None | Some(BinaryOutputStyle::Utf8) if value_bytes > O::MAX_OFFSET / 3 => {
+            checked_utf8_capacity(input, O::MAX_OFFSET)?
+        }
         None | Some(BinaryOutputStyle::Utf8) if checked => {
             valid_prefix.len() + 3 * value_bytes.saturating_sub(valid_prefix.len())
         }
@@ -1094,6 +1097,11 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
             }
         };
         written.expect("writing to a string builder cannot fail");
+        // Other output styles can overflow when append_value records the row offset.
+        let end = builder.values_slice().len();
+        if !utf8_style && end > O::MAX_OFFSET {
+            return Err(ArrowError::OffsetOverflowError(end));
+        }
         builder.append_value("");
     }
     let strings = builder.finish();
@@ -1109,6 +1117,21 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         return Ok(Arc::new(strings));
     }
     Ok(Arc::new(strings))
+}
+
+fn checked_utf8_capacity<O: OffsetSizeTrait>(
+    input: &GenericByteArray<GenericBinaryType<O>>,
+    max_offset: usize,
+) -> Result<usize, ArrowError> {
+    let size = input
+        .iter()
+        .flatten()
+        .map(decoded_utf8_spark_lossy_len)
+        .sum();
+    if size > max_offset {
+        return Err(ArrowError::OffsetOverflowError(size));
+    }
+    Ok(size)
 }
 
 /// True when the `used` bytes of `buffer` fill at least half of its allocation, which is when
@@ -1189,6 +1212,23 @@ mod tests {
                 other => panic!("expected external SparkError, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn utf8_capacity_checks_decoded_row_lengths_against_offset_limit() {
+        // C2 A2 spans two rows, each requiring a replacement. The surrogate in
+        // the last row decodes to one replacement, for nine bytes in total.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xC2]),
+            None,
+            Some(&[0xA2]),
+            Some(&[0xED, 0xA0, 0x80]),
+        ]);
+        assert_eq!(checked_utf8_capacity(&input, 9).unwrap(), 9);
+        assert!(matches!(
+            checked_utf8_capacity(&input, 8),
+            Err(ArrowError::OffsetOverflowError(9))
+        ));
     }
 
     #[test]

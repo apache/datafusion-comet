@@ -1474,6 +1474,15 @@ impl SparkPhysicalExprAdapter {
                 return Ok(Transformed::no(expr));
             }
 
+            // These ARROW:schema representations need the same replacement decoder
+            // as nested binary values. The scalar cast delegates them to Arrow.
+            let needs_binary_decode = target_type == &DataType::Utf8
+                && match physical_type {
+                    DataType::LargeBinary | DataType::BinaryView => true,
+                    DataType::Dictionary(_, value) => **value == DataType::LargeBinary,
+                    _ => false,
+                };
+
             // Complex casts (including changes in list representation), timestamp tz relabel
             // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads), and
             // Timestamp -> Int64
@@ -1498,7 +1507,8 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Map(_, _), DataType::Map(_, _))
                     | (DataType::Timestamp(_, _), DataType::Timestamp(_, _))
                     | (DataType::Timestamp(_, _), DataType::Int64)
-            ) {
+            ) || needs_binary_decode
+            {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
@@ -3044,6 +3054,38 @@ pub(crate) mod test {
         spark_parquet_options.allow_cast_unsigned_ints = true;
         let mut stream = scan_parquet(batch, required_schema, spark_parquet_options)?;
         stream.next().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn adapted_binary_columns_decode_invalid_utf8() -> Result<(), DataFusionError> {
+        let values = BinaryArray::from(vec![
+            Some("café".as_bytes()),
+            None,
+            Some(b"A\xed\xa0\x80B".as_slice()),
+        ]);
+        let required_schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let expected = StringArray::from(vec![Some("café"), None, Some("A\u{fffd}B")]);
+        let dictionary_type =
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::LargeBinary));
+
+        // DataFusion's binary-to-string coercion matches names exactly and skips dictionaries.
+        // These columns reach Comet's case-insensitive schema adapter as binary.
+        for (name, binary_type) in [
+            ("S", DataType::LargeBinary),
+            ("S", DataType::BinaryView),
+            ("s", dictionary_type.clone()),
+        ] {
+            let column = arrow::compute::cast(&values, &binary_type)?;
+            let batch = RecordBatch::try_from_iter([(name, column)])?;
+            let read = roundtrip(&batch, Arc::clone(&required_schema)).await?;
+            let strings = read.column(0).as_string::<i32>();
+            assert_eq!(strings, &expected, "{binary_type}");
+        }
+
+        let batch = RecordBatch::try_from_iter([("s", new_null_array(&dictionary_type, 3))])?;
+        let read = roundtrip(&batch, required_schema).await?;
+        assert_eq!(read.column(0).null_count(), 3);
+        Ok(())
     }
 
     /// A file whose Arrow schema declares dictionary-typed string and binary columns reads

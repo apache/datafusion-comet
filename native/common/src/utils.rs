@@ -107,44 +107,59 @@ fn decode_long_or_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
         return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) });
     }
 
+    let mut out = String::with_capacity(bytes.len());
+    decode_utf8_spark_lossy_chars(bytes, |c| out.push(c));
+    Cow::Owned(out)
+}
+
+/// Byte length of [`decode_utf8_spark_lossy`]'s result without allocating the string.
+pub fn decoded_utf8_spark_lossy_len(bytes: &[u8]) -> usize {
+    let Err(error) = std::str::from_utf8(bytes) else {
+        return bytes.len();
+    };
+    let mut len = error.valid_up_to();
+    decode_utf8_spark_lossy_chars(&bytes[error.valid_up_to()..], |c| len += c.len_utf8());
+    len
+}
+
+fn decode_utf8_spark_lossy_chars(bytes: &[u8], mut emit: impl FnMut(char)) {
     const RC: char = '\u{FFFD}';
     let n = bytes.len();
-    let mut out = String::with_capacity(n);
     let mut i = 0;
     while i < n {
         let b1 = bytes[i];
         if b1 < 0x80 {
-            out.push(b1 as char);
+            emit(b1 as char);
             i += 1;
         } else if (0xC2..=0xDF).contains(&b1) {
             // 2-byte lead. Bad/absent continuation -> single FFFD, skip 1.
             if i + 1 < n && (bytes[i + 1] & 0xC0) == 0x80 {
                 let cp = (((b1 as u32) & 0x1F) << 6) | ((bytes[i + 1] as u32) & 0x3F);
                 // guards above keep cp a valid scalar (2-byte range, never a surrogate)
-                out.push(char::from_u32(cp).unwrap());
+                emit(char::from_u32(cp).unwrap());
                 i += 2;
             } else {
-                out.push(RC);
+                emit(RC);
                 i += 1;
             }
         } else if (0xE0..=0xEF).contains(&b1) {
             // 3-byte lead.
             if i + 1 >= n {
-                out.push(RC); // truncated lead at EOF
+                emit(RC); // truncated lead at EOF
                 i = n;
             } else {
                 let b2 = bytes[i + 1];
                 if (b1 == 0xE0 && (b2 & 0xE0) == 0x80) || (b2 & 0xC0) != 0x80 {
                     // overlong (E0 80..9F) or b2 not a continuation -> skip 1
-                    out.push(RC);
+                    emit(RC);
                     i += 1;
                 } else if i + 2 >= n {
-                    out.push(RC); // truncated after a valid b2 at EOF
+                    emit(RC); // truncated after a valid b2 at EOF
                     i = n;
                 } else {
                     let b3 = bytes[i + 2];
                     if (b3 & 0xC0) != 0x80 {
-                        out.push(RC); // b3 not a continuation -> skip 2
+                        emit(RC); // b3 not a continuation -> skip 2
                         i += 2;
                     } else {
                         let cp = (((b1 as u32) & 0x0F) << 12)
@@ -152,11 +167,11 @@ fn decode_long_or_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
                             | ((b3 as u32) & 0x3F);
                         if (0xD800..=0xDFFF).contains(&cp) {
                             // surrogate (e.g. ED A0 80) -> JDK skips all 3, single FFFD
-                            out.push(RC);
+                            emit(RC);
                             i += 3;
                         } else {
                             // surrogate range excluded above -> cp is a valid scalar
-                            out.push(char::from_u32(cp).unwrap());
+                            emit(char::from_u32(cp).unwrap());
                             i += 3;
                         }
                     }
@@ -165,7 +180,7 @@ fn decode_long_or_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
         } else if (0xF0..=0xF4).contains(&b1) {
             // 4-byte lead.
             if i + 1 >= n {
-                out.push(RC);
+                emit(RC);
                 i = n;
             } else {
                 let b2 = bytes[i + 1];
@@ -173,19 +188,19 @@ fn decode_long_or_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
                     || (b1 == 0xF4 && (b2 & 0xF0) != 0x80)
                     || (b2 & 0xC0) != 0x80
                 {
-                    out.push(RC); // bad b2 -> skip 1
+                    emit(RC); // bad b2 -> skip 1
                     i += 1;
                 } else if i + 2 >= n {
-                    out.push(RC);
+                    emit(RC);
                     i = n;
                 } else if (bytes[i + 2] & 0xC0) != 0x80 {
-                    out.push(RC); // b3 not a continuation -> skip 2
+                    emit(RC); // b3 not a continuation -> skip 2
                     i += 2;
                 } else if i + 3 >= n {
-                    out.push(RC);
+                    emit(RC);
                     i = n;
                 } else if (bytes[i + 3] & 0xC0) != 0x80 {
-                    out.push(RC); // b4 not a continuation -> skip 3
+                    emit(RC); // b4 not a continuation -> skip 3
                     i += 3;
                 } else {
                     let cp = (((b1 as u32) & 0x07) << 18)
@@ -193,18 +208,17 @@ fn decode_long_or_non_ascii_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
                         | (((bytes[i + 2] as u32) & 0x3F) << 6)
                         | ((bytes[i + 3] as u32) & 0x3F);
                     // F0/F4 range guards above keep cp within U+10000..=U+10FFFF -> a valid scalar
-                    out.push(char::from_u32(cp).unwrap());
+                    emit(char::from_u32(cp).unwrap());
                     i += 4;
                 }
             }
         } else {
             // Lone continuation (0x80..0xBF), overlong 2-byte leads (0xC0/0xC1), or out-of-range
             // 4-byte leads (0xF5..0xFF): each is a single ill-formed byte -> skip 1.
-            out.push(RC);
+            emit(RC);
             i += 1;
         }
     }
-    Cow::Owned(out)
 }
 
 #[cfg(test)]
@@ -231,6 +245,11 @@ mod tests {
         ];
         for (bytes, expected) in cases {
             assert_eq!(
+                decoded_utf8_spark_lossy_len(bytes),
+                expected.len(),
+                "{bytes:02x?}"
+            );
+            assert_eq!(
                 decode_utf8_spark_lossy(bytes),
                 *expected,
                 "bytes {bytes:02x?} should render like the JVM"
@@ -241,6 +260,7 @@ mod tests {
     #[test]
     fn decode_utf8_spark_lossy_valid_utf8_is_borrowed_zero_copy() {
         let s = "café — 日本語 🦀";
+        assert_eq!(decoded_utf8_spark_lossy_len(s.as_bytes()), s.len());
         match decode_utf8_spark_lossy(s.as_bytes()) {
             Cow::Borrowed(b) => assert_eq!(b, s),
             Cow::Owned(_) => panic!("valid UTF-8 must borrow, not allocate"),
@@ -308,6 +328,8 @@ mod tests {
         bytes.push(0xFF);
         bytes.push(b'b');
         bytes.extend_from_slice("🦀".as_bytes());
-        assert_eq!(decode_utf8_spark_lossy(&bytes), "aé\u{FFFD}b🦀");
+        let expected = "aé\u{FFFD}b🦀";
+        assert_eq!(decoded_utf8_spark_lossy_len(&bytes), expected.len());
+        assert_eq!(decode_utf8_spark_lossy(&bytes), expected);
     }
 }
