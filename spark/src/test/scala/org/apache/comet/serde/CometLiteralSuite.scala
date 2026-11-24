@@ -150,6 +150,18 @@ class CometLiteralSuite extends CometTestBase with CometTypeShim {
     }
   }
 
+  test("year-month interval arrays remain compatible") {
+    val intervalType = YearMonthIntervalType()
+    val arrayLiteral =
+      Literal(new GenericArrayData(Array[Any](14)), ArrayType(intervalType, containsNull = false))
+    val nestedArrayLiteral = Literal(
+      new GenericArrayData(Array[Any](new GenericArrayData(Array[Any](14)))),
+      ArrayType(ArrayType(intervalType, containsNull = false), containsNull = false))
+
+    assert(CometLiteral.getSupportLevel(arrayLiteral).isInstanceOf[Compatible])
+    assert(CometLiteral.getSupportLevel(nestedArrayLiteral).isInstanceOf[Compatible])
+  }
+
   // Spark folds each projection into one literal whose arrays all declare non-nullable elements,
   // while `literal_to_array_ref` rebuilds every populated level with nullable fields. The empty
   // `array()` branch used to keep the declared fields instead, so it could not be concatenated

@@ -51,7 +51,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
           allowDuplicateStructFieldNames = false)
       case arrayType: ArrayType =>
         listLiteralElementSupported(arrayType.elementType) &&
-        supportedDataType(arrayType, allowComplex = true)
+        supportedDataType(arrayType, allowComplex = true, allowIntervals = true)
       case dt => supportedDataType(dt)
     }
 
