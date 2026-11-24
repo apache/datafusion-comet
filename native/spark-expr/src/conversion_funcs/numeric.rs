@@ -524,6 +524,16 @@ macro_rules! cast_float_to_int32_up {
     }};
 }
 
+/// 10^scale, or an error for a scale outside 0..=38. Negative scales need
+/// spark.sql.legacy.allowNegativeScaleOfDecimal, and the serde and Parquet scan both leave those
+/// to Spark.
+fn decimal_scale_factor(scale: i8) -> SparkResult<i128> {
+    u32::try_from(scale)
+        .ok()
+        .and_then(pow10_i128)
+        .ok_or_else(|| SparkError::Internal(format!("unsupported decimal scale {scale}")))
+}
+
 // When Spark casts to Byte/Short Types, it does not cast directly to Byte/Short.
 // It casts to Int first and then to Byte/Short. Because of potential overflows in the Int cast,
 // this can cause unexpected Short/Byte cast results. Replicate this behavior.
@@ -542,7 +552,7 @@ macro_rules! cast_decimal_to_int16_down {
             .downcast_ref::<Decimal128Array>()
             .expect("Expected a Decimal128ArrayType");
 
-        let divisor = 10_i128.pow($scale as u32);
+        let divisor = decimal_scale_factor($scale)?;
         // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
         // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
         // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
@@ -597,7 +607,7 @@ macro_rules! cast_decimal_to_int32_up {
             .downcast_ref::<Decimal128Array>()
             .expect("Expected a Decimal128ArrayType");
 
-        let divisor = 10_i128.pow($scale as u32);
+        let divisor = decimal_scale_factor($scale)?;
         // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
         // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
         // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
@@ -775,7 +785,7 @@ where
     T: ArrowPrimitiveType,
     T::Native: Into<i128> + Bounded,
 {
-    let multiplier = 10_i128.pow(scale as u32);
+    let multiplier = decimal_scale_factor(scale)?;
 
     // Single spelling of the "does this value fit at the target precision after scaling" check,
     // shared between the vectorized pass and the ANSI rescan below.
@@ -1371,7 +1381,7 @@ pub(crate) fn cast_decimal_to_timestamp(
     scale: i8,
 ) -> SparkResult<ArrayRef> {
     let arr = array_ref.as_primitive::<Decimal128Type>();
-    let scale_factor = 10_i128.pow(scale as u32);
+    let scale_factor = decimal_scale_factor(scale)?;
     // `unary_opt` visits valid rows only. `unary` also divides null slots, and
     // that was slower on every measured shape, including a batch with no nulls.
     let micros = arr.unary_opt::<_, TimestampMicrosecondType>(|value| {
@@ -3103,6 +3113,37 @@ mod tests {
         let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.5e-6), Some(-1.5e-6)]));
         let out = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap();
         assert_ts(&out, &[Some(1), Some(-1)], Some("UTC"));
+    }
+
+    #[test]
+    fn test_cast_kernels_reject_negative_scale() {
+        // Try routes decimal to integer through the DataFusion cast, not these kernels.
+        let decimals: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(12345), None])
+                .with_precision_and_scale(10, -2)
+                .unwrap(),
+        );
+        let ints: ArrayRef = Arc::new(Int32Array::from(vec![Some(7), None]));
+        let utc = Some(Arc::from("UTC"));
+        let cases = [
+            (&decimals, DataType::Int8),
+            (&decimals, DataType::Int16),
+            (&decimals, DataType::Int32),
+            (&decimals, DataType::Int64),
+            (&ints, DataType::Decimal128(10, -2)),
+            (&decimals, DataType::Timestamp(TimeUnit::Microsecond, utc)),
+        ];
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            let options = SparkCastOptions::new(eval_mode, "UTC");
+            for (input, to_type) in &cases {
+                let err = cast_array(Arc::clone(input), to_type, &options)
+                    .expect_err("a negative scale must be rejected");
+                assert!(
+                    err.to_string().contains("unsupported decimal scale -2"),
+                    "{eval_mode:?} {to_type}: unexpected error: {err}"
+                );
+            }
+        }
     }
 
     #[test]
