@@ -35,6 +35,13 @@ import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
+private[serde] object NullGuardSupport {
+
+  val nondeterministicReason: String =
+    "Comet has no native path for a nondeterministic operand such as `rand()` or " +
+      "`monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice."
+}
+
 object CometArrayRemove
     extends CometExpressionSerde[ArrayRemove]
     with CometExprShim
@@ -1060,7 +1067,13 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
 object CometSize extends CometExpressionSerde[Size] {
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
+
   override def getSupportLevel(expr: Size): SupportLevel = {
+    if (!expr.child.deterministic) {
+      return Unsupported(Some(NullGuardSupport.nondeterministicReason))
+    }
     expr.child.dataType match {
       case _: ArrayType => Compatible()
       case _: MapType => Compatible()
@@ -1139,7 +1152,8 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 object CometArraysZip extends CometExpressionSerde[ArraysZip] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; falls back to Spark for unsupported types")
+    "Not all input data types are supported; falls back to Spark for unsupported types",
+    NullGuardSupport.nondeterministicReason)
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
@@ -1155,6 +1169,9 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
   }
 
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
+    if (expr.children.exists(!_.deterministic)) {
+      return Unsupported(Some(NullGuardSupport.nondeterministicReason))
+    }
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
