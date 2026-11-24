@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.comet.{CometNativeExec, CometSinkPlaceHolder}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.types.DataType
 
@@ -114,6 +114,9 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, s: CometShuffleExchangeExec), _) =>
         Some(s)
       case s: CometShuffleExchangeExec => Some(s)
+      // An AQE read over a Comet shuffle stage, which CometExecRule converts for a skew join
+      case AQEShuffleReadExec(stage: ShuffleQueryStageExec, _) =>
+        Some(stage.shuffle).collect { case s: CometShuffleExchangeExec => s }
       case _ => None
     }
 

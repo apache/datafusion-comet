@@ -17,8 +17,6 @@
 
 -- Exercises the unchunked base64 path (chunk = false in the native function).
 -- On Spark 3.5+ this config produces single-line output with no CRLF separators.
--- On Spark 3.4 the config does not exist and is ignored, so both engines still chunk;
--- the file is harmless there and Comet still matches Spark.
 -- Config: spark.sql.chunkBase64String.enabled=false
 
 statement

@@ -31,6 +31,13 @@ use arrow::record_batch::RecordBatch;
 /// [`finish_partition`](PartitionWriter::finish_partition) per partition in
 /// ascending id order, then a single [`finish_all`](PartitionWriter::finish_all).
 ///
+/// Batches passed to [`write`](PartitionWriter::write) and
+/// [`finish_partition`](PartitionWriter::finish_partition) should be maximal `batch_size`
+/// chunks plus at most one smaller tail per call, as `PartitionedBatchIterator` yields.
+/// [`LocalPartitionWriter`] writes each batch as its own block in multi-partition mode, and
+/// spilled blocks are copied to the output as they are, so staging many small batches would
+/// produce many small blocks.
+///
 /// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
 pub(crate) trait PartitionWriter: Send {
     /// Stages the batches from `iter` for partition `pid` without finalizing it.

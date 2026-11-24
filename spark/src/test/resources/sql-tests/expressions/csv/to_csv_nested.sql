@@ -16,7 +16,7 @@
 -- under the License.
 
 -- Full-value coverage of `to_csv` over complex field types, which `to_csv.sql` can only assert for
--- non-nullness because Spark 3.4 / 3.5 render a complex field as a Java identity string. Spark 4.0
+-- non-nullness because Spark 3.5 renders a complex field as a Java identity string. Spark 4.0
 -- gave `UnivocityGenerator.makeConverter` real array / map / struct branches ("[1, 2, 3]",
 -- "{k -> 10}", "{5, z}"), built from the typed `getArray` / `getMap` / `getStruct` getters, so from
 -- 4.0 on the value is deterministic and Comet's kernel-side `CometInternalRow` / `CometArrayData` /

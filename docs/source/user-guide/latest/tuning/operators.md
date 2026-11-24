@@ -39,6 +39,25 @@ set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a n
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
 
+### Left-semi sort-merge joins
+
+A left-semi join returns each left row if any right row matches. For an unfiltered batch join
+on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to keep one copy of each repeated key per batch before the native sort. The option is off by
+default. The right sort must read the key column directly from a Comet shuffle. With the
+`fair_unified` memory pool, the native planner checks at first execution for memory held by another
+Spark consumer in the task and skips reduction if it finds any, logging the reason at
+debug level. This best-effort check does not cover consumers that allocate memory later.
+
+The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
+batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
+partition. Batches with too few repeated keys also pass through; after an unprofitable
+batch, reduction is only tried again on a larger batch in the same partition. The join
+reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+
+Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Extending reduction to those joins or across small batches is separate follow-up work.
+
 ### Broadcast Joins
 
 Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
@@ -49,6 +68,20 @@ broadcast again. Each task still builds its own hash table.
 
 Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
 itself.
+
+#### Broadcast compression
+
+Comet compresses the Arrow IPC batches of a broadcast with Spark's `spark.io.compression.codec`. When
+`spark.broadcast.compress` is `true`, which is Spark's default, Spark compresses the broadcast again with the same
+codec, and executors decompress it twice. The second pass runs on the driver before the join can start, and it saves few
+bytes because the data is already compressed: up to about 10% when the build side has sorted or sequential columns,
+such as surrogate keys, and 0 to 6% otherwise. Its cost grows with the size of the broadcast and with the codec level.
+In local tests with broadcasts of 270 to 460 MiB, it added about 0.2 seconds of driver time and up to 0.15 seconds on
+each executor with `lz4`, and about 0.85 seconds of driver time with `zstd` at level 5.
+
+For queries that broadcast large build sides, consider setting `spark.broadcast.compress=false`. The setting applies to
+every broadcast in the application, so broadcasts that Comet does not create, such as the build side of a join that
+runs in Spark, are sent uncompressed too.
 
 ### Join Runtime Filters
 
@@ -171,6 +204,48 @@ A lower row threshold allows an earlier decision; a lower ratio threshold makes
 skipping more likely. These settings only tune eligible plans. They cannot enable skipping
 while `spark.comet.exec.aggregate.skipPartial.enabled` is `false`, or for unsupported
 accumulators and modes.
+
+## MIN/MAX Reader Filtering
+
+For a Parquet table `events` with a `BIGINT` column `event_id`, enable reader filtering before
+planning the query:
+
+```sql
+SET spark.comet.exec.aggregate.dynamicFilter.enabled=true;
+SELECT MIN(event_id) FROM events;
+```
+
+This experimental option is disabled by default. Once a task has observed a non-null minimum,
+its native Parquet reader can skip later row groups whose statistics prove that no value is
+smaller. `MAX` works the same way with an improving maximum. Each task starts with a fresh bound;
+bounds are not shared across Spark partitions or exchanges, or retained for later executions.
+The aggregate still computes the result from the rows the reader emits.
+
+Reader filtering applies only to these plans:
+
+| Requirement | Supported scope                                                                                                                                                                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aggregate   | One unfiltered, non-distinct `MIN` or `MAX`, without grouping. Multiple aggregates, including `MIN` and `MAX` together, are excluded.                                                                                                                           |
+| Argument    | A direct `TINYINT`, `SMALLINT`, `INT`, or `BIGINT` column.                                                                                                                                                                                                      |
+| Stage       | A partial aggregate consuming input rows. `Final` and `PartialMerge` stages do not produce reader filters.                                                                                                                                                      |
+| Input       | A direct native Parquet scan in the same Comet pipeline. Expressions, filters, limits, standalone projections, Spark exchanges, and JVM/Arrow boundaries between the aggregate and scan stop attachment. Column projection within the reader remains supported. |
+
+Unsupported plans retain ordinary aggregation. Scans with supplied file statistics or encryption
+also skip attachment. Before reading rows, Comet inspects the task's file footers. If any file has
+more than 64 row groups, or retained decoded footer metadata exceeds 8 MiB, the whole task uses
+ordinary aggregation. This inspection adds startup work even when filtering saves no data reads.
+For each file, schema adaptation disables pruning if it could hide a conversion error. Missing
+statistics, including unknown null counts, can prevent pruning.
+
+Ascending data can establish a useful `MIN` bound early; descending data can do the same for `MAX`.
+The opposite ordering can keep improving the bound until the end, leaving few or no row groups to
+skip. Random data and constant values exercise different pruning opportunities. Compare filtering
+enabled and disabled for your layout and partition count, including query elapsed time, emitted
+scan rows, bytes read, and row groups pruned. An attached filter alone does not demonstrate a saving.
+See [MIN/MAX metrics](../metrics.md#minmax-reader-filtering) for how to interpret these counters.
+
+Existing Parquet page-index and decoder-filter options can also use the bound. This feature adds
+no separate filter over decoded scan batches.
 
 ## Local TopK Fusion
 

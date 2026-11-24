@@ -26,25 +26,6 @@ compatibility guide. For the rule that governs how long each Spark minor is supp
 [Apache Spark version support section](../../../about/versioning_policy.md#apache-spark-version-support)
 of the versioning policy.
 
-## Spark 3.4
-
-Spark 3.4.3 is supported with Java 17 and Scala 2.12/2.13.
-
-```{warning}
-Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
-Comet continues to build and publish Spark 3.4 binaries in the meantime, but Apache Spark's own
-SQL test suite no longer runs against Spark 3.4 automatically: it runs only when a contributor
-opts a pull request into it. Regressions specific to Spark 3.4 are therefore more likely to reach a
-release than on the other supported versions. We recommend moving to Spark 3.5 or later.
-```
-
-### Known Limitations
-
-- **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
-  rejected because a file's type cannot be converted to the requested type, the error's cause chain
-  has one more `SparkException` layer than Spark's own reader produces.
-  See [Parquet](../parquet.md#schema-mismatch-handling) for details.
-
 ## Spark 3.5
 
 Spark 3.5.9 is supported with Java 17 and Scala 2.12/2.13.

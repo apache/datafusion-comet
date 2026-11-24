@@ -20,7 +20,9 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.File
+import java.nio.file.Files
 import java.util.{LinkedList => JLinkedList, Map => JMap, Properties}
+import java.util.zip.Adler32
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -42,6 +44,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, IntegerType, MetadataBuilder, StructField, StructType}
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
+
+import org.apache.comet.CometConf
 
 class CometDiskBlockWriterSuite extends AnyFunSuite {
 
@@ -220,6 +224,57 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       Utils.deleteRecursively(tempDir)
       tmmA.cleanUpAllAllocatedMemory()
       tmmB.cleanUpAllAllocatedMemory()
+    }
+  }
+
+  for (checksumEnabled <- Seq(false, true)) {
+    val state = if (checksumEnabled) "enabled" else "disabled"
+    test(s"a writer's checksum follows shuffle checksums being $state across spills") {
+      // The bypass merge sort writer calls setChecksum only when spark.shuffle.checksum.enabled is
+      // true. When it is disabled, every write, including the ones after the first spill, must
+      // skip the checksum. When it is enabled, the checksum must cover the bytes of every write.
+      val conf = new SparkConf()
+        .set("spark.memory.offHeap.enabled", "true")
+        .set("spark.memory.offHeap.size", "1g")
+      val tmm = new TaskMemoryManager(new TestMemoryManager(conf), 0L)
+      val allocator = CometShuffleMemoryAllocator.getInstance(tmm, pageSize)
+      val tempDir = Utils.createTempDir()
+      // Spill every two rows so that the writer writes to its file several times.
+      SQLConf.get.setConfString(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key, "2")
+      try {
+        val file = new File(tempDir, "partition0")
+        val writer = new CometDiskBlockWriter(
+          file,
+          allocator,
+          pageSize,
+          pageSize,
+          newTaskContext(tmm, 0L),
+          new UnsafeRowSerializer(1).newInstance(),
+          schema,
+          new ShuffleWriteMetrics,
+          conf,
+          false,
+          new JLinkedList[CometDiskBlockWriter]())
+        if (checksumEnabled) {
+          writer.setChecksum(Long.MinValue)
+          writer.setChecksumAlgo("adler32")
+        }
+        val toUnsafe = UnsafeProjection.create(schema)
+        (0 until 5).foreach(_ => writer.insertRow(toUnsafe(InternalRow(new Array[Byte](16))), 0))
+        assert(writer.close().length > 0)
+        assert(writer.getOutputRecords == 5)
+        if (checksumEnabled) {
+          val expected = new Adler32()
+          expected.update(Files.readAllBytes(file.toPath))
+          assert(writer.getChecksum == expected.getValue)
+        } else {
+          assert(writer.getChecksum == -1)
+        }
+      } finally {
+        SQLConf.get.unsetConf(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key)
+        Utils.deleteRecursively(tempDir)
+        tmm.cleanUpAllAllocatedMemory()
+      }
     }
   }
 
