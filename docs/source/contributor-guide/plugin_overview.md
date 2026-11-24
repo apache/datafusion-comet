@@ -56,12 +56,12 @@ and skips the remaining steps. Otherwise it:
 - Sets `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer` when
   `spark.comet.exec.inMemoryCache.enabled=true`, unless the application has chosen a different serializer.
   It leaves Spark's serializer in place where Comet could not scan its format in the Comet pipeline or Kryo would
-  reject it; see [In-Memory Cache](../user-guide/latest/in-memory-cache.md).
+  reject it; see [In-Memory Cache](../user-guide/dev/in-memory-cache.md).
 - Registers `CometSource` with Spark's metrics system and adds `CometMetricsListener` to
   `spark.sql.queryExecutionListeners` when `spark.comet.metrics.enabled=true`.
 - Logs a warning for settings that are likely to cause problems, such as an unset `spark.executor.memoryOverhead`.
 
-The plugin does not change any executor memory setting. The [Memory Tuning](../user-guide/latest/tuning/memory.md) guide covers how
+The plugin does not change any executor memory setting. The [Memory Tuning](../user-guide/dev/tuning/memory.md) guide covers how
 to size them.
 
 When the driver or an executor stops, the plugin shuts down Comet's tokio runtime in that JVM.
@@ -73,7 +73,7 @@ that the event log records them. A listener on a listener bus queue of its own p
 heartbeat a minute or more after the first of them arrived, which also ends an idle executor's minute, and posts what
 the driver plugin holds when an executor is removed and when the application ends, since an executor that goes away
 sends nothing more. See
-[Reading the Memory Usage Log from the Event Log](../user-guide/latest/tuning/memory.md#reading-the-memory-usage-log-from-the-event-log).
+[Reading the Memory Usage Log from the Event Log](../user-guide/dev/tuning/memory.md#reading-the-memory-usage-log-from-the-event-log).
 
 `CometSparkSessionExtensions` can also be registered without the plugin, through `spark.sql.extensions` or
 `SparkSession.Builder.withExtensions`. Most of Comet's test suites and the Spark SQL tests enable Comet this way, so
@@ -153,7 +153,7 @@ override the DataFusion versions to ensure compatibility with Apache Spark.
 Not every expression in a Rust plan runs in Rust. When an expression has no Rust implementation, or its Rust
 implementation does not match Spark for the given input, its serde can route it through the JVM codegen dispatcher
 instead of falling back to Spark (see the
-[Implementation legend](../user-guide/latest/expressions.md#implementation-legend)). The Rust plan then evaluates the
+[Implementation legend](../user-guide/dev/expressions.md#implementation-legend)). The Rust plan then evaluates the
 expression with `JvmScalarUdfExpr`, which passes each batch's input columns through JNI and the Arrow C Data Interface
 to `CometUdfBridge`, which hands them to `CometScalaUDFCodegen` on the JVM. There, Spark's own generated code for the expression, compiled into a batch
 kernel by `CometBatchKernelCodegen`, runs over the Arrow vectors and returns an Arrow column. Scala and Java UDFs take

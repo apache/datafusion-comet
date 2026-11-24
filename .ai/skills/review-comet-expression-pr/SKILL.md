@@ -241,7 +241,7 @@ contributor to hand-edit that text. Check what feeds it:
 
 ### Hand-edited, the PR should update these
 
-- `docs/source/user-guide/latest/expressions.md`, the supported-expressions list. A new expression
+- `docs/source/user-guide/dev/expressions.md`, the supported-expressions list. A new expression
   belongs here.
 - Other `latest/compatibility/` pages such as `floating-point.md`, `regex.md`, `operators.md`.
 

@@ -311,7 +311,7 @@ build() {  # $1 = revision, or worktree in audit mode; $2 = output directory
     git archive "$1" docs/source | tar -x -C "$2/src" && profiles=$(git show "$1:docs/build.sh") ||
       return 1
   fi
-  T="$2/src/docs/source/user-guide/latest/compatibility/expressions"
+  T="$2/src/docs/source/user-guide/dev/compatibility/expressions"
   for p in $(printf '%s\n' "$profiles" | sed -n 's/^SPARK_PROFILES=(\(.*\))/\1/p'); do
     mkdir -p "$T/$p" && cp "$T/_category_template"/*.md "$T/$p/" || return 1
   done
@@ -444,7 +444,7 @@ other real findings.
 | Run                                                                                               | Expected                                                                                                                     |
 | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | PR mode on #6786, which predates the guide, so step 2 reads it from `$TARGET` or the working tree | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
-| Audit `docs/source/user-guide/latest/understanding-comet-plans.md`                                | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
+| Audit `docs/source/user-guide/dev/understanding-comet-plans.md`                                   | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
 | Audit `docs/source/contributor-guide/timezones.md`                                                | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                 |
-| Audit `docs/source/user-guide/latest/compatibility/expressions`                                   | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
+| Audit `docs/source/user-guide/dev/compatibility/expressions`                                      | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
 | Audit a scratch page containing `_native execution_` and "Spark's native shuffle"                 | `N1` and `N5` findings                                                                                                       |

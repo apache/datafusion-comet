@@ -187,7 +187,7 @@ The checklist for a behavior change:
 
 1. Make the behavior change itself, gated on the new legacy config.
 2. Declare the legacy config in `CometConf.scala` under `CATEGORY_LEGACY`, defaulting to `false`.
-3. Add a section to the [upgrade guide](../user-guide/latest/migration-guide.md) under the
+3. Add a section to the [upgrade guide](../user-guide/dev/migration-guide.md) under the
    upcoming release, describing the change and naming the config that reverts it.
 4. Add a test covering both branches: the new behavior by default, and the old behavior with the
    legacy config set.

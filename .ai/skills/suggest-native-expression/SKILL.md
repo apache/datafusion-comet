@@ -48,9 +48,9 @@ on them.
 - `docs/source/contributor-guide/roadmap.md`, section "Native Coverage for Codegen-Dispatched
   Expressions". This is the project-level statement of why this work matters and it is the
   section the filed issue should reference.
-- `docs/source/user-guide/latest/compatibility/index.md`, section "Native and codegen-dispatch
+- `docs/source/user-guide/dev/compatibility/index.md`, section "Native and codegen-dispatch
   implementations". Defines the two paths and which one is the default.
-- `docs/source/user-guide/latest/expressions.md`, the Implementation legend and tables. Useful for a
+- `docs/source/user-guide/dev/expressions.md`, the Implementation legend and tables. Useful for a
   candidate's SQL name, category, and status, but see Step 1: this table is not the pool.
 - `docs/source/contributor-guide/optimizing_expressions.md`, the "Proven techniques" table. If
   no technique in that table applies to the candidate, the native upside claim is weak.
@@ -109,7 +109,7 @@ grep -rhoE "CometCodegenDispatch\[[A-Za-z0-9]+\]" spark/src/main/scala/org/apach
 grep -rn "NativeOptInAvailable\|CodegenDispatchFallback" spark/src/main/scala/org/apache/comet/serde/*.scala
 ```
 
-Then cross-reference `docs/source/user-guide/latest/expressions.md` for each candidate's SQL name,
+Then cross-reference `docs/source/user-guide/dev/expressions.md` for each candidate's SQL name,
 category, and Implementation label. Do **not** build the pool from that table alone: its
 Implementation column is derived from a function-registry lookup, so a dispatcher-routed serde whose
 SQL name does not resolve is rendered `—` and disappears from a table-driven grep. `mask` is the
@@ -140,7 +140,7 @@ space.
 ### Exclude
 
 1. **Families the project has ruled out.** Read the "Not currently planned" section of
-   `docs/source/user-guide/latest/expressions.md` and drop anything it covers. Proposing one of
+   `docs/source/user-guide/dev/expressions.md` and drop anything it covers. Proposing one of
    these needs a project-direction argument that this skill does not have.
 2. **Already-assessed expressions.** This is the check that makes the skill cumulative:
 
@@ -454,7 +454,7 @@ makes the pool shrink over time instead of being re-walked on every run.
 Add the line to the expression's category page under
 `docs/source/contributor-guide/expression-audits/`, named after the Spark function-registry
 category (`string_funcs.md`, `datetime_funcs.md`, and so on). Match the category used for the
-expression in `docs/source/user-guide/latest/expressions.md`. If the page does not exist, create
+expression in `docs/source/user-guide/dev/expressions.md`. If the page does not exist, create
 it with the ASF license header, a `# <category> Expression Audits` title, and the standard intro
 blockquote the other pages use. Add or reuse a `## <function_name>` heading, keeping headings
 alphabetically ordered.

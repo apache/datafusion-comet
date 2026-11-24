@@ -45,4 +45,4 @@
 - Partial native support; options and map/array inputs fall back.
 - Performance (tuned 2026-07-13, PR [#4902](https://github.com/apache/datafusion-comet/pull/4902)): `escape_string` returns `Cow` (zero-alloc borrow when nothing needs escaping) and bulk-copies unescaped byte runs instead of pushing char-by-char per value. 2x faster. Benchmark: `benches/to_json.rs`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

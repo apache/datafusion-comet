@@ -98,4 +98,4 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

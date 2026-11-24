@@ -31,7 +31,7 @@ The contributor guide is the canonical reference. Read these before writing code
 
 - `docs/source/contributor-guide/adding_a_new_expression.md` covers the Scala serde, protobuf, Rust scalar function flow, support levels, shims, and tests.
 - `docs/source/contributor-guide/sql-file-tests.md` describes the Comet SQL Tests format.
-- `docs/source/user-guide/latest/expressions.md` lists the support status for every expression.
+- `docs/source/user-guide/dev/expressions.md` lists the support status for every expression.
 
 ## Workflow
 

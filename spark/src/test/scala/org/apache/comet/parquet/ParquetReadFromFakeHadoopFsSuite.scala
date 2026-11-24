@@ -56,7 +56,7 @@ import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
  * [[https://github.com/apache/datafusion-comet/issues/5023 #5023]].
  *
  * Comet's HDFS support is experimental (see the
- * [[https://datafusion.apache.org/comet/user-guide/latest/datasources.html#hdfs data sources guide]]),
+ * [[https://datafusion.apache.org/comet/user-guide/dev/datasources.html#hdfs data sources guide]]),
  * and working around the upstream bug would mean carrying a patched copy of libhdfs in this repo,
  * so we run this suite by hand instead of paying for the flake on every pull request. The
  * planner-side half of the coverage -- that a `hdfs://` scan is still claimed natively rather

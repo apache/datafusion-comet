@@ -32,8 +32,8 @@ audits of expressions. Each page holds dated entries per component. An entry rec
 
 A later audit of the same area adds a new dated entry instead of editing an old one, so the history
 stays visible. The open issues that users can hit are listed in the Known Issues
-sections of the [Parquet](../../user-guide/latest/parquet.md#known-issues) and
-[Iceberg](../../user-guide/latest/iceberg.md#known-issues) guides.
+sections of the [Parquet](../../user-guide/dev/parquet.md#known-issues) and
+[Iceberg](../../user-guide/dev/iceberg.md#known-issues) guides.
 
 ```{toctree}
 :maxdepth: 1

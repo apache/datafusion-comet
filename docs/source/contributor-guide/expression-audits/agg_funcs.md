@@ -123,4 +123,4 @@
 
 - Performance (tuned 2026-11-17, PR [#7674](https://github.com/apache/datafusion-comet/pull/7674)): the grouped decimal accumulator loads the result's precision bounds once and compares against them on every update, merge, and evaluate, instead of calling `Decimal128Type::is_valid_decimal_precision`, which release builds keep out of line. Benchmark: `benches/decimal_groups.rs`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

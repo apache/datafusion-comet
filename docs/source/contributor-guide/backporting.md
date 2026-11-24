@@ -120,20 +120,23 @@ runs on a pull request against a release branch.
 
 Some differences between a release branch and `main` are easy to miss:
 
-- On a release branch, `docs/source/user-guide/latest/configs.md` holds the generated tables
+- On a release branch, the user guide's `configs.md` holds the generated tables
   rather than template markers (see
   [Generate Release Documentation](release_process.md#generate-release-documentation)). A backport
   that changes a configuration's description or default has to update its row there.
-- The per-Spark-version compatibility pages in
-  `docs/source/user-guide/latest/compatibility/expressions/spark-<version>/` are frozen the same
-  way. A backport that changes the notes or reasons an expression serde reports
+- The per-Spark-version compatibility pages in the user guide
+  (`compatibility/expressions/spark-<version>/`) are frozen the same way. A backport that changes the notes or reasons an expression serde reports
   (`getCompatibleNotes`, `getIncompatibleReasons` or `getUnsupportedReasons`), or the support level
   of a cast, has to update the matching section in each page it affects. Rerunning
   `./dev/generate-release-docs.sh` and reading `git diff` shows the exact text, at the cost of one
   Maven build per Spark version. The script rewrites every frozen page, so keep only the hunks the
   backport changes.
-- Only `docs/source/user-guide/latest/` is published from a release branch, so changes to the
-  contributor guide or `docs/source/conf.py` need no backport.
+- Only the user guide directory is published from a release branch, so changes to the
+  contributor guide or `docs/source/conf.py` need no backport. That directory is
+  `docs/source/user-guide/dev/` on `main` and on branches cut after it was renamed from `latest`,
+  and `docs/source/user-guide/latest/` on branch-1.2 and older. Git's rename detection usually
+  carries a cherry-pick across the rename, but check that the change landed under the directory
+  the branch actually has.
 - CI builds with the latest stable Rust. When a new Rust release adds Clippy lints, `main` gets a
   commit that fixes them, and a release branch needs the same commit before its pull requests pass.
 
