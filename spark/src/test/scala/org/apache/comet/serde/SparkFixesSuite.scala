@@ -36,7 +36,6 @@ class SparkFixesSuite extends AnyFunSuite {
   test("fixes by Spark version") {
     // SPARK-58821, SPARK-60118 and SPARK-60119 are in 4.0.5, 4.1.4 and 4.2.1.
     Seq(
-      "3.4.3" -> false,
       "3.5.9" -> false,
       "4.0.4" -> false,
       "4.1.3" -> false,
@@ -59,7 +58,6 @@ class SparkFixesSuite extends AnyFunSuite {
     // 4.2.0 normalizes the arguments in the plan (SPARK-54918), and 4.0.5+, 4.1.4+ and 4.2.1+
     // normalize during evaluation (SPARK-59602). Earlier releases keep flat signed zeros apart.
     checkVersions("array set float normalization", SparkFixes.arraySetFunctionsNormalizeFloats)(
-      "3.4.3" -> false,
       "3.5.9" -> false,
       "4.0.0" -> false,
       "4.0.4" -> false,
@@ -83,7 +81,6 @@ class SparkFixesSuite extends AnyFunSuite {
     // earlier patches of the same minor version. A vendor suffix parses and a missing patch
     // reads as 0.
     checkVersions("slope pair-null filtering", SparkFixes.slopeFiltersVarByPairNulls)(
-      "3.4.3" -> false,
       "3.5.0" -> false,
       "3.5.1" -> false,
       "3.5.2" -> true,
@@ -96,7 +93,6 @@ class SparkFixesSuite extends AnyFunSuite {
       "3.5" -> false)
 
     checkVersions("regr_r2 degenerate-case swap", SparkFixes.r2DegenerateCasesSwapped)(
-      "3.4.3" -> false,
       "3.5.3" -> false,
       "3.5.8" -> false,
       "3.5.9" -> true,
@@ -120,7 +116,6 @@ class SparkFixesSuite extends AnyFunSuite {
   test("percentile keeps signed-zero keys from the Spark release that fixed it") {
     // SPARK-45599 is in 3.5.2 and 4.0.0.
     checkVersions("percentile signed-zero keys", SparkFixes.keepsSignedZeroKeys)(
-      "3.4.3" -> false,
       "3.5.0" -> false,
       "3.5.1" -> false,
       "3.5" -> false,

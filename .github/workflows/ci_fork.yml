@@ -66,6 +66,7 @@ jobs:
     # test it twice.
     if: github.repository != 'apache/datafusion-comet'
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     # Failing to cancel only leaves an older run to finish, so it never blocks the run.
     continue-on-error: true
     permissions:
