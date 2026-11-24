@@ -506,7 +506,12 @@ Bloom-enabled native writes require an identifiable Iceberg version >= 1.5. See 
 rules. Ambiguous legacy aliases and invalid lookup names use Java. Iceberg 1.6/1.7 also uses Java
 for explicit FPP properties because those releases validate them independently.
 
-To exercise that independent FPP validation on Iceberg 1.7.2, first build Comet's JVM classes
+The Linux CI workflow also runs the full `CometIcebergWriteActionSuite`,
+`CometIcebergWriteDetectionSuite`, and `IcebergWriteProtoTranslationSuite` on Spark 3.5 with
+Iceberg 1.5.2 and 1.7.2. These rows exercise raw physical paths and independent FPP validation
+on normal fork pull-request runs, full manual runs, and merge-queue runs.
+
+To reproduce the independent FPP checks locally on Iceberg 1.7.2, first build Comet's JVM classes
 and native library as described in the [Development Guide](development.md). Then run:
 
 ```shell
