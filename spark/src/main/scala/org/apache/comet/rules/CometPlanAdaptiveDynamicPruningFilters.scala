@@ -267,7 +267,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // plan makes it fail at execution with "Comet execution only takes Arrow Arrays". So only
       // build a Comet exchange when the join is Comet AND buildSidePlan is actually native;
       // otherwise fall back to a Spark broadcast + SubqueryBroadcastExec (correct, loses only DPP
-      // broadcast reuse). Mirrors the non-AQE guard in CometExecRule.rewriteInSubqueryPlan.
+      // broadcast reuse). Same check as the non-AQE path in CometExecRule.rewriteInSubqueryPlan.
       val isComet = isCometJoin && isNativeBuildSide(buildSidePlan)
       logDebug(
         s"Matched DPP subquery '${sab.name}' to " +
