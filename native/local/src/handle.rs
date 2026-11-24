@@ -18,7 +18,7 @@
 //! Delivery to blocking callers, with cancellation that does not wait for a reader's wait.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::Thread;
@@ -50,6 +50,8 @@ pub struct QueryHandle {
     reader: Mutex<Option<Thread>>,
     cancelled: AtomicBool,
     runtime: Handle,
+    /// The partition whose turn it is; see [`LocalQueryStream::partition`].
+    turn: Arc<AtomicUsize>,
     /// Set when a reader is about to park, so that a test can cancel a parked reader.
     #[cfg(test)]
     parking: AtomicBool,
@@ -70,7 +72,9 @@ impl QueryHandle {
             let _guard = runtime.enter();
             query.execute()?
         };
+        let turn = Arc::clone(&stream.turn);
         Ok(Self {
+            turn,
             stream: Mutex::new(Some(stream)),
             reader: Mutex::new(None),
             cancelled: AtomicBool::new(false),
@@ -78,6 +82,12 @@ impl QueryHandle {
             #[cfg(test)]
             parking: AtomicBool::new(false),
         })
+    }
+
+    /// The partition whose turn it is: the one the last batch or error came from, or that is
+    /// being waited for. Readable while another thread polls.
+    pub fn partition(&self) -> usize {
+        self.turn.load(Ordering::Acquire)
     }
 
     /// A bounded wait lets a JVM caller check Spark task interruption between polls.
@@ -195,10 +205,11 @@ mod tests {
         let thread = std::thread::spawn(move || {
             sender.send(reader.poll(Duration::from_secs(60))).unwrap();
         });
-        // Cancel only once the reader has passed its last check before parking, so that only
-        // the wakeup can end its wait.
+        // Cancel only once both partitions have started, on the runtime's blocking pool, and the
+        // reader has passed its last check before parking, so that only the wakeup can end its
+        // wait. The plan and each started stream hold a reference.
         let waiting = Instant::now();
-        while !query.parking.load(Ordering::Acquire) {
+        while refs.strong_count() < 3 || !query.parking.load(Ordering::Acquire) {
             assert!(
                 waiting.elapsed() < Duration::from_secs(5),
                 "the reader never parked"

@@ -19,6 +19,8 @@
 
 package org.apache.comet.local
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.{SparkEnv, TaskContext, TaskKilledException}
 import org.apache.spark.sql.comet.CometExec
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -52,6 +54,7 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
     val maxResultSize = SparkEnv.get.conf.getSizeAsBytes("spark.driver.maxResultSize", "1g")
     id = native.createQuery(
       spec.plan,
+      spec.scanPartitions,
       CometExecIterator.serializeCometSQLConfs(),
       spec.partitions,
       spec.columns,
@@ -80,9 +83,21 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
   }
 
   private def executionFailure(failure: Throwable): Throwable = {
+    // A file read error that does not name its file names the failing partition's files, as
+    // ordinary execution names its task's. Read before close, which forgets the partition.
+    val filePaths = failure match {
+      case _: CometQueryExecutionException if id != 0L =>
+        val partition =
+          try native.failedPartition(id)
+          catch { case NonFatal(_) => -1 }
+        if (partition >= 0 && partition < spec.filePaths.length) spec.filePaths(partition)
+        else Seq.empty[String]
+      case _ => Seq.empty[String]
+    }
     closeAfterFailure(failure)
     failure match {
-      case e: CometQueryExecutionException => SparkErrorConverter.convertToSparkException(e)
+      case e: CometQueryExecutionException =>
+        SparkErrorConverter.convertToSparkException(e, filePaths)
       case other => other
     }
   }

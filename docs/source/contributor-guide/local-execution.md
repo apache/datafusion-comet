@@ -39,15 +39,26 @@ admitted when:
 - the converted plan is one native block, a tree of Comet native operators whose root carries
   the block's serialized plan, with no JVM input, broadcast or shuffle inside it;
 - the block's only leaf is a `CometRangeExec`, so the range must be converted to Comet
-  (`spark.comet.exec.range.enabled`);
-- its expressions are deterministic, contain no subquery, and do not call back into the JVM,
-  which the serialized plan is also checked for;
+  (`spark.comet.exec.range.enabled`), or a `CometNativeScanExec`, Comet's native Parquet scan;
+- a scan reports no partitioning, so a bucketed scan, which reports its buckets' hash
+  partitioning, is not admitted, and its files are not encrypted, since decrypting them needs
+  the JVM;
+- its expressions are deterministic, contain no subquery, including a scalar subquery or dynamic
+  pruning in a scan's filters, and do not call back into the JVM, which the serialized plan is
+  also checked for;
 - it has between 1 and 1024 partitions.
+
+A range's partitions are known when the plan is admitted. A scan's partitions are its file
+partitions, which ordinary execution lists only when the query runs, so a `collect` lists them
+then, as ordinary execution would, and runs as ordinary execution when there are none, as for a
+scan whose partitions are all pruned, or more than 1024. It has the same file partitions as
+ordinary execution, so the result has Spark's row order.
 
 A root `CollectLimitExec`, which Spark plans for `take`, `head`, `show` and `limit`, is not
 admitted: it collects through `executeTake`, which does not run locally, so such a query keeps
-ordinary Comet execution. Admitted plans have no exchange, so AQE does not wrap them and they are
-admitted whether or not AQE is enabled.
+ordinary Comet execution. Admitted plans have no exchange or subquery, so AQE does not wrap them
+and they are admitted whether or not AQE is enabled. When `spark.sql.adaptive.forceApply` wraps
+one anyway, it is admitted when AQE plans its final stage.
 
 ## Execution
 
@@ -66,10 +77,16 @@ single partition. That partition's task creates the native graph:
   what they copy from the serialized plan, such as a string literal. Partition 0 is planned up
   front, for the output schema and so that a plan the planner rejects fails before the query
   starts, and runs that plan when it starts.
+- A scan's partition reads that partition's files. The JNI call takes each partition's serialized
+  `NativeScan` with its files, as a Spark task receives them, and a partition's files are
+  injected into a copy of the plan when the partition is planned, so only the files of all
+  partitions are held for the whole query.
 - `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
-  order, so the result has Spark's row order. Each partition starts its operators on its own
-  task, so a start that waits, for instance for a memory grant, does not hold up the pull, and a
-  partition's error, including a failure to start, is reported when its turn comes.
+  order, so the result has Spark's row order. Each partition plans and starts its operators on
+  the runtime's blocking pool, since planning can block: creating an S3 object store waits on
+  Comet's runtime, which panics on a worker. So a start that waits, for instance for a memory
+  grant, holds up neither the pull nor a worker, and a partition's error, including a failure to
+  start, is reported when its turn comes.
 - At most as many partitions run at once as Spark runs tasks, `spark.executor.cores` divided by
   `spark.task.cpus`, and the next starts when the first is delivered. A partition's operators
   register their memory consumers when it starts, so this also bounds how many share the task's
@@ -98,8 +115,14 @@ partition, or when the partitions are ranges of a prefix of that ordering, as a 
 are. Sorting within partitions, for example, reports no ordering. `CometLocalResultExec` reports
 the block's own partitioning and ordering, which hold for the partitions it returns.
 
-Explain shows the native block under `CometLocalExec`. Its native operators do not report SQL
-metrics; `CometLocalExec` counts the rows and batches it delivers.
+Explain shows the native block under `CometLocalExec`, with the number of partitions for a range;
+a scan's are known only once the query runs. Its native operators do not report SQL metrics, and
+a scan reports no input metrics to the task; `CometLocalExec` counts the rows and batches it
+delivers.
+
+A file that fails to read is named as ordinary execution names it. When the native error does
+not carry the file's path, ordinary execution names the files of the failing task. A local query
+records the partition whose turn it was when it failed, and names that partition's files.
 
 ## Result delivery
 
@@ -133,8 +156,9 @@ partitions as without local execution.
 
 ## Lifecycle and cancellation
 
-The JNI registry holds numeric, never reused IDs for at most 1024 live queries. EOF, errors,
-early termination and task completion remove an entry. A concurrent pull holds an `Arc`, so a
+The JNI registry holds numeric, never reused IDs for at most 1024 live queries. EOF, early
+termination and task completion remove an entry. A failed query stays until the JVM, having
+read which partition failed, closes it. A concurrent pull holds an `Arc`, so a
 close cannot free an entry that is being read, and cancellation wakes a waiting pull, so it waits
 only for a poll the pull is already in. Each partition records when it has sent its last batch;
 if the runtime stops it before that, the reader reports an error instead of a truncated result.
@@ -155,14 +179,20 @@ Build native code, including the JNI library, before the JVM suite, and never us
 ```shell
 cd native
 cargo test -p datafusion-comet-local
+cargo test -p datafusion-comet --lib local::
 cd ..
 make core
 ./mvnw test -Dsuites=org.apache.comet.local.CometLocalExecutionSuite
 ```
 
 The native tests cover partition-order delivery, the bound on running partitions and its
-changes, partition starts that wait, read-ahead, errors reported in a partition's turn,
-cancellation with busy workers, the pull that waits on its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
-with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, reported orderings, limits left to ordinary execution, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After
-each test it checks that no native query, imported Arrow memory or result slot is left.
+changes, partition starts that wait, block or panic, read-ahead, errors reported in a
+partition's turn and the partition they came from, cancellation with busy workers, the pull that
+waits on its own thread, runtime shutdown, and scan partitions that each read their own files.
+`CometLocalExecutionSuite` compares admitted queries with Spark's results and order, and covers
+ranges Spark would overflow, Parquet scans split into many partitions, partition pruning, scans
+of no files or of more partitions than run locally, declined scans and expressions, AQE,
+reported orderings, limits left to ordinary execution, iterators, tails, many partitions with
+sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and
+task cancellation, unreadable files, and native errors. After each test it checks that no native
+query, imported Arrow memory or result slot is left.
