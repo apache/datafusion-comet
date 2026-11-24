@@ -1865,7 +1865,8 @@ impl PhysicalPlanner {
                 let ordering = LexOrdering::new(exprs?).unwrap();
 
                 // Only a full sort over unordered input merges: TopK never does, and a sort passes
-                // ordered input through.
+                // ordered input through. The coalescer's reservation cannot spill, so Spark could
+                // spill another consumer in the task to grant it.
                 let (sort_input, coalescer): (Arc<dyn ExecutionPlan>, Vec<_>) =
                     if sort.coalesce_input
                         && fetch.is_none()
@@ -1874,6 +1875,7 @@ impl PhysicalPlanner {
                             .properties()
                             .equivalence_properties()
                             .ordering_satisfy(ordering.clone())?
+                        && !join::other_spark_consumer_holds_memory(self)?
                     {
                         let config = self.session_ctx.copied_config();
                         let coalescer: Arc<dyn ExecutionPlan> =

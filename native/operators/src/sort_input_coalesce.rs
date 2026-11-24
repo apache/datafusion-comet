@@ -42,7 +42,7 @@ use datafusion::execution::{async_try_stream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, RecordOutput,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -175,7 +175,7 @@ impl ExecutionPlan for SortInputCoalesceExec {
                     grouper.prepare(&batch)?
                 };
                 if let Some(batch) = flushed {
-                    baseline.record_output(batch.num_rows());
+                    (&batch).record_output(&baseline);
                     out.emit(batch).await;
                 }
                 let ready = {
@@ -183,7 +183,7 @@ impl ExecutionPlan for SortInputCoalesceExec {
                     grouper.add(batch, step)?
                 };
                 for batch in ready.into_iter().flatten() {
-                    baseline.record_output(batch.num_rows());
+                    (&batch).record_output(&baseline);
                     out.emit(batch).await;
                 }
             }
@@ -192,7 +192,7 @@ impl ExecutionPlan for SortInputCoalesceExec {
                 grouper.flush()?
             };
             if let Some(batch) = last {
-                baseline.record_output(batch.num_rows());
+                (&batch).record_output(&baseline);
                 out.emit(batch).await;
             }
             Ok(())
@@ -245,11 +245,18 @@ fn sliced_size(batch: &RecordBatch) -> Result<usize> {
     })
 }
 
+/// `held` is what a batch keeps alive, counting a shared buffer once. `copy` is what concatenating
+/// it writes, which counts a buffer once per column that uses it.
+#[derive(Clone, Copy)]
+struct Size {
+    held: usize,
+    copy: usize,
+}
+
 enum Step {
     Skip,
     PassThrough,
-    /// Size in bytes.
-    Hold(usize),
+    Hold(Size),
 }
 
 /// Groups whole input batches in arrival order and concatenates each group. Inputs are never
@@ -263,7 +270,8 @@ struct Grouper {
     past_gate: bool,
     pending: Vec<RecordBatch>,
     rows: usize,
-    bytes: usize,
+    held: usize,
+    copy: usize,
     reservation: MemoryReservation,
     backoff: usize,
     input_batches: Count,
@@ -282,7 +290,8 @@ impl Grouper {
             past_gate: exec.gate_bytes == 0,
             pending: Vec::new(),
             rows: 0,
-            bytes: 0,
+            held: 0,
+            copy: 0,
             reservation,
             backoff: 0,
             input_batches: metrics
@@ -299,9 +308,8 @@ impl Grouper {
         if rows == 0 {
             return Ok((Step::Skip, None));
         }
-        // A held batch is sized by every buffer it keeps alive, so a small slice of a large batch
-        // counts as large and passes through.
-        let bytes = if !self.past_gate {
+        // A small slice of a large batch is held by its whole buffer, so it passes through.
+        let size = if !self.past_gate {
             // Counted as DataFusion's `get_reserved_bytes_for_record_batch` counts it, which the
             // sort compares with the threshold.
             self.seen_bytes = self
@@ -315,19 +323,22 @@ impl Grouper {
             self.backoff -= 1;
             None
         } else {
-            Some(get_record_batch_memory_size(batch))
+            Some(Size {
+                held: get_record_batch_memory_size(batch),
+                copy: sliced_size(batch)?,
+            })
         };
-        match bytes.filter(|&bytes| bytes <= self.max_bytes) {
-            Some(bytes) => {
+        match size.filter(|size| size.held.max(size.copy) <= self.max_bytes) {
+            Some(size) => {
                 // A batch with another schema starts a new group, since the concat needs one.
                 let fits = rows <= self.target_rows - self.rows
-                    && bytes <= self.max_bytes - self.bytes
+                    && size.copy <= self.max_bytes - self.copy
                     && self
                         .pending
                         .first()
                         .is_none_or(|held| held.schema() == batch.schema());
                 let flushed = if fits { None } else { self.flush()? };
-                Ok((Step::Hold(bytes), flushed))
+                Ok((Step::Hold(size), flushed))
             }
             None => Ok((Step::PassThrough, self.flush()?)),
         }
@@ -335,21 +346,22 @@ impl Grouper {
 
     /// Returns what is ready, in input order: a flushed group, then `batch` when it is not held.
     fn add(&mut self, batch: RecordBatch, step: Step) -> Result<[Option<RecordBatch>; 2]> {
-        let bytes = match step {
+        let size = match step {
             Step::Skip => return Ok([None, None]),
             Step::PassThrough => return Ok([None, Some(batch)]),
-            Step::Hold(bytes) => bytes,
+            Step::Hold(size) => size,
         };
         let rows = batch.num_rows();
-        if !self.reserve(bytes)? {
+        if !self.reserve(size)? {
             // The sort can spill and this cannot, so hand it everything.
             self.backoff = REFUSED_BACKOFF_BATCHES;
             return Ok([self.flush()?, Some(batch)]);
         }
         self.pending.push(batch);
         self.rows += rows;
-        self.bytes += bytes;
-        if self.rows == self.target_rows || self.bytes == self.max_bytes {
+        self.held += size.held;
+        self.copy += size.copy;
+        if self.rows == self.target_rows || self.copy == self.max_bytes {
             return Ok([self.flush()?, None]);
         }
         Ok([None, None])
@@ -363,11 +375,11 @@ impl Grouper {
         Ok(ready)
     }
 
-    /// Reserves the held bytes plus `bytes`, twice over for the combined copy, and no more: a
-    /// consumer that cannot spill is checked only against the whole pool, so asking ahead could
-    /// make Spark spill another consumer for memory never used. Returns false when refused.
-    fn reserve(&mut self, bytes: usize) -> Result<bool> {
-        let needed = 2 * (self.bytes + bytes);
+    /// Reserves the held batches and the combined copy with `size` added, and no more: a consumer
+    /// that cannot spill is checked only against the whole pool, so asking ahead could make Spark
+    /// spill another consumer for memory never used. Returns false when refused.
+    fn reserve(&mut self, size: Size) -> Result<bool> {
+        let needed = self.held + size.held + self.copy + size.copy;
         let size = self.reservation.size();
         if needed <= size {
             return Ok(true);
@@ -395,7 +407,8 @@ impl Grouper {
         // The sort reserves what it buffers, so hold nothing between groups.
         self.reservation.free();
         self.rows = 0;
-        self.bytes = 0;
+        self.held = 0;
+        self.copy = 0;
         Ok(out)
     }
 }
@@ -629,11 +642,11 @@ mod tests {
         let exec = SortInputCoalesceExec::new(source, 1000, 0);
         let mut grouper = Grouper::new(&exec, MemoryConsumer::new("test").register(&pool), 0);
         // The reservation covers exactly the held batches and their copy.
-        let mut held = 0;
+        let mut needed = 0;
         for batch in &input {
-            held += get_record_batch_memory_size(batch);
+            needed += get_record_batch_memory_size(batch) + sliced_size(batch).unwrap();
             assert!(grouper.push(batch.clone()).unwrap().is_empty());
-            assert_eq!(pool.reserved(), 2 * held);
+            assert_eq!(pool.reserved(), needed);
         }
         let combined = grouper.flush().unwrap().unwrap();
         assert_eq!(
@@ -827,22 +840,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_the_stream_early_releases_the_reservation() {
-        let input = ten_row_batches(10);
-        let schema = input[0].schema();
+    async fn dropping_the_stream_while_it_holds_a_group_releases_the_reservation() {
+        use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
+        use futures::StreamExt;
+
+        // Two short batches, then an input that never yields again.
+        #[derive(Debug)]
+        struct TwoThenPending(SchemaRef);
+        impl PartitionStream for TwoThenPending {
+            fn schema(&self) -> &SchemaRef {
+                &self.0
+            }
+            fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
+                let batches = futures::stream::iter([Ok(ints(0..10)), Ok(ints(10..20))])
+                    .chain(futures::stream::pending());
+                Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.0), batches))
+            }
+        }
+
+        let schema = ints(0..1).schema();
+        let source = Arc::new(
+            StreamingTableExec::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(TwoThenPending(Arc::clone(&schema)))],
+                None,
+                vec![],
+                false,
+                None,
+            )
+            .unwrap(),
+        );
         let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1 << 30));
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::clone(&pool))
             .build_arc()
             .unwrap();
         let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
-        let source = MemorySourceConfig::try_new_exec(&[input], schema, None).unwrap();
-        let exec = SortInputCoalesceExec::new(source, 40, 0);
+        let exec = SortInputCoalesceExec::new(source, 1000, 0);
         let mut stream = exec.execute(0, ctx.task_ctx()).unwrap();
-        // The first group is out and the second is being held.
-        assert_eq!(stream.try_next().await.unwrap().unwrap().num_rows(), 40);
+        assert!(futures::poll!(stream.next()).is_pending());
+        assert!(pool.reserved() > 0, "the two batches should be held");
         drop(stream);
         assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn a_copy_of_shared_columns_is_reserved_and_capped() {
+        use arrow::array::StringArray;
+        // Eight fields share one string buffer of about 100 KiB. Holding a batch keeps one copy
+        // alive, but concatenating writes the strings once per field.
+        let strings: ArrayRef = Arc::new(StringArray::from_iter_values(
+            (0..256).map(|i| format!("{i:0>400}")),
+        ));
+        let batch = |fields: usize| {
+            let names: Vec<_> = (0..fields)
+                .map(|i| Field::new(format!("f{i}"), DataType::Utf8, false))
+                .collect();
+            let column = StructArray::new(
+                Fields::from(names),
+                vec![Arc::clone(&strings); fields],
+                None,
+            );
+            RecordBatch::try_from_iter([("s", Arc::new(column) as ArrayRef)]).unwrap()
+        };
+        let run_capped = |input: Vec<RecordBatch>, pool_bytes: usize| {
+            let schema = input[0].schema();
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(pool_bytes));
+            let runtime = RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::clone(&pool))
+                .build_arc()
+                .unwrap();
+            let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+            let (output, _) = run_with(
+                input,
+                schema,
+                |source| SortInputCoalesceExec::new(source, 8192, 0).with_max_bytes(512 * 1024),
+                ctx,
+            );
+            assert_eq!(pool.reserved(), 0);
+            output
+        };
+
+        // Each batch's copy is about 800 KiB, over the 512 KiB cap, so neither is combined.
+        let wide = vec![batch(8), batch(8)];
+        assert_eq!(run_capped(wide.clone(), 1 << 30), wide);
+
+        // With two fields the two copies fit the cap. They are combined only when the pool holds
+        // the retained input and the copy together.
+        let narrow = vec![batch(2), batch(2)];
+        let held: usize = narrow.iter().map(get_record_batch_memory_size).sum();
+        let copy: usize = narrow.iter().map(|b| sliced_size(b).unwrap()).sum();
+        assert!(
+            copy > held,
+            "the copy counts the shared strings once per field"
+        );
+        assert_eq!(row_counts(&run_capped(narrow.clone(), held + copy)), [512]);
+        assert_eq!(run_capped(narrow.clone(), held + copy - 1), narrow);
     }
 
     /// Sorts `input` by `keys` (column name, descending) under a memory limit that forces

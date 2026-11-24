@@ -27,9 +27,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int64Array, StringArray, StructArray};
+use arrow::array::{ArrayRef, AsArray, Int64Array, StringArray, StructArray};
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Field, Fields};
+use arrow::datatypes::{DataType, Field, Fields, Int64Type};
 use arrow::record_batch::RecordBatch;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -77,7 +77,7 @@ fn batches(rows_per_batch: usize, scattered: bool) -> Vec<RecordBatch> {
             columns.push((
                 "g".into(),
                 Arc::new(Int64Array::from_iter_values(
-                    ids.iter().map(|&i| (i % 64) as i64),
+                    ids.iter().map(|&i| (i * 64 / ROWS) as i64),
                 )),
             ));
             for c in 0..8 {
@@ -104,6 +104,25 @@ fn batches(rows_per_batch: usize, scattered: bool) -> Vec<RecordBatch> {
             RecordBatch::try_from_iter(columns).unwrap()
         })
         .collect()
+}
+
+/// Checks that the `in_order` input really is sorted on both key sets, across batch boundaries.
+fn assert_in_order(input: &[RecordBatch]) {
+    let mut last: Option<(i64, String)> = None;
+    for batch in input {
+        let g = batch
+            .column_by_name("g")
+            .unwrap()
+            .as_primitive::<Int64Type>();
+        let key = batch.column_by_name("key").unwrap().as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            let current = (g.value(row), key.value(row).to_string());
+            if let Some(previous) = &last {
+                assert!(previous <= &current, "{previous:?} > {current:?}");
+            }
+            last = Some(current);
+        }
+    }
 }
 
 fn sort(
@@ -153,6 +172,9 @@ fn bench(c: &mut Criterion) {
                 group.sample_size(10);
                 for rows_per_batch in [16, 64, 256, 384, 512, 1024, 8192] {
                     let input = batches(rows_per_batch, scattered);
+                    if !scattered {
+                        assert_in_order(&input);
+                    }
                     for (label, coalesce) in [("raw", false), ("coalesced", true)] {
                         group.bench_with_input(
                             BenchmarkId::new(label, rows_per_batch),

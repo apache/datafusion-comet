@@ -208,6 +208,30 @@ impl OperatorBuilder for HashJoinBuilder {
 /// Builder for `SortMergeJoin`.
 pub struct SortMergeJoinBuilder;
 
+/// Whether another Spark consumer in this task holds execution memory, so that a native request
+/// Comet's fair share does not stop would make Spark spill it. A best-effort check that runs once
+/// at first execution, after input iterator construction; it cannot see consumers that allocate
+/// later. False outside a Spark task.
+pub(super) fn other_spark_consumer_holds_memory(
+    planner: &PhysicalPlanner,
+) -> Result<bool, CometError> {
+    let Some(context) = &planner.task_context else {
+        return Ok(false);
+    };
+    JVMClasses::with_env(|env| -> Result<bool, CometError> {
+        let result = env.call_static_method(
+            jni::jni_str!("org/apache/comet/CometExecIterator"),
+            jni::jni_str!("hasOtherExecutionMemory"),
+            jni::jni_sig!("(Lorg/apache/spark/TaskContext;)Z"),
+            &[JValue::Object(context.as_obj())],
+        );
+        if let Some(error) = check_exception(env)? {
+            return Err(error);
+        }
+        Ok(result?.z()?)
+    })
+}
+
 /// Spark identifies the shuffle input. Check the actual sort and its key before replacing its child.
 fn reduce_before_sort(
     planner: &PhysicalPlanner,
@@ -220,7 +244,6 @@ fn reduce_before_sort(
     let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
         return Ok(None);
     };
-    // The reducer packs its own output, so it replaces any input coalescer.
     let input = SortInputCoalesceExec::unwrap_input(sort.input());
     let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
         return Ok(None);
@@ -239,41 +262,28 @@ fn reduce_before_sort(
     }
     // A smaller sort reservation can pass Comet's fair-share limit and reach Spark's
     // acquireExecutionMemory, spilling a resident JVM consumer where the unreduced sort
-    // would have spilled natively. This best-effort check runs once at first execution,
-    // after input iterator construction; it cannot cover consumers that allocate later.
-    if let Some(context) = &planner.task_context {
-        let occupied = JVMClasses::with_env(|env| -> Result<bool, CometError> {
-            let result = env.call_static_method(
-                jni::jni_str!("org/apache/comet/CometExecIterator"),
-                jni::jni_str!("hasOtherExecutionMemory"),
-                jni::jni_sig!("(Lorg/apache/spark/TaskContext;)Z"),
-                &[JValue::Object(context.as_obj())],
-            );
-            if let Some(error) = check_exception(env)? {
-                return Err(error);
-            }
-            Ok(result?.z()?)
-        })?;
-        if occupied {
-            log::debug!(
-                "Skipping semi-join right-key reduction before sort {}: another Spark \
-                 consumer holds execution memory in this task",
-                params.right.plan_id
-            );
-            return Ok(None);
-        }
+    // would have spilled natively.
+    if other_spark_consumer_holds_memory(planner)? {
+        log::debug!(
+            "Skipping semi-join right-key reduction before sort {}: another Spark \
+             consumer holds execution memory in this task",
+            params.right.plan_id
+        );
+        return Ok(None);
     }
     let reducer: Arc<dyn ExecutionPlan> =
         Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
-    let sort = Arc::clone(&params.right.native_plan).replace_children(
-        vec![Arc::clone(&reducer)],
-        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-    )?;
-    let right = Arc::make_mut(&mut params.right);
-    right.native_plan = sort;
-    right
-        .additional_native_plans
-        .retain(|plan| !plan.is::<SortInputCoalesceExec>());
+    let recompute = || ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute);
+    // A coalescer stays above the reducer, which forwards short blocks it cannot reduce
+    // unchanged. Its copy shares the metrics the sort already reports.
+    let sort_input = if sort.input().is::<SortInputCoalesceExec>() {
+        Arc::clone(sort.input()).replace_children(vec![Arc::clone(&reducer)], recompute())?
+    } else {
+        Arc::clone(&reducer)
+    };
+    let sort =
+        Arc::clone(&params.right.native_plan).replace_children(vec![sort_input], recompute())?;
+    Arc::make_mut(&mut params.right).native_plan = sort;
     // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
     Ok(Some(reducer))
 }

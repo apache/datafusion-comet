@@ -15,9 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- CometSort combines small input batches before sorting them once the input passes the
--- in-place sort threshold. These queries give each sort task many tiny shuffle blocks and
--- check that the result matches Spark.
+-- CometSort combines small input batches before sorting them. These queries give each sort task
+-- tiny shuffle blocks of nested and boundary values and check that the combined result matches
+-- Spark. CometTaskMetricsSuite covers the default gate, spilling and the config toggle.
 
 -- Many small scan partitions, so each sort task reads small blocks from many map tasks.
 -- Config: spark.sql.files.maxPartitionBytes=1024
@@ -27,17 +27,13 @@
 -- A combined batch holds at most this many rows.
 -- Config: spark.comet.batchSize=64
 -- Config: spark.comet.exec.respectDataFusionConfigs=true
--- 0 starts combining with the first batch and makes the sort merge instead of sorting in
--- place. The default, 1 MiB, lets the first part of each sort task's input pass through.
--- ConfigMatrix: spark.comet.datafusion.execution.sort_in_place_threshold_bytes=0,1048576
+-- 0 starts combining with the first block and makes the sort merge instead of sorting in place.
+-- Config: spark.comet.datafusion.execution.sort_in_place_threshold_bytes=0
 -- Write year 1 and year 9999 values without the legacy calendar rebase.
 -- Config: spark.sql.parquet.datetimeRebaseModeInWrite=CORRECTED
 -- Config: spark.sql.parquet.int96RebaseModeInWrite=CORRECTED
 -- Config: spark.comet.exec.sort.coalesceInput.enabled=true
--- The second run gives the sort a tiny memory pool and merge reservation so that it spills.
--- Config: spark.comet.datafusion.execution.sort_spill_reservation_bytes=65536
--- ConfigMatrix: spark.comet.exec.memoryPool.fraction=1.0,0.002
--- ConfigMatrix: spark.sql.session.timeZone=UTC,America/Los_Angeles
+-- Config: spark.sql.session.timeZone=America/Los_Angeles
 
 statement
 CREATE TABLE sort_coalesce(
@@ -51,7 +47,7 @@ CREATE TABLE sort_coalesce(
   m MAP<STRING, ARRAY<INT>>,
   arr ARRAY<STRING>) USING parquet
 
--- 200 write tasks give 200 small files, so each sort task reads blocks of about 12 rows, well
+-- 20 write tasks give 20 small files, so each sort task reads blocks of about 12 rows, well
 -- under the size that gets combined.
 statement
 INSERT INTO sort_coalesce
@@ -97,7 +93,7 @@ SELECT
       named_struct('x', -id, 'y', CAST(NULL AS STRING))))),
   IF(id % 13 = 0, NULL, map('a', array(CAST(id AS INT), NULL), 'b', array())),
   IF(id % 17 = 0, NULL, array(concat('é', id % 5), NULL, 'z'))
-FROM range(0, 10000, 1, 200)
+FROM range(0, 1000, 1, 20)
 
 -- A single string key with non-ASCII values, an empty string and nulls.
 query

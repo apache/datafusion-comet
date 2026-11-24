@@ -82,7 +82,7 @@ fn wraps_the_input_of_a_full_sort_only() {
 }
 
 #[test]
-fn semi_join_key_reduction_replaces_the_coalescer() {
+fn semi_join_key_reduction_goes_below_the_coalescer() {
     let key = create_bound_reference(0);
     let sorted = sort(true, None);
     let join = Operator {
@@ -106,8 +106,12 @@ fn semi_join_key_reduction_replaces_the_coalescer() {
         .create_plan(&join, &mut vec![], 1)
         .unwrap();
     let right = &plan.children[1];
-    assert!(right.native_plan.children()[0].is::<MembershipKeyReductionExec>());
-    assert!(right.additional_native_plans.is_empty());
+    // The reducer forwards blocks it cannot reduce unchanged, so they still get combined.
+    let coalescer = &right.native_plan.children()[0];
+    assert!(coalescer.is::<SortInputCoalesceExec>());
+    assert!(coalescer.children()[0].is::<MembershipKeyReductionExec>());
+    assert_eq!(right.additional_native_plans.len(), 1);
+    assert!(right.additional_native_plans[0].is::<SortInputCoalesceExec>());
     // The left sort keeps its coalescer.
     assert!(plan.children[0].native_plan.children()[0].is::<SortInputCoalesceExec>());
 }

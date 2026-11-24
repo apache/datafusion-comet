@@ -80,17 +80,6 @@ Kubernetes can kill an executor that runs out of it. The plugin warns at startup
 but check it before you upgrade; see
 [Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
 
-### Sorts Combine Small Input Batches
-
-`CometSort` now combines small input batches before sorting them, once a task's sort input is too
-large to sort in place. A shuffle written by many map tasks gives each reduce task many tiny
-batches, and DataFusion's sort merges one stream per batch, at least when it spills or sorts on more
-than one key, which made such sorts very slow. The results do not change. A combined batch is
-larger than the blocks it replaces, so a sort with a very small memory share can fail with "Not
-enough memory to continue external sort" where it used to run. If that happens, set
-`spark.comet.exec.sort.coalesceInput.enabled=false`, or use the remedies in
-[Memory Pool Limits](#memory-pool-limits).
-
 ### Deprecated and Removed Settings
 
 `spark.comet.exec.columnarToRow.native.enabled` is deprecated and will be removed in a future major

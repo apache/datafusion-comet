@@ -541,6 +541,76 @@ mod tests {
         assert_eq!(pool.reserved(), other_sort.size());
     }
 
+    /// Sorts 64 batches of 256 rows, eight separately allocated `Int64` columns each (16 KiB a
+    /// batch), with the default session config: a 10 MiB merge reservation, a 1 MiB in-place
+    /// threshold and an 8,192-row batch size.
+    async fn sort_int_batches(pool: &Arc<dyn MemoryPool>, coalesce: bool) -> DFResult<usize> {
+        use datafusion::physical_plan::{collect, ExecutionPlan};
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        use datafusion_comet_operators::SortInputCoalesceExec;
+
+        let input: Vec<RecordBatch> = (0..64)
+            .map(|b| {
+                let columns = (0..8).map(|c| {
+                    let values = (0..256).map(|i| ((b * 256 + i) * 7919 + c) % 16_384);
+                    (
+                        format!("c{c}"),
+                        Arc::new(Int64Array::from_iter_values(values)) as ArrayRef,
+                    )
+                });
+                RecordBatch::try_from_iter(columns).unwrap()
+            })
+            .collect();
+        let schema = input[0].schema();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::clone(pool))
+            .build_arc()?;
+        let config = SessionConfig::new();
+        let gate = config.options().execution.sort_in_place_threshold_bytes;
+        let ctx = SessionContext::new_with_config_rt(config, runtime);
+        let source: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[input], Arc::clone(&schema), None)?;
+        let sort_input: Arc<dyn ExecutionPlan> = if coalesce {
+            Arc::new(SortInputCoalesceExec::new(source, 8192, gate))
+        } else {
+            source
+        };
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            col("c0", &schema)?,
+            Default::default(),
+        )])
+        .unwrap();
+        let output = collect(
+            Arc::new(SortExec::new(ordering, sort_input)),
+            ctx.task_ctx(),
+        )
+        .await?;
+        Ok(output.iter().map(|batch| batch.num_rows()).sum())
+    }
+
+    /// A known limit of combining input before a sort. The coalescer cannot spill, so the pool
+    /// checks it only against its size, and it can build a batch larger than what the sort may
+    /// hold. Here the sort's share is 768 KiB: the raw batches fit in runs of 24, 24 and 16, but
+    /// the 512 KiB combined batch costs the sort 1 MiB, and after spilling it still does not fit.
+    /// Combining stays opt-in until the sort can fall back to the original batches.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_combined_batch_can_exceed_a_share_the_raw_batches_fit() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool = pool(&fake, 11 * 1024 * 1024 + 512 * 1024);
+        let other_sort = spillable("ExternalSorter[1]", &pool);
+        hold(&other_sort, 2);
+
+        assert_eq!(sort_int_batches(&pool, false).await.unwrap(), 64 * 256);
+        let error = sort_int_batches(&pool, true).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Not enough memory to continue external sort"),
+            "{error}"
+        );
+        assert_eq!(pool.reserved(), other_sort.size());
+    }
+
     #[test]
     fn consumers_that_can_spill_share_their_tasks_share_of_the_pool() {
         // Eight running tasks share a 1040-byte pool, and Spark grants this one its 130 bytes.

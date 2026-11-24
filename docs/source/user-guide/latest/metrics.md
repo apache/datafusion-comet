@@ -98,8 +98,8 @@ Native sorts report these additional metrics:
 | `number of small input batches combined into larger ones`     | Small input batches, such as shuffle blocks from many map tasks, combined before the sort.          |
 | `number of batches produced by combining small input batches` | Batches the sort received from that combining. Zero means the sort got its input batches unchanged. |
 
-The combining is controlled by `spark.comet.exec.sort.coalesceInput.enabled`. Its time is included in
-the sort's `total time`.
+The combining is off unless `spark.comet.exec.sort.coalesceInput.enabled=true`. Its time is included
+in the sort's `total time`.
 
 ### Hash Joins
 

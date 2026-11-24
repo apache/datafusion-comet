@@ -454,11 +454,13 @@ Four details matter for tuning:
   the task's whole share, because the limit is then zero. Spark lets such a consumer hold more than
   `off_heap_size / running_tasks` while other tasks have not yet asked for memory. A larger
   `spark.memory.offHeap.size`, a smaller `spark.comet.batchSize` or `spark.comet.exec.memoryPool=greedy_unified`
-  avoids it, and the migration guide says so too. For a sort over a shuffle with many small
-  blocks, `spark.comet.exec.sort.coalesceInput.enabled=false` also avoids it, as described next.
-- `CometSort` can put a consumer that cannot spill in front of the sort, which combines small input
-  batches, such as shuffle blocks from many map tasks, before the sort buffers them. It reserves
-  twice the bytes of the batches it holds, enough for them and the combined copy, and releases that
+  avoids it, and the migration guide says so too. If `spark.comet.exec.sort.coalesceInput.enabled`
+  is set, turning it off also avoids it for a sort over a shuffle with many small blocks, as
+  described next.
+- With `spark.comet.exec.sort.coalesceInput.enabled=true`, `CometSort` puts a consumer that cannot
+  spill in front of the sort, which combines small input batches, such as shuffle blocks from many
+  map tasks, before the sort buffers them. It reserves the batches it holds plus the combined copy,
+  which counts a buffer once per column that uses it, and releases that
   before the sort reserves the combined batch, so it holds nothing while the sort takes a batch. A
   combined batch is larger than the blocks it replaces, so a sort whose share is very close to the
   least it can run with may still fail with the error above where the blocks fit, as it can with a
@@ -467,8 +469,9 @@ Four details matter for tuning:
   is kept between 64 KiB and 4 MiB, so with a threshold below 128 KiB or above 8 MiB it is not half.
   While it holds a group, its reservation, like any that cannot spill, lowers the share of the
   task's consumers that can spill, such as another plan's sort in the same task. When the pool
-  refuses it a reservation, it passes the next 64 small batches through, then asks again.
-  `spark.comet.exec.sort.coalesceInput.enabled=false` turns it off.
+  refuses it a reservation, it passes the next 64 small batches through, then asks again. It is
+  not used when another Spark consumer in the task already holds execution memory, since Spark
+  could spill that consumer to grant its reservation.
 
 ### Task-shared pools and their lifetime
 
