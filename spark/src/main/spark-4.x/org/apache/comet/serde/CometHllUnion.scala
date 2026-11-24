@@ -29,20 +29,18 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctio
 // passed to the native `hll_union`, which enforces the flag and unions with min lgConfigK.
 object CometHllUnion extends CometExpressionSerde[HllUnion] {
   private val incompatReason =
-    "Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly from Spark."
+    s"${CometHllReasons.sketchBytesReason} When `allowDifferentLgConfigK` is true and the " +
+      "inputs have different `lgConfigK` values, the estimate of the result can also differ " +
+      "from Spark by up to about 1.6%."
 
   private val nonLiteralAllowReason =
     "The allowDifferentLgConfigK argument must be a foldable literal."
 
-  private val errorReason =
-    "Errors surface as plain Comet execution errors rather than Spark's SparkRuntimeException " +
-      "with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState " +
-      "22000), so the message and error class differ even though both engines fail."
-
   override def getUnsupportedReasons(): Seq[String] = Seq(nonLiteralAllowReason)
 
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(incompatReason, errorReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getCompatibleNotes(): Seq[String] = Seq(CometHllReasons.unionErrorNote)
 
   override def getSupportLevel(expr: HllUnion): SupportLevel = {
     if (!expr.third.foldable) {
