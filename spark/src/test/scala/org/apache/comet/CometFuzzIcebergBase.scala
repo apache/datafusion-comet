@@ -33,7 +33,6 @@ import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
@@ -113,8 +112,6 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
           generateArray = true,
           generateStruct = true,
           primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot { dataType =>
-            // Disable decimals - iceberg-rust doesn't support FIXED_LEN_BYTE_ARRAY in page index yet
-            dataType.isInstanceOf[DecimalType] ||
             // Disable ByteType and ShortType for Iceberg < 1.6.0
             // Fixed in https://github.com/apache/iceberg/pull/10349
             (isIcebergVersionLessThan(

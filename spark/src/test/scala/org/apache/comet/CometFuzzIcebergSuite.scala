@@ -28,6 +28,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.IcebergScanPlanData.distinctResiduals
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
@@ -184,7 +185,8 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
   // remnant. It exists because the correctness test above cannot see pushdown at all -- results
   // match and the scan stays native whether or not a predicate pushes, since CometFilter enforces
   // it either way -- so only a residual-pool check catches a regression like byte/short mapping to
-  // None or binary escaping the page-index gate.
+  // None or binary escaping the page-index gate. Decimal equality literals are checked explicitly
+  // so a unary NOT NULL alone cannot masquerade as decimal literal pushdown.
   test("filter pushdown - residual pool reflects whether the column type is pushable") {
     // Reading commonData forces Iceberg planning (ParallelIterable), which on older Iceberg leaves
     // a prefetched manifest stream open that Spark's DebugFilesystem flags at teardown.
@@ -197,7 +199,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     def isPushable(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: DateType | _: StringType | _: TimestampType |
-          _: TimestampNTZType =>
+          _: TimestampNTZType | _: DecimalType =>
         true
       case _ => false
     }
@@ -205,6 +207,22 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     val df = spark.table(icebergTableName)
     val primitiveColumns = df.schema.fields.filterNot(f => isComplexType(f.dataType))
     assert(primitiveColumns.nonEmpty, "expected at least one primitive column in the fuzz schema")
+    assert(
+      primitiveColumns.exists(_.dataType.isInstanceOf[DecimalType]),
+      "expected decimal columns")
+
+    def binaryPredicates(predicate: OperatorOuterClass.IcebergPredicate)
+        : Seq[OperatorOuterClass.IcebergBinaryPredicate] = {
+      if (predicate.hasBinary) {
+        Seq(predicate.getBinary)
+      } else if (predicate.hasAnd) {
+        binaryPredicates(predicate.getAnd.getLeft) ++ binaryPredicates(predicate.getAnd.getRight)
+      } else if (predicate.hasOr) {
+        binaryPredicates(predicate.getOr.getLeft) ++ binaryPredicates(predicate.getOr.getRight)
+      } else {
+        Seq.empty
+      }
+    }
 
     for (field <- primitiveColumns) {
       val name = field.name
@@ -226,11 +244,31 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         val (_, cometPlan) = checkSparkAnswer(df.where(col(name) === lit(v)))
         val scans = collectIcebergNativeScans(cometPlan)
         assert(scans.length == 1, s"expected one native scan for '$name'\n$cometPlan")
-        val pushed = distinctResiduals(scans.head).nonEmpty
+        val residuals = distinctResiduals(scans.head)
+        val pushed = residuals.nonEmpty
         if (isPushable(field.dataType)) {
           assert(
             pushed,
             s"expected a pushed residual for pushable column '$name' (${field.dataType})")
+          field.dataType match {
+            case decimalType: DecimalType =>
+              val equalities = residuals.toSeq
+                .flatMap(binaryPredicates)
+                .filter(p =>
+                  p.getColumn == name && p.getOp == OperatorOuterClass.IcebergPredicateOperator.Eq)
+              assert(equalities.nonEmpty, s"expected decimal equality pushdown for '$name'")
+              val expected = v.asInstanceOf[java.math.BigDecimal].setScale(decimalType.scale)
+              equalities.foreach { predicate =>
+                assert(predicate.getValue.hasDecimalVal, s"expected decimal literal for '$name'")
+                val decimal = predicate.getValue.getDecimalVal
+                assert(decimal.getPrecision == decimalType.precision)
+                assert(decimal.getScale == decimalType.scale)
+                assert(
+                  new java.math.BigInteger(decimal.getUnscaled.toByteArray) == expected
+                    .unscaledValue())
+              }
+            case _ =>
+          }
         } else {
           assert(
             !pushed,
