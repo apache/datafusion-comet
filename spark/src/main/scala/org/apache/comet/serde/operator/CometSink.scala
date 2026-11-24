@@ -54,12 +54,15 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       op: T,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes = op.output.forall(a =>
-      supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
+    val unsupportedType = op.output
+      .find(a => !supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
+      .map(_.dataType)
 
-    if (!supportedTypes) {
-      withFallbackReason(op, "Unsupported data type")
-      return None
+    unsupportedType match {
+      case Some(dataType) =>
+        withFallbackReason(op, s"Unsupported data type $dataType")
+        return None
+      case None => ()
     }
 
     // These operators are source of Comet native execution chain
@@ -126,12 +129,15 @@ object CometExchangeSink extends CometSink[SparkPlan] {
   private def convertToShuffleScan(
       op: SparkPlan,
       builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes = op.output.forall(a =>
-      supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
+    val unsupportedType = op.output
+      .find(a => !supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
+      .map(_.dataType)
 
-    if (!supportedTypes) {
-      withFallbackReason(op, "Unsupported data type for shuffle direct read")
-      return None
+    unsupportedType match {
+      case Some(dataType) =>
+        withFallbackReason(op, s"Unsupported data type $dataType for shuffle direct read")
+        return None
+      case None => ()
     }
 
     val scanBuilder = OperatorOuterClass.ShuffleScan.newBuilder()

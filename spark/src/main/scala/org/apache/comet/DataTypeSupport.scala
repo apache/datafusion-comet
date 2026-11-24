@@ -53,6 +53,11 @@ trait DataTypeSupport {
       fallbackReasons: ListBuffer[String]): Boolean = {
 
     dt match {
+      case decimal: DecimalType if !DataTypeSupport.isArrowDecimalScaleSupported(decimal) =>
+        fallbackReasons +=
+          s"Unsupported $name of type $dt: decimal scale is outside Arrow's supported range " +
+            "[-128, 127]"
+        false
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
           BinaryType | StringType | _: DecimalType | DateType | TimestampType | TimestampNTZType |
           CalendarIntervalType =>
@@ -83,6 +88,10 @@ object DataTypeSupport {
   val ARRAY_ELEMENT = "array element"
   val MAP_KEY = "map key"
   val MAP_VALUE = "map value"
+
+  /** Arrow's Decimal128 scale is a signed 8-bit integer. */
+  def isArrowDecimalScaleSupported(dataType: DecimalType): Boolean =
+    dataType.scale >= Byte.MinValue && dataType.scale <= Byte.MaxValue
 
   def isComplexType(dt: DataType): Boolean = dt match {
     case _: StructType | _: ArrayType | _: MapType => true

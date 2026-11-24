@@ -53,7 +53,7 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, ShuffledJoin, SortMergeJoinExec}
 import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, lit, spark_partition_id, sum, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
@@ -1047,6 +1047,20 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     // Names that differ only by case are distinct to Java Arrow and stay supported.
     val distinctCase = StructType(Seq(StructField("a", LongType), StructField("A", LongType)))
     assert(CometLocalTableScanExec.isSchemaSupported(schemaWith(distinctCase), ListBuffer.empty))
+  }
+
+  test("row conversion sinks decline decimal scales outside Arrow's signed-byte range") {
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val unsupported = DecimalType(10, -129)
+      val schema = StructType(Seq(StructField("value", unsupported)))
+      for (sink <- Seq(CometLocalTableScanExec, CometSparkToColumnarExec)) {
+        val reasons = ListBuffer.empty[String]
+        assert(!sink.isSchemaSupported(schema, reasons), s"$sink accepted $unsupported")
+        assert(
+          reasons.exists(_.contains("scale is outside Arrow's supported range")),
+          reasons.toString)
+      }
+    }
   }
 
   test("native shuffle predicate declines a struct with duplicate field names") {

@@ -568,12 +568,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Returns whether `dt` is supported at a caller's data-type boundary.
    *
-   * The defaults preserve expression-serde behavior: primitive types, `CalendarIntervalType`,
-   * `TimeType`, and all `StringType` variants are accepted, while complex and ANSI interval types
-   * are rejected. Sinks and native shuffle enable complex and ANSI interval types because their
-   * Arrow IPC paths support them. Local scans additionally reject non-default strings, while JVM
-   * columnar shuffle rejects ANSI intervals, calendar intervals, and duplicate struct field names
-   * because its unsafe-row-to-Arrow path cannot handle them.
+   * The defaults preserve expression-serde behavior: primitive types, decimals whose scale fits
+   * Arrow's signed 8-bit scale, `CalendarIntervalType`, `TimeType`, and all `StringType` variants
+   * are accepted, while complex and ANSI interval types are rejected. Sinks and native shuffle
+   * enable complex and ANSI interval types because their Arrow IPC paths support them. Local
+   * scans additionally reject non-default strings, while JVM columnar shuffle rejects ANSI
+   * intervals, calendar intervals, and duplicate struct field names because its
+   * unsafe-row-to-Arrow path cannot handle them.
    *
    * Note that the option polarity is mixed: `allowComplex` and `allowIntervals` are restrictive
    * by default; the other four options are permissive by default.
@@ -604,9 +605,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       allowDuplicateStructFieldNames: Boolean = true): Boolean = {
     def supported(dt: DataType): Boolean = dt match {
       case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-          _: DoubleType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-          _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+          _: DoubleType | _: BinaryType | _: TimestampType | _: TimestampNTZType | _: DateType |
+          _: BooleanType | _: NullType =>
         true
+      case decimal: DecimalType => DataTypeSupport.isArrowDecimalScaleSupported(decimal)
       case CalendarIntervalType if allowCalendarInterval =>
         true
       case st: StringType if allowAnyStringType || st == StringType =>
