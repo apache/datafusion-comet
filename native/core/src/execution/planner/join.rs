@@ -387,10 +387,15 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
             partition_count,
         )?;
 
-        let left = Arc::clone(&join_params.left.native_plan);
-        let right = Arc::clone(&join_params.right.native_plan);
-
         let filter = join_params.join_filter.clone();
+        let mut left = Arc::clone(&join_params.left.native_plan);
+        let mut right = Arc::clone(&join_params.right.native_plan);
+        if bnlj.build_side == BuildSide::BuildRight as i32 {
+            left = planner.bound_join_filter_probe(left, filter.as_ref());
+        } else {
+            right = planner.bound_join_filter_probe(right, filter.as_ref());
+        }
+
         let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
             left,
             right,

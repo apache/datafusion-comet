@@ -35,10 +35,15 @@ use std::sync::Arc;
 /// them at a time, and one input row can match many. A split under the join cannot bound that, so
 /// the planner puts this above a join whose filter expands a large string or binary scalar. It
 /// owns no metrics: the join's are reported as its own.
+///
+/// A sort concatenates the batches it buffers into runs of up to `sort_in_place_threshold_bytes`
+/// and evaluates its keys over each run, so a scope over a sort whose keys expand a scalar also
+/// turns that off, and the sort evaluates them one input batch at a time.
 #[derive(Debug)]
 pub struct BatchSizeScopeExec {
     input: Arc<dyn ExecutionPlan>,
     batch_size: usize,
+    sort_by_batch: bool,
 }
 
 impl BatchSizeScopeExec {
@@ -46,7 +51,20 @@ impl BatchSizeScopeExec {
         Self {
             input,
             batch_size: batch_size.max(1),
+            sort_by_batch: false,
         }
+    }
+
+    /// A scope under which a sort evaluates its keys over each batch it receives on its own.
+    pub fn sorting_by_batch(input: Arc<dyn ExecutionPlan>, batch_size: usize) -> Self {
+        Self {
+            sort_by_batch: true,
+            ..Self::new(input, batch_size)
+        }
+    }
+
+    pub fn sorts_by_batch(&self) -> bool {
+        self.sort_by_batch
     }
 
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
@@ -62,7 +80,11 @@ impl DisplayAs for BatchSizeScopeExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "CometBatchSizeScopeExec: batch_size={}", self.batch_size)
+                write!(f, "CometBatchSizeScopeExec: batch_size={}", self.batch_size)?;
+                if self.sort_by_batch {
+                    write!(f, ", sort_by_batch")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => unimplemented!(),
         }
@@ -97,10 +119,11 @@ impl ExecutionPlan for BatchSizeScopeExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(BatchSizeScopeExec::new(
-            Arc::clone(&children[0]),
-            self.batch_size,
-        )))
+        Ok(Arc::new(BatchSizeScopeExec {
+            input: Arc::clone(&children[0]),
+            batch_size: self.batch_size,
+            sort_by_batch: self.sort_by_batch,
+        }))
     }
 
     fn execute(
@@ -108,10 +131,13 @@ impl ExecutionPlan for BatchSizeScopeExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let config = context
+        let mut config = context
             .session_config()
             .clone()
             .with_batch_size(self.batch_size);
+        if self.sort_by_batch {
+            config = config.with_sort_in_place_threshold_bytes(0);
+        }
         let scoped = TaskContext::new(
             context.task_id(),
             context.session_id(),
@@ -138,11 +164,12 @@ mod tests {
     use datafusion::prelude::{SessionConfig, SessionContext};
     use std::sync::Mutex;
 
-    /// Records the session batch size it is executed with, as a join reads it.
+    /// Records the session batch size it is executed with, as a join reads it, and whether a sort
+    /// would evaluate its keys batch by batch.
     #[derive(Debug)]
     struct BatchSizeProbe {
         input: Arc<dyn ExecutionPlan>,
-        seen: Arc<Mutex<Option<usize>>>,
+        seen: Arc<Mutex<Option<(usize, bool)>>>,
     }
 
     impl DisplayAs for BatchSizeProbe {
@@ -183,7 +210,9 @@ mod tests {
             partition: usize,
             context: Arc<TaskContext>,
         ) -> Result<SendableRecordBatchStream> {
-            *self.seen.lock().unwrap() = Some(context.session_config().batch_size());
+            let config = context.session_config();
+            let sorts_by_batch = config.options().execution.sort_in_place_threshold_bytes == 0;
+            *self.seen.lock().unwrap() = Some((config.batch_size(), sorts_by_batch));
             self.input.execute(partition, context)
         }
     }
@@ -199,7 +228,21 @@ mod tests {
         BatchSizeScopeExec::new(probe, 4)
             .execute(0, ctx.task_ctx())
             .unwrap();
-        assert_eq!(*seen.lock().unwrap(), Some(4));
+        assert_eq!(*seen.lock().unwrap(), Some((4, false)));
         assert_eq!(ctx.task_ctx().session_config().batch_size(), 16);
+    }
+
+    #[test]
+    fn a_sorting_scope_turns_off_the_sort_concatenating_its_input() {
+        let seen = Arc::new(Mutex::new(None));
+        let probe = Arc::new(BatchSizeProbe {
+            input: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
+            seen: Arc::clone(&seen),
+        });
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(16));
+        BatchSizeScopeExec::sorting_by_batch(probe, 4)
+            .execute(0, ctx.task_ctx())
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some((4, true)));
     }
 }

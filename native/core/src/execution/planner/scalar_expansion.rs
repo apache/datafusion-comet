@@ -103,9 +103,24 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Splits the probe input of a nested-loop join whose filter expands a string or binary
+    /// scalar at the rows that keep it within `SCALAR_EXPANSION_BYTES`. The join evaluates the
+    /// filter for one build row against a whole probe batch, whatever the session batch size, and
+    /// some inputs, such as a range, size their batches when they are planned.
+    pub(crate) fn bound_join_filter_probe(
+        &self,
+        probe: Arc<dyn ExecutionPlan>,
+        filter: Option<&JoinFilter>,
+    ) -> Arc<dyn ExecutionPlan> {
+        match filter.and_then(|f| self.scalar_expansion_rows([f.expression()], f.schema())) {
+            Some(rows) => Arc::new(BatchSplitExec::new(probe, rows)),
+            None => probe,
+        }
+    }
+
     /// The most rows per batch at which the string and binary scalars `exprs` expand stay within
     /// `SCALAR_EXPANSION_BYTES`, or `None` when they expand no scalar.
-    fn scalar_expansion_rows<'a>(
+    pub(crate) fn scalar_expansion_rows<'a>(
         &self,
         exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
         schema: &Schema,
@@ -473,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_a_join_at_the_batch_size_its_filter_scalar_allows() {
+    fn bounds_a_join_by_the_scalar_its_filter_expands() {
         use datafusion::common::JoinSide;
         use datafusion::physical_plan::empty::EmptyExec;
         use datafusion::physical_plan::joins::utils::ColumnIndex;
@@ -507,6 +522,25 @@ mod tests {
         assert!(Arc::ptr_eq(&unbounded, &join));
         assert!(Arc::ptr_eq(
             &planner.bound_join_filter_expansion(Arc::clone(&join), None),
+            &join
+        ));
+        // A nested-loop join's probe input is split, since the join evaluates the filter over a
+        // whole probe batch, at the cap even when the session batch size is within it.
+        let probe = planner.bound_join_filter_probe(Arc::clone(&join), Some(&wide));
+        let split = probe
+            .downcast_ref::<BatchSplitExec>()
+            .expect("a split under the probe side");
+        assert_eq!(4096, split.batch_size());
+        let small_probe = planner.bound_join_filter_probe(Arc::clone(&join), Some(&small));
+        assert_eq!(
+            256 * 1024 * 1024,
+            small_probe
+                .downcast_ref::<BatchSplitExec>()
+                .unwrap()
+                .batch_size()
+        );
+        assert!(Arc::ptr_eq(
+            &planner.bound_join_filter_probe(Arc::clone(&join), None),
             &join
         ));
     }

@@ -1597,7 +1597,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
     }
 
     val literalBytes = expandedLiteralBytes(op.sortOrder)
-    if (literalBytes.toLong * CometConf.COMET_BATCH_SIZE.get() > MaxExpandedLiteralBytes) {
+    if (literalBytes > MaxSortKeyLiteralBytes) {
       withFallbackReason(
         op,
         s"A sort key expands a string or binary literal of $literalBytes bytes. The native " +
@@ -1619,10 +1619,13 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
   }
 
   /**
-   * The bytes past which a string or binary scalar, expanded to a batch's length, no longer fits
-   * the native planner's bound for one operator's expansion.
+   * The largest string or binary literal a native full sort's keys may expand. The native sort
+   * evaluates its keys batch by batch, so the expansion cannot overflow, but its merge holds a
+   * batch of keys for every run at once, and Spark's sort holds none. The limit puts 1 GiB of
+   * keys in a batch at the default batch size, and does not follow the configured batch size,
+   * since a smaller batch only makes more runs.
    */
-  private val MaxExpandedLiteralBytes = 1L << 30
+  private val MaxSortKeyLiteralBytes = 128 * 1024
 
   /**
    * The bytes of the string and binary literals the sort keys expand to a batch's length. A key

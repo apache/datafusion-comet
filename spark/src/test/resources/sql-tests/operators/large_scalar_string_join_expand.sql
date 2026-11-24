@@ -54,6 +54,12 @@ query
 SELECT /*+ BROADCAST(b) */ count(*) FROM test_scalar_join_a a JOIN test_scalar_join_b b
   ON length(concat(repeat('x', 262144), a.s, b.s)) > 0
 
+-- the same with a range as the probe side, which emits batches of the size it was planned with
+-- and which the join evaluates the filter against one build row at a time
+query
+SELECT /*+ BROADCAST(b) */ count(*) FROM range(0, 8192, 1, 1) r JOIN test_scalar_join_b b
+  ON length(concat(repeat('x', 262144), CAST(r.id AS STRING), b.s)) > 0
+
 -- Expand evaluates the distinct aggregate's argument, which expands the scalar
 query
 SELECT count(DISTINCT length(concat(repeat('x', 262144), CAST(id AS STRING)))), count(DISTINCT id % 7)
@@ -62,3 +68,7 @@ FROM range(0, 8192, 1, 1)
 -- a full sort on a key that expands the literal
 query expect_fallback(A sort key expands a string or binary literal of 262144 bytes)
 SELECT id FROM range(0, 8192, 1, 1) SORT BY concat(repeat('x', 262144), CAST(id AS STRING))
+
+-- a full sort on a key with a smaller literal stays native, evaluating its keys batch by batch
+query
+SELECT id FROM range(0, 20000, 1, 3) SORT BY concat(repeat('x', 1024), CAST(id AS STRING))
