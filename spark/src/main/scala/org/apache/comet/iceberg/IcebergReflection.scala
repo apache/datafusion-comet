@@ -2047,9 +2047,8 @@ object IcebergReflection extends Logging {
    * (Avro-encoded) via iceberg-rust's `ManifestWriter`; this helper builds an
    * `InMemoryFileIO`/`InMemoryInputFile` pair so the manifest stays in process, then reads it via
    * the standard `ManifestFiles.read` entry point. Each entry is `copy()`-ed so the returned
-   * `DataFile`s outlive the reader. The 3-arg `GenericManifestFile` constructor is
-   * package-private and requires `setAccessible(true)` on every supported Iceberg version (1.5.2
-   * / 1.8.1 / 1.10.0 verified).
+   * `DataFile`s outlive the reader. The `GenericManifestFile` constructors are package-private
+   * and require `setAccessible(true)`.
    *
    * `specId` is stamped onto the synthesised `ManifestFile` because the manifest reader uses it
    * to pick the correct partition spec when materialising partition data on each `DataFile`.
@@ -2084,18 +2083,34 @@ object IcebergReflection extends Logging {
 
   /**
    * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Iceberg 1.8 and
-   * later use the package-private `(InputFile, int, long)` constructor. The placeholder snapshot
-   * id never reaches storage: `BatchWrite.commit(messages)` stamps the real snapshot id onto the
-   * embedded `DataFile`s.
+   * later use the package-private `(InputFile, int, long)` constructor; older runtimes use
+   * `(InputFile, int)`. The placeholder snapshot id never reaches storage:
+   * `BatchWrite.commit(messages)` stamps the real snapshot id onto the embedded `DataFile`s.
    */
   private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
     val inputFileClass = loadClass(ClassNames.INPUT_FILE)
     val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
-    val ctor = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
-    ctor.setAccessible(true)
-    ctor
-      .newInstance(inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L))
-      .asInstanceOf[AnyRef]
+    try {
+      val ctor = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+      ctor.setAccessible(true)
+      ctor
+        .newInstance(inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L))
+        .asInstanceOf[AnyRef]
+    } catch {
+      case _: NoSuchMethodException =>
+        val ctor = cls.getDeclaredConstructor(inputFileClass, classOf[Int])
+        ctor.setAccessible(true)
+        val manifest = ctor.newInstance(inputFile, Integer.valueOf(specId)).asInstanceOf[AnyRef]
+        // The copy builder retains the cached length but not the input file.
+        cls.getMethod("length").invoke(manifest)
+        val builder = cls
+          .getMethod("copyOf", loadClass(ClassNames.MANIFEST_FILE))
+          .invoke(null, manifest)
+        builder.getClass
+          .getMethod("withSnapshotId", classOf[java.lang.Long])
+          .invoke(builder, java.lang.Long.valueOf(0L))
+        builder.getClass.getMethod("build").invoke(builder).asInstanceOf[AnyRef]
+    }
   }
 
   private def readDataFilesFromManifest(
