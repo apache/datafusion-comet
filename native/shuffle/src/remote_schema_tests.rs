@@ -570,3 +570,43 @@ fn remote_shuffle_preserves_row_count_without_columns() {
     assert_eq!(decoded.num_columns(), 0);
     assert_eq!(decoded.num_rows(), 3);
 }
+
+#[test]
+fn split_remote_block_normalizes_slice_by_slice_like_a_whole_decode() {
+    use arrow::array::AsArray;
+    let mut names = StringDictionaryBuilder::<Int32Type>::new();
+    for i in 0..10 {
+        if i % 4 == 3 {
+            names.append_null();
+        } else {
+            names.append_value(["alpha", "beta"][i % 2]);
+        }
+    }
+    let ids: ArrayRef = Arc::new(Int32Array::from((0..10).collect::<Vec<_>>()));
+    let block = batch(vec![ids, Arc::new(names.finish())]);
+    let types = [DataType::Int32, DataType::Utf8];
+    let bytes = encoded_batch(&block, CompressionCodec::Zstd(1), true);
+
+    let whole = decode_remote_shuffle_batch(&bytes, &types).unwrap();
+    let validated = crate::read_validated_remote_batch(&bytes, &types).unwrap();
+    assert!(matches!(
+        validated.column(1).data_type(),
+        DataType::Dictionary(_, _)
+    ));
+
+    // A twelve-byte budget fits at most three of these values per slice.
+    let ranges = crate::dictionary_expansion_ranges(&validated, 12);
+    assert!(ranges.len() > 1);
+    let slices: Vec<RecordBatch> = ranges
+        .iter()
+        .map(|r| {
+            let slice = validated.slice(r.start, r.len());
+            crate::normalize_remote_batch(slice, &types).unwrap()
+        })
+        .collect();
+    for slice in &slices {
+        assert!(slice.column(1).as_string::<i32>().values().len() <= 12);
+    }
+    let rejoined = arrow::compute::concat_batches(&whole.schema(), &slices).unwrap();
+    assert_eq!(rejoined, whole);
+}
