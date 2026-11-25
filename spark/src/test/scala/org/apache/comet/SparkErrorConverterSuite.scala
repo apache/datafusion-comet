@@ -78,6 +78,23 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       error.getMessage)
   }
 
+  test("CastOverflowInTableInsert names the column as Spark does") {
+    val error = SparkErrorConverter
+      .convertErrorType(
+        "CastOverflowInTableInsert",
+        "CAST_OVERFLOW_IN_TABLE_INSERT",
+        Map("fromType" -> "DECIMAL(20,2)", "toType" -> "DECIMAL(10,2)", "columnName" -> "s.x"),
+        Array.empty,
+        "")
+      .getOrElse(fail("Expected CastOverflowInTableInsert to be converted"))
+    assert(error.isInstanceOf[ArithmeticException])
+    assert(error.asInstanceOf[SparkThrowable].getErrorClass == "CAST_OVERFLOW_IN_TABLE_INSERT")
+    assert(error.asInstanceOf[SparkThrowable].getQueryContext.isEmpty)
+    assert(error.getMessage.contains("\"DECIMAL(20,2)\""), error.getMessage)
+    assert(error.getMessage.contains("\"DECIMAL(10,2)\""), error.getMessage)
+    assert(error.getMessage.contains("`s`.`x`"), error.getMessage)
+  }
+
   test("ArithmeticOverflow without a suggested function remains compatible") {
     // Accept both older payloads without the key and unary errors with an empty function.
     for (params <- Seq(

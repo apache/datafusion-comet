@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod check_overflow_in_table_insert;
 mod checkoverflow;
 mod decimal_rescale_check;
 mod make_decimal;
 mod unscaled_value;
 
+pub use check_overflow_in_table_insert::CheckOverflowInTableInsert;
 pub use checkoverflow::CheckOverflow;
 pub use decimal_rescale_check::DecimalRescaleCheckOverflow;
 pub use make_decimal::spark_make_decimal;

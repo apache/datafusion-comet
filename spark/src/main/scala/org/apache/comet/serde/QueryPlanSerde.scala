@@ -366,6 +366,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[AttributeReference] -> CometAttributeReference,
       classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
       classOf[CheckOverflow] -> CometCheckOverflow,
+      classOf[CheckOverflowInTableInsert] -> CometCheckOverflowInTableInsert,
       classOf[Coalesce] -> CometCoalesce,
       classOf[Invoke] -> CometInvoke,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
@@ -1445,6 +1446,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
     }
   }
+
+  /**
+   * Whether `expr` is a subexpression that can raise and that the operator's expressions share
+   * and Spark eliminates, so that Spark evaluates it for every row before the expressions that
+   * use it. False outside `withSharedSubexpressions`, where what they share is unknown.
+   */
+  def isSharedSubexpression(expr: Expression): Boolean =
+    sharedSubexpressions.value.exists { s =>
+      s.raising.nonEmpty && {
+        val promoted = DecimalPrecision.promote(expr)
+        s.raising.exists(_.semanticEquals(promoted))
+      }
+    }
 
   /**
    * Whether `expr` cannot raise an error for any row, so Comet may evaluate it for rows that
