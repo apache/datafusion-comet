@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.{DecimalType, IntegerType, TimeType}
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, retryEnclosingDispatch, scalarFunctionExprToProtoWithReturnType, withChildEvaluation}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -54,14 +54,16 @@ trait CometExprShim extends Spark4xCometExprShim {
   override def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr match {
+      binding: Boolean,
+      fallback: => Option[Expr]): Option[Expr] = {
+    val result = expr match {
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
             s.functionName == "makeTime" &&
             s.arguments.size == 3 &&
             s.dataType.isInstanceOf[TimeType] =>
-        val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
+        val childExprs =
+          withChildEvaluation(s)(s.arguments.map(exprToProtoInternal(_, inputs, binding)))
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
         optExpr
@@ -92,7 +94,7 @@ trait CometExprShim extends Spark4xCometExprShim {
               scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
             optExpr
           case _ =>
-            super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
+            return super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding, fallback)
         }
 
       // try_to_time resolves to TryEval(Invoke(Literal(ToTimeParser), "parse", ...))
@@ -100,7 +102,8 @@ trait CometExprShim extends Spark4xCometExprShim {
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(parser: ToTimeParser, _), "parse", args)
               if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty && args.size == 1 =>
-            val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
+            val childExprs =
+              withChildEvaluation(i)(args.map(exprToProtoInternal(_, inputs, binding)))
             val optExpr = scalarFunctionExprToProtoWithReturnType(
               "to_time",
               i.dataType,
@@ -108,11 +111,13 @@ trait CometExprShim extends Spark4xCometExprShim {
               childExprs: _*)
             optExpr
           case _ =>
-            super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
+            return super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding, fallback)
         }
 
-      case _ => super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
+      case _ =>
+        return super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding, fallback)
     }
+    result.orElse(retryEnclosingDispatch(expr)(fallback))
   }
 }
 

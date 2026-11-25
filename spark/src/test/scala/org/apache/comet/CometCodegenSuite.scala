@@ -1373,6 +1373,22 @@ class CometCodegenSuite
     }
   }
 
+  test("two arrays_zip expressions sharing a nondeterministic user function stay in Spark") {
+    import org.apache.spark.sql.functions.udf
+    var calls = 0L
+    val counter = udf { (offset: Long) =>
+      calls += 1
+      offset + calls
+    }
+    spark.udf.register("zipCounter", counter.asNondeterministic())
+    withTypedCol("BIGINT", "1", "2", "3") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT arrays_zip(array(map(c, zipCounter(0L)))), " +
+          "arrays_zip(array(map(c, zipCounter(10L)))) FROM t",
+        "a nondeterministic user function can share state across calls")
+    }
+  }
+
   test("a null guard the dispatcher cannot take whole stays native around its UDF (#6704)") {
     spark.udf.register("plusOne", (x: Long) => x + 1)
     withTypedCol("BIGINT", "1", "NULL", "-3") {

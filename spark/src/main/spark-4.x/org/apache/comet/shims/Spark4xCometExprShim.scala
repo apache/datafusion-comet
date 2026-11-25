@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, liftFallbackReasons}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, liftFallbackReasons, retryEnclosingDispatch}
 
 /**
  * Shared trait body for the Spark 4.x `CometExprShim` traits (4.0/4.1/4.2). Holds the parts that
@@ -60,8 +60,9 @@ trait Spark4xCometExprShim extends CometExprShim4x {
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr match {
+      binding: Boolean,
+      fallback: => Option[Expr] = None): Option[Expr] = {
+    val result = expr match {
       // RuntimeReplaceable structured-text functions (schema_of_csv/json, json_object_keys,
       // xpath_*, schema_of_xml) and from_xml/to_xml route through the codegen dispatcher; see
       // CometExprShim4x.convertStructuredText. Guarded so non-structured-text Invoke/StaticInvoke
@@ -95,7 +96,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
               liftFallbackReasons(parseUrl, i)
             }
             result
-          case _ => None
+          case _ => return fallback
         }
 
       case s: StaticInvoke =>
@@ -107,7 +108,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
               liftFallbackReasons(lengthOfJsonArray, s)
             }
             exprProto
-          case _ => None
+          case _ => return fallback
         }
 
       // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
@@ -118,7 +119,8 @@ trait Spark4xCometExprShim extends CometExprShim4x {
       case s: StringSplitSQL =>
         convertStringSplitSQL(s, inputs, binding)
 
-      case _ => None
+      case _ => return fallback
     }
+    result.orElse(retryEnclosingDispatch(expr)(fallback))
   }
 }

@@ -138,3 +138,18 @@ SELECT make_time(0, 0, 0) = make_time(0, 0, 0)
 -- current_time() is foldable and produces a Time literal
 query
 SELECT current_time() IS NOT NULL
+
+statement
+CREATE TABLE test_make_time_lookup USING parquet AS
+SELECT IF(id = 0, NULL, 1) AS h, map(0D, 7) AS m FROM range(0, 2, 1, 1)
+
+-- The NULL hour skips the lookup. Its counter starts at zero on the second row.
+query expect_dispatch(staticinvoke)
+SELECT make_time(h, m[CAST(monotonically_increasing_id() AS DOUBLE)], 0) FROM test_make_time_lookup
+
+statement
+SET spark.sql.ansi.enabled=true
+
+-- collect_list calls make_time.eval, which evaluates the minute even on the NULL hour.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT collect_list(make_time(h, m[1D / coalesce(h, 0)], 0)) FROM test_make_time_lookup

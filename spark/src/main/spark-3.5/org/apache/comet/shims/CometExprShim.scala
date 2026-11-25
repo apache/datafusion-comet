@@ -50,7 +50,8 @@ trait CometExprShim {
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = None
+      binding: Boolean,
+      fallback: => Option[Expr] = None): Option[Expr] = fallback
 }
 
 object CometEvalModeUtil {
