@@ -51,7 +51,7 @@ Warming those caches is the only thing the push run is for, so on `push` the
 Linux build runs in **cache-refresh-only** mode: `build-native` and the two
 TPC-H/TPC-DS jobs, each stopping once its cache entry is written, and nothing
 else. The lints, the Rust tests, the `linux-test` matrix and the TPC query runs
-are skipped, which takes the push tier from 587 runner-minutes to about 40.
+are skipped, which takes the push tier from 587 runner-minutes to about 20.
 `linux-test-rust` writes no cache: a debug `native/target` is 4-5 GB, more than
 the rest of main's entries could leave room for (issue #6387). Three POLICY outputs express this: `build_linux`
 says whether the workflow runs at all, `build_linux_full` whether it runs the
@@ -215,11 +215,25 @@ Things that follow from that, and are easy to break:
   it tells apart by the caller's `github.workflow`, and `required_checks` skips
   itself when `Preflight` does. That starts no runner for a fork's schedule or
   for a second copy of a push, and leaves the bridge one workflow to look up. A
-  push that adds nothing to upstream `main`, such as a sync of the fork, selects
-  no build or test suite and writes to no build cache. A fork's caches are therefore cold unless a run on its `main` builds,
-  and each branch run rebuilds the native library: 59 minutes of wall time and
-  240 runner-minutes cold against 50 and 213 warm, measured 2026-10-28 on one
-  fork.
+  push to the fork's `main` that adds nothing to upstream, such as a sync, runs
+  the Linux build in cache-refresh-only mode (`compute` in `compute-changes.py`).
+  That writes the fork's `Linux-java-maven-*` and `cargo-ci` entries on `main`,
+  which has to be the fork's default branch for its other branches to restore
+  them. In a warm run of the same mode on upstream `main`
+  ([45050546538](https://github.com/apache/datafusion-comet/actions/runs/45050546538)),
+  its four Linux jobs (`Lint`, `build-native` and the two TPC jobs) took 16.5
+  minutes of job time, and about 20 with `Preflight` and `Detect changes`. A
+  cold first refresh takes longer. A fork `main` that carries its own commits
+  runs the PR tier instead, which saves those entries only when it builds, so
+  one whose own commits are docs-only stays cold. So does a `main` that is never
+  synced: each branch run downloads its Maven dependencies from Central and
+  rebuilds the native library, 59 minutes of wall time and 240 runner-minutes
+  cold against 50 and 213 warm, measured 2026-10-28 on one fork. The refresh
+  warms only the default profile's Maven dependencies. The Celeborn jobs build
+  with `-Pspark-3.5,scala-2.12,celeborn-reflection-compatibility`, so after
+  restoring that entry they still download the Spark 3.5 / Scala 2.12
+  dependency set. The other `lint-java` profiles, scalafix, and sbt, coursier
+  and Gradle still download too.
 - **Branch names compare without regard to case in Actions,** in `==`, `!=` and
   concurrency group names alike, and a fork can hold both `feature` and
   `Feature`. So a fork push has no concurrency group shared with another push: it
@@ -241,7 +255,8 @@ Things that follow from that, and are easy to break:
   that. It lists every file when it has nothing to go on (the fetch fails or
   there is no merge base), because selecting no suites then would report a green
   run for a change nobody could see. An empty diff with a merge base is a branch
-  that adds nothing to upstream, which selects nothing.
+  that adds nothing to upstream, which selects nothing but the cache refresh
+  above, and that only on the fork's `main`.
   `dev/ci/test-fork-push-changed-files.py` runs it against real repositories,
   including the stale-baseline revert and a branch whose commits only the fork's
   `main` has.
