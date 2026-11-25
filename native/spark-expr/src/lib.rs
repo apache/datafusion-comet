@@ -82,8 +82,8 @@ pub use conversion_funcs::*;
 pub use nondetermenistic_funcs::*;
 
 pub use comet_scalar_funcs::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
-    register_all_comet_functions,
+    create_comet_physical_fun, create_comet_physical_fun_with_config,
+    create_comet_physical_fun_with_eval_mode, register_all_comet_functions,
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{

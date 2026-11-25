@@ -18,12 +18,17 @@
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, TimeUnit};
+    use datafusion::config::ConfigOptions;
     use datafusion::error::Result;
     use datafusion::execution::session_state::SessionStateBuilder;
     use datafusion::execution::FunctionRegistry;
+    use datafusion::logical_expr::ScalarUDF;
     use datafusion::prelude::SessionContext;
-    use datafusion_comet_spark_expr::create_comet_physical_fun;
-    use datafusion_comet_spark_expr::register_all_comet_functions;
+    use datafusion_comet_spark_expr::{
+        create_comet_physical_fun, create_comet_physical_fun_with_config,
+        register_all_comet_functions,
+    };
+    use datafusion_spark::function::string::elt::SparkElt;
 
     #[test]
     fn test_concat_ws_runtime_scalars() -> Result<()> {
@@ -167,7 +172,14 @@ mod tests {
         let ctx = SessionContext::new();
         let udf = {
             let session_state = ctx.state();
-            create_comet_physical_fun("make_date", DataType::Date32, &session_state, Some(true))?
+            let mut config = ConfigOptions::default();
+            config.execution.enable_ansi_mode = true;
+            create_comet_physical_fun_with_config(
+                "make_date",
+                DataType::Date32,
+                &session_state,
+                &config,
+            )?
         };
         ctx.register_udf(udf.as_ref().clone());
 
@@ -181,24 +193,39 @@ mod tests {
         Ok(())
     }
 
-    /// Registry catch-all must fail closed when fail_on_error=true (#5074).
     #[tokio::test]
     async fn test_registry_udf_rejects_fail_on_error() -> Result<()> {
-        // SessionContext registers DataFusion built-ins (e.g. acos) used by the catch-all.
         let ctx = SessionContext::new();
+        ctx.register_udf(ScalarUDF::new_from_impl(SparkElt::new()));
         let session_state = ctx.state();
-        // "acos" is a DataFusion built-in resolved only via the registry catch-all.
-        let err = create_comet_physical_fun("acos", DataType::Float64, &session_state, Some(true));
-        assert!(
-            err.is_err(),
-            "registry UDF must reject fail_on_error=true, got Ok"
-        );
-        let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("acos"), "unexpected error message: {msg}");
-        assert!(
-            msg.contains("fail_on_error=true"),
-            "unexpected error message: {msg}"
-        );
+        let mut config = ConfigOptions::default();
+        config.execution.enable_ansi_mode = true;
+        for (name, result) in [
+            (
+                "acos",
+                create_comet_physical_fun("acos", DataType::Float64, &session_state, Some(true)),
+            ),
+            (
+                "acos",
+                create_comet_physical_fun_with_config(
+                    "acos",
+                    DataType::Float64,
+                    &session_state,
+                    &config,
+                ),
+            ),
+            (
+                "elt",
+                create_comet_physical_fun("elt", DataType::Utf8, &session_state, Some(true)),
+            ),
+        ] {
+            let msg = result.unwrap_err().to_string();
+            assert!(msg.contains(name), "unexpected error message: {msg}");
+            assert!(
+                msg.contains("fail_on_error=true"),
+                "unexpected error message: {msg}"
+            );
+        }
 
         let udf_false =
             create_comet_physical_fun("acos", DataType::Float64, &session_state, Some(false))?;
