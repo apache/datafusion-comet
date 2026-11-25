@@ -95,8 +95,8 @@ struct ConsumerUsage {
 }
 
 impl ConsumerUsage {
-    /// Whether the consumer holds more than its low-water mark. DataFusion 56's aggregates reserve
-    /// their initial table when the plan starts, before any batch flows (apache/datafusion#25900),
+    /// Whether the consumer holds more than its low-water mark. The aggregates reserve their
+    /// initial table when the plan starts, before any batch flows (apache/datafusion#25900),
     /// so a first reservation does not show that an operator has started work. A consumer that has
     /// emptied, such as an aggregate that emitted early, is active again once it holds memory, and
     /// one that only gives memory back, such as a sort emitting what it buffered, is not.
@@ -244,15 +244,15 @@ fn limited_to_its_share(consumer: &MemoryConsumer) -> bool {
     consumer.can_spill() && !consumer.name().starts_with(CLUSTERED_FINAL_AGGREGATE)
 }
 
-/// The name prefix of the consumer that DataFusion 55.2's `ExternalSorter` registers for what it
-/// buffers. Its merge registers a separate consumer, `ExternalSorterMerge[`, that cannot spill.
+/// The name prefix of the consumer that `ExternalSorter` registers for what it buffers. Its merge
+/// registers a separate consumer, `ExternalSorterMerge[`, that cannot spill.
 const EXTERNAL_SORTER: &str = "ExternalSorter[";
 
 /// Whether `consumer` is a sort's. `ExternalSorter` fails when its first request is refused,
 /// since it has nothing to spill yet, so a sort that has registered but not reserved takes a share
 /// from every consumer that can spill except another sort. The others can keep what they hold
-/// until they have emitted it: DataFusion 55.2's hash aggregates keep their output reserved until
-/// they have emitted all of it, and emit slices of it, whose buffers a sort above is charged for in
+/// until they have emitted it: the hash aggregates keep their output reserved until they have
+/// emitted all of it, and emit slices of it, whose buffers a sort above is charged for in
 /// full. A sort gives memory back before it emits (see [`limited_to_its_share`]) and emits compact
 /// batches, so it needs to leave a sort above it no room.
 fn is_sort(consumer: &MemoryConsumer) -> bool {
@@ -687,9 +687,9 @@ mod tests {
         assert_eq!(fake.held(), 90);
     }
 
-    /// DataFusion 56's aggregates reserve their initial table when the plan starts, before any
-    /// batch flows (apache/datafusion#25900), so a consumer takes a share only while it holds more
-    /// than the least it has held since its first reservation.
+    /// The aggregates reserve their initial table when the plan starts, before any batch flows
+    /// (apache/datafusion#25900), so a consumer takes a share only while it holds more than the
+    /// least it has held since its first reservation.
     #[test]
     fn a_consumer_takes_a_share_while_it_holds_more_than_its_low_water_mark() {
         let fake = FakeSpark::with(usize::MAX);
@@ -893,10 +893,9 @@ mod tests {
     /// In a `CometSortAggregateExec` over a native sort, the final aggregate's input is sorted on
     /// every grouping key, so DataFusion runs it as a `ClusteredFinalAggregateStream` with no spill
     /// path, and a refused request fails the query. While the sort reads its input, the aggregate
-    /// holds only the table that DataFusion 56 reserves when the plan starts
-    /// (apache/datafusion#25900), so the sort can fill the rest of the task's share. It must give
-    /// part of it back before
-    /// the aggregate's first request, which it does whether it emits from one sorted batch or
+    /// holds only the table it reserves when the plan starts (apache/datafusion#25900), so the
+    /// sort can fill the rest of the task's share. It must give part of it back before the
+    /// aggregate's first request, which it does whether it emits from one sorted batch or
     /// merges sorted runs, with or without its merge reservation, and with 256 or 1024 groups in
     /// each batch.
     #[tokio::test(flavor = "multi_thread")]
@@ -1040,13 +1039,12 @@ mod tests {
         [distinct, partial, Arc::new(final_agg.unwrap())]
     }
 
-    /// The aggregates above the first one in `distinct_count` hold only the tables that
-    /// DataFusion 56 reserves when the plan starts (apache/datafusion#25900) while it reads its
-    /// input, so it can fill the rest of the task's share, and it holds all of its output until it has emitted
-    /// it. With wide values that leaves the `Partial` aggregate too little room, so it emits early,
-    /// and the `Final` aggregate starts while the first one still holds nearly all of the share.
-    /// DataFusion 55.2's `FinalHashAggregateStream` then spills and completes rather than failing
-    /// the query.
+    /// The aggregates above the first one in `distinct_count` hold only the tables they reserve
+    /// when the plan starts (apache/datafusion#25900) while it reads its input, so it can fill the
+    /// rest of the task's share, and it holds all of its output until it has emitted it. With wide
+    /// values that leaves the `Partial` aggregate too little room, so it emits early, and the
+    /// `Final` aggregate starts while the first one still holds nearly all of the share.
+    /// `FinalHashAggregateStream` then spills and completes rather than failing the query.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_final_aggregate_that_starts_while_the_one_below_fills_the_share_spills() {
         let schema = Arc::new(Schema::new(vec![
@@ -1106,8 +1104,7 @@ mod tests {
     }
 
     /// A sort above a hash aggregate, as for a window or a sort-merge join over an aggregate.
-    /// DataFusion 55.2's hash aggregates keep their output reserved until they have emitted all of
-    /// it, and `ExternalSorter` fails when its first request is refused, since it has nothing to
+    /// The hash aggregates keep their output reserved until they have emitted all of it, and `ExternalSorter` fails when its first request is refused, since it has nothing to
     /// spill yet.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sort_above_a_hash_aggregate_gets_room_for_its_first_batch() {

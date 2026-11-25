@@ -983,11 +983,10 @@ fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
     ] {
         assert!(normalize(&malformed).is_err(), "accepted {malformed:?}");
     }
-    // Arrow 59 rejected both dictionaries only for their empty entry, which Arrow 60 accepts
-    // (apache/arrow-rs#10352), so they no longer reach the empty-key retry. Arrow does not reject
-    // the rest: an unsorted dictionary may repeat an entry, and bytes after the last offset are
-    // never read. The row passes through unchanged, as in Spark, which checks only the offsets
-    // of the keys it looks up.
+    // Arrow accepts an empty entry in an unsorted dictionary (apache/arrow-rs#10352), so these
+    // don't reach the empty-key retry. Arrow does not reject the rest: an unsorted dictionary
+    // may repeat an entry, and bytes after the last offset are never read. The row passes
+    // through unchanged, as in Spark, which checks only the offsets of the keys it looks up.
     for accepted in [
         vec![1, 3, 0, 1, 1, 2, b'z', b'z'], // Duplicate dictionary keys.
         vec![1, 3, 0, 1, 1, 2, b'z', b'a', 0], // Trailing bytes.

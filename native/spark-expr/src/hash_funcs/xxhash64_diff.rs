@@ -35,8 +35,8 @@
 //! | Map&lt;Utf8, Int32&gt; / Map&lt;Int32, Utf8&gt; / Map&lt;Utf8, Utf8&gt; / Map&lt;Int32, Int32&gt; | yes |
 //! | Map&lt;Utf8, Decimal128&gt; | only for precision ≤ 18 |
 //! | Struct (non-null parent) | yes, but not routed (see below) |
-//! | Struct NULL with hidden children | yes since DataFusion 56 (apache/datafusion#25774), but not routed |
-//! | List&lt;Dictionary&gt; | yes since DataFusion 56 (apache/datafusion#25813), but not routed |
+//! | Struct NULL with hidden children | yes (apache/datafusion#25774), but not routed (#7764) |
+//! | List&lt;Dictionary&gt; | yes (apache/datafusion#25813), but not routed (#7764) |
 //! | Time64(ns) | **no** — upstream does not dispatch |
 //! | Float32/64 NaN with non-canonical bits | **no** — upstream hashes the raw bits |
 //! | custom seed | **no** — `SparkXxhash64` hardcodes 42 |
@@ -800,8 +800,6 @@ fn null_struct_ignores_hidden_child_values_comet() {
     );
 }
 
-/// `SparkXxhash64` used to hash the hidden child values of a NULL struct. DataFusion 56 fixed it
-/// (apache/datafusion#25774), so upstream now agrees with the Comet kernel here.
 #[test]
 fn null_struct_hidden_children_match_spark_xxhash64() {
     let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
@@ -1036,8 +1034,6 @@ fn struct_of_list() {
     assert_compatible("Struct<List<Int32>>", &[array]);
 }
 
-/// `SparkXxhash64` used to restart the hash of a nested dictionary from seed 42. DataFusion 56
-/// fixed it (apache/datafusion#25813), so upstream now agrees with the Comet kernel here.
 #[test]
 fn list_of_dictionary_matches_spark_xxhash64() {
     let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
@@ -1181,8 +1177,6 @@ fn null_struct_expression_matches_comet_kernel() {
     assert_eq!(expr, kernel);
     assert_eq!(expr[1], SPARK_DEFAULT_SEED);
     let upstream = spark_xxhash64_upstream(&[hidden]).unwrap();
-    // Upstream used to hash the hidden children of a NULL struct; DataFusion 56 fixed it
-    // (apache/datafusion#25774).
     assert_eq!(expr[1], upstream[1]);
 }
 

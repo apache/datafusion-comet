@@ -299,16 +299,13 @@ fn micros(arg: &ArrayRef) -> Result<TimestampMicrosecondArray, String> {
     Ok(arr.iter().collect::<TimestampMicrosecondArray>())
 }
 
-/// `(Int64) -> Map(String, Int32)` built through a [`MapBuilder`] with
-/// explicit field names.
-///
-/// The names are `entries` / `keys` / `values`, which is what arrow-rs's
-/// default builder used before arrow 60 changed its default to `entries` /
-/// `key` / `value`. Comet's own Spark-to-Arrow conversion emits the latter.
-/// Those names are positional in the Arrow format, so the two spellings
-/// have to be accepted interchangeably; this UDF is what proves it end to
-/// end, since `echo_c` hands back the map Comet gave it and so always
-/// carries Comet's own names.
+/// `(Int64) -> Map(String, Int32)` built through a [`MapBuilder`] whose
+/// children are named `entries` / `keys` / `values`, where Comet's own
+/// Spark-to-Arrow conversion emits `entries` / `key` / `value`. Those names
+/// are positional in the Arrow format, so the two spellings have to be
+/// accepted interchangeably; this UDF is what proves it end to end, since
+/// `echo_c` hands back the map Comet gave it and so always carries Comet's
+/// own names.
 #[derive(Default)]
 pub struct MakeMapC;
 

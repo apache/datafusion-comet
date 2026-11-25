@@ -256,11 +256,9 @@ impl OperatorBuilder for HashAggBuilder {
 
         // A PartialMerge over input sorted on some of its keys runs as Final, as a
         // ClusteredFinalAggregateStream, which the fair pool exempts from its fair limit
-        // (`limited_to_its_share`). It was added because DataFusion 55 ran Single there with the
-        // legacy GroupedHashAggregateStream, whose spill could fail against that limit (#6880).
-        // DataFusion 56 runs Single there as a ClusteredSingleAggregateStream, which spills, so
-        // this may no longer be needed (#7765). MergeAsPartial evaluates to its state
-        // under Final as under Single.
+        // (`limited_to_its_share`). #7765 tracks whether Single, which runs a
+        // ClusteredSingleAggregateStream there, would now do. MergeAsPartial evaluates to its
+        // state under Final as under Single.
         // Only partially sorted input switches: with fully sorted input Final has no spill path.
         // Final also reads states from the columns after the keys, so the input must be the keys
         // followed by native states (Spark's binary collect buffers keep Single, and arrive

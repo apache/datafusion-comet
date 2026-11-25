@@ -477,8 +477,8 @@ mod import_tests {
         };
         let array = FFI_ArrowArray::new(&struct_data);
 
-        // The same import `RecordBatchStreamReader::next` performs. (Arrow 60 made the
-        // `FFI_ArrowArrayStream` callbacks private, so a hand-rolled stream is no longer possible.)
+        // The same import `RecordBatchStreamReader::next` performs. The `FFI_ArrowArrayStream`
+        // callbacks are private, so the test can't build a stream for the reader to import.
         // SAFETY: `array` was exported above from data whose layout matches the struct type.
         let data = unsafe { from_ffi_and_data_type(array, DataType::Struct(fields)) }.unwrap();
         let (_, columns, _) = StructArray::from(data).into_parts();

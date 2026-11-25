@@ -219,7 +219,7 @@ impl<T: UnaryExec> ExecutionPlan for MetricOwningExec<T> {
         Some(self.rebuild(inner, ExecutionPlanMetricsSet::new()))
     }
 
-    // DataFusion 56 deprecates `with_preserve_order` because it no longer calls it, but the
+    // DataFusion deprecates `with_preserve_order` because it no longer calls it, but the
     // method stays on the trait, so keep forwarding it to the wrapped operator.
     #[allow(deprecated)]
     fn with_preserve_order(&self, preserve_order: bool) -> Option<Arc<dyn ExecutionPlan>> {
