@@ -173,6 +173,13 @@ with the JVM's and logs a warning if they differ. The user guide describes the e
 "Timezone Database Versions" on the datetime
 [expression compatibility](../user-guide/latest/compatibility/expressions/index.md) page.
 
+For `CAST(date AS TIMESTAMP)`, the planner derives the start of each local date from
+`LocalDate.atStartOfDay`. For region zones it records the days around transitions when
+the offset from UTC midnight changes. After the historical transitions, recurring rules
+repeat every 400 Gregorian years. Rust uses that cycle to look up the offset, applies it
+to the original epoch day in seconds, then checks the conversion to microseconds.
+Fixed offsets in whole minutes use the same arithmetic with a constant offset.
+
 ## Scans
 
 Parquet stores timestamps either as `INT64` annotated `TIMESTAMP(MICROS or MILLIS, isAdjustedToUTC)`,
@@ -185,12 +192,13 @@ value by a timezone:
 | `TIMESTAMP`, `isAdjustedToUTC=false` | `TimestampType`    | Relabelled without shifting, as Spark does                                                    |
 | `TIMESTAMP`, `isAdjustedToUTC=false` | `TimestampNTZType` | Read as is                                                                                    |
 | `TIMESTAMP`, `isAdjustedToUTC=true`  | `TimestampNTZType` | Rejected on Spark 3.x (SPARK-36182). Relabelled without shifting on Spark 4.0+ (SPARK-47447). |
+| `DATE` decoded as Arrow `Date32`     | `TimestampNTZType` | Rejected on Spark 3.5. Scaled from days to microseconds with an overflow check on Spark 4.0+. |
 | `INT96`                              | `TimestampType`    | Coerced to microseconds and labelled `"UTC"`                                                  |
 
 The `INT96` coercion is configured by `coerce_int96` and `coerce_int96_tz` in `parquet_exec.rs`. An
 `INT96` column read as `TimestampNTZType` follows the `isAdjustedToUTC=true` row.
 
-The timestamp-to-timestamp adaptations go through `CometCastColumnExpr` and
+The date-to-NTZ and timestamp-to-timestamp adaptations go through `CometCastColumnExpr` and
 `parquet_convert_array` in `native/core/src/parquet/`, not through Spark's `Cast`. A Spark cast
 between `TimestampType` and `TimestampNTZType` would apply the session timezone, and the Parquet
 reader does not.

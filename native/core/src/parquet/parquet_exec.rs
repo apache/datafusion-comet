@@ -21,7 +21,7 @@ use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTO
 use crate::parquet::file_error_context::ParquetErrorContext;
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
-    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+    contains_ntz, object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
@@ -123,7 +123,7 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    // Spark can discard filtered-out values before timestamp conversion using statistics,
+    // Spark can discard filtered-out values before TIMESTAMP_MILLIS conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
     // existing safe cast for filtered scans and use checked conversion only when every value is
@@ -311,11 +311,22 @@ pub(crate) fn init_datasource_exec(
         _ => Arc::new(parquet_source),
     };
 
-    let file_source = if spark_parquet_options.checked_timestamp_overflow {
+    // A projected NTZ may need a checked DATE conversion when the physical file opens.
+    let file_source = if spark_parquet_options.checked_timestamp_overflow
+        || (allow_type_promotion
+            && required_schema
+                .fields()
+                .iter()
+                .any(|f| contains_ntz(f.data_type())))
+    {
         ParquetErrorContext::wrap(file_source)
     } else {
         file_source
     };
+    // Row filters need the checked cast when promotion is supported. On Spark 3.5
+    // the footer check above rejects promotion at the first data-page read.
+    spark_parquet_options.prune_date_nulls =
+        !allow_type_promotion || !session_config.options().execution.parquet.pushdown_filters;
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );

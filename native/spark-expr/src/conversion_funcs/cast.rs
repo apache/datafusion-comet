@@ -35,7 +35,7 @@ use crate::conversion_funcs::string::{
 };
 use crate::conversion_funcs::temporal::{
     cast_date_to_timestamp, is_df_cast_from_date_spark_compatible,
-    is_df_cast_from_timestamp_spark_compatible,
+    is_df_cast_from_timestamp_spark_compatible, DateOffsets,
 };
 use crate::conversion_funcs::utils::spark_cast_postprocess;
 use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
@@ -44,12 +44,12 @@ use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, GenericByteArray, GenericStringArray, ListArray, MapArray,
-    StringArray, StructArray,
+    downcast_dictionary_array, make_array, new_null_array, BinaryBuilder, BooleanArray,
+    GenericByteArray, GenericStringArray, ListArray, MapArray, StringArray, StructArray,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
 use arrow::datatypes::{
-    format_decimal_str, DataType, Float32Type, Float64Type, GenericBinaryType, Int16Type,
+    format_decimal_str, DataType, Field, Float32Type, Float64Type, GenericBinaryType, Int16Type,
     Int32Type, Int64Type, Int8Type, Schema,
 };
 use arrow::error::ArrowError;
@@ -58,7 +58,7 @@ use arrow::{
         cast::AsArray, types::Decimal128Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
         Int8Array, OffsetSizeTrait,
     },
-    compute::{cast_with_options, rescale_decimal, CastOptions},
+    compute::{cast_with_options, nullif, rescale_decimal, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -68,6 +68,7 @@ use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResu
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::decode_utf8_spark_lossy;
+use datafusion_comet_common::struct_nulls::{child_visibility, Visibility};
 use std::{
     fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
@@ -170,6 +171,9 @@ pub struct SparkCastOptions {
     /// session local timezone by an analyzer in Spark.
     // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
+    /// JVM start-of-day offsets for DATE to TIMESTAMP in a region time zone.
+    /// Callers without this table use chrono-tz's finite transition history.
+    pub date_offsets: Option<Arc<DateOffsets>>,
     /// True when running against Spark 4.0+. Enables version-specific cast behaviour
     /// such as the handling of leading whitespace before T-prefixed time-only strings.
     pub is_spark4_plus: bool,
@@ -200,6 +204,7 @@ impl SparkCastOptions {
         Self {
             eval_mode,
             timezone: timezone.to_string(),
+            date_offsets: None,
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
@@ -215,6 +220,7 @@ impl SparkCastOptions {
         Self {
             eval_mode,
             timezone: "".to_string(),
+            date_offsets: None,
             is_spark4_plus: false,
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
@@ -266,6 +272,15 @@ pub(crate) fn cast_array(
     to_type: &DataType,
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
+    cast_array_impl(array, to_type, cast_options, &Visibility::new(&|| None))
+}
+
+fn cast_array_impl(
+    array: ArrayRef,
+    to_type: &DataType,
+    cast_options: &SparkCastOptions,
+    parent_visibility: &Visibility<'_>,
+) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type().clone();
 
@@ -302,6 +317,8 @@ pub(crate) fn cast_array(
         }
     }
 
+    let child_mask = || child_visibility(array.as_ref(), parent_visibility);
+    let children = Visibility::new(&child_mask);
     let cast_result = match (&from_type, to_type) {
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
         // logical type while preserving length and nullness.
@@ -440,6 +457,7 @@ pub(crate) fn cast_array(
             &from_type,
             to_type,
             cast_options,
+            &children,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(to)) => {
@@ -449,11 +467,7 @@ pub(crate) fn cast_array(
             let casted_values = match (list_array.values().data_type(), to.data_type()) {
                 // Spark legacy array casts produce null elements for array<Date> -> array<Int>.
                 (Date32, Int32) => new_null_array(to.data_type(), list_array.values().len()),
-                _ => cast_array(
-                    Arc::clone(list_array.values()),
-                    to.data_type(),
-                    cast_options,
-                )?,
+                _ => cast_child(list_array.values(), to, cast_options, &children)?,
             };
             Ok(Arc::new(ListArray::new(
                 Arc::clone(to),
@@ -462,14 +476,20 @@ pub(crate) fn cast_array(
                 list_array.nulls().cloned(),
             )) as ArrayRef)
         }
-        (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?),
+        (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(
+            &array,
+            &from_type,
+            to_type,
+            cast_options,
+            &children,
+        )?),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if cast_options.allow_cast_unsigned_ints =>
         {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
-        (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
+        (Date32, Timestamp(_, tz)) => cast_date_to_timestamp(&array, cast_options, tz),
         (Int8, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int8Array, 1),
         (Int16, Binary) if (eval_mode == Legacy) => {
             cast_whole_num_to_binary!(&array, Int16Array, 2)
@@ -525,6 +545,52 @@ pub(crate) fn cast_array(
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
 }
 
+fn cast_child(
+    array: &ArrayRef,
+    field: &Field,
+    options: &SparkCastOptions,
+    parent: &Visibility<'_>,
+) -> DataFusionResult<ArrayRef> {
+    let to_type = field.data_type();
+    let result = cast_array_impl(Arc::clone(array), to_type, options, parent);
+    if !(to_type.is_primitive() || to_type == &DataType::Boolean)
+        || result
+            .as_ref()
+            .is_ok_and(|values| field.is_nullable() || values.null_count() <= array.null_count())
+    {
+        return result;
+    }
+    let Some(visible) = parent.as_ref().filter(|v| v.null_count() != 0) else {
+        return result;
+    };
+    let hidden = BooleanArray::new(!visible.inner(), None);
+    // Retry only the failed leaf. Masking the input preserves the first visible
+    // error and shares the payload buffers, including variable-width strings.
+    let output = result.or_else(|_| {
+        let masked = nullif(array, &hidden)?;
+        // The dictionary cast parses the values before expanding the keys.
+        let input = masked.as_ref();
+        let masked = downcast_dictionary_array!(
+            input => {
+                let unused = BooleanArray::new(!&input.occupancy(), None);
+                Arc::new(input.with_values(nullif(input.values(), &unused)?)) as ArrayRef
+            },
+            _ => masked,
+        );
+        cast_array(masked, to_type, options)
+    })?;
+    if field.is_nullable() {
+        return Ok(output);
+    }
+    // Mark hidden placeholders valid for required children such as map keys,
+    // preserving any visible nulls from TRY.
+    let nulls = output
+        .nulls()
+        .map(|n| NullBuffer::new(n.inner() | hidden.values()));
+    let data = output.to_data().into_builder().nulls(nulls).build()?;
+    Ok(make_array(data))
+}
+
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
 fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
@@ -562,23 +628,15 @@ fn cast_struct_to_struct(
     from_type: &DataType,
     to_type: &DataType,
     cast_options: &SparkCastOptions,
+    child_visibility: &Visibility<'_>,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
-        (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            let cast_fields: Vec<ArrayRef> = from_fields
+        (DataType::Struct(_), DataType::Struct(to_fields)) => {
+            let cast_fields = array
+                .columns()
                 .iter()
-                .enumerate()
-                .zip(to_fields.iter())
-                .map(|((idx, _from), to)| {
-                    let from_field = Arc::clone(array.column(idx));
-                    let array_length = from_field.len();
-                    let cast_result = spark_cast(
-                        ColumnarValue::from(from_field),
-                        to.data_type(),
-                        cast_options,
-                    )?;
-                    cast_result.to_array(array_length)
-                })
+                .zip(to_fields)
+                .map(|(child, field)| cast_child(child, field, cast_options, child_visibility))
                 .collect::<DataFusionResult<Vec<_>>>()?;
 
             Ok(Arc::new(StructArray::try_new(
@@ -611,6 +669,7 @@ fn cast_map_to_map(
     from_type: &DataType,
     to_type: &DataType,
     cast_options: &SparkCastOptions,
+    child_visibility: &Visibility<'_>,
 ) -> DataFusionResult<ArrayRef> {
     let map_array = array
         .as_any()
@@ -673,13 +732,13 @@ fn cast_map_to_map(
             let cast_keys = if key_type_unchanged {
                 Arc::clone(keys)
             } else {
-                cast_array(Arc::clone(keys), to_fields[0].data_type(), cast_options)?
+                cast_child(keys, &to_fields[0], cast_options, child_visibility)?
             };
             let values = map_array.values();
             let cast_values = if value_type_unchanged {
                 Arc::clone(values)
             } else {
-                cast_array(Arc::clone(values), to_fields[1].data_type(), cast_options)?
+                cast_child(values, &to_fields[1], cast_options, child_visibility)?
             };
 
             // `None` rather than the source entries null buffer, which is always absent.
@@ -2032,6 +2091,109 @@ mod tests {
     }
     fn legacy_opts() -> SparkCastOptions {
         SparkCastOptions::new(EvalMode::Legacy, "UTC")
+    }
+
+    #[test]
+    fn widening_a_required_child_preserves_masked_nulls() {
+        let input: ArrayRef = Arc::new(Int32Array::from(vec![None, Some(42)]));
+        let field = Field::new("value", DataType::Int64, false);
+        let mask = || -> Option<NullBuffer> {
+            panic!("widening should not materialize ancestor visibility")
+        };
+        let output = cast_child(&input, &field, &legacy_opts(), &Visibility::new(&mask)).unwrap();
+        assert_eq!(output.as_ref(), &Int64Array::from(vec![None, Some(42)]));
+    }
+
+    #[test]
+    fn nested_ansi_cast_retries_only_referenced_dictionary_values() {
+        use arrow::array::DictionaryArray;
+
+        let values: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::from_iter([
+            "hidden", "42", "visible",
+        ]));
+        let options = SparkCastOptions::new(EvalMode::Ansi, "UTC");
+        let cast = |last| {
+            let mask = || Some(NullBuffer::from(vec![false, true, last]));
+            let field = Field::new("value", DataType::Int32, false);
+            cast_child(&values, &field, &options, &Visibility::new(&mask))
+        };
+        let result = cast(false).unwrap();
+        assert_eq!(result.null_count(), 0);
+        assert_eq!(result.as_primitive::<Int32Type>().value(1), 42);
+        assert!(cast(true).unwrap_err().to_string().contains("visible"));
+    }
+
+    #[test]
+    fn nested_timestamp_cast_checks_only_visible_dates() {
+        use arrow::array::{Date32Array, TimestampMicrosecondArray};
+
+        // One child per row, even when the struct/list/map is null.
+        fn containers(values: ArrayRef) -> [ArrayRef; 4] {
+            let field = Arc::new(Field::new("value", values.data_type().clone(), false));
+            let offsets = OffsetBuffer::new(vec![0, 1, 2, 3, 4, 5].into());
+            let nulls = Some(NullBuffer::from(vec![true, true, false, true, true]));
+            let map = |keys: ArrayRef| -> ArrayRef {
+                let key_field = Arc::new(Field::new("key", keys.data_type().clone(), false));
+                let entries = StructArray::new(
+                    vec![key_field, Arc::clone(&field)].into(),
+                    vec![keys, Arc::clone(&values)],
+                    None,
+                );
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+                    offsets.clone(),
+                    entries,
+                    nulls.clone(),
+                    false,
+                ))
+            };
+            [
+                map(Arc::clone(&values)),
+                map(Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]))),
+                Arc::new(StructArray::new(
+                    vec![Arc::clone(&field)].into(),
+                    vec![Arc::clone(&values)],
+                    nulls.clone(),
+                )),
+                Arc::new(ListArray::new(field, offsets, values, nulls)),
+            ]
+        }
+
+        let dates = containers(Arc::new(Date32Array::from(vec![
+            i32::MIN,
+            0,
+            i32::MAX,
+            1,
+            i32::MAX,
+        ])));
+        let timestamps = containers(Arc::new(TimestampMicrosecondArray::from(vec![
+            0,
+            0,
+            0,
+            86_400_000_000,
+            0,
+        ])));
+        for (dates, expected) in dates.into_iter().zip(timestamps) {
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let options = SparkCastOptions::new(mode, "UTC");
+                let cast = |input| cast_array(input, expected.data_type(), &options);
+                for (start, len) in [(1, 3), (1, 1), (2, 1), (2, 0)] {
+                    let actual = cast(dates.slice(start, len)).unwrap();
+                    actual.to_data().validate_full().unwrap();
+                    assert_eq!(actual.to_data(), expected.slice(start, len).to_data());
+                    if let Some(map) = dates
+                        .as_map_opt()
+                        .filter(|m| m.keys().data_type() == &DataType::Utf8)
+                    {
+                        assert!(Arc::ptr_eq(actual.as_map().keys(), map.keys()));
+                    }
+                }
+                if mode != EvalMode::Try {
+                    let error = cast(dates.slice(1, 4)).unwrap_err();
+                    assert!(error.to_string().contains("long overflow"));
+                }
+            }
+        }
     }
 
     /// Build a `Map<Utf8, Int32>` MapArray (Parquet-style "key_value" field names).

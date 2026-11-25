@@ -29,6 +29,14 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class SparkErrorConverterSuite extends AnyFunSuite {
 
+  test("LongOverflow converts to a plain ArithmeticException") {
+    val json = """{"errorType":"LongOverflow","errorClass":"","params":{}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json))
+    assert(ex.getClass == classOf[ArithmeticException])
+    assert(ex.getMessage == "long overflow")
+  }
+
   test("ArithmeticOverflow preserves the suggested function") {
     for (function <- Seq("try_add", "try_subtract", "try_multiply")) {
       val error = SparkErrorConverter

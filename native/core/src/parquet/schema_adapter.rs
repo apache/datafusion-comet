@@ -23,8 +23,8 @@ use crate::parquet::datetime_rebase::{
 use crate::parquet::field_resolver::{duplicate_name_error, FieldClaim, FieldResolver};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
-    SparkParquetOptions,
+    duplicate_parquet_field_error, field_id, match_struct_fields, may_read_date_as_ntz,
+    spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -32,7 +32,7 @@ use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::{Column, IsNotNullExpr, IsNullExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -542,7 +542,7 @@ fn spark_has_updater(
     }
 
     // Type promotion (widening). When `allow_type_promotion` is false,
-    // reject the three widenings (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE)
+    // reject the widenings (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE, DATE→NTZ)
     // that Spark 3.x's vectorized reader rejects. The flag tracks Comet's
     // per-Spark-version constant in ShimCometConf.
     if !options.allow_type_promotion {
@@ -551,6 +551,7 @@ fn spark_has_updater(
             (DataType::Int32, DataType::Int64)
                 | (DataType::Float32, DataType::Float64)
                 | (DataType::Int32, DataType::Float64)
+                | (DataType::Date32, DataType::Timestamp(_, None))
         );
         if is_disallowed_promotion {
             return false;
@@ -1339,9 +1340,33 @@ impl SparkPhysicalExprAdapter {
                     }
                 }
             }
-            Ok(Transformed::no(e))
+            self.adapt_date_null_check(e)
         })
         .data()
+    }
+
+    /// DataFusion prunes by null count only on a bare column. Spark prunes before it
+    /// selects a DATE -> NTZ updater. The projected column still checks decoded values.
+    fn adapt_date_null_check(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        if self.parquet_options.prune_date_nulls
+            && (expr.is::<IsNullExpr>() || expr.is::<IsNotNullExpr>())
+        {
+            let cast = expr.children()[0];
+            if cast.is::<CometCastColumnExpr>() || cast.is::<RejectOnNonEmpty>() {
+                let source = cast.children()[0];
+                if may_read_date_as_ntz(
+                    &source.data_type(&self.physical_file_schema)?,
+                    &cast.data_type(&self.physical_file_schema)?,
+                ) {
+                    let source = Arc::clone(source);
+                    return Ok(Transformed::yes(expr.with_new_children(vec![source])?));
+                }
+            }
+        }
+        Ok(Transformed::no(expr))
     }
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
@@ -1475,9 +1500,9 @@ impl SparkPhysicalExprAdapter {
             }
 
             // Complex casts (including changes in list representation), timestamp tz relabel
-            // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads), and
-            // Timestamp -> Int64
-            // (Spark's `nanosAsLong`) need spark_parquet_convert: it handles nested
+            // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads),
+            // Timestamp -> Int64 (Spark's `nanosAsLong`), and DATE -> NTZ need
+            // spark_parquet_convert: it handles checked reader conversions, nested
             // field selection, metadata-only tz changes, and raw-value reinterpretation
             // that Spark's Cast would otherwise convert incorrectly.
             if matches!(
@@ -1498,7 +1523,8 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Map(_, _), DataType::Map(_, _))
                     | (DataType::Timestamp(_, _), DataType::Timestamp(_, _))
                     | (DataType::Timestamp(_, _), DataType::Int64)
-            ) {
+            ) || may_read_date_as_ntz(physical_type, target_type)
+            {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
@@ -1534,7 +1560,7 @@ impl SparkPhysicalExprAdapter {
             )?));
         }
 
-        Ok(Transformed::no(expr))
+        self.adapt_date_null_check(expr)
     }
 
     /// Replace missing columns with defaults cast to the logical schema, propagating conversion

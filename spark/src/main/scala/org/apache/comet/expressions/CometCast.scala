@@ -121,7 +121,9 @@ object CometCast
   // would only duplicate the matrix and risk drifting from it.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
-    if (cast.child.isInstanceOf[Literal]) {
+    if (mayNullRequiredTimestamp(cast)) {
+      Unsupported(Some(requiredTimestampReason))
+    } else if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
       // (see `convert`), so the cast never executes natively and the result matches Spark by
       // definition. `CometLiteral` then validates the resulting literal's data type, except
@@ -202,6 +204,12 @@ object CometCast
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setTimezone(timeZone)
+        expr match {
+          case cast: Cast
+              if hasDateToTimestampCast(cast)((target, _) => target == TimestampType) =>
+            CometTimeZone.dateOffsets(timeZone).foreach(castBuilder.setDateOffsets)
+          case _ =>
+        }
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         castBuilder.setDecimalZeroAnyExponent(
           SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
@@ -569,6 +577,33 @@ object CometCast
         Compatible()
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
     }
+
+  private[comet] val requiredTimestampReason: String =
+    "TRY_CAST from date can overflow and produce a null in a non-nullable timestamp"
+
+  // Spark counts date to timestamp as an upcast even though daysToMicros can overflow. Under
+  // TRY the result can then be null where Spark's nullability metadata says it cannot be.
+  private[comet] def mayNullRequiredTimestamp(expr: Expression): Boolean = expr match {
+    case cast: Cast if evalMode(cast) == CometEvalMode.TRY =>
+      hasDateToTimestampCast(cast)((_, nullable) => !nullable)
+    case _ => false
+  }
+
+  private def hasDateToTimestampCast(cast: Cast)(
+      accept: (DataType, Boolean) => Boolean): Boolean = {
+    def visit(fromType: DataType, toType: DataType, nullable: Boolean): Boolean =
+      (fromType, toType) match {
+        case (DataTypes.DateType, TimestampType | TimestampNTZType) => accept(toType, nullable)
+        case (ArrayType(from, _), ArrayType(to, containsNull)) =>
+          visit(from, to, containsNull)
+        case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, valueContainsNull)) =>
+          visit(fromKey, toKey, nullable = false) || visit(fromValue, toValue, valueContainsNull)
+        case (StructType(from), StructType(to)) =>
+          from.zip(to).exists { case (a, b) => visit(a.dataType, b.dataType, b.nullable) }
+        case _ => false
+      }
+    visit(cast.child.dataType, cast.dataType, cast.nullable)
+  }
 
   /**
    * Whether evaluating `cast` can produce a map with a null key. Under TRY a key cast that throws
