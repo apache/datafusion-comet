@@ -85,10 +85,10 @@ async fn mixed_file_schema_rejection_survives_topk_pruning() {
     }
 }
 
-/// Sanitizing incomplete statistics would expose a file excluded by a static
-/// predicate. Decline attachment so the static predicate keeps hiding that file.
+/// A static predicate excludes a file whose null count is omitted and whose payload cannot be
+/// converted. Attaching the TopK filter must leave the static predicate hiding that file.
 #[tokio::test]
-async fn static_range_with_unknown_null_count_skips_reader_attachment() {
+async fn static_range_with_unknown_null_count_keeps_hiding_an_excluded_file() {
     let clean = write_file(&DataType::Int64, 0);
     let incompatible = write_file(&DataType::Int32, 100);
     omit_null_counts(&incompatible, 0, &[0]);
@@ -128,7 +128,7 @@ async fn static_range_with_unknown_null_count_skips_reader_attachment() {
         if filtering {
             assert_eq!(
                 count_metric(plan.as_ref(), "dynamic_filter_topk_filters_skipped"),
-                1
+                0
             );
         }
     }

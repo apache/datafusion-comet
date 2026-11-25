@@ -37,9 +37,7 @@ use datafusion::physical_plan::{
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
 
-mod reader;
-
-use reader::try_attach_topk_reader_filter;
+use super::parquet_reader::try_attach_parquet_reader_filter;
 
 /// Keep an unexecuted template in the Spark plan. Each stream gets a fresh TopK
 /// and reader predicate, so a previous execution's threshold cannot discard rows
@@ -97,7 +95,8 @@ impl TopKReaderFilterExec {
         // Parquet reader below it rather than installing one from outside.
         let sort = Self::fresh_sort(&self.template, Arc::clone(self.template.input()));
         let predicate = produced_topk_filter(&sort)?;
-        let reader = try_attach_topk_reader_filter(self.template.input(), predicate, &self.config)?;
+        let reader =
+            try_attach_parquet_reader_filter(self.template.input(), predicate, &self.config)?;
         let reader_filter_attached = reader.is_some();
         let sort = match reader {
             Some(reader) => Arc::new(sort)
