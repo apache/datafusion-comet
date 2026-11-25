@@ -883,6 +883,24 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.expression.MapSort.codegen.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to route `MapSort` cases that have no native implementation through Comet's " +
+          "JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet pipeline). This " +
+          "includes array, struct, interval, and non-default-collated string map keys, and " +
+          "floating-point keys under `spark.comet.exec.strictFloatingPoint=true`. Enabling it " +
+          "can keep projections and eligible native shuffles in Comet. JVM columnar shuffle " +
+          "computes partition IDs with Spark expressions independently of this setting. " +
+          "Disabled by default because a matched benchmark of projections and forced native " +
+          "shuffle is slower than Spark fallback for most measured shapes. Those results do " +
+          "not compare JVM columnar shuffle with native shuffle in `auto` mode. Supported " +
+          "scalar keys continue to use Rust `map_sort`. This flag does not change codegen " +
+          "dispatch for any other expression.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.hash.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.hash.enabled")
