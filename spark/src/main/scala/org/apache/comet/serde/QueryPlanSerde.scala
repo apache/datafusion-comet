@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -87,6 +88,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Size] -> CometSize,
     classOf[ArraysZip] -> CometArraysZip,
     classOf[ArrayTransform] -> CometArrayTransform,
+    classOf[NamedLambdaVariable] -> CometNamedLambdaVariable,
     classOf[ArrayExists] -> CometArrayExists,
     classOf[ArrayForAll] -> CometArrayForAll,
     classOf[ArrayAggregate] -> CometArrayAggregate,
@@ -1338,20 +1340,71 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
    * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
    * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * `None` outside `withSharedSubexpressions`, where they are unknown. Only those that can raise
+   * are kept, see `cannotRaise`.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
-    // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
-    lazy val common: Seq[Expression] =
+    // The shared subexpressions that can raise. Find shared nodes in Spark's original trees, then
+    // compare them after decimal promotion. Promotion wraps decimal arithmetic in CheckOverflow,
+    // which `cannotRaise` does not list, so that arithmetic is always kept.
+    lazy val raising: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
         expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
+        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote).filterNot(cannotRaise)
       } else {
         Nil
       }
+  }
+
+  /**
+   * Whether evaluating `expr` on a row cannot raise, whatever the row holds. This fails closed:
+   * an expression is assumed to raise unless it is listed. Numeric arithmetic and casts between
+   * the types `plainCastType` lists raise only in the ANSI eval mode they carry, but some
+   * expressions raise in any mode, such as `element_at` with the index 0, the arithmetic of
+   * intervals and a date cast to a timestamp, so those stay out.
+   */
+  private def cannotRaise(expr: Expression): Boolean =
+    !expr.exists(!nodeCannotRaise(_))
+
+  private def nodeCannotRaise(node: Expression): Boolean = {
+    def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    node match {
+      case _: Literal | _: AttributeReference | _: BoundReference | _: GetStructField => true
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+          _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
+        true
+      case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
+          _: Contains =>
+        true
+      case c: Cast =>
+        evalMode(c) != CometEvalMode.ANSI && plainCastType(c.child.dataType) &&
+        plainCastType(c.dataType)
+      case a: Add => plainArithmetic(a, a.evalMode)
+      case a: Subtract => plainArithmetic(a, a.evalMode)
+      case a: Multiply => plainArithmetic(a, a.evalMode)
+      case a: Divide => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
+      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case _ => false
+    }
+  }
+
+  /**
+   * Whether a cast to or from `dataType` outside the ANSI eval mode cannot raise. This fails
+   * closed by listing the types that are known to be safe. Casts to or from dates, timestamps and
+   * intervals are left out: some raise in every eval mode, such as a date cast to a timestamp,
+   * which overflows `Math.multiplyExact` for a date past about the year 294247. Maps are left out
+   * too, since a cast key can become NULL.
+   */
+  private def plainCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType | BinaryType | NullType => true
+    case ArrayType(elementType, _) => plainCastType(elementType)
+    case StructType(fields) => fields.forall(f => plainCastType(f.dataType))
+    case _ => false
   }
 
   /**
@@ -1369,17 +1422,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
    * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
-   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
-   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
-   * share is unknown.
+   * `TernaryExpression` does. Not if one of them holds a subexpression that can raise and that
+   * the operator's expressions share and Spark eliminates: Spark evaluates that for every row,
+   * and raises if it fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`,
+   * where what they share is unknown.
    */
   def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
 
   /**
    * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
    * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
-   * the operator's expressions share and Spark eliminates, nor outside
+   * can raise and that the operator's expressions share and Spark eliminates, nor outside
    * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
    * promotion so callers may pass either original or already-promoted trees.
    */
@@ -1387,10 +1440,144 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // Subexpression elimination never shares a leaf, such as a column or a literal
     skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
       // Avoid decimal promotion when Spark shares nothing.
-      s.common.isEmpty || !skippable.exists { expr =>
-        DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
+      s.raising.isEmpty || !skippable.exists { expr =>
+        DecimalPrecision.promote(expr).exists(e => s.raising.exists(_.semanticEquals(e)))
       }
     }
+  }
+
+  /**
+   * Whether `expr` cannot raise an error for any row, so Comet may evaluate it for rows that
+   * Spark skips. It answers from Spark's semantics, independently of the Rust function
+   * `cannot_fail` in `case_when.rs`, which judges the physical expressions it is given. It is
+   * conservative: an allowed expression whose children also cannot fail. Anything not listed is
+   * treated as able to fail.
+   */
+  def cannotFail(expr: Expression): Boolean = {
+    def numeric: Boolean = expr.dataType.isInstanceOf[NumericType]
+    def nonAnsiNumeric(evalMode: EvalMode.Value): Boolean = evalMode != EvalMode.ANSI && numeric
+    // Floating-point arithmetic never overflows into an error, even in ANSI mode
+    def floating: Boolean = expr.dataType == FloatType || expr.dataType == DoubleType
+    val nodeCannotFail = expr match {
+      case _: Attribute | _: BoundReference | _: Literal => true
+      case _: GetStructField => true
+      case _: BinaryComparison | _: And | _: Or | _: Not | _: IsNull | _: IsNotNull => true
+      case _: In | _: InSet | _: Greatest | _: Least => true
+      case _: If | _: CaseWhen | _: Coalesce | _: IsNaN | _: NaNvl => true
+      case _: KnownFloatingPointNormalized | _: NormalizeNaNAndZero => true
+      case _: Substring | _: Upper | _: Lower | _: Length | _: OctetLength | _: BitLength => true
+      case _: StringTrim | _: StringTrimLeft | _: StringTrimRight => true
+      case _: StringReplace | _: InitCap => true
+      // These fail only when the result would exceed 2GB, more than a row can hold
+      case _: ConcatWs => true
+      case c: Concat => c.children.nonEmpty && c.dataType == StringType
+      case _: Reverse => expr.dataType == StringType
+      case _: Year | _: Quarter | _: Month | _: DayOfMonth | _: DayOfWeek | _: WeekDay |
+          _: DayOfYear | _: Hour | _: Minute | _: Second =>
+        true
+      case _: Murmur3Hash | _: XxHash64 | _: Md5 | _: Sha1 | _: Sha2 | _: Crc32 => true
+      // Invalid input gives NaN or NULL, and a floating-point floor or ceil saturates to a long
+      case _: Floor | _: Ceil | _: Sqrt | _: Exp | _: Log | _: Signum => true
+      // Rounding an integer fails on overflow in ANSI mode; a decimal is never treated as safe
+      case r: Round => roundCannotFail(r.dataType, r.ansiEnabled)
+      case r: BRound => roundCannotFail(r.dataType, r.ansiEnabled)
+      case c: Cast => CometCast.cannotFail(c)
+      case _: UnaryPositive => true
+      case u: UnaryMinus => floating || (!u.failOnError && numeric)
+      case a: Abs => floating || (!a.failOnError && numeric)
+      case a: Add => floating || nonAnsiNumeric(a.evalMode)
+      case s: Subtract => floating || nonAnsiNumeric(s.evalMode)
+      case m: Multiply => floating || nonAnsiNumeric(m.evalMode)
+      case d: Divide => nonAnsiNumeric(d.evalMode)
+      case d: IntegralDivide => nonAnsiNumeric(d.evalMode)
+      case r: Remainder => nonAnsiNumeric(r.evalMode)
+      case p: Pmod => nonAnsiNumeric(p.evalMode)
+      case _ => false
+    }
+    nodeCannotFail && expr.children.forall(cannotFail)
+  }
+
+  private def roundCannotFail(dataType: DataType, ansiEnabled: Boolean): Boolean =
+    dataType match {
+      case FloatType | DoubleType => true
+      case ByteType | ShortType | IntegerType | LongType => !ansiEnabled
+      case _ => false
+    }
+
+  /**
+   * The first sort key after the first that can fail. Spark's ordering evaluates a sort key only
+   * for the rows whose earlier keys tie, but Comet evaluates every key over the whole batch, so
+   * such a key may raise on a row that Spark skips
+   * (https://github.com/apache/datafusion-comet/issues/7246). Under ANSI any key that
+   * `cannotFail` does not accept counts. Otherwise a key counts when `raisesInAnyMode` flags it,
+   * or when it holds a node still in ANSI mode that `cannotFail` does not accept, such as `b + 1`
+   * in the ordering of a view created with ANSI on.
+   */
+  def laterSortKeyThatCanFail(sortOrder: Seq[SortOrder]): Option[SortOrder] = {
+    val canFail: Expression => Boolean =
+      if (SQLConf.get.ansiEnabled) e => !cannotFail(e)
+      else e => raisesInAnyMode(e) || e.exists(n => hasAnsiEvalMode(n) && !cannotFail(n))
+    sortOrder.drop(1).find(s => canFail(s.child))
+  }
+
+  /**
+   * Whether `expr` was resolved in ANSI mode, whatever the session's setting is now. A view keeps
+   * the configs it was created with, so its expressions keep their ANSI eval mode when it is
+   * queried with ANSI off. Like `raisesInAnyMode`, it is best-effort: it covers arithmetic, casts
+   * and the expressions listed here (https://github.com/apache/datafusion-comet/issues/7585).
+   */
+  private def hasAnsiEvalMode(expr: Expression): Boolean = expr match {
+    case u: UnaryMinus => u.failOnError
+    case a: Abs => a.failOnError
+    case r: Round => r.ansiEnabled
+    case r: BRound => r.ansiEnabled
+    case e: ElementAt => e.failOnError
+    case g: GetArrayItem => g.failOnError
+    case e: Elt => e.failOnError
+    // Spark 4.1 keeps the arithmetic eval mode inside a `NumericEvalContext`, so read it by name
+    case a: Add => a.evalMode == EvalMode.ANSI
+    case s: Subtract => s.evalMode == EvalMode.ANSI
+    case m: Multiply => m.evalMode == EvalMode.ANSI
+    case d: Divide => d.evalMode == EvalMode.ANSI
+    case d: IntegralDivide => d.evalMode == EvalMode.ANSI
+    case r: Remainder => r.evalMode == EvalMode.ANSI
+    case p: Pmod => p.evalMode == EvalMode.ANSI
+    case c: Cast => c.evalMode == EvalMode.ANSI
+    case _ => expr.productIterator.contains(EvalMode.ANSI)
+  }
+
+  /**
+   * With ANSI off, whether `expr` can still raise on a row that Spark's ordering skips, because
+   * Spark raises for it in every mode. Comet 1.2 ran every TopK in Comet, so this only adds
+   * safety over that release even though the list is best-effort
+   * (https://github.com/apache/datafusion-comet/issues/7585). A Rust kernel that raises where
+   * Spark does not, such as a timestamp cast of a year beyond chrono's range, raises in a
+   * projection too and is left to its own issue
+   * (https://github.com/apache/datafusion-comet/issues/7471).
+   */
+  private def raisesInAnyMode(expr: Expression): Boolean = {
+    def constantWhere(e: Expression)(ok: Int => Boolean): Boolean =
+      e.foldable && (e.eval() match {
+        case null => true
+        case v: Int => ok(v)
+        case _ => false
+      })
+    expr.find {
+      // assert_true is replaced by If(_, null, RaiseError) before planning
+      case _: RaiseError | _: UserDefinedExpression => true
+      // element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
+      case e: ElementAt =>
+        e.left.dataType.isInstanceOf[ArrayType] && !(e.right.foldable && e.right.eval() != 0)
+      // an invalid pattern raises in every mode
+      case r: RLike => !r.right.foldable
+      // slice raises for a start of 0 or a negative length in every mode
+      case s: Slice => !(constantWhere(s.start)(_ != 0) && constantWhere(s.length)(_ >= 0))
+      // array_insert raises INVALID_INDEX_OF_ZERO in every mode
+      case a: ArrayInsert => !constantWhere(a.posExpr)(_ != 0)
+      // sequence raises for bounds that do not match the step in every mode
+      case s: Sequence => !s.children.forall(_.foldable)
+      case _ => false
+    }.isDefined
   }
 
   /**

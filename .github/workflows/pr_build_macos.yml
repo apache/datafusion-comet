@@ -214,6 +214,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometBlockStoreShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.NativeBatchDecoderIteratorSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
+              org.apache.comet.exec.CometShuffleChecksumDisabledSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
@@ -267,6 +268,7 @@ jobs:
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
+              org.apache.comet.cloud.s3.CometS3CredentialReleaseSuite
               org.apache.comet.rules.CometMultiStoreScanSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite

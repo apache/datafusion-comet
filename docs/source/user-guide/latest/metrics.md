@@ -87,6 +87,30 @@ Native aggregates with grouping keys report these additional metrics:
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
 
+#### MIN/MAX Reader Filtering
+
+When `spark.comet.exec.aggregate.dynamicFilter.enabled=true` is captured in an ungrouped partial
+aggregate's plan, its metric map includes these counters. See
+[MIN/MAX reader filtering](tuning/operators.md#minmax-reader-filtering) for eligibility and limits.
+
+| Metric                                   | Description                                                                                                                               |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `dynamic_filter_minmax_filters_attached` | Executions that attach their improving MIN/MAX bound to a native Parquet reader.                                                          |
+| `dynamic_filter_minmax_filters_skipped`  | Executions of an eligible MIN/MAX aggregate that skip reader attachment, including those exceeding the footer limits or using encryption. |
+
+Plans rejected before reader attachment is attempted do not increment either counter. An attached
+filter can still prune nothing, including when a file's schema adaptation disables pruning.
+
+Reader work remains on the scan. Compare `output_rows`, `bytes_scanned`,
+`row_groups_pruned_dynamic_filter`, and `row_groups_pruned_statistics` with filtering disabled.
+`bytes_scanned` measures requested data/Bloom-filter ranges, excluding footer and page-index reads;
+use `scan_io_metadata_bytes` to include the metadata work of inspecting footers. Row groups pruned
+while reading a file increment `row_groups_pruned_dynamic_filter`; pruning when later files open
+can instead increment `row_groups_pruned_statistics`. The statistics counter also includes other
+predicates, so neither counter alone measures MIN/MAX savings. Page-index and decoder filtering
+retain their existing `page_index_rows_pruned` and `pushdown_rows_pruned` counters. There are no
+separate evaluated/pruned row counters on the aggregate.
+
 ### CometSort
 
 Native sorts report these additional metrics:
@@ -245,7 +269,7 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
 | `scan_io_metadata_prefetches`              | Opens that used a load which read storage ahead of them, started when the previous file opened (`spark.comet.parquet.prefetchNextFileMetadata.enabled`). Each also counts as a cache miss.                                   |
-| `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.                                                                                                              |
+| `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold or MIN/MAX bound.                                                                                             |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
