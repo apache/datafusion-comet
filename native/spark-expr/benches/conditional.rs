@@ -18,7 +18,7 @@
 //! Benchmarks for `CASE WHEN` and `IF`, built the way Comet's planner builds them.
 //!
 //! The first eight shapes are the queries in `CometConditionalExpressionBenchmark`. The rest cover
-//! patterns that are common in TPC-H and TPC-DS, the null guard Comet puts around a divisor, and a
+//! patterns that are common in TPC-H and TPC-DS, an explicit `IF(d = 0, NULL, d)`, and a
 //! branch that can fail, which must still be evaluated only for the rows that choose it.
 
 use arrow::array::{ArrayRef, Int32Array, Int64Array, StringArray};
@@ -30,7 +30,7 @@ use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{lit, BinaryExpr, Column, IsNotNullExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::{
-    create_case_when, Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions,
+    create_case_when, create_null_if_zero_expr, Cast, EvalMode, IfExpr, SparkCastOptions,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -187,21 +187,11 @@ fn case_column_3_branches() -> Expr {
 }
 
 /// The 10-branch column case is a DOUBLE, because `c1 / 2` is. Spark casts every other branch to
-/// DOUBLE, and Comet's legacy-mode divide guards the divisor with `IF(d = 0, NULL, d)`.
+/// DOUBLE.
 fn case_column_10_branches() -> Expr {
     let double = |e: Expr| spark_cast(e, DataType::Float64);
     let long = |e: Expr| spark_cast(e, DataType::Int64);
-    let two = || -> Expr {
-        Arc::new(NormalizeNaNAndZero::new(
-            DataType::Float64,
-            lit(ScalarValue::Float64(Some(2.0))),
-        ))
-    };
-    let divisor = if_expr(
-        binary(two(), Operator::Eq, lit(0.0f64)),
-        lit(ScalarValue::Float64(None)),
-        two(),
-    );
+    let divisor = create_null_if_zero_expr(lit(2.0f64), &schema()).unwrap();
     let mut values = vec![
         double(col("c1")),
         double(col("c3")),
@@ -273,7 +263,7 @@ fn case_column_or_null() -> Expr {
     case_when(vec![(c2_below(50), col("c3"))], None)
 }
 
-/// The guard Comet's legacy-mode divide puts around a divisor that is not a literal.
+/// An explicit `IF(c2 = 0, NULL, c2)` in the query.
 fn divisor_guard() -> Expr {
     if_expr(
         binary(col("c2"), Operator::Eq, lit(0i32)),

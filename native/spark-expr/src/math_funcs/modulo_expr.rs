@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{create_comet_physical_fun, spark_comparison, FloatOperands, IfExpr};
-use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
+use super::create_null_if_zero_expr;
+use crate::{create_comet_physical_fun, remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
 use arrow::array::{ArrayRef, ArrowNativeTypeOp, AsArray, PrimitiveArray};
 use arrow::compute::kernels::arity::try_binary;
 use arrow::compute::kernels::numeric::rem;
@@ -27,7 +27,6 @@ use datafusion::common::{
 };
 use datafusion::config::ConfigOptions;
 use datafusion::execution::FunctionRegistry;
-use datafusion::physical_expr::expressions::lit;
 use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr_common::datum::{apply, apply_cmp_for_nested};
 use datafusion::{
@@ -159,7 +158,7 @@ pub fn create_modulo_expr(
     // For non-ANSI mode, wrap the right expression such that any zero value is replaced with `NULL`
     // to prevent divide by zero error.
     let right_non_ansi_safe = if !fail_on_error {
-        null_if_zero_primitive(right, &input_schema)?
+        create_null_if_zero_expr(right, &input_schema)?
     } else {
         right
     };
@@ -221,66 +220,6 @@ pub fn create_modulo_expr(
     }
 }
 
-fn null_if_zero_primitive(
-    expression: Arc<dyn PhysicalExpr>,
-    input_schema: &Schema,
-) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
-    let expr_data_type = expression.data_type(input_schema)?;
-
-    if is_primitive_datatype(&expr_data_type) {
-        let zero = match expr_data_type {
-            DataType::Int8 => ScalarValue::Int8(Some(0)),
-            DataType::Int16 => ScalarValue::Int16(Some(0)),
-            DataType::Int32 => ScalarValue::Int32(Some(0)),
-            DataType::Int64 => ScalarValue::Int64(Some(0)),
-            DataType::UInt8 => ScalarValue::UInt8(Some(0)),
-            DataType::UInt16 => ScalarValue::UInt16(Some(0)),
-            DataType::UInt32 => ScalarValue::UInt32(Some(0)),
-            DataType::UInt64 => ScalarValue::UInt64(Some(0)),
-            DataType::Float32 => ScalarValue::Float32(Some(0.0)),
-            DataType::Float64 => ScalarValue::Float64(Some(0.0)),
-            DataType::Decimal128(s, p) => ScalarValue::Decimal128(Some(0), s, p),
-            DataType::Decimal256(s, p) => ScalarValue::Decimal256(Some(i256::from(0)), s, p),
-            _ => return Ok(expression),
-        };
-
-        // Create an expression like - `if (eval(expr) == Literal(0)) then NULL else eval(expr)`.
-        // This expression evaluates to null for rows with zero values to prevent divide by zero
-        // error. A float divisor is compared in Spark's ordering, where `-0.0` equals `0.0` as it
-        // does in Spark's own check, while Arrow's `eq` tells the two zeros apart.
-        let eq_expr = spark_comparison(
-            Arc::<dyn PhysicalExpr>::clone(&expression),
-            Operator::Eq,
-            lit(zero),
-            input_schema,
-            FloatOperands::Normalize,
-        )?;
-        let null_literal = lit(ScalarValue::try_new_null(&expr_data_type)?);
-        let if_expr = Arc::new(IfExpr::new(eq_expr, null_literal, expression));
-        Ok(if_expr)
-    } else {
-        Ok(expression)
-    }
-}
-
-fn is_primitive_datatype(dt: &DataType) -> bool {
-    matches!(
-        dt,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _)
-    )
-}
-
 fn create_modulo_scalar_function(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
@@ -303,7 +242,6 @@ fn create_modulo_scalar_function(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SparkComparison;
     use arrow::array::{
         Array, ArrayRef, Decimal128Array, Decimal128Builder, Float32Array, Float64Array,
         Int32Array, PrimitiveArray, RecordBatch,
@@ -696,19 +634,6 @@ mod tests {
         .unwrap();
         let expected = Arc::new(Float32Array::from(vec![None]));
         verify_result(modulo_expr, batch, false, Some(expected));
-    }
-
-    #[test]
-    fn test_non_ansi_float_divisor_guard_compares_in_spark_ordering() {
-        // DataFusion 55 folds `-0.0` into `0.0` before Arrow's `eq`, so the test above would pass
-        // with a plain `BinaryExpr` guard too. The guard must not depend on that.
-        let schema = Schema::new(vec![Field::new("b", DataType::Float64, true)]);
-        let guard = null_if_zero_primitive(Arc::new(Column::new("b", 0)), &schema).unwrap();
-        let condition = guard.children()[0];
-        assert!(
-            condition.downcast_ref::<SparkComparison>().is_some(),
-            "unexpected guard condition: {condition}"
-        );
     }
 
     #[test]

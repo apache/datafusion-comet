@@ -1373,6 +1373,30 @@ class CometCodegenSuite
     }
   }
 
+  test("math domain checks evaluate a nondeterministic operand once per row (#7671)") {
+    import org.apache.spark.sql.functions.udf
+    val calls = spark.sparkContext.longAccumulator
+    val counted = udf { (x: Long) =>
+      calls.add(1L)
+      x
+    }
+    spark.udf.register("counted", counted.asNondeterministic())
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withTypedCol("BIGINT", "-1", "0", "1") {
+        val df = sql("""SELECT c / counted(c), c DIV counted(c), c % counted(c),
+            |       ln(counted(c)), log10(counted(c)), log2(counted(c))
+            |FROM t""".stripMargin)
+        val rows = df.collect()
+        assertExpressionImpl(
+          df.queryExecution.executedPlan,
+          native = Seq("divide", "integraldivide", "remainder", "ln", "log10", "log2"),
+          dispatched = Seq("counted"))
+        assert(rows.length == 3)
+        assert(calls.value.longValue() == 6L * rows.length.toLong)
+      }
+    }
+  }
+
   test("a null guard the dispatcher cannot take whole stays native around its UDF (#6704)") {
     spark.udf.register("plusOne", (x: Long) => x + 1)
     withTypedCol("BIGINT", "1", "NULL", "-3") {

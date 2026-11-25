@@ -122,12 +122,12 @@ use datafusion_comet_proto::{
     spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
-    coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
-    jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
-    CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero, NormalizeNestedFloats,
-    NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    coerce_to_common_type, create_case_when, create_if_expr, create_null_if_zero_expr,
+    decimal128_add_sub_width, jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert,
+    AtLeastNNonNulls, Cast, CheckOverflow, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    FloatOperands, GetArrayStructFields, GetStructField, IfExpr, ListExtract, MakeDateExpr,
+    NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit, SparkCastOptions, ToJson,
+    UnboundColumn, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -1492,6 +1492,11 @@ impl PhysicalPlanner {
 
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
+        let right = if op == DataFusionOperator::Divide && eval_mode != EvalMode::Ansi {
+            create_null_if_zero_expr(right, &input_schema)?
+        } else {
+            right
+        };
         let required_return_type = || {
             return_type
                 .map(to_arrow_datatype)

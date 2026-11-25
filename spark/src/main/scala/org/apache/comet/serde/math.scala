@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, Least, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryLogExpression, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -87,42 +87,27 @@ object CometFloor extends CometExpressionSerde[Floor] {
   }
 }
 
-// The expression for `log` functions is defined as null on numbers less than or equal
-// to 0. This matches Spark and Hive behavior, where non positive values eval to null
-// instead of NaN or -Infinity.
-object CometLog extends CometExpressionSerde[Log] with MathExprBase {
+sealed abstract class CometUnaryLog[T <: UnaryLogExpression](function: String)
+    extends CometExpressionSerde[T] {
   override def convert(
-      expr: Log,
+      expr: T,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
-    val optExpr = scalarFunctionExprToProto("ln", childExpr)
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val guarded = scalarFunctionExprToProtoWithReturnType(
+      "spark_null_if_non_positive",
+      DoubleType,
+      false,
+      childExpr)
+    scalarFunctionExprToProto(function, guarded)
   }
 }
 
-object CometLog10 extends CometExpressionSerde[Log10] with MathExprBase {
-  override def convert(
-      expr: Log10,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
-    val optExpr = scalarFunctionExprToProto("log10", childExpr)
-    optExpr
-  }
-}
+object CometLog extends CometUnaryLog[Log]("ln")
 
-object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
-  override def convert(
-      expr: Log2,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
-    val optExpr = scalarFunctionExprToProto("log2", childExpr)
-    optExpr
+object CometLog10 extends CometUnaryLog[Log10]("log10")
 
-  }
-}
+object CometLog2 extends CometUnaryLog[Log2]("log2")
 
 object CometLogarithm extends CometExpressionSerde[Logarithm] {
   override def convert(
@@ -139,7 +124,7 @@ object CometLogarithm extends CometExpressionSerde[Logarithm] {
   }
 }
 
-object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
+object CometHex extends CometExpressionSerde[Hex] {
   override def convert(
       expr: Hex,
       inputs: Seq[Attribute],
@@ -150,7 +135,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
   }
 }
 
-object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
+object CometUnhex extends CometExpressionSerde[Unhex] {
   override def convert(
       expr: Unhex,
       inputs: Seq[Attribute],
@@ -174,7 +159,7 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
  * implementation, so `CodegenDispatchFallback` keeps them in the Comet pipeline by running
  * Spark's own `Abs.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
  */
-object CometAbs extends CometExpressionSerde[Abs] with MathExprBase with CodegenDispatchFallback {
+object CometAbs extends CometExpressionSerde[Abs] with CodegenDispatchFallback {
 
   private val unsupportedReason: String =
     "`INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` inputs"
@@ -259,13 +244,6 @@ object CometSignum extends CometExpressionSerde[Signum] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     scalarFunctionExprToProtoWithReturnType("spark_signum", DoubleType, false, childExpr)
-  }
-}
-
-sealed trait MathExprBase {
-  protected def nullIfNegative(expression: Expression): Expression = {
-    val zero = Literal.default(expression.dataType)
-    If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
   }
 }
 
