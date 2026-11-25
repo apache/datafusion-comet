@@ -852,9 +852,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       "s3.sse.type" -> "kms",
       "s3.sse.key" -> "key-id",
       "s3.sse.md5" -> "md5",
-      "client.assume-role.arn" -> "arn",
-      "client.assume-role.external-id" -> "external",
-      "client.assume-role.session-name" -> "session",
       "s3.allow-anonymous" -> "false",
       "s3.disable-ec2-metadata" -> "false",
       "s3.disable-config-load" -> "false",
@@ -872,10 +869,16 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "s3.access-points.bucket" -> secret,
         "s3.remote-signing-enabled" -> secret,
         "client.factory" -> secret,
+        "client.assume-role.arn" -> secret,
+        "client.assume-role.external-id" -> secret,
+        "client.assume-role.session-name" -> secret,
         "client.credentials-provider" -> secret,
         "unrelated.property" -> secret))
     assert(
       unsupportedFileIO == Seq(
+        "client.assume-role.arn",
+        "client.assume-role.external-id",
+        "client.assume-role.session-name",
         "client.credentials-provider",
         "client.factory",
         "s3.access-points.bucket",
@@ -911,6 +914,112 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     assert(
       !unsupportedWithCustomProvider.exists(_.contains(secret)),
       unsupportedWithCustomProvider)
+  }
+
+  test("S3 FileIO admits AssumeRoleAwsClientFactory with its role and region") {
+    val factory = "org.apache.iceberg.aws.AssumeRoleAwsClientFactory"
+    val assumeRole = Map(
+      "client.factory" -> factory,
+      "client.assume-role.arn" -> "arn:aws:iam::123456789012:role/data",
+      "client.assume-role.region" -> "eu-west-1")
+    val declined =
+      Seq("client.assume-role.arn", "client.assume-role.region", "client.factory")
+    def unsupported(properties: Map[String, String]): Seq[String] =
+      CometIcebergNativeWrite.unsupportedS3FileIOProperties(properties, s3FileIO = true)
+
+    assert(unsupported(assumeRole).isEmpty)
+    assert(unsupported(assumeRole + ("client.region" -> "eu-west-1")).isEmpty)
+    assert(unsupported(assumeRole + ("s3.region" -> "eu-west-1")).isEmpty)
+    assert(unsupported(assumeRole + ("s3.allow-anonymous" -> "false")).isEmpty)
+    assert(
+      unsupported(
+        assumeRole ++ Map(
+          "client.assume-role.external-id" -> "external",
+          "client.assume-role.session-name" -> "session")).isEmpty)
+
+    assert(
+      CometIcebergNativeWrite.unsupportedS3FileIOProperties(assumeRole, s3FileIO = false) ==
+        declined)
+
+    assert(
+      unsupported(assumeRole + ("client.region" -> "us-east-1")) == declined :+ "client.region")
+    assert(unsupported(assumeRole + ("s3.region" -> "us-east-1")) == declined :+ "s3.region")
+
+    Seq(
+      "s3.access-key-id" -> "access",
+      "s3.secret-access-key" -> "secret",
+      "s3.session-token" -> "token",
+      "s3.allow-anonymous" -> "true",
+      "s3.disable-ec2-metadata" -> "true",
+      "s3.disable-config-load" -> "true",
+      "s3.allow-anonymous" -> "1",
+      "s3.disable-ec2-metadata" -> "T",
+      "s3.disable-config-load" -> "on").foreach { case (key, value) =>
+      assert(unsupported(assumeRole + (key -> value)) == (declined :+ key).sorted, key)
+    }
+
+    assert(
+      unsupported(assumeRole + ("client.factory" -> "com.example.CustomAwsClientFactory")) ==
+        declined)
+    assert(unsupported(assumeRole + ("client.factory" -> s" $factory")) == declined)
+    assert(
+      unsupported(assumeRole - "client.assume-role.arn") ==
+        Seq("client.assume-role.region", "client.factory"))
+    assert(unsupported(assumeRole + ("client.assume-role.arn" -> " ")) == declined)
+    assert(unsupported(assumeRole + ("client.assume-role.region" -> " ")) == declined)
+    assert(
+      unsupported(
+        assumeRole - "client.factory" ++ Map(
+          "client.assume-role.external-id" -> "external",
+          "client.assume-role.session-name" -> "session")) ==
+        Seq(
+          "client.assume-role.arn",
+          "client.assume-role.external-id",
+          "client.assume-role.region",
+          "client.assume-role.session-name"))
+
+    assert(
+      unsupported(
+        assumeRole ++ Map(
+          "client.assume-role.tags.team" -> "data",
+          "client.assume-role.timeout-sec" -> "900")) ==
+        Seq("client.assume-role.tags.team", "client.assume-role.timeout-sec"))
+
+    assert(
+      unsupported(assumeRole + ("s3.comet.credential.provider.class" -> "provider")) ==
+        declined :+ "s3.comet.credential.provider.class")
+  }
+
+  test("the native writer takes AssumeRoleAwsClientFactory's region and session name") {
+    val assumeRole = Map(
+      "client.factory" -> "org.apache.iceberg.aws.AssumeRoleAwsClientFactory",
+      "client.assume-role.arn" -> "arn:aws:iam::123456789012:role/data",
+      "client.assume-role.region" -> "eu-west-1")
+    def settings(properties: Map[String, String]): Map[String, String] =
+      CometIcebergNativeWrite.withAssumeRoleSettings(properties, properties)
+
+    val defaulted = settings(assumeRole)
+    assert(
+      defaulted - "client.assume-role.session-name" == assumeRole + ("client.region" -> "eu-west-1"))
+    assert(
+      defaulted("client.assume-role.session-name")
+        .matches("iceberg-aws-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+      defaulted)
+
+    val configured = assumeRole ++ Map(
+      "s3.region" -> "eu-west-1",
+      "client.assume-role.session-name" -> "session")
+    assert(settings(configured) == configured)
+
+    val noFactory = assumeRole - "client.factory"
+    assert(settings(noFactory) == noFactory)
+  }
+
+  test("only S3FileIO itself takes AssumeRoleAwsClientFactory") {
+    assert(CometIcebergNativeWrite.isS3FileIO(Some(classOf[S3FileIO])))
+    assert(!CometIcebergNativeWrite.isS3FileIO(Some(classOf[DetectionS3FileIOSubclass])))
+    assert(!CometIcebergNativeWrite.isS3FileIO(Some(classOf[HadoopFileIO])))
+    assert(!CometIcebergNativeWrite.isS3FileIO(None))
   }
 
   test("a longer dotted bucket is not the target bucket") {
@@ -953,7 +1062,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     loadFailures.foreach { failure =>
       val names = CometIcebergNativeWrite.icebergAwsPropertyNames(_ => throw failure)
       val unsupported =
-        CometIcebergNativeWrite.unsupportedS3FileIOProperties(properties, names)
+        CometIcebergNativeWrite.unsupportedS3FileIOProperties(properties, names, false)
       assert(unsupported == expected, unsupported)
       assert(!unsupported.exists(_.contains(secret)), unsupported)
     }
@@ -2456,6 +2565,8 @@ class DetectionDelegatingLocationProvider(delegate: LocationProvider) extends Lo
 }
 
 /** A real S3FileIO for data, with local metadata managed by HadoopCatalog. Planning only. */
+class DetectionS3FileIOSubclass extends S3FileIO
+
 class DetectionS3FileIOHadoopCatalog extends HadoopCatalog {
   override protected def newTableOps(identifier: TableIdentifier): TableOperations =
     new DetectionS3FileIOTableOperations(super.newTableOps(identifier))

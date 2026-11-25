@@ -300,9 +300,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     "s3.sse.type",
     "s3.sse.key",
     "s3.sse.md5",
-    "client.assume-role.arn",
-    "client.assume-role.external-id",
-    "client.assume-role.session-name",
     "s3.allow-anonymous",
     "s3.disable-ec2-metadata",
     "s3.disable-config-load",
@@ -331,6 +328,26 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // A failed native write task deletes the files it wrote, as iceberg-java's writer does through
   // `FileIO.deleteFile`. S3FileIO skips that delete when this is false, so only true is harmless.
   private val S3FileIODeleteEnabledProperty = "s3.delete-enabled"
+
+  private val S3FileIOClientFactoryProperty = "client.factory"
+  private val AssumeRoleAwsClientFactoryClass =
+    "org.apache.iceberg.aws.AssumeRoleAwsClientFactory"
+  private val AssumeRoleArnProperty = "client.assume-role.arn"
+  private val AssumeRoleRegionProperty = "client.assume-role.region"
+  private val AssumeRoleSessionNameProperty = "client.assume-role.session-name"
+  // iceberg-java ignores these without the factory, so they are admitted only with it.
+  private val AssumeRoleProperties = Set(
+    S3FileIOClientFactoryProperty,
+    AssumeRoleArnProperty,
+    "client.assume-role.external-id",
+    AssumeRoleSessionNameProperty,
+    AssumeRoleRegionProperty)
+  private val NativeS3RegionProperties = Seq("client.region", "s3.region")
+  // The factory ignores these, but opendal would use them as AssumeRole's source credentials.
+  private val AssumeRoleConflictingCredentialProperties =
+    Seq("s3.access-key-id", "s3.secret-access-key", "s3.session-token")
+  private val AssumeRoleConflictingCredentialFlags =
+    Seq("s3.allow-anonymous", "s3.disable-ec2-metadata", "s3.disable-config-load")
 
   // iceberg-java also defines "dsse-kms", but the pinned iceberg-rust S3 backend cannot map
   // that mode into an OpenDAL server-side-encryption configuration. Check the value as well as
@@ -1065,21 +1082,35 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .toMap + (CometS3CredentialProviderClassProperty -> HadoopS3ACredentialAdapterClass)
 
   /** Return unsupported FileIO S3/client property names in deterministic order. */
-  private[comet] def unsupportedS3FileIOProperties(properties: Map[String, String]): Seq[String] =
-    unsupportedS3FileIOProperties(properties, IcebergAwsProperties)
+  private[comet] def unsupportedS3FileIOProperties(
+      properties: Map[String, String],
+      s3FileIO: Boolean = false): Seq[String] =
+    unsupportedS3FileIOProperties(properties, IcebergAwsProperties, s3FileIO)
 
   private[comet] def unsupportedS3FileIOProperties(
       properties: Map[String, String],
-      icebergAwsProperties: IcebergAwsPropertyNames): Seq[String] = {
+      icebergAwsProperties: IcebergAwsPropertyNames,
+      s3FileIO: Boolean): Seq[String] = {
     val customCredentialProviderConfigured = properties
       .get(CometS3CredentialProviderClassProperty)
       .exists(_.trim.nonEmpty)
+
+    val assumeRole = usesAssumeRoleClientFactory(properties)
+    val assumeRoleConflicts =
+      if (assumeRole) assumeRoleConflictingProperties(properties) else Seq.empty
+    val admittedAssumeRoleKeys =
+      if (s3FileIO && assumeRole && assumeRoleConflicts.isEmpty) {
+        AssumeRoleProperties
+      } else {
+        Set.empty[String]
+      }
 
     properties.iterator
       .filter { case (key, _) => key.startsWith("s3.") || key.startsWith("client.") }
       .filter { case (key, value) =>
         val unsupportedName = !SupportedS3FileIOProperties.contains(key) &&
           !IgnoredS3FileIOProperties.contains(key) &&
+          !admittedAssumeRoleKeys.contains(key) &&
           // PropertyUtil.propertyAsBoolean semantics, as S3FileIOProperties reads it.
           !(key == S3FileIODeleteEnabledProperty && java.lang.Boolean.parseBoolean(value))
         val unsupportedValue =
@@ -1090,8 +1121,49 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       }
       .map(_._1)
       .toSeq
+      .++(assumeRoleConflicts)
+      .distinct
       .sorted
   }
+
+  private def assumeRoleConflictingProperties(properties: Map[String, String]): Seq[String] = {
+    val region = properties(AssumeRoleRegionProperty)
+    Seq(CometS3CredentialProviderClassProperty).filter(
+      properties.get(_).exists(_.trim.nonEmpty)) ++
+      NativeS3RegionProperties.filter(properties.get(_).exists(_ != region)) ++
+      AssumeRoleConflictingCredentialProperties.filter(properties.contains) ++
+      AssumeRoleConflictingCredentialFlags.filter(properties.get(_).exists(isTruthy))
+  }
+
+  // iceberg-rust's `is_truthy`, which reads these flags more loosely than iceberg-java.
+  private def isTruthy(value: String): Boolean =
+    Set("true", "t", "1", "on").contains(value.toLowerCase(Locale.ROOT))
+
+  private def usesAssumeRoleClientFactory(properties: Map[String, String]): Boolean =
+    properties.get(S3FileIOClientFactoryProperty).contains(AssumeRoleAwsClientFactoryClass) &&
+      properties.get(AssumeRoleArnProperty).exists(_.trim.nonEmpty) &&
+      properties.get(AssumeRoleRegionProperty).exists(_.trim.nonEmpty)
+
+  // The pinned iceberg-rust has no `client.assume-role.region`, and opendal names the session
+  // `reqsign` where the factory names it `iceberg-aws-<uuid>`. The gate declines another region.
+  private[comet] def withAssumeRoleSettings(
+      fileIOProperties: Map[String, String],
+      catalogProperties: Map[String, String]): Map[String, String] =
+    if (usesAssumeRoleClientFactory(fileIOProperties)) {
+      val region =
+        if (NativeS3RegionProperties.exists(catalogProperties.contains)) None
+        else Some("client.region" -> fileIOProperties(AssumeRoleRegionProperty))
+      val sessionName =
+        if (catalogProperties.contains(AssumeRoleSessionNameProperty)) None
+        else Some(AssumeRoleSessionNameProperty -> s"iceberg-aws-${java.util.UUID.randomUUID()}")
+      catalogProperties ++ region ++ sessionName
+    } else {
+      catalogProperties
+    }
+
+  // A subclass can override client creation and ignore the factory.
+  private[comet] def isS3FileIO(resolvedFileIO: Option[Class[_]]): Boolean =
+    resolvedFileIO.exists(_.getName == IcebergReflection.ClassNames.S3_FILE_IO)
 
   private val requireSupportedHadoopS3Settings: TriggerRule = ctx =>
     s3DataLocation(ctx).flatMap { location =>
@@ -1104,8 +1176,17 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
 
   private val requireSupportedS3FileIOProperties: TriggerRule = ctx =>
-    s3DataLocation(ctx).flatMap { _ =>
-      unsupportedSettingsReason("S3 FileIO", unsupportedS3FileIOProperties(ctx.fileIOProperties))
+    s3DataLocation(ctx).flatMap { location =>
+      // Resolving a ResolvingFileIO's delegate instantiates it.
+      lazy val s3FileIO = isS3FileIO(
+        IcebergReflection
+          .getFileIO(ctx.table)
+          .flatMap(io => IcebergReflection.resolveFileIOClass(io, location)))
+      unsupportedSettingsReason(
+        "S3 FileIO",
+        unsupportedS3FileIOProperties(
+          ctx.fileIOProperties,
+          ctx.fileIOProperties.contains(S3FileIOClientFactoryProperty) && s3FileIO))
     }
 
   // HadoopFileIO takes its GCS configuration from `fs.gs.*`, which is not forwarded to the
@@ -1515,8 +1596,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val storageFileIOProperties =
       if (s3aEncryption.isEmpty) fileIOProperties
       else fileIOProperties.filter { case (k, _) => !k.startsWith("s3.sse.") }
-    val catalogProperties = hadoopDerivedProperties ++ storageFileIOProperties ++
-      s3aEncryption ++ s3aCredentials + CometIcebergNativeScan.ioTimeoutProperty()
+    val catalogProperties = withAssumeRoleSettings(
+      fileIOProperties,
+      hadoopDerivedProperties ++ storageFileIOProperties ++
+        s3aEncryption ++ s3aCredentials + CometIcebergNativeScan.ioTimeoutProperty())
 
     val common = IcebergWriteProtoTranslation.buildCommon(
       catalogProperties = catalogProperties,

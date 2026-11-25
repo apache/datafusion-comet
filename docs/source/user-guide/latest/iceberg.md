@@ -571,6 +571,17 @@ carries the catalog's `hadoop.*` overrides. Also gated explicitly: any `encrypti
 `write.object-storage.enabled=true`, and `write.location-provider.impl`. An `io-impl` table
 property is ignored, because iceberg-java reads `io-impl` from catalog properties only.
 
+`client.factory` and the `client.assume-role.*` settings are admitted only together, with the
+factory set to `org.apache.iceberg.aws.AssumeRoleAwsClientFactory`, both `client.assume-role.arn` and
+`client.assume-role.region` set, and the data location written through `S3FileIO` itself, not a
+subclass. That region becomes the write region. When `client.assume-role.session-name` is not set,
+the native writer names the session `iceberg-aws-<uuid>`, as the factory does. The native writer
+calls STS in the assume-role region, while the factory's STS client takes its region from the
+default AWS region chain. The write falls back when the factory is combined with a different
+`client.region` or `s3.region`, static S3 keys, a credential-provider class, or
+`s3.allow-anonymous`, `s3.disable-ec2-metadata` or `s3.disable-config-load` set to a value the
+native writer reads as true (`true`, `t`, `1` or `on`, in any case).
+
 Three checks look past properties at the table's instantiated state, because they can be
 configured at the catalog level (or by a custom `TableOperations`) without any table or write
 property changing: `table.locationProvider()` must be Iceberg's `DefaultLocationProvider`;
