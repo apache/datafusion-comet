@@ -21,15 +21,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow::array::{ArrayRef, RecordBatch, TimestampMillisecondArray};
 use datafusion::datasource::physical_plan::CsvSource;
 use datafusion::physical_plan::collect;
 use datafusion::prelude::SessionContext;
+use datafusion_comet_common::{error_chain, SparkError};
 use datafusion_comet_proto::spark_expression::{data_type::DataTypeId, DataType as SparkDataType};
 use datafusion_comet_proto::spark_operator::{
-    operator::OpStruct, CsvOptions, CsvScan, Operator, SparkFilePartition, SparkPartitionedFile,
-    SparkStructField,
+    operator::OpStruct, CsvOptions, CsvScan, NativeScan, NativeScanCommon, Operator,
+    SparkFilePartition, SparkPartitionedFile, SparkStructField,
 };
 use datafusion_datasource::source::DataSourceExec;
+use parquet::arrow::ArrowWriter;
 
 use crate::execution::planner::PhysicalPlanner;
 
@@ -124,11 +127,11 @@ fn partition_mixing_libhdfs_and_native_reads_of_one_bucket_is_rejected() {
     );
 }
 
-fn string_field(name: &str) -> SparkStructField {
+fn field(name: &str, type_id: DataTypeId) -> SparkStructField {
     SparkStructField {
         name: name.to_string(),
         data_type: Some(SparkDataType {
-            type_id: DataTypeId::String as i32,
+            type_id: type_id as i32,
             type_info: None,
         }),
         nullable: true,
@@ -136,10 +139,61 @@ fn string_field(name: &str) -> SparkStructField {
     }
 }
 
+#[tokio::test]
+async fn timestamp_overflow_preserves_encoded_file_path_without_query_or_fragment() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad timestamp.parquet");
+    let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![i64::MAX]));
+    let batch = RecordBatch::try_from_iter([("ts", millis)]).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), batch.schema(), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let expected = url::Url::from_file_path(&path).unwrap();
+    let file_size = path.metadata().unwrap().len() as i64;
+    let timestamp = field("ts", DataTypeId::TimestampNtz);
+    let operator = Operator {
+        op_struct: Some(OpStruct::NativeScan(NativeScan {
+            common: Some(NativeScanCommon {
+                data_schema: vec![timestamp.clone()],
+                required_schema: vec![timestamp],
+                projection_vector: vec![0],
+                session_timezone: "UTC".to_string(),
+                ..Default::default()
+            }),
+            file_partition: Some(SparkFilePartition {
+                partitioned_file: vec![SparkPartitionedFile {
+                    file_path: format!("{expected}?sig=example#fragment"),
+                    length: file_size,
+                    file_size,
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let planner = PhysicalPlanner::default();
+    let (_, _, plan) = planner.create_plan(&operator, &mut vec![], 1).unwrap();
+    let error = collect(
+        Arc::clone(&plan.native_plan),
+        planner.session_ctx().task_ctx(),
+    )
+    .await
+    .unwrap_err();
+    let Some(SparkError::ParquetTimestampOverflow { file_path }) =
+        error_chain(&error).find_map(|e| e.downcast_ref::<SparkError>())
+    else {
+        panic!("expected structured timestamp overflow, got {error:?}");
+    };
+    assert_eq!(file_path, expected.as_str());
+}
+
 fn csv_scan(file_partitions: Vec<SparkFilePartition>) -> Operator {
     Operator {
         op_struct: Some(OpStruct::CsvScan(CsvScan {
-            data_schema: vec![string_field("c")],
+            data_schema: vec![field("c", DataTypeId::String)],
             partition_schema: vec![],
             projection_vector: vec![0],
             file_partitions,

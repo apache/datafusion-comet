@@ -93,6 +93,7 @@ use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::file_error_context::SparkFilePath;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::{
     object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
@@ -772,9 +773,7 @@ impl PhysicalPlanner {
             partitioned_file.object_meta.location = path;
             partitioned_file
                 .extensions
-                .insert(crate::parquet::file_error_context::SparkFilePath(
-                    Arc::from(file.file_path.as_str()),
-                ));
+                .insert(SparkFilePath::new(&file.file_path, &url));
 
             // Process partition values
             let partition_values: Result<Vec<_>, _> = file
