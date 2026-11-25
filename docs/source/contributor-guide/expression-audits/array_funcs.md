@@ -169,7 +169,7 @@
 ## flatten
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Flatten(child) extends UnaryExpression`; returns NULL if any inner sub-array is NULL. Comet routes via `CometFlatten` and falls back for child types containing `BinaryType` / `StructType` / `MapType` (limitation of `ArraysBase.isTypeSupported`).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `Flatten(child) extends UnaryExpression`; returns NULL if any inner sub-array is NULL. Comet routes via `CometFlatten` and falls back for child types containing `StructType` / `MapType` (limitation of `ArraysBase.isTypeSupported`). `CometFlatten` accepts `BinaryType` elements, since flatten only rearranges offsets and never reads the values.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
