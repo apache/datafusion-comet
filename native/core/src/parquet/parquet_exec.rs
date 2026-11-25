@@ -23,7 +23,7 @@ use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
-use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
+use crate::parquet::schema_adapter::{CometOnlyPredicate, SparkPhysicalExprAdapterFactory};
 use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -123,12 +123,16 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    // Spark can discard filtered-out values before timestamp conversion using statistics,
-    // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
-    // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
-    // existing safe cast for filtered scans and use checked conversion only when every value is
-    // necessarily read.
-    spark_parquet_options.checked_timestamp_overflow = data_filters.is_none();
+    // Spark may skip overflowing values via page, dictionary or row filters, even
+    // when none serialize for Comet (Some([])). Comet-only predicates are removed
+    // by the per-file adapter when they could hide an overflow Spark would read.
+    spark_parquet_options.checked_timestamp_overflow = match data_filters.as_deref() {
+        None => true,
+        Some([]) => false,
+        Some(filters) => filters
+            .iter()
+            .all(|filter| filter.is::<CometOnlyPredicate>()),
+    };
     spark_parquet_options.rebase_from_file_metadata = rebase_from_file_metadata;
     spark_parquet_options.datetime_rebase_mode_in_read = datetime_rebase_mode_in_read.to_string();
     spark_parquet_options.int96_rebase_mode_in_read = int96_rebase_mode_in_read.to_string();

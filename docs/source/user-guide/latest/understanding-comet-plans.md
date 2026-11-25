@@ -375,6 +375,7 @@ Rust plans, as their rows say.
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                      |
 | `CometCoalesce`          | JVM-side partition coalesce.                                                                                                             |
+| `CometParquetResult`     | Enables overflow checks during `collect()` for [filtered Parquet reads](parquet.md#reads-that-differ-from-spark).                        |
 | `CometCollectLimit`      | Collect limit (`CollectLimitExec`). `collect`, `show`, and `take` take rows from its child on the JVM; other reads run Rust limit plans. |
 | `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                      |
 | `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                          |

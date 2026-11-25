@@ -640,6 +640,124 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("TIMESTAMP_MILLIS overflow when Spark applies filters above the Parquet reader") {
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int64 id;
+        |  optional int64 match_id;
+        |  optional group s {
+        |    optional int32 k;
+        |    optional int64 ts(TIMESTAMP_MILLIS);
+        |  }
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      Seq(0L, Long.MaxValue / 1000 + 1).zipWithIndex.foreach { case (millis, k) =>
+        val record = new SimpleGroup(schema)
+        record.add(0, k.toLong)
+        record.add(1, 0L)
+        val nested = record.addGroup(2)
+        nested.add(0, k)
+        nested.add(1, millis)
+        writer.write(record)
+      }
+      writer.close()
+
+      Seq(false, true).foreach { rowFilterPushdown =>
+        withSQLConf(
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilterPushdown.toString) {
+          readParquetFile(path.toString) { df =>
+            def checkOverflow(predicate: String): Unit = {
+              val filtered = df.where(predicate).select("s.ts")
+              assert(collect(filtered.queryExecution.executedPlan) {
+                case _: CometNativeScanExec => true
+              }.nonEmpty)
+              val error = checkSparkError(filtered, errorClass)
+              assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+              assert(error.getCause.getClass == classOf[ArithmeticException])
+              assert(error.getCause.getMessage == "long overflow")
+            }
+
+            def checkWithAndWithoutLimit(predicate: String): Unit = {
+              checkOverflow(predicate)
+              // Spark stops after the valid first batch. Comet can decode both rows together.
+              withSQLConf(
+                SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "1",
+                CometConf.COMET_BATCH_SIZE.key -> "2") {
+                val filtered = df.where(predicate).select("s.ts")
+                checkSparkAnswerAndOperator(filtered.limit(1), Seq(classOf[CometNativeScanExec]))
+
+                // The same plan can serve a partial RDD read and a full SQL collection.
+                val first = filtered.queryExecution.toRdd.take(1)
+                assert(
+                  first.length == 1 && !first.head.isNullAt(0) && first.head.getLong(0) == 0L)
+                val error = intercept[SparkException](filtered.collect())
+                assert(causeChain(error).last.isInstanceOf[ArithmeticException])
+              }
+            }
+
+            // A column-to-column comparison has no V1 filter. Comet's row filter could
+            // otherwise discard the second row before converting its timestamp.
+            checkWithAndWithoutLimit("id <=> match_id")
+            checkSparkAnswerAndOperator(
+              df.where("s.k < 0").select("s.ts"),
+              Seq(classOf[CometNativeScanExec]))
+
+            if (isSpark40Plus) {
+              withSQLConf(SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key -> "") {
+                checkOverflow("s.k >= 0")
+                checkOverflow("s.k < 0")
+              }
+              withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+                checkWithAndWithoutLimit("id <=> (SELECT min(id) FROM range(2))")
+              }
+            }
+          }
+        }
+      }
+
+      // Spark 4.x translates filters when it builds the reader. Spark 3.5 can translate
+      // them earlier when it builds the scan metadata for display.
+      if (isSpark40Plus) {
+        val nestedPushdown = SQLConf.NESTED_PREDICATE_PUSHDOWN_FILE_SOURCE_LIST.key
+        Seq(false, true).foreach { cometEnabled =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> cometEnabled.toString,
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+            nestedPushdown -> "") {
+            val filtered = spark.read.parquet(path.toString).where("s.k < 0").select("s.ts")
+            val nativeScans = collect(filtered.queryExecution.executedPlan) {
+              case _: CometNativeScanExec => true
+            }
+            assert(nativeScans.nonEmpty == cometEnabled)
+            withSQLConf(nestedPushdown -> "parquet") {
+              assert(filtered.collect().isEmpty)
+            }
+            // Spark reuses the reader that prunes the overflowing row group.
+            assert(filtered.collect().isEmpty)
+          }
+        }
+
+        val owner = spark.newSession()
+        val pushdown = SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key
+        owner.conf.set(SQLConf.USE_V1_SOURCE_LIST.key, "parquet")
+        owner.conf.set(pushdown, "true")
+        withGlobalTempView("millis_overflow") {
+          owner.read.parquet(path.toString).createGlobalTempView("millis_overflow")
+          withSQLConf(pushdown -> "false") {
+            val shared = spark.table("global_temp.millis_overflow")
+            val filtered = shared.where("id <=> (SELECT min(id) FROM range(2, 4))").select("s.ts")
+            checkSparkAnswerAndOperator(filtered, Seq(classOf[CometNativeScanExec]))
+          }
+        }
+      }
+    }
+  }
+
   test("filtered TIMESTAMP_MILLIS scan preserves empty NOT IN null semantics") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "part-r-0.parquet")
@@ -2597,6 +2715,45 @@ abstract class ParquetReadSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  test("filtered TIMESTAMP_MILLIS with swapped nested field ids") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int64 id;
+        |  optional int64 match_id;
+        |  optional group s {
+        |    optional int64 a (TIMESTAMP_MILLIS) = 1;
+        |    optional int64 b (TIMESTAMP_MILLIS) = 2;
+        |  }
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      val record = new SimpleGroup(schema)
+      record.add(0, 1L)
+      record.add(1, 0L)
+      val nested = record.addGroup(2)
+      nested.add(0, Long.MaxValue / 1000 + 1)
+      nested.add(1, 0L)
+      writer.write(record)
+      writer.close()
+
+      // Spark selects the leaves by id, then uses the physical name to choose the decoder.
+      // It reads s.a as a raw long before the residual filter discards the row.
+      val swapped = new StructType()
+        .add("a", LongType, true, withId(2))
+        .add("b", TimestampType, true, withId(1))
+      val readSchema =
+        new StructType().add("id", LongType).add("match_id", LongType).add("s", swapped)
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        checkSparkAnswerAndOperator(
+          df.where("id <=> match_id").select("s"),
+          Seq(classOf[CometNativeScanExec]))
       }
     }
   }

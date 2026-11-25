@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -37,6 +38,7 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
@@ -74,6 +76,27 @@ case class CometNativeScanExec(
     with DataSourceScanExec
     with ShimStreamSourceAwareSparkPlan
     with CometScanWithPlanData {
+
+  private[comet] def canCheckFilteredTimestampOverflow: Boolean = {
+    val common = nativeOp.getNativeScan.getCommon
+    // Spark builds the Parquet reader with the relation's session, which can differ from
+    // the one planning the scan (for example, through a global temporary view).
+    lazy val readerConf = relation.sparkSession.sessionState.conf
+    // Spark 3.5 can cache a translated nested filter when displaying metadata, before the
+    // reader is constructed. Its nested pushdown setting may have changed since then.
+    lazy val nested = !isSpark40Plus || DataSourceUtils.supportNestedPredicatePushdown(relation)
+    lazy val hasSubquery = dataFilters.exists(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+    lazy val mayPushFilter = hasSubquery ||
+      dataFilters.exists(f => DataSourceStrategy.translateFilter(f, nested).isDefined)
+    // With field IDs, Spark can select a physical column by ID but decode it by name.
+    // Check only when both readers match columns by name with the same case sensitivity.
+    (common.getHasDataFilters || hasSubquery) &&
+    requiredSchema.existsRecursively(dt => dt == TimestampType || dt == TimestampNTZType) &&
+    !ParquetUtils.hasFieldIds(requiredSchema) &&
+    common.getCaseSensitive == readerConf.caseSensitiveAnalysis &&
+    !new FileSourceOptions(relation.options).ignoreCorruptFiles &&
+    (!readerConf.parquetFilterPushDown || !mayPushFilter)
+  }
 
   override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
     // AQE rewrites DPP placeholders in the live scan before transition reversion.
@@ -195,9 +218,13 @@ case class CometNativeScanExec(
         .map(_.transform { case s: ExecScalarSubquery =>
           Literal.create(s.eval(null), s.dataType)
         })
-      if (resolvedFilters.nonEmpty) {
+      // Like Spark's cached reader, retain the filter translation from RDD construction.
+      // The task injector restricts the check to actions that collect the full result.
+      val checkOverflow = canCheckFilteredTimestampOverflow
+      if (resolvedFilters.nonEmpty || checkOverflow) {
         val commonBuilder = base.toBuilder
         commonBuilder.setHasDataFilters(true)
+        commonBuilder.setCheckFilteredTimestampOverflow(checkOverflow)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
@@ -383,4 +410,56 @@ object CometNativeScanExec {
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
   }
+}
+
+/**
+ * Spark can expose the same plan to collect and to an RDD consumer that stops after one row. A
+ * larger native batch may decode timestamps past that row. Scope the extra overflow check to the
+ * collecting action's tasks, even when the actions share a cached execution RDD.
+ */
+case class CometParquetResultExec(child: SparkPlan) extends UnaryExecNode with CometPlan {
+  override def output: Seq[Attribute] = child.output
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+
+  override protected def doExecute(): RDD[InternalRow] = child.execute()
+
+  override def executeCollect(): Array[InternalRow] =
+    CometParquetResultExec.candidate(child) match {
+      case Some(scan) =>
+        val key = CometParquetResultExec.collectingScanId
+        val previous = sparkContext.getLocalProperty(key)
+        sparkContext.setLocalProperty(key, scan.nativeOp.getPlanId.toString)
+        try child.executeCollect()
+        finally sparkContext.setLocalProperty(key, previous)
+      case None => child.executeCollect()
+    }
+
+  override protected def withNewChildInternal(newChild: SparkPlan): CometParquetResultExec =
+    copy(child = newChild)
+}
+
+object CometParquetResultExec {
+  private val collectingScanId = "comet.parquet.collectingScanId"
+
+  private[comet] def isCollecting(planId: Int): Boolean = {
+    val task = TaskContext.get()
+    task != null && planId.toString == task.getLocalProperty(collectingScanId)
+  }
+
+  @scala.annotation.tailrec
+  private def candidate(plan: SparkPlan): Option[CometNativeScanExec] = plan match {
+    case scan: CometNativeScanExec => Some(scan)
+    case _: CometColumnarToRowExec | _: CometProjectExec | _: CometFilterExec | _: ProjectExec |
+        _: FilterExec | _: WholeStageCodegenExec | _: InputAdapter =>
+      candidate(plan.children.head)
+    case _ => None
+  }
+
+  def wrap(plan: SparkPlan): SparkPlan =
+    if (!plan.supportsColumnar && candidate(plan).exists(_.canCheckFilteredTimestampOverflow)) {
+      CometParquetResultExec(plan)
+    } else {
+      plan
+    }
 }

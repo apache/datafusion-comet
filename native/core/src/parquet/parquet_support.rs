@@ -119,9 +119,8 @@ pub struct SparkParquetOptions {
     pub allow_timestamp_ltz_to_ntz: bool,
     /// When true (the default), a TIMESTAMP_MILLIS field that overflows during
     /// the millis->micros upscale raises an error, matching Spark's checked
-    /// `millisToMicros`. Filtered scans set this to false and retain the safe cast
-    /// (overflow -> NULL), because Spark may discard values through pruning paths that
-    /// DataFusion cannot fully mirror before conversion.
+    /// `millisToMicros`. Scans where Spark may prune data retain the safe cast
+    /// (overflow -> NULL) because DataFusion may read values Spark skips.
     pub checked_timestamp_overflow: bool,
     /// When true, resolve each file's datetime calendar-rebase policy from its parquet footer
     /// metadata (`org.apache.spark.legacyDateTime` and friends) and rebase -- or refuse --
@@ -301,9 +300,6 @@ fn parquet_convert_array_impl(
             // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
             // `millisToMicros` uses `Math.multiplyExact`:
             // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
-            //
-            // Filtered scans retain safe conversion until DataFusion can mirror Spark's
-            // pruning paths, including nested predicates.
             let millis = array.as_primitive::<TimestampMillisecondType>();
             // Ignore values hidden by null ancestors or by sliced list/map offsets.
             // Restore the original child validity: required fields must remain non-null.
@@ -423,7 +419,7 @@ fn parquet_convert_array_impl(
 
 // Struct fields are matched by name/field ID later. This type-only check is conservative
 // until that matching occurs; each selected child is checked again before conversion.
-fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
+pub(super) fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
     match data_type {
         DataType::Timestamp(timestamp_unit, _) => *timestamp_unit == unit,
         DataType::Struct(fields) => fields
@@ -2671,8 +2667,6 @@ mod tests {
         assert!(matches!(err, DataFusionError::External(ref source)
             if matches!(source.downcast_ref::<SparkError>(), Some(SparkError::ParquetTimestampOverflow { .. }))));
 
-        // Filtered scans disable checked conversion because Spark may prune values before
-        // conversion through paths DataFusion cannot fully mirror.
         let mut unchecked_options = options.clone();
         unchecked_options.checked_timestamp_overflow = false;
         let converted =

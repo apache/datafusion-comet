@@ -23,8 +23,8 @@ use crate::parquet::datetime_rebase::{
 use crate::parquet::field_resolver::{duplicate_name_error, FieldClaim, FieldResolver};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
-    SparkParquetOptions,
+    duplicate_parquet_field_error, field_id, has_timestamp_unit, match_struct_fields,
+    spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -32,7 +32,7 @@ use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::{lit, Column};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -48,6 +48,93 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+/// Tag scan predicates that Spark evaluates only after decoding. The file's
+/// timestamp units are available only when the reader adapts the predicates.
+pub(crate) fn protect_timestamp_overflow(
+    predicates: Vec<Arc<dyn PhysicalExpr>>,
+    required_schema: &SchemaRef,
+) -> Vec<Arc<dyn PhysicalExpr>> {
+    let timestamp_roots: Arc<[FieldRef]> = required_schema
+        .fields()
+        .iter()
+        .filter(|field| has_timestamp_unit(field.data_type(), TimeUnit::Microsecond))
+        .cloned()
+        .collect();
+    if timestamp_roots.is_empty() {
+        return predicates;
+    }
+    predicates
+        .into_iter()
+        .map(|predicate| {
+            Arc::new(CometOnlyPredicate {
+                predicate,
+                timestamp_roots: Arc::clone(&timestamp_roots),
+            }) as Arc<dyn PhysicalExpr>
+        })
+        .collect()
+}
+
+#[derive(Debug, Eq)]
+pub(super) struct CometOnlyPredicate {
+    predicate: Arc<dyn PhysicalExpr>,
+    timestamp_roots: Arc<[FieldRef]>,
+}
+
+impl PartialEq for CometOnlyPredicate {
+    fn eq(&self, other: &Self) -> bool {
+        self.predicate.eq(&other.predicate) && self.timestamp_roots == other.timestamp_roots
+    }
+}
+
+impl Hash for CometOnlyPredicate {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.predicate.hash(state);
+        self.timestamp_roots.hash(state);
+    }
+}
+
+impl Display for CometOnlyPredicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.predicate, f)
+    }
+}
+
+impl PhysicalExpr for CometOnlyPredicate {
+    fn data_type(&self, schema: &Schema) -> DataFusionResult<DataType> {
+        self.predicate.data_type(schema)
+    }
+
+    fn nullable(&self, schema: &Schema) -> DataFusionResult<bool> {
+        self.predicate.nullable(schema)
+    }
+
+    fn evaluate(&self, _batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        // Before per-file adaptation, pruning could still mask an overflow.
+        Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))))
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.predicate]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        let [predicate] = children.as_slice() else {
+            return datafusion::common::internal_err!("Expected one child for CometOnlyPredicate");
+        };
+        Ok(Arc::new(Self {
+            predicate: Arc::clone(predicate),
+            timestamp_roots: Arc::clone(&self.timestamp_roots),
+        }))
+    }
+
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.predicate.fmt_sql(f)
+    }
+}
 
 /// Factory for creating Spark-compatible physical expression adapters.
 ///
@@ -389,6 +476,8 @@ fn reject_on_non_empty_expr(
 enum ConversionCheck {
     /// Spark has an updater for the pair (for a same-shape complex pair: for every leaf).
     Accept,
+    /// Accepted, with at least one requested timestamp requiring checked scaling.
+    ScaleMillis,
     /// Spark rejects the pair, but only while decoding a row group, so the rejection is
     /// deferred to runtime via [`RejectOnNonEmpty`] (SPARK-26709). A file with nothing to
     /// decode, empty or with every row group pruned, reads. Carries the offending
@@ -457,6 +546,15 @@ fn check_leaf_conversion(
             ));
         }
     } else if spark_has_updater(physical_type, target_type, options, nanos_timestamp) {
+        if matches!(
+            (physical_type, target_type),
+            (
+                DataType::Timestamp(TimeUnit::Millisecond, _),
+                DataType::Timestamp(TimeUnit::Microsecond, _)
+            )
+        ) {
+            return Ok(ConversionCheck::ScaleMillis);
+        }
         return Ok(ConversionCheck::Accept);
     }
     Ok(ConversionCheck::RejectOnNonEmpty {
@@ -661,7 +759,9 @@ fn combine_checks(
     let mut combined = ConversionCheck::Accept;
     for check in checks {
         let check = check?;
-        if matches!(combined, ConversionCheck::Accept) {
+        if !matches!(combined, ConversionCheck::RejectOnNonEmpty { .. })
+            && !matches!(check, ConversionCheck::Accept)
+        {
             combined = check;
         }
     }
@@ -1104,6 +1204,29 @@ struct SparkPhysicalExprAdapter {
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        // All tagged predicates in the opener's conjunction share one projection.
+        let expr = if self.parquet_options.checked_timestamp_overflow && !expr.is::<Column>() {
+            let mut defer_filters = None;
+            expr.transform_down(|expr| {
+                let Some(filter) = expr.downcast_ref::<CometOnlyPredicate>() else {
+                    return Ok(Transformed::no(expr));
+                };
+                let defer = defer_filters.get_or_insert_with(|| {
+                    filter
+                        .timestamp_roots
+                        .iter()
+                        .any(|field| self.may_overflow(field))
+                });
+                Ok(Transformed::yes(if *defer {
+                    lit(true)
+                } else {
+                    Arc::clone(&filter.predicate)
+                }))
+            })
+            .data()?
+        } else {
+            expr
+        };
         self.check_duplicate_columns(&expr)?;
 
         // First let the default adapter handle column remapping, missing columns,
@@ -1145,6 +1268,27 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
 }
 
 impl SparkPhysicalExprAdapter {
+    fn may_overflow(&self, requested: &Field) -> bool {
+        let Ok(physical) = self.physical_file_schema.field_with_name(requested.name()) else {
+            return false;
+        };
+        if !has_timestamp_unit(physical.data_type(), TimeUnit::Millisecond) {
+            return false;
+        }
+        // Reuse the decoder's leaf pairing after root remapping. Keep the
+        // predicate above the scan on a rejected conversion too, so the
+        // reader can surface the error at its usual point.
+        !matches!(
+            check_field_conversion(
+                physical,
+                requested.data_type(),
+                physical.name(),
+                &self.parquet_options,
+            ),
+            Ok(ConversionCheck::Accept)
+        )
+    }
+
     /// Check if any Column references multiple physical fields under the configured fold.
     /// Only the columns actually referenced trigger the error (not the whole schema).
     fn check_duplicate_columns(&self, expr: &Arc<dyn PhysicalExpr>) -> DataFusionResult<()> {
@@ -1301,7 +1445,7 @@ impl SparkPhysicalExprAdapter {
                             physical_field.name(),
                             &self.parquet_options,
                         )? {
-                            ConversionCheck::Accept => {}
+                            ConversionCheck::Accept | ConversionCheck::ScaleMillis => {}
                             ConversionCheck::RejectOnNonEmpty {
                                 column,
                                 physical_type: leaf_physical_type,
@@ -1421,7 +1565,7 @@ impl SparkPhysicalExprAdapter {
                 input_field.name(),
                 &self.parquet_options,
             )? {
-                ConversionCheck::Accept => {}
+                ConversionCheck::Accept | ConversionCheck::ScaleMillis => {}
                 ConversionCheck::RejectOnNonEmpty {
                     column,
                     physical_type: leaf_physical_type,
@@ -1782,6 +1926,33 @@ pub(crate) mod test {
     use std::collections::HashMap;
     use std::fs::File;
     use std::sync::Arc;
+
+    #[test]
+    fn comet_only_predicate_depends_on_projected_timestamp_unit() -> Result<(), DataFusionError> {
+        let schema = |fields| {
+            Arc::new(Schema::new(vec![
+                Field::new("keep", DataType::Boolean, true),
+                Field::new("events", list_type(struct_type(fields)), true),
+            ]))
+        };
+        let micros = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let millis = DataType::Timestamp(TimeUnit::Millisecond, None);
+        let logical = schema(vec![("ts", micros.clone())]);
+        let predicate: Arc<dyn PhysicalExpr> = Arc::new(Column::new("keep", 0));
+        let protected = super::protect_timestamp_overflow(vec![Arc::clone(&predicate)], &logical);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        let factory = SparkPhysicalExprAdapterFactory::new(options, None);
+        for (requested, unused, expected) in [
+            (millis.clone(), micros.clone(), super::lit(true)),
+            (micros, millis, predicate),
+        ] {
+            let physical = schema(vec![("unused", unused), ("TS", requested)]);
+            let adapter = factory.create(Arc::clone(&logical), physical)?;
+            let actual = adapter.rewrite(Arc::clone(&protected[0]))?;
+            assert!(actual.eq(&expected), "expected {expected}, got {actual}");
+        }
+        Ok(())
+    }
 
     /// Build field metadata carrying a Parquet field id, for the field-id remap tests.
     fn id_meta(id: &str) -> HashMap<String, String> {

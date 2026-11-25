@@ -45,7 +45,7 @@ trait CometPlanChecker {
     wrapped.foreach {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
           _: CometIcebergNativeScanExec =>
-      case _: CometSinkPlaceHolder | _: CometScanWrapper =>
+      case _: CometSinkPlaceHolder | _: CometScanWrapper | _: CometParquetResultExec =>
       case _: CometColumnarToRowExec =>
       case _: CometSparkToColumnarExec =>
       case _: CometExec | _: CometShuffleExchangeExec =>
