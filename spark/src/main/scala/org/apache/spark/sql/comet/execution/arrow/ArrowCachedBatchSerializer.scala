@@ -26,7 +26,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GenericInternalRow, GreaterThanOrEqual, IsNotNull, IsNull, LessThan, Literal, StartsWith}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -489,12 +489,33 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         p.references.forall(a => prunable.contains(a.exprId)) && !prunesOnCollatedPrefix(p)
     }
 
-    super.buildFilter(prunablePredicates, cachedAttributes)
+    // C3 matches the first byte of U+00E9 (C3 A9), but Spark cuts bounds by character and rejects
+    // a lower bound of U+00E9. The byte range [C3, C4) expresses the match under binary ordering.
+    val filters = prunablePredicates.map(_.transform {
+      case StartsWith(a: AttributeReference, Literal(prefix: UTF8String, _))
+          if a.dataType == StringType && !Utils.isValidUtf8(prefix) =>
+        bytePrefixRange(a, prefix)
+    })
+    super.buildFilter(filters, cachedAttributes)
+  }
+
+  private def bytePrefixRange(a: Attribute, prefix: UTF8String): Expression = {
+    val lower = GreaterThanOrEqual(a, Literal(prefix, StringType))
+    val bytes = prefix.getBytes
+    // The exclusive end for C3 FF is C4. An all-FF prefix has no upper bound.
+    val last = bytes.lastIndexWhere(_ != 0xff.toByte)
+    if (last < 0) {
+      lower
+    } else {
+      val end = java.util.Arrays.copyOf(bytes, last + 1)
+      end(last) = (end(last) + 1).toByte
+      And(lower, LessThan(a, Literal(UTF8String.fromBytes(end), StringType)))
+    }
   }
 
   // Spark prunes StartsWith by cutting each bound to the prefix's length in characters, which
-  // assumes a matching value begins with as many characters as the prefix has. That holds under
-  // binary comparison but not under every collation: under UTF8_LCASE, U+0130 is one character
+  // assumes a matching value begins with as many characters as the prefix has. That holds for
+  // valid UTF-8 under binary comparison. Under UTF8_LCASE, U+0130 is one character
   // that lowercases to two, so a batch of values beginning with it is pruned against a
   // two-character prefix they all match. Spark's own cache prunes the same way. A predicate that
   // holds such a StartsWith anywhere is left out whole, since leaving out a conjunct only prunes
