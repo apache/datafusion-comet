@@ -18,6 +18,7 @@
 mod array_contains;
 mod array_extrema;
 mod array_insert;
+mod array_match;
 mod array_position;
 mod array_remove;
 mod array_set_ops;

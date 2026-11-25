@@ -15,300 +15,110 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::Arc;
+
+use super::array_match::{invoke_match, MatchOperation, MatchRows};
+use crate::float_semantics::spark_equality_by_ordinal;
 use arrow::array::{
-    make_comparator, Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array,
-    OffsetSizeTrait,
+    Array, ArrayRef, AsArray, BooleanArray, Date32Array, Decimal128Array, GenericListArray,
+    Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, OffsetSizeTrait, StringArray,
+    TimestampMicrosecondArray,
 };
-use arrow::buffer::{NullBuffer, ScalarBuffer};
-use arrow::compute::SortOptions;
-use arrow::datatypes::{
-    ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type,
-    Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
-};
-use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
+use arrow::datatypes::{DataType, TimeUnit};
+use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use std::cmp::Ordering;
-use std::sync::Arc;
 
-use crate::float_semantics::{compare_floats, has_float_leaf, normalize_nested_floats};
-
-/// Spark array_position() function that returns the 1-based position of an element in an array.
-/// Returns 0 if the element is not found (Spark behavior differs from DataFusion which returns null).
-fn spark_array_position(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    if args.len() != 2 {
-        return exec_err!("array_position function takes exactly two arguments");
-    }
-
-    let len = args
-        .iter()
-        .fold(Option::<usize>::None, |acc, arg| match arg {
-            ColumnarValue::Scalar(_) => acc,
-            ColumnarValue::Array(a) => Some(a.len()),
-        });
-
-    let is_scalar = len.is_none();
-    let arrays = ColumnarValue::values_to_arrays(args)?;
-
-    let result = array_position_inner(&arrays)?;
-
-    if is_scalar {
-        let scalar = ScalarValue::try_from_array(&result, 0)?;
-        Ok(ColumnarValue::Scalar(scalar))
-    } else {
-        Ok(ColumnarValue::Array(result))
-    }
-}
-
-fn array_position_inner(args: &[ArrayRef]) -> Result<ArrayRef, DataFusionError> {
-    let array = &args[0];
-    let element = &args[1];
-
+fn array_position(array: &ArrayRef, needle: &ColumnarValue) -> Result<ArrayRef> {
     match array.data_type() {
-        DataType::List(_) => generic_array_position::<i32>(array, element),
-        DataType::LargeList(_) => generic_array_position::<i64>(array, element),
+        DataType::List(_) => position(array.as_list::<i32>(), needle),
+        DataType::LargeList(_) => position(array.as_list::<i64>(), needle),
         other => exec_err!("array_position does not support type '{other:?}'"),
     }
 }
 
-/// Searches for an element in a list array using the flat values buffer and offsets directly,
-/// avoiding per-row subarray allocation. Dispatches to typed fast paths by element data type.
-fn generic_array_position<O: OffsetSizeTrait>(
-    array: &ArrayRef,
-    element: &ArrayRef,
-) -> Result<ArrayRef, DataFusionError> {
-    let list_array = array
-        .as_any()
-        .downcast_ref::<GenericListArray<O>>()
-        .ok_or_else(|| DataFusionError::Internal("expected list array".into()))?;
+fn position<O: OffsetSizeTrait>(
+    array: &GenericListArray<O>,
+    needle: &ColumnarValue,
+) -> Result<ArrayRef> {
+    let rows = MatchRows::new(array, needle)?;
+    let values = array.values();
 
-    let values = list_array.values();
-    let offsets = list_array.offsets();
-    let elem_type = values.data_type().clone();
-
-    match &elem_type {
-        DataType::Boolean => position_boolean::<O>(list_array, offsets, values, element),
-        DataType::Int8 => position_primitive::<O, Int8Type>(list_array, offsets, values, element),
-        DataType::Int16 => position_primitive::<O, Int16Type>(list_array, offsets, values, element),
-        DataType::Int32 => position_primitive::<O, Int32Type>(list_array, offsets, values, element),
-        DataType::Int64 => position_primitive::<O, Int64Type>(list_array, offsets, values, element),
-        DataType::Float32 => position_float::<O, Float32Type>(list_array, offsets, values, element),
-        DataType::Float64 => position_float::<O, Float64Type>(list_array, offsets, values, element),
-        DataType::Decimal128(_, _) => {
-            position_primitive::<O, Decimal128Type>(list_array, offsets, values, element)
-        }
-        DataType::Date32 => {
-            position_primitive::<O, Date32Type>(list_array, offsets, values, element)
-        }
-        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
-            position_primitive::<O, TimestampMicrosecondType>(list_array, offsets, values, element)
-        }
-        DataType::Utf8 => position_string::<O, i32>(list_array, offsets, values, element),
-        DataType::LargeUtf8 => position_string::<O, i64>(list_array, offsets, values, element),
-        // Fallback to Arrow's comparator for complex types (nested arrays, etc.)
-        _ => position_fallback::<O>(list_array, offsets, values, element),
-    }
-}
-
-/// Compute the combined null buffer from list array and element nulls.
-fn combined_nulls(
-    list_array_nulls: Option<&NullBuffer>,
-    element_nulls: Option<&NullBuffer>,
-) -> Option<NullBuffer> {
-    match (list_array_nulls, element_nulls) {
-        (Some(a), Some(b)) => NullBuffer::union(Some(a), Some(b)),
-        (Some(a), None) => Some(a.clone()),
-        (None, Some(b)) => Some(b.clone()),
-        (None, None) => None,
-    }
-}
-
-/// Fast path for primitive types: downcast once, iterate using offsets into the flat buffer.
-fn position_primitive<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
-    list_array: &GenericListArray<O>,
-    offsets: &arrow::buffer::OffsetBuffer<O>,
-    values: &ArrayRef,
-    element: &ArrayRef,
-) -> Result<ArrayRef, DataFusionError>
-where
-    T::Native: PartialEq,
-{
-    let values_typed = values.as_primitive::<T>();
-    let element_typed = element.as_primitive::<T>();
-    let num_rows = list_array.len();
-    let nulls = combined_nulls(list_array.nulls(), element.nulls());
-    let mut result = vec![0i64; num_rows];
-
-    for (row_index, w) in offsets.windows(2).enumerate() {
-        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
-            continue;
-        }
-        let start = w[0].as_usize();
-        let end = w[1].as_usize();
-        let search_val = element_typed.value(row_index);
-        for i in start..end {
-            if !values_typed.is_null(i) && values_typed.value(i) == search_val {
-                result[row_index] = (i - start + 1) as i64;
-                break;
+    // Only position needs typed non-float comparisons: contains and remove use DataFusion here.
+    macro_rules! typed_position {
+        ($ty:ty) => {
+            if let (Some(values), Some(needles)) = (
+                values.as_any().downcast_ref::<$ty>(),
+                rows.needles.as_any().downcast_ref::<$ty>(),
+            ) {
+                return SparkArrayPositionFunc::apply(&rows, |i, j| {
+                    values.value(i) == needles.value(j)
+                });
             }
-        }
+        };
     }
-
-    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
+    match values.data_type() {
+        DataType::Boolean => typed_position!(BooleanArray),
+        DataType::Int8 => typed_position!(Int8Array),
+        DataType::Int16 => typed_position!(Int16Array),
+        DataType::Int32 => typed_position!(Int32Array),
+        DataType::Int64 => typed_position!(Int64Array),
+        DataType::Decimal128(_, _) => typed_position!(Decimal128Array),
+        DataType::Date32 => typed_position!(Date32Array),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => typed_position!(TimestampMicrosecondArray),
+        DataType::Utf8 => typed_position!(StringArray),
+        DataType::LargeUtf8 => typed_position!(LargeStringArray),
+        _ => {}
+    }
+    // The registered DataFusion UDF also accepts structs, whose fields have historically been
+    // compared by ordinal even when their names differ.
+    rows.evaluate::<SparkArrayPositionFunc>(spark_equality_by_ordinal)
 }
 
-/// Float path: same as primitive but treats NaN == NaN (Spark's ordering.equiv() semantics).
-fn position_float<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
-    list_array: &GenericListArray<O>,
-    offsets: &arrow::buffer::OffsetBuffer<O>,
-    values: &ArrayRef,
-    element: &ArrayRef,
-) -> Result<ArrayRef, DataFusionError>
-where
-    T::Native: PartialEq + num::Float,
-{
-    let values_typed = values.as_primitive::<T>();
-    let element_typed = element.as_primitive::<T>();
-    let num_rows = list_array.len();
-    let nulls = combined_nulls(list_array.nulls(), element.nulls());
-    let mut result = vec![0i64; num_rows];
-
-    for (row_index, w) in offsets.windows(2).enumerate() {
-        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
-            continue;
-        }
-        let start = w[0].as_usize();
-        let end = w[1].as_usize();
-        let search_val = element_typed.value(row_index);
-        for i in start..end {
-            if !values_typed.is_null(i) {
-                let v = values_typed.value(i);
-                if compare_floats(v, search_val).is_eq() {
-                    result[row_index] = (i - start + 1) as i64;
-                    break;
-                }
-            }
-        }
+impl<O: OffsetSizeTrait> MatchOperation<O> for SparkArrayPositionFunc {
+    fn apply(rows: &MatchRows<'_, O>, equal: impl Fn(usize, usize) -> bool) -> Result<ArrayRef> {
+        let positions: Vec<_> = rows
+            .first_matches(equal)
+            .map(|(position, _)| position)
+            .collect();
+        Ok(Arc::new(Int64Array::new(
+            positions.into(),
+            rows.nulls.clone(),
+        )))
     }
-
-    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
-}
-
-/// Boolean path.
-fn position_boolean<O: OffsetSizeTrait>(
-    list_array: &GenericListArray<O>,
-    offsets: &arrow::buffer::OffsetBuffer<O>,
-    values: &ArrayRef,
-    element: &ArrayRef,
-) -> Result<ArrayRef, DataFusionError> {
-    let values_typed = values
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .ok_or_else(|| DataFusionError::Internal("expected boolean array".into()))?;
-    let element_typed = element
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .ok_or_else(|| DataFusionError::Internal("expected boolean array".into()))?;
-    let num_rows = list_array.len();
-    let nulls = combined_nulls(list_array.nulls(), element.nulls());
-    let mut result = vec![0i64; num_rows];
-
-    for (row_index, w) in offsets.windows(2).enumerate() {
-        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
-            continue;
-        }
-        let start = w[0].as_usize();
-        let end = w[1].as_usize();
-        let search_val = element_typed.value(row_index);
-        for i in start..end {
-            if !values_typed.is_null(i) && values_typed.value(i) == search_val {
-                result[row_index] = (i - start + 1) as i64;
-                break;
-            }
-        }
-    }
-
-    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
-}
-
-/// String path: downcast once, iterate using offsets into the flat string buffer.
-fn position_string<O: OffsetSizeTrait, S: OffsetSizeTrait>(
-    list_array: &GenericListArray<O>,
-    offsets: &arrow::buffer::OffsetBuffer<O>,
-    values: &ArrayRef,
-    element: &ArrayRef,
-) -> Result<ArrayRef, DataFusionError> {
-    let values_typed = values.as_string::<S>();
-    let element_typed = element.as_string::<S>();
-    let num_rows = list_array.len();
-    let nulls = combined_nulls(list_array.nulls(), element.nulls());
-    let mut result = vec![0i64; num_rows];
-
-    for (row_index, w) in offsets.windows(2).enumerate() {
-        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
-            continue;
-        }
-        let start = w[0].as_usize();
-        let end = w[1].as_usize();
-        let search_val = element_typed.value(row_index);
-        for i in start..end {
-            if !values_typed.is_null(i) && values_typed.value(i) == search_val {
-                result[row_index] = (i - start + 1) as i64;
-                break;
-            }
-        }
-    }
-
-    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
-}
-
-/// Fallback for complex types (nested arrays, structs, etc.) using Arrow's comparator.
-fn position_fallback<O: OffsetSizeTrait>(
-    list_array: &GenericListArray<O>,
-    offsets: &arrow::buffer::OffsetBuffer<O>,
-    values: &ArrayRef,
-    element: &ArrayRef,
-) -> Result<ArrayRef, DataFusionError> {
-    let num_rows = list_array.len();
-    let nulls = combined_nulls(list_array.nulls(), element.nulls());
-    let mut result = vec![0i64; num_rows];
-    let values_normalized =
-        has_float_leaf(values.data_type()).then(|| normalize_nested_floats(values));
-    let element_normalized =
-        has_float_leaf(element.data_type()).then(|| normalize_nested_floats(element));
-    let comparator = make_comparator(
-        values_normalized.as_ref().unwrap_or(values).as_ref(),
-        element_normalized.as_ref().unwrap_or(element).as_ref(),
-        SortOptions::default(),
-    )?;
-
-    for (row_index, w) in offsets.windows(2).enumerate() {
-        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
-            continue;
-        }
-        let start = w[0].as_usize();
-        let end = w[1].as_usize();
-        for i in start..end {
-            if !values.is_null(i) && comparator(i, row_index) == Ordering::Equal {
-                result[row_index] = (i - start + 1) as i64;
-                break;
-            }
-        }
-    }
-
-    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::ListArray;
+    use crate::float_semantics::NEGATIVE_NAN;
+    use arrow::array::{LargeListArray, ListArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Float64Type};
+    use datafusion::common::ScalarValue;
 
     #[test]
-    fn test_nested_float_and_null_position() -> DataFusionResult<()> {
+    fn scalar_needle_in_sliced_large_list() -> Result<()> {
+        let array = LargeListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![None, Some(NEGATIVE_NAN), Some(f64::NAN)]),
+            None,
+            Some(vec![]),
+            Some(vec![Some(1.0)]),
+        ]);
+        let array: ArrayRef = Arc::new(array.slice(1, 4));
+        let needle = ColumnarValue::Scalar(ScalarValue::Float64(Some(f64::NAN)));
+        let result = array_position(&array, &needle)?;
+        assert_eq!(
+            result.as_any().downcast_ref::<Int64Array>().unwrap(),
+            &Int64Array::from(vec![Some(2), None, Some(0), Some(0)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_float_and_null_position() -> Result<()> {
         let values = ListArray::from_iter_primitive::<Float64Type, _, _>([
             Some(vec![Some(1.0)]),
             Some(vec![Some(f64::NAN)]),
@@ -328,22 +138,19 @@ mod tests {
             Some(vec![Some(1.0), None]),
         ]);
 
-        let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
+        let result = position(&array, &ColumnarValue::Array(Arc::new(element)))?;
         let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(result, &Int64Array::from(vec![2, 1, 1]));
         Ok(())
     }
 
-    // array_position over array<struct<...>> currently falls back to Spark
-    // (ArraysBase.isTypeSupported rejects StructType, see #1307), so this only
-    // exercises position_fallback directly and isn't reachable from a SQL query.
+    // ArraysBase.isTypeSupported rejects structs, so this case is only reachable from Rust.
     #[test]
-    fn test_struct_float_field_signed_zero_position() -> DataFusionResult<()> {
-        use arrow::array::{Float64Builder, StructBuilder};
+    fn struct_position_compares_signed_zeros_by_field_ordinal() -> Result<()> {
+        use arrow::array::{Float64Builder, StructArray, StructBuilder};
 
         let fields = vec![Arc::new(Field::new("a", DataType::Float64, true))];
-        let mut values_builder =
-            StructBuilder::new(fields.clone(), vec![Box::new(Float64Builder::new())]);
+        let mut values_builder = StructBuilder::new(fields, vec![Box::new(Float64Builder::new())]);
         for v in [-0.0, 1.0] {
             values_builder
                 .field_builder::<Float64Builder>(0)
@@ -359,6 +166,7 @@ mod tests {
             None,
         );
 
+        let fields = vec![Arc::new(Field::new("A", DataType::Float64, true))];
         let mut element_builder = StructBuilder::new(fields, vec![Box::new(Float64Builder::new())]);
         element_builder
             .field_builder::<Float64Builder>(0)
@@ -367,14 +175,17 @@ mod tests {
         element_builder.append(true);
         let element = element_builder.finish();
 
-        let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
+        let result = position(&array, &ColumnarValue::Array(Arc::new(element)))?;
         let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
-        // {-0.0} is the first element and now matches {0.0}, matching Spark.
         assert_eq!(result, &Int64Array::from(vec![1]));
+
+        let empty_struct = StructArray::new_empty_fields(1, None);
+        assert!(position(&array, &ColumnarValue::Array(Arc::new(empty_struct))).is_err());
         Ok(())
     }
 }
 
+/// Returns the 1-based position of the first matching element, or 0 if none matches.
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct SparkArrayPositionFunc {
     signature: Signature,
@@ -403,11 +214,11 @@ impl ScalarUDFImpl for SparkArrayPositionFunc {
         &self.signature
     }
 
-    fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(DataType::Int64)
     }
 
-    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
-        spark_array_position(&args.args)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        invoke_match(self, args, array_position)
     }
 }

@@ -177,7 +177,7 @@ SELECT array_position(array(cast('NaN' as double), 1.0), cast('NaN' as double))
 query spark_answer_only
 SELECT array_position(array(1.0, cast('NaN' as double), 2.0), cast('NaN' as double))
 
--- NaN handling with column data
+-- Column and constant lookups must find the first equal float, skipping null elements.
 statement
 CREATE TABLE test_ap_nan(arr array<float>, val float) USING parquet
 
@@ -185,10 +185,20 @@ statement
 INSERT INTO test_ap_nan VALUES
   (array(cast('NaN' as float), cast(1.0 as float)), cast('NaN' as float)),
   (array(cast(1.0 as float), cast('NaN' as float), cast(2.0 as float)), cast('NaN' as float)),
-  (array(cast(1.0 as float), cast(2.0 as float)), cast('NaN' as float))
+  (array(cast(1.0 as float), cast(2.0 as float)), cast('NaN' as float)),
+  (array(), 0.0F),
+  (array(NULL, float('-0.0'), 0.0F), 0.0F),
+  (NULL, NULL)
 
 query
-SELECT array_position(arr, val) FROM test_ap_nan
+SELECT array_position(arr, val), array_position(arr, 0.0F), array_position(arr, float('NaN'))
+FROM test_ap_nan
+
+-- Negating a stored NaN flips its sign bit after the Parquet read.
+query
+SELECT array_position(array(NULL, -val, val), float('NaN')),
+       array_position(array(NULL, array(-val, NULL), array(val, NULL)), array(val, NULL))
+FROM test_ap_nan
 
 -- decimal arrays
 statement
@@ -218,14 +228,14 @@ INSERT INTO test_ap_date VALUES
 query
 SELECT array_position(arr, val) FROM test_ap_date
 
--- nested array (exercises position_fallback code path)
+-- nested array
 query spark_answer_only
 SELECT array_position(array(array(1, 2), array(3, 4)), array(1, 2))
 
 query spark_answer_only
 SELECT array_position(array(array(1, 2), array(3, 4)), array(5, 6))
 
--- nested int array column (exercises position_fallback natively)
+-- nested int array column
 statement
 CREATE TABLE test_ap_nested_int(arr array<array<int>>, val array<int>) USING parquet
 
@@ -240,7 +250,7 @@ INSERT INTO test_ap_nested_int VALUES
 query
 SELECT array_position(arr, val) FROM test_ap_nested_int
 
--- nested string array column (exercises position_fallback natively)
+-- nested string array column
 statement
 CREATE TABLE test_ap_nested_str(arr array<array<string>>, val array<string>) USING parquet
 
@@ -269,7 +279,7 @@ INSERT INTO test_ap_nested_dbl VALUES
   (array(array(double('0.0'))), NULL)
 
 query
-SELECT array_position(arr, val) FROM test_ap_nested_dbl
+SELECT array_position(arr, val), array_position(arr, array(0.0D)) FROM test_ap_nested_dbl
 
 -- timestamp arrays
 statement

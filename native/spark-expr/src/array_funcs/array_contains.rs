@@ -17,16 +17,15 @@
 
 use std::sync::Arc;
 
+use super::array_match::{invoke_match, invoke_with_mask, MatchOperation, MatchRows};
 use super::set_bits_before;
-use crate::float_semantics::{compare_floats, spark_equality};
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, ListArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
-use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
-use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
+use arrow::datatypes::DataType;
+use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Operator, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use num::Float;
 
 /// Spark's `array_contains` for arrays whose elements hold floats at any depth.
 ///
@@ -63,89 +62,23 @@ impl ScalarUDFImpl for SparkFloatArrayContains {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let [array, value] = take_function_args(self.name(), &args.args)?;
-        let all_scalars = matches!(
-            (array, value),
-            (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
-        );
-        let rows = if all_scalars { 1 } else { args.number_rows };
-        let array = array.to_array(rows)?;
-        // Spark arrays use Arrow's 32-bit List layout.
-        let Some(list) = array.as_list_opt::<i32>() else {
-            return exec_err!(
-                "spark_array_contains takes a list, got {}",
-                array.data_type()
-            );
-        };
-        let result = match value {
-            ColumnarValue::Scalar(needle) => contains_constant(list, needle)?,
-            ColumnarValue::Array(value) => array_contains(list, value)?,
-        };
-        if all_scalars {
-            Ok(ColumnarValue::Scalar(ScalarValue::Boolean(
-                result.is_valid(0).then(|| result.value(0)),
-            )))
-        } else {
-            Ok(ColumnarValue::Array(Arc::new(result)))
+        if matches!(args.args.as_slice(), [_, ColumnarValue::Scalar(value)] if value.is_null()) {
+            return invoke_match(self, args, |array, _| {
+                let Some(list) = array.as_list_opt::<i32>() else {
+                    return exec_err!("{} takes a list, got {}", self.name(), array.data_type());
+                };
+                Ok(Arc::new(BooleanArray::new_null(list.len())))
+            });
         }
+        invoke_with_mask(self, args, Operator::IsNotDistinctFrom, from_mask)
     }
 }
 
-fn array_contains(array: &ListArray, value: &ArrayRef) -> Result<BooleanArray> {
-    // Spark casts the value to the element type. Anything else fails in `spark_equality`.
-    match (array.value_type(), value.data_type()) {
-        (DataType::Float32, DataType::Float32) => Ok(contains_floats::<Float32Type>(array, value)),
-        (DataType::Float64, DataType::Float64) => Ok(contains_floats::<Float64Type>(array, value)),
-        _ => {
-            let equal = spark_equality(array.values().as_ref(), value.as_ref())?;
-            contains_where(array, value, equal)
-        }
-    }
-}
-
-/// [`array_contains`] with the same value for every row, which a float array answers in one pass
-/// over all the values.
-fn contains_constant(array: &ListArray, needle: &ScalarValue) -> Result<BooleanArray> {
-    match (array.value_type(), needle) {
-        // A null value gives null for every row.
-        (_, needle) if needle.is_null() => Ok(BooleanArray::new_null(array.len())),
-        (DataType::Float32, ScalarValue::Float32(Some(needle))) => {
-            Ok(contains_float_constant::<Float32Type>(array, *needle))
-        }
-        (DataType::Float64, ScalarValue::Float64(Some(needle))) => {
-            Ok(contains_float_constant::<Float64Type>(array, *needle))
-        }
-        _ => array_contains(array, &needle.to_array_of_size(array.len())?),
-    }
-}
-
-fn contains_float_constant<T>(array: &ListArray, needle: T::Native) -> BooleanArray
-where
-    T: ArrowPrimitiveType,
-    T::Native: Float,
-{
+fn from_mask(array: &ListArray, elements: &ArrayRef, matches: BooleanBuffer) -> Result<ArrayRef> {
     let offsets = array.offsets();
-    let first = offsets[0] as usize;
-    let values = array
-        .values()
-        .slice(first, offsets[array.len()] as usize - first);
-    let floats = values.as_primitive::<T>();
-    let buffer = floats.values();
-    // For a fixed value, Spark's genEqual is one test per element: IEEE `==`, under which the two
-    // zeros are equal and a NaN differs from every number, or `is_nan` for a NaN value.
-    let matches = if needle.is_nan() {
-        BooleanBuffer::collect_bool(buffer.len(), |index| buffer[index].is_nan())
-    } else {
-        BooleanBuffer::collect_bool(buffer.len(), |index| buffer[index] == needle)
-    };
-    // A null element never matches.
-    let matches = match floats.nulls() {
-        Some(nulls) => &matches & nulls.inner(),
-        None => matches,
-    };
     // One pass over each bitmap gives every row's match count and valid count.
     let matched = set_bits_before(&matches, offsets);
-    let valid = floats
+    let valid = elements
         .nulls()
         .map(|nulls| set_bits_before(nulls.inner(), offsets));
     let mut values = BooleanBufferBuilder::new(array.len());
@@ -158,88 +91,38 @@ where
         values.append(found);
         validity.append(array.is_valid(row) && (found || !has_null));
     }
-    BooleanArray::new(values.finish(), Some(NullBuffer::new(validity.finish())))
+    Ok(Arc::new(BooleanArray::new(
+        values.finish(),
+        Some(NullBuffer::new(validity.finish())),
+    )))
 }
 
-/// Tests each row's floats against the row's value in Spark's `genEqual`, straight from the
-/// flattened values. A row is null when the array or the value is.
-fn contains_floats<T>(array: &ListArray, value: &ArrayRef) -> BooleanArray
-where
-    T: ArrowPrimitiveType,
-    T::Native: Float,
-{
-    let values = array.values().as_primitive::<T>();
-    let needles = value.as_primitive::<T>().values();
-    let (buffer, nulls) = (values.values(), values.nulls());
-    let row_nulls = NullBuffer::union(array.nulls(), value.nulls());
-    let mut found_rows = BooleanBufferBuilder::new(array.len());
-    let mut validity = BooleanBufferBuilder::new(array.len());
-    for (row, bounds) in array.offsets().windows(2).enumerate() {
-        let (mut found, mut has_null) = (false, false);
-        let row_valid = row_nulls.as_ref().is_none_or(|nulls| nulls.is_valid(row));
-        if row_valid {
-            let needle = needles[row];
-            for index in bounds[0] as usize..bounds[1] as usize {
-                if nulls.is_some_and(|nulls| nulls.is_null(index)) {
-                    has_null = true;
-                } else if compare_floats(buffer[index], needle).is_eq() {
-                    found = true;
-                    break;
-                }
-            }
+impl MatchOperation<i32> for SparkFloatArrayContains {
+    fn apply(rows: &MatchRows<'_, i32>, equal: impl Fn(usize, usize) -> bool) -> Result<ArrayRef> {
+        let mut values = BooleanBufferBuilder::new(rows.array.len());
+        let mut validity = BooleanBufferBuilder::new(rows.array.len());
+        for (row, (position, has_null)) in rows.first_matches(equal).enumerate() {
+            let found = position != 0;
+            values.append(found);
+            let valid = rows.nulls.as_ref().is_none_or(|nulls| nulls.is_valid(row));
+            validity.append(valid && (found || !has_null));
         }
-        found_rows.append(found);
-        validity.append(row_valid && (found || !has_null));
+        Ok(Arc::new(BooleanArray::new(
+            values.finish(),
+            Some(NullBuffer::new(validity.finish())),
+        )))
     }
-    BooleanArray::new(
-        found_rows.finish(),
-        Some(NullBuffer::new(validity.finish())),
-    )
-}
-
-/// Tests each row's non-null elements with `equal(element, row)`. A row is null when the array or
-/// the value is.
-fn contains_where<F>(array: &ListArray, value: &ArrayRef, equal: F) -> Result<BooleanArray>
-where
-    F: Fn(usize, usize) -> bool,
-{
-    let element_nulls = array.values().logical_nulls();
-    let row_nulls = NullBuffer::union(array.nulls(), value.nulls());
-    let mut found_rows = BooleanBufferBuilder::new(array.len());
-    let mut validity = BooleanBufferBuilder::new(array.len());
-    for (row, bounds) in array.offsets().windows(2).enumerate() {
-        let (mut found, mut has_null) = (false, false);
-        let row_valid = row_nulls.as_ref().is_none_or(|nulls| nulls.is_valid(row));
-        if row_valid {
-            for element in bounds[0] as usize..bounds[1] as usize {
-                if element_nulls
-                    .as_ref()
-                    .is_some_and(|nulls| nulls.is_null(element))
-                {
-                    has_null = true;
-                } else if equal(element, row) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        found_rows.append(found);
-        validity.append(row_valid && (found || !has_null));
-    }
-    Ok(BooleanArray::new(
-        found_rows.finish(),
-        Some(NullBuffer::new(validity.finish())),
-    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::test_util::list;
     use super::*;
-    use crate::float_semantics::EDGE_VALUES;
+    use crate::float_semantics::{compare_floats, EDGE_VALUES};
     use arrow::array::{Float64Array, Int32Array, StructArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
+    use datafusion::common::ScalarValue;
     use datafusion::config::ConfigOptions;
 
     fn invoke(array: ColumnarValue, value: ColumnarValue, rows: usize) -> Result<ColumnarValue> {
