@@ -705,7 +705,7 @@ SELECT $ARGUMENTS(col) FROM test_$ARGUMENTS
 
 -- literal arguments
 query
-SELECT $ARGUMENTS('value'), $ARGUMENTS(''), $ARGUMENTS(NULL)
+SELECT $ARGUMENTS('value'), $ARGUMENTS('')
 ```
 
 ### Verify the tests pass
