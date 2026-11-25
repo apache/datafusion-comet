@@ -304,12 +304,15 @@ the inside out, a Comet plan in the default configuration sees:
 ```text
 [LoggingMemoryPool]          <- only when spark.comet.debug.memory=true
   [TaskSharedMemoryPool]     <- RAII handle for the per-task registry
-    [TrackConsumersPool]     <- DataFusion; names the top 10 consumers in error messages
-      [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
+    [SpillReplayPool]        <- lets a spilled final aggregate read its spill files back
+      [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
+        [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
 ```
 
 Each decorator forwards every `MemoryPool` method to its inner pool, so `reserved()` at any level
-reports the base pool's number.
+reports the base pool's number. `SpillReplayPool` also turns one kind of refused `try_grow` into a
+`grow`; see
+[Final aggregates reading their spill files back](#final-aggregates-reading-their-spill-files-back).
 
 ### The unified pools
 
@@ -406,7 +409,7 @@ total plus the request would exceed `pool_size`, which Spark's own limit on the 
 tight as unless the deprecated fraction is below `1 / N`.
 
 The pool goes by what a consumer declares, with one exception. DataFusion registers
-`ClusteredFinalAggregateStream` (`OrderedFinalAggregateStream` before DataFusion 56) as able to spill even when its input is sorted on every grouping key,
+`ClusteredFinalAggregateStream` as able to spill even when its input is sorted on every grouping key,
 as a workaround for [apache/datafusion#17334](https://github.com/apache/datafusion/issues/17334), but
 builds a spill path only for partially sorted input. Fully sorted, as in a `CometSortAggregateExec`
 over a native sort, a refusal fails the query, so the pool checks its requests only against the
@@ -484,6 +487,19 @@ created it, so the JVM side shares one manager per task as well: `CometExecItera
 hands every native plan in a task the same one and drops it when the task completes. Its `getUsed`
 covers the whole task, so `CometExecIterator.close()` warns about memory still in use only when
 the task's last open native plan closes.
+
+### Final aggregates reading their spill files back
+
+`SpillReplayPool` (`spill_replay.rs`) wraps both Comet pools to work around
+[issue #6254](https://github.com/apache/datafusion-comet/issues/6254). Once one of DataFusion's
+final aggregates has spilled, it reads its spill files back through an aggregate that cannot spill,
+so a refused `try_grow` there fails the task. DataFusion 56 checks for room for this when it picks
+the spill files to merge, but it does not keep that room, so the request can still be refused. When
+the pool refuses such a request, `SpillReplayPool` records it with the pool's `grow` instead, which
+skips `CometFairMemoryPool`'s local checks and carries what Spark does not grant as overcommit.
+Every other refusal is passed on unchanged. `spill_replay.rs` describes how the wrapper recognizes
+these requests and what that relies on in DataFusion.
+[Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks removing it.
 
 ## How DataFusion consumes the pool
 

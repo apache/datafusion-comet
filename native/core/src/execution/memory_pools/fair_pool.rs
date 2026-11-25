@@ -21,6 +21,7 @@ use std::{
 };
 
 use super::spark_memory::SparkMemory;
+use super::spill_replay::CLUSTERED_FINAL_AGGREGATE;
 use super::task_shared::RunningTasks;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -214,10 +215,6 @@ impl Display for CometFairMemoryPool {
         )
     }
 }
-
-/// The prefix of the name DataFusion gives the consumer of a `ClusteredFinalAggregateStream`, the
-/// final aggregate over input sorted on some or all of its keys.
-const CLUSTERED_FINAL_AGGREGATE: &str = "ClusteredFinalAggregateStream[";
 
 /// Whether a request from `consumer` is held to its fair limit and the task's share.
 ///
