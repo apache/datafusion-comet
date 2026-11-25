@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::shuffle_writer::contains_view_type;
 use arrow::array::{cast::AsArray, Array, ArrayRef, BooleanArray, RecordBatch};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{concat_batches, interleave, interleave_record_batch};
@@ -42,7 +43,8 @@ pub(crate) struct BufferedRun {
 /// space at a 64-row group, which matters because this list is charged against the spill
 /// reservation. The payoff is at flush: a run is copied with one bulk copy per buffer, where a
 /// row list has to be gathered a row at a time through `interleave_record_batch`, re-walking
-/// every column and every nested child.
+/// every column and every nested child, unless its rows happen to be contiguous (see
+/// [`RowIterator`]).
 pub(crate) enum PartitionIndices {
     /// One `(batch, row)` pair per row, in the order the rows should be written.
     Rows(Vec<Vec<(u32, u32)>>),
@@ -97,6 +99,9 @@ pub(super) struct PartitionedBatchesProducer {
     batch_size: usize,
     // Every partition borrows the same immutable schema. Check it once per flush.
     has_boolean_columns: bool,
+    /// Slicing a view array keeps every data buffer it shares, so rows of a schema with a view
+    /// type are always gathered (see `contains_view_type`).
+    has_view_types: bool,
 }
 
 impl PartitionedBatchesProducer {
@@ -105,18 +110,23 @@ impl PartitionedBatchesProducer {
         indices: PartitionIndices,
         batch_size: usize,
     ) -> Self {
-        let has_boolean_columns = buffered_batches.first().is_some_and(|batch| {
-            batch
-                .schema_ref()
-                .fields()
-                .iter()
-                .any(|field| field.data_type() == &DataType::Boolean)
-        });
+        let schema_has = |matches: fn(&DataType) -> bool| {
+            buffered_batches.first().is_some_and(|batch| {
+                batch
+                    .schema_ref()
+                    .fields()
+                    .iter()
+                    .any(|field| matches(field.data_type()))
+            })
+        };
+        let has_boolean_columns = schema_has(|data_type| data_type == &DataType::Boolean);
+        let has_view_types = schema_has(contains_view_type);
         Self {
             partition_indices: indices,
             buffered_batches,
             batch_size,
             has_boolean_columns,
+            has_view_types,
         }
     }
 
@@ -128,8 +138,8 @@ impl PartitionedBatchesProducer {
     }
 
     /// `interleave_time` is the shuffle writer's `interleave_time` metric, which times the gather
-    /// out of the partition index for either shape: `interleave_record_batch` over rows, or the
-    /// slicing and concatenation of runs.
+    /// out of the partition index for either shape: `interleave_record_batch` over scattered
+    /// rows, or the slicing and concatenation of runs.
     pub(super) fn produce<'a>(
         &'a self,
         refs: &'a [&'a RecordBatch],
@@ -150,6 +160,7 @@ impl PartitionedBatchesProducer {
                 self.batch_size,
                 interleave_time,
                 self.has_boolean_columns,
+                self.has_view_types,
             )),
             PartitionIndices::Runs(runs) => PartitionedBatchIterator::Runs(RunIterator::new(
                 &runs[partition_id],
@@ -182,8 +193,12 @@ impl Iterator for PartitionedBatchIterator<'_> {
 }
 
 /// Produces a partition's output by gathering individually named rows.
+///
+/// Rows that already sit together, such as a batch whose rows all hash to one partition, are
+/// sliced out instead of copied a row at a time. See [`has_long_runs`].
 pub(crate) struct RowIterator<'a> {
     has_boolean_columns: bool,
+    has_view_types: bool,
     record_batches: &'a [&'a RecordBatch],
     batch_size: usize,
     indices: &'a [(u32, u32)],
@@ -191,6 +206,9 @@ pub(crate) struct RowIterator<'a> {
     /// expects. Reused across chunks so each partition costs one small allocation
     /// (capacity at most `batch_size`) rather than re-materializing its whole index list.
     chunk_scratch: Vec<(usize, usize)>,
+    /// Scratch for the slices cut from the current chunk's runs. Grown only by chunks that
+    /// take the slice path, so scattered partitions never allocate it.
+    slice_scratch: Vec<RecordBatch>,
     pos: usize,
     interleave_time: &'a Time,
 }
@@ -202,25 +220,30 @@ impl<'a> RowIterator<'a> {
         batch_size: usize,
         interleave_time: &'a Time,
         has_boolean_columns: bool,
+        has_view_types: bool,
     ) -> Self {
         if indices.is_empty() {
             // Avoid unnecessary allocations when the partition is empty
             return Self {
                 has_boolean_columns,
+                has_view_types,
                 record_batches: &[],
                 batch_size,
                 indices: &[],
                 chunk_scratch: vec![],
+                slice_scratch: vec![],
                 pos: 0,
                 interleave_time,
             };
         }
         Self {
             has_boolean_columns,
+            has_view_types,
             record_batches,
             batch_size,
             indices,
             chunk_scratch: Vec::with_capacity(batch_size.min(indices.len())),
+            slice_scratch: vec![],
             pos: 0,
             interleave_time,
         }
@@ -236,17 +259,27 @@ impl Iterator for RowIterator<'_> {
         }
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
-        self.chunk_scratch.clear();
-        self.chunk_scratch.extend(
-            self.indices[self.pos..indices_end]
-                .iter()
-                .map(|(i_batch, i_row)| (*i_batch as usize, *i_row as usize)),
-        );
+        let chunk = &self.indices[self.pos..indices_end];
         let mut timer = self.interleave_time.timer();
-        let result = if self.has_boolean_columns {
-            interleave_shuffle_batches(self.record_batches, &self.chunk_scratch)
+        let result = if !self.has_view_types && has_long_runs(chunk) {
+            self.slice_scratch.clear();
+            self.slice_scratch.extend(contiguous_runs(chunk).map(|run| {
+                let (batch, start) = run[0];
+                self.record_batches[batch as usize].slice(start as usize, run.len())
+            }));
+            concat_slices(&mut self.slice_scratch)
         } else {
-            interleave_record_batch(self.record_batches, &self.chunk_scratch)
+            self.chunk_scratch.clear();
+            self.chunk_scratch.extend(
+                chunk
+                    .iter()
+                    .map(|(i_batch, i_row)| (*i_batch as usize, *i_row as usize)),
+            );
+            if self.has_boolean_columns {
+                interleave_shuffle_batches(self.record_batches, &self.chunk_scratch)
+            } else {
+                interleave_record_batch(self.record_batches, &self.chunk_scratch)
+            }
         };
         timer.stop();
         match result {
@@ -259,6 +292,57 @@ impl Iterator for RowIterator<'_> {
                 Some(DataFusionError::get_back_trace()),
             ))),
         }
+    }
+}
+
+/// The shortest average run that [`RowIterator`] slices out of a chunk rather than gathering row
+/// by row. Slicing costs a fixed amount per run and array, gathering a fixed amount per row and
+/// array. Slicing wins from runs of about 32 rows on flat schemas and breaks even at about 64 on
+/// nested ones.
+const MIN_AVG_RUN_ROWS: usize = 64;
+
+/// The maximal runs of consecutive rows of one buffered batch in `chunk`, in order.
+fn contiguous_runs(chunk: &[(u32, u32)]) -> impl Iterator<Item = &[(u32, u32)]> {
+    chunk.chunk_by(|&(batch, row), &(next_batch, next_row)| {
+        next_batch == batch && next_row == row + 1
+    })
+}
+
+/// Whether the runs of `chunk` average at least [`MIN_AVG_RUN_ROWS`] rows.
+///
+/// The exact count stops one run past the budget, which for runs just under the minimum is most
+/// of the chunk, all of it wasted before the gather. So a lower bound comes first. A stretch of
+/// `MIN_AVG_RUN_ROWS` steps whose ends are not that many rows apart in one batch holds a run
+/// boundary, and the stretches are disjoint, so one probe per stretch rules out any chunk whose
+/// runs are all shorter than the minimum.
+fn has_long_runs(chunk: &[(u32, u32)]) -> bool {
+    let max_runs = chunk.len() / MIN_AVG_RUN_ROWS;
+    if max_runs == 0 {
+        return false;
+    }
+    let last = chunk.len() - 1;
+    let broken = (0..last)
+        .step_by(MIN_AVG_RUN_ROWS)
+        .filter(|&start| {
+            let end = (start + MIN_AVG_RUN_ROWS).min(last);
+            let (batch, row) = chunk[start];
+            chunk[end] != (batch, row + (end - start) as u32)
+        })
+        .count();
+    broken < max_runs && contiguous_runs(chunk).take(max_runs + 1).count() <= max_runs
+}
+
+/// One output batch from the slices making up a chunk.
+///
+/// `concat_batches` over a single slice returns the slice rather than compacting it (arrow's
+/// `concat` short-circuits at one input), so skip the call and let the slice through: the IPC
+/// writer truncates a sliced array's buffers per type, and the one family it does not, the view
+/// types, cannot reach here (see `contains_view_type`).
+fn concat_slices(slices: &mut Vec<RecordBatch>) -> Result<RecordBatch, ArrowError> {
+    if slices.len() == 1 {
+        Ok(slices.pop().expect("one slice"))
+    } else {
+        concat_batches(&slices[0].schema(), slices.iter())
     }
 }
 
@@ -394,15 +478,7 @@ impl Iterator for RunIterator<'_> {
             }
         }
 
-        // `concat_batches` over a single slice returns the slice rather than compacting it
-        // (arrow's `concat` short-circuits at one input), so skip the call and let the slice
-        // through: the IPC writer truncates a sliced array's buffers per type, and the one
-        // family it does not, the view types, cannot reach here (see `create_repartitioner`).
-        let result = if self.chunk_scratch.len() == 1 {
-            Ok(self.chunk_scratch.pop().expect("one slice"))
-        } else {
-            concat_batches(&self.chunk_scratch[0].schema(), self.chunk_scratch.iter())
-        };
+        let result = concat_slices(&mut self.chunk_scratch);
         timer.stop();
         match result {
             Ok(batch) => Some(Ok(batch)),
@@ -417,7 +493,7 @@ impl Iterator for RunIterator<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Decimal128Array, Int32Array, Int64Array};
+    use arrow::array::{Decimal128Array, Int32Array, Int64Array, StringArray, StringViewArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -753,5 +829,134 @@ mod tests {
     fn empty_run_list_produces_nothing() {
         let (values, _) = run_values(vec![], 4);
         assert!(values.is_empty());
+    }
+
+    /// Rows that sit in long runs are sliced out rather than gathered, and come out the same as
+    /// the gather. The chunks of 300 rows are one whole batch, two runs, and part of a batch, over
+    /// sources that are themselves slices. The whole-batch chunk shares its source buffers, which
+    /// shows that the slice path was taken.
+    #[test]
+    fn contiguous_rows_are_sliced_not_gathered() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("s", DataType::Utf8, true),
+            Field::new("b", DataType::Boolean, true),
+        ]));
+        let buffered: Vec<RecordBatch> = (0..3)
+            .map(|b| {
+                let rows = b * 1000..b * 1000 + 305;
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from_iter_values(rows.clone())),
+                        Arc::new(StringArray::from_iter(
+                            rows.clone()
+                                .map(|r| (r % 7 != 0).then(|| format!("row {r}"))),
+                        )),
+                        Arc::new(BooleanArray::from_iter(
+                            rows.map(|r| (r % 5 != 0).then_some(r % 3 == 0)),
+                        )),
+                    ],
+                )
+                .unwrap()
+                .slice(5, 300)
+            })
+            .collect();
+        let indices: Vec<(u32, u32)> = (0..300)
+            .map(|r| (0, r))
+            .chain((20..220).map(|r| (1, r)))
+            .chain((0..300).map(|r| (2, r)))
+            .collect();
+        let batch_size = 300;
+        let producer = PartitionedBatchesProducer::new(
+            buffered.clone(),
+            PartitionIndices::Rows(vec![indices.clone()]),
+            batch_size,
+        );
+        let refs = producer.batch_refs();
+        let time = Time::default();
+        let produced: Vec<RecordBatch> = producer
+            .produce(&refs, 0, &time)
+            .collect::<datafusion::common::Result<_>>()
+            .unwrap();
+
+        let expected: Vec<RecordBatch> = indices
+            .chunks(batch_size)
+            .map(|chunk| {
+                let chunk: Vec<_> = chunk
+                    .iter()
+                    .map(|&(b, r)| (b as usize, r as usize))
+                    .collect();
+                interleave_record_batch(&refs, &chunk).unwrap()
+            })
+            .collect();
+        assert_eq!(produced, expected);
+        assert_eq!(
+            produced[0].column(0).to_data().buffers()[0]
+                .data_ptr()
+                .as_ptr() as usize,
+            buffered[0].column(0).to_data().buffers()[0]
+                .data_ptr()
+                .as_ptr() as usize,
+            "expected the source allocation, not a copy"
+        );
+    }
+
+    /// A sliced view array keeps every data buffer it shares, so view columns are gathered even
+    /// when their rows are contiguous.
+    #[test]
+    fn view_columns_are_gathered_even_when_contiguous() {
+        let values = StringViewArray::from_iter_values(
+            (0..300).map(|r| format!("a view value longer than twelve bytes {r}")),
+        );
+        let batch = RecordBatch::try_from_iter([("s", Arc::new(values) as ArrayRef)]).unwrap();
+        let views = batch.column(0).to_data().buffers()[0].clone();
+        // Long enough to take the slice path if the schema allowed it.
+        let producer = PartitionedBatchesProducer::new(
+            vec![batch.clone()],
+            PartitionIndices::Rows(vec![(0..300).map(|r| (0, r)).collect()]),
+            300,
+        );
+        let refs = producer.batch_refs();
+        let time = Time::default();
+        let produced: Vec<RecordBatch> = producer
+            .produce(&refs, 0, &time)
+            .collect::<datafusion::common::Result<_>>()
+            .unwrap();
+
+        assert_eq!(produced, vec![batch]);
+        assert_ne!(
+            produced[0].column(0).to_data().buffers()[0]
+                .data_ptr()
+                .as_ptr() as usize,
+            views.data_ptr().as_ptr() as usize,
+            "expected the views to be gathered, not sliced"
+        );
+    }
+
+    /// The probe-per-stretch lower bound in `has_long_runs` never changes the exact count's
+    /// decision, on random mixes of short and long runs that need not follow each other in row
+    /// order.
+    #[test]
+    fn long_run_bound_matches_exact_count() {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..500 {
+            let len = 1 + (next() % 9_000) as usize;
+            let mut chunk = Vec::with_capacity(len);
+            while chunk.len() < len {
+                let run = 1 + (next() % [2, 40, 70, 200, 9_000][case % 5]) as usize;
+                let (batch, row) = ((next() % 16) as u32, (next() % 4_096) as u32);
+                chunk.extend((0..run.min(len - chunk.len())).map(|k| (batch, row + k as u32)));
+            }
+            let max_runs = chunk.len() / MIN_AVG_RUN_ROWS;
+            let exact = max_runs > 0 && contiguous_runs(&chunk).count() <= max_runs;
+            assert_eq!(has_long_runs(&chunk), exact, "case {case}");
+        }
     }
 }
