@@ -1547,7 +1547,7 @@ class CometNativeCastSuite
 
   // The tests above compare the cast with the Spark they run on, and SparkFixesSuite covers the
   // setting for each Spark version.
-  test("cast StringType to DecimalType sets the decimal options for the running Spark version") {
+  test("cast StringType to DecimalType sets the decimal options for Spark and Java versions") {
     val a = AttributeReference("a", StringType)()
     val cast =
       CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false).map(_.getCast)
@@ -1557,6 +1557,7 @@ class CometNativeCastSuite
         Some(SparkFixes.castsZeroWithAnyExponentToDecimal(version)))
     assert(
       cast.map(_.getDecimalTinyToZero) == Some(SparkFixes.castsTinyStringToDecimalZero(version)))
+    assert(cast.map(_.getDecimalFullDivisorRange) == Some(Runtime.version().feature() >= 25))
   }
 
   test(
@@ -1814,6 +1815,19 @@ class CometNativeCastSuite
         val actual = rootCause(cometError.getOrElse(fail("Comet did not fail")))
         assert(actual.getClass == expected.getClass, s"Spark: $expected, Comet: $actual")
         assert(actual.getMessage == expected.getMessage)
+      }
+    }
+  }
+
+  test("(ansi) cast a long decimal coefficient with an extreme negative exponent") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val data = roundtripParquet(Seq("9" * 40 + "e-2147483647").toDF("s"), dir)
+        val df = data.select(col("s").cast(DecimalType(10, 2)))
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        // Before SPARK-60119 Spark throws a raw ArithmeticException (#6966).
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkError.isDefined == cometError.isDefined)
       }
     }
   }
@@ -2549,6 +2563,17 @@ class CometNativeCastSuite
       // testTry=false: try_cast uses SQL string interpolation (toType.sql → "DECIMAL(10,-4)")
       // which the SQL parser rejects regardless of allowNegativeScaleOfDecimal.
       castTest(values, DataTypes.createDecimalType(10, -4), testTry = false)
+      val fortyDigits = Seq("1" + "0" * 39).toDF("a")
+      castTest(fortyDigits, DataTypes.createDecimalType(10, -35), testTry = false)
+
+      withTempPath { dir =>
+        val data = roundtripParquet(Seq("1." + "0" * 50).toDF("s"), dir)
+        Seq(col("s"), col("s").cast(DecimalType(10, 0))).foreach { input =>
+          checkSparkAnswerAndFallbackReason(
+            data.filter(input.cast(DecimalType(10, -256)).cast("boolean")),
+            "Decimal scale -256 does not fit in a signed byte")
+        }
+      }
     }
   }
 

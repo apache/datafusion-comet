@@ -81,14 +81,12 @@ under ANSI mode. Comet chooses the behavior by the Spark version number. On a ve
 reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
 returns `0`.
 
-Likewise, a string far below the target scale's unit in the last place casts to `0` on those
-releases when the difference to the target scale does not fit in an int (SPARK-60119), for example
-`'1e-2147483647'` cast to `DECIMAL(10,-2)`, which needs
-`spark.sql.legacy.allowNegativeScaleOfDecimal=true`. Earlier releases raise a raw
-`ArithmeticException` in every eval mode, which Comet cannot reproduce: it returns `NULL`, or
-raises `CAST_INVALID_INPUT` under ANSI mode. Comet again chooses the behavior by the Spark version
-number, so on a vendor build that reports an older version but includes SPARK-60119, Comet returns
-`NULL` (or raises) where Spark returns `0`.
+On those same releases, Spark and Comet cast `'1e-2147483647'` to `DECIMAL(10,2)` as `0.00`
+(SPARK-60119). On earlier releases, this cast needs a power of ten larger than the JDK supports.
+Spark raises an `ArithmeticException` in every eval mode. Comet checks the limit for the
+driver's JDK version and raises `CAST_INVALID_INPUT` under ANSI mode or returns `NULL` otherwise
+([#6966](https://github.com/apache/datafusion-comet/issues/6966)). A vendor build that backports
+SPARK-60119 to an earlier Spark version can return `0` where Comet raises or returns `NULL`.
 
 A string whose integral part has more than 38 digits, such as `'6E+38'`, is rejected before Spark
 checks the value against the target type. Comet does the same: the result is `NULL`, or
@@ -96,15 +94,17 @@ checks the value against the target type. Comet does the same: the result is `NU
 `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, Spark does not apply this limit, and neither
 does Comet.
 
+Comet then rounds to the target scale with ties away from zero. A string with more than 38 digits
+can fit the target precision after rounding. Casting a string column to a decimal with a scale
+below `-128` falls back to Spark because the Arrow decimal type in Rust stores the scale as a
+signed byte. Folded decimal literals and existing decimal columns bypass this cast check. Their
+scales can wrap when Comet converts their types to Arrow (for example, `-256` becomes `0`).
+
 Under ANSI mode, a value that parses but is too large for the target type can raise
-`CAST_INVALID_INPUT` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`, when scaling it to the target
-type needs more than 38 digits. Examples are `'1e37'` cast to `DECIMAL(10,2)`, and `'6E+38'` cast to
+`CAST_INVALID_INPUT` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`, when the target scale exceeds
+the parsed scale by more than 38. Examples are `'1e37'` cast to `DECIMAL(10,2)`, and `'6E+38'` cast to
 `DECIMAL(10,2)` with the setting above
-([#7576](https://github.com/apache/datafusion-comet/issues/7576)). A string whose digits do not
-fit in an `i128`, which is about 38 of them with the fractional digits included, and that the limit
-above does not reject, is not parsed at all. Comet returns `NULL`, or raises `CAST_INVALID_INPUT`
-under ANSI mode, where Spark returns the value or raises `NUMERIC_VALUE_OUT_OF_RANGE`
-([#7581](https://github.com/apache/datafusion-comet/issues/7581)).
+([#7576](https://github.com/apache/datafusion-comet/issues/7576)).
 
 ## String to Date
 
@@ -212,6 +212,8 @@ as `"1.23E+4"`).
 
 ## Decimal with Negative Scale to Integer and Timestamp
 
+The following applies to negative scales from `-128` to `-1`, which fit in the scale field in Arrow Rust.
+
 Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
 `LongType` or `TimestampType` has no native implementation, and neither does casting any of the
 integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
@@ -225,8 +227,8 @@ overflows when the scale is negative. See
 All other cast directions to and from negative-scale decimals run natively: `FloatType` and
 `DoubleType`, `StringType` in both directions (subject to the config gate described above),
 casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
-Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
-not specific to a negative one.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher for both
+positive and negative scales in the supported range.
 
 ## Complex Types
 

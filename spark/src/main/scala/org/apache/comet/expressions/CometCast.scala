@@ -209,6 +209,8 @@ object CometCast
         // Spark does not apply the 38 integral-digit limit to a string cast to decimal with
         // spark.sql.legacy.allowNegativeScaleOfDecimal.
         castBuilder.setDecimalSkipIntegralDigitLimit(allowNegativeScaleOfDecimal)
+        // JDK-8355719 relaxed the overflow check in BigInteger.pow.
+        castBuilder.setDecimalFullDivisorRange(Runtime.version().feature() >= 25)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
@@ -272,6 +274,8 @@ object CometCast
     }
 
     (fromType, toType) match {
+      case (_, d: DecimalType) if !d.scale.isValidByte =>
+        Unsupported(Some(s"Decimal scale ${d.scale} does not fit in a signed byte"))
       case (NullType, _) => Compatible()
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))

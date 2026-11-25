@@ -183,6 +183,8 @@ pub struct SparkCastOptions {
     /// True when Spark does not apply the 38 integral-digit limit when it casts a string to
     /// decimal, as it does not with `spark.sql.legacy.allowNegativeScaleOfDecimal`.
     pub decimal_skip_integral_digit_limit: bool,
+    /// True when `BigInteger.TEN.pow` accepts every power of ten representable by `BigInteger`.
+    pub decimal_full_divisor_range: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -204,6 +206,7 @@ impl SparkCastOptions {
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
             decimal_skip_integral_digit_limit: false,
+            decimal_full_divisor_range: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -219,6 +222,7 @@ impl SparkCastOptions {
             decimal_zero_any_exponent: false,
             decimal_tiny_to_zero: false,
             decimal_skip_integral_digit_limit: false,
+            decimal_full_divisor_range: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -324,26 +328,9 @@ pub(crate) fn cast_array(
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
-        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => cast_string_to_decimal(
-            &array,
-            to_type,
-            precision,
-            scale,
-            eval_mode,
-            cast_options.decimal_zero_any_exponent,
-            cast_options.decimal_tiny_to_zero,
-            cast_options.decimal_skip_integral_digit_limit,
-        ),
-        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => cast_string_to_decimal(
-            &array,
-            to_type,
-            precision,
-            scale,
-            eval_mode,
-            cast_options.decimal_zero_any_exponent,
-            cast_options.decimal_tiny_to_zero,
-            cast_options.decimal_skip_integral_digit_limit,
-        ),
+        (Utf8 | LargeUtf8, Decimal128(_, _) | Decimal256(_, _)) => {
+            cast_string_to_decimal(&array, to_type, cast_options)
+        }
         (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
             if eval_mode == EvalMode::Ansi =>
         {
