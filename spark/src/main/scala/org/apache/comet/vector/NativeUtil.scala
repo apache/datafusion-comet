@@ -19,12 +19,14 @@
 
 package org.apache.comet.vector
 
+import java.util.concurrent.atomic.LongAdder
+
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.util.AutoCloseables
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
 import org.apache.spark.SparkException
@@ -32,7 +34,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, ConstantCol
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType, TimestampNTZType, TimestampType}
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometRuntimeException}
 
@@ -63,6 +65,23 @@ class NativeUtil extends AutoCloseable {
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
   /**
+   * The fields of a native plan's output columns, as [[getNextPlanBatch]] last imported them.
+   * Native sends the output schema only when it changes, and the batches in between are imported
+   * with these. `null` until the first batch.
+   */
+  private var planOutputFields: Array[Field] = _
+
+  /**
+   * The schema structs [[getNextPlanBatch]] passes native with every batch. Native fills them
+   * only when the output schema changes, so they stay allocated and empty across the batches in
+   * between. Importing them consumes them, and the next call allocates new ones.
+   */
+  private var planOutputSchemas: Array[ArrowSchema] = _
+
+  /** The addresses of [[planOutputSchemas]]. */
+  private var planOutputSchemaAddrs: Array[Long] = _
+
+  /**
    * Allocates Arrow structs for the given number of columns.
    *
    * @param numCols
@@ -71,21 +90,14 @@ class NativeUtil extends AutoCloseable {
    *   a pair of Arrow arrays and Arrow schemas
    */
   def allocateArrowStructs(numCols: Int): (Array[ArrowArray], Array[ArrowSchema]) = {
-    val arrays = new Array[ArrowArray](numCols)
-    val schemas = new Array[ArrowSchema](numCols)
-
-    try {
-      (0 until numCols).foreach { index =>
-        // Publish each allocation before the next one, so partial allocation failures can free it.
-        schemas(index) = ArrowSchema.allocateNew(allocator)
-        arrays(index) = ArrowArray.allocateNew(allocator)
+    val arrays = allocateArrowArrays(numCols)
+    val schemas =
+      try allocateArrowSchemas(numCols)
+      catch {
+        case failure: Throwable =>
+          releaseArrowStructs(arrays, Array.empty, failure)
+          throw failure
       }
-    } catch {
-      case failure: Throwable =>
-        releaseArrowStructs(arrays, schemas, failure)
-        throw failure
-    }
-
     (arrays, schemas)
   }
 
@@ -216,6 +228,86 @@ class NativeUtil extends AutoCloseable {
     }
   }
 
+  /**
+   * Gets the next batch of a native plan, which sends its output schema only with the batches
+   * where it changes, and otherwise works like [[getNextBatch]].
+   *
+   * Native sets [[NativeUtil.OUTPUT_SCHEMA_EXPORTED]] in what `func` returns when it filled the
+   * schema structs too, as it does for every batch with
+   * `spark.comet.exec.cacheOutputSchema.enabled` off. The batch is then imported as
+   * [[getNextBatch]] imports every batch, and its fields are kept for the batches that arrive
+   * without a schema.
+   */
+  def getNextPlanBatch(
+      numOutputCols: Int,
+      func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
+    if (planOutputSchemas == null) {
+      planOutputSchemas = allocateArrowSchemas(numOutputCols)
+      planOutputSchemaAddrs = planOutputSchemas.map(_.memoryAddress())
+    }
+    val schemas = planOutputSchemas
+    val arrays = allocateArrowArrays(numOutputCols)
+
+    val result =
+      try {
+        func(arrays.map(_.memoryAddress()), planOutputSchemaAddrs)
+      } catch {
+        case failure: Throwable =>
+          // As in getNextBatch, native may have filled some of the structs before failing.
+          planOutputSchemas = null
+          releaseArrowStructs(arrays, schemas, failure)
+          throw failure
+      }
+
+    result match {
+      case -1 =>
+        // The schema structs stay allocated for close() to free.
+        releaseArrowStructs(arrays, Array.empty)
+        None
+      case packed =>
+        val numRows = (packed & 0xffffffffL).toInt
+        val cometVectors = if ((packed & NativeUtil.OUTPUT_SCHEMA_EXPORTED) != 0) {
+          // The import consumes the schema structs, so the next batch gets new ones.
+          planOutputSchemas = null
+          val imported = importVector(arrays, schemas)
+          val fields = imported.map(_.getValueVector.getField).toArray
+          // A field with a dictionary is good for its own batch only, and native sends the schema
+          // of every batch that has one.
+          planOutputFields = if (fields.exists(CometVectorUtils.hasDictionary)) null else fields
+          NativeUtil.planOutputSchemaImports.increment()
+          imported.toArray
+        } else {
+          importVector(arrays, planOutputFields)
+        }
+        Some(new ColumnarBatch(cometVectors.toArray[ColumnVector], numRows))
+    }
+  }
+
+  protected def allocateArrowArrays(numCols: Int): Array[ArrowArray] = {
+    val arrays = new Array[ArrowArray](numCols)
+    try {
+      // Publish each allocation before the next one, so partial allocation failures can free it.
+      (0 until numCols).foreach(index => arrays(index) = ArrowArray.allocateNew(allocator))
+    } catch {
+      case failure: Throwable =>
+        releaseArrowStructs(arrays, Array.empty, failure)
+        throw failure
+    }
+    arrays
+  }
+
+  protected def allocateArrowSchemas(numCols: Int): Array[ArrowSchema] = {
+    val schemas = new Array[ArrowSchema](numCols)
+    try {
+      (0 until numCols).foreach(index => schemas(index) = ArrowSchema.allocateNew(allocator))
+    } catch {
+      case failure: Throwable =>
+        releaseArrowStructs(Array.empty, schemas, failure)
+        throw failure
+    }
+    schemas
+  }
+
   private def releaseArrowStructs(
       arrays: Array[ArrowArray],
       schemas: Array[ArrowSchema],
@@ -259,20 +351,45 @@ class NativeUtil extends AutoCloseable {
    * @return
    *   a list of Comet vectors
    */
-  def importVector(arrays: Array[ArrowArray], schemas: Array[ArrowSchema]): Seq[CometVector] = {
-    val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
-    var firstUnconsumed = 0
+  def importVector(arrays: Array[ArrowArray], schemas: Array[ArrowSchema]): Seq[CometVector] =
+    // importField's finally consumes the schema. ArrayImporter takes the array normally, while
+    // ArrowImporter's catch releases it if the import fails before that transfer.
+    importColumns(arrays, schemas)(i =>
+      importer.importVector(arrays(i), schemas(i), dictionaryProvider)).toSeq
 
+  /**
+   * Imports arrays from native execution with the fields of an earlier import of the same schema,
+   * and returns a list of Comet vectors. On failure it releases everything it was given, as the
+   * import with schemas does.
+   */
+  private def importVector(
+      arrays: Array[ArrowArray],
+      fields: Array[Field]): Array[CometVector] = {
+    if (arrays.nonEmpty && (fields == null || fields.length != arrays.length)) {
+      val failure = new IllegalStateException(
+        s"Native plan sent ${arrays.length} output columns without a schema, but the last " +
+          s"schema it sent had ${Option(fields).fold(0)(_.length)}")
+      releaseArrowStructs(arrays, Array.empty, failure)
+      throw failure
+    }
+    importColumns(arrays, Array.empty)(i =>
+      importer.importVector(arrays(i), fields(i), dictionaryProvider))
+  }
+
+  /**
+   * Imports each of `arrays` with `importColumn` and wraps it as a Comet vector. `importColumn`
+   * consumes its column's array, and schema if any, even when it fails. On failure this releases
+   * the rest, the arrays and `schemas` not consumed yet and the vectors already imported, so
+   * callers must not add cleanup of their own.
+   */
+  private def importColumns(arrays: Array[ArrowArray], schemas: Array[ArrowSchema])(
+      importColumn: Int => FieldVector): Array[CometVector] = {
+    val vectors = new Array[CometVector](arrays.length)
+    var i = 0
     try {
-      (0 until arrays.length).foreach { i =>
-        val arrowSchema = schemas(i)
-        val arrowArray = arrays(i)
-
-        // importField's finally consumes the schema. ArrayImporter takes the array normally, while
-        // ArrowImporter's catch releases it if the import fails before that transfer.
-        firstUnconsumed = i + 1
-        val arrowVector = importer.importVector(arrowArray, arrowSchema, dictionaryProvider)
-        val cometVector =
+      while (i < arrays.length) {
+        val arrowVector = importColumn(i)
+        vectors(i) =
           try CometVector.getVector(arrowVector, dictionaryProvider)
           catch {
             case failure: Throwable =>
@@ -284,13 +401,13 @@ class NativeUtil extends AutoCloseable {
               ArrowImporter.closeDictionaries(field, dictionaryProvider, failure)
               throw failure
           }
-        arrayVectors += cometVector
+        i += 1
       }
-      arrayVectors.toSeq
+      vectors
     } catch {
       case failure: Throwable =>
-        AutoCloseables.close(failure, arrayVectors.toSeq: _*)
-        releaseArrowStructs(arrays.drop(firstUnconsumed), schemas.drop(firstUnconsumed), failure)
+        AutoCloseables.close(failure, vectors.take(i): _*)
+        releaseArrowStructs(arrays.drop(i + 1), schemas.drop(i + 1), failure)
         throw failure
     }
   }
@@ -326,12 +443,31 @@ class NativeUtil extends AutoCloseable {
   }
 
   override def close(): Unit = {
-    // closing the dictionary provider also closes the dictionary arrays
-    dictionaryProvider.close()
+    val schemas = planOutputSchemas
+    planOutputSchemas = null
+    try {
+      if (schemas != null) releaseArrowStructs(Array.empty, schemas)
+    } finally {
+      // closing the dictionary provider also closes the dictionary arrays
+      dictionaryProvider.close()
+    }
   }
 }
 
 object NativeUtil {
+
+  /**
+   * Set in what `Native.executePlan` returns when native filled the schema structs as well as the
+   * arrays. The row count is in the low 32 bits. Matches `OUTPUT_SCHEMA_EXPORTED` in
+   * `jni_api.rs`.
+   */
+  val OUTPUT_SCHEMA_EXPORTED: Long = 1L << 32
+
+  /**
+   * How many times [[NativeUtil.getNextPlanBatch]] has imported an output schema in this JVM, so
+   * that tests and benchmarks can check that a plan sends it only when it changes.
+   */
+  private[apache] val planOutputSchemaImports = new LongAdder()
 
   /**
    * Describes the first timestamp in `field` whose timezone label is not Comet's convention for

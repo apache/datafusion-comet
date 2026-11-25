@@ -290,7 +290,9 @@ fn next(env: &mut Env, id: i64, arrays: JLongArray, schemas: JLongArray) -> Come
     match entry.query.poll(Duration::from_millis(50))? {
         QueryPoll::Pending => Ok(-2),
         QueryPoll::Finished => Ok(-1),
-        QueryPoll::Batch(batch) => prepare_output(env, arrays, schemas, batch, entry.validate),
+        QueryPoll::Batch(batch) => {
+            prepare_output(env, arrays, schemas, batch, entry.validate, None)
+        }
     }
 }
 
