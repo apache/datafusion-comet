@@ -507,10 +507,10 @@ POLICY_CASES = [
     (fork_pr(head=UPSTREAM), PR_TIER),
     (fork_pr(base="branch-1.1"), QUEUE_TIER | NIGHTLY_TIER),
     # A push to a fork's branch is the contributor's pull request tier and
-    # nothing more: not main's cache refresh or site deploy (`docs` publishes to
-    # asf-site), and not the queue's or the nightly's suites. That holds for the
-    # fork's default branch too; a push that adds nothing to upstream selects no
-    # file (see dev/ci/fork-push-changed-files.sh).
+    # nothing more: not the site deploy (`docs` publishes to asf-site), and not
+    # the queue's or the nightly's suites. That holds for the fork's default
+    # branch too, except that a sync of it, which adds no file to upstream, runs
+    # the Linux build's cache refresh (see COMPUTE_CASES below).
     ({"name": "push", "repository": FORK}, PR_TIER),
     # A pull request opened inside a fork leaves the PR tier to the branch push
     # that already ran it, so the same commit is not tested twice, but a label
@@ -519,6 +519,32 @@ POLICY_CASES = [
     (fork_pr(repository=FORK, head=FORK, labels=["run-iceberg-tests"]), ICEBERG_OPT_IN),
     # Upstream, push stays the cache refresh and the site deploy.
     ({"name": "push", "repository": UPSTREAM}, {"docs", "build_linux", "build_macos"}),
+]
+
+# compute() cases: (event, changed files, the outputs that must be true). These
+# cover what POLICY_CASES cannot, a push whose file list is empty.
+FORK_MAIN_PUSH = {"name": "push", "repository": FORK, "ref": "refs/heads/main"}
+FORK_BRANCH_PUSH = {"name": "push", "repository": FORK, "ref": "refs/heads/feature"}
+UPSTREAM_MAIN_PUSH = {"name": "push", "repository": UPSTREAM, "ref": "refs/heads/main"}
+NATIVE_SOURCE = ["native/core/src/lib.rs"]
+COMPUTE_CASES = [
+    # A sync of a fork's main adds nothing to upstream, and runs the Linux build
+    # in cache-refresh-only mode (`build_linux` without `build_linux_full`) so
+    # the fork's branches can restore its Maven and cargo caches.
+    (FORK_MAIN_PUSH, [], {"build_linux"}),
+    # A fork's main that does add something runs the PR tier, as a branch does.
+    (FORK_MAIN_PUSH, NATIVE_SOURCE, PR_TIER),
+    (FORK_BRANCH_PUSH, NATIVE_SOURCE, PR_TIER),
+    (FORK_BRANCH_PUSH, [], set()),
+    (UPSTREAM_MAIN_PUSH, NATIVE_SOURCE, {"build_linux", "build_macos"}),
+    (UPSTREAM_MAIN_PUSH, [], set()),
+    # Only a push refreshes, and only to main itself.
+    ({"name": "schedule", "repository": FORK, "ref": "refs/heads/main"}, [], set()),
+    ({"name": "push", "repository": FORK, "ref": "refs/heads/fix/main"}, [], set()),
+    # A push with a missing or empty ref never refreshes. event_from_env gives
+    # an empty one when REF is unset.
+    ({"name": "push", "repository": FORK}, [], set()),
+    ({"name": "push", "repository": FORK, "ref": ""}, [], set()),
 ]
 
 
@@ -838,6 +864,23 @@ def check_event_policy():
     return not failures
 
 
+def check_compute():
+    module = load_filters()
+    failures = []
+    for event, files, expected in COMPUTE_CASES:
+        actual = {job for job, flag in module.compute(files, event).items() if flag}
+        if actual != expected:
+            failures.append(
+                f"{event['name']} to {event.get('ref')} in {event['repository']} with files {files}: "
+                f"unexpectedly selected {sorted(actual - expected) or 'nothing'}, "
+                f"unexpectedly skipped {sorted(expected - actual) or 'nothing'} "
+                f"(see compute in dev/ci/compute-changes.py)"
+            )
+    for failure in failures:
+        print(f"compute: {failure}")
+    return not failures
+
+
 # The environment variables `event_from_env` in compute-changes.py reads, and
 # the `github` context expression ci.yml's `Compute outputs` step must set each
 # one from. A typo in an expression is as silent as a missing variable: both
@@ -850,6 +893,7 @@ EVENT_ENV_SOURCES = {
     "PR_BASE_REF": "github.event.pull_request.base.ref",
     "PR_HEAD_REPO": "github.event.pull_request.head.repo.full_name",
     "REPOSITORY": "github.repository",
+    "REF": "github.ref",
 }
 ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
 ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
@@ -1947,6 +1991,7 @@ def check_docs_permission_boundary():
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_compute() and ok
     ok = check_event_env() and ok
     ok = check_docs_deploy_guard() and ok
     ok = check_docs_permission_boundary() and ok
