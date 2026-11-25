@@ -18,6 +18,72 @@
 //! This includes utilities for hashing and murmur3 hashing.
 
 use arrow::array::Array;
+use arrow::buffer::NullBuffer;
+use datafusion::common::{internal_err, Result};
+
+/// The positions of the set bits of `bits`, lowest first.
+#[inline]
+fn set_bits(mut bits: u64) -> impl Iterator<Item = usize> {
+    std::iter::from_fn(move || {
+        (bits != 0).then(|| {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            i
+        })
+    })
+}
+
+/// The fewest valid rows in a 64-row chunk for which hashing every row of the chunk and restoring
+/// its null rows costs less than hashing only its valid rows one at a time.
+/// The null rates from 25% to 85% in the `hash_nulls` benchmark put random chunks around this
+/// count, so rerun them when changing the value.
+const MIN_VALID_FOR_DENSE: u32 = 16;
+
+/// Hashes the valid rows of a fixed-width column that has nulls, 64 rows at a time. Null rows keep
+/// their previous hash. A chunk with at least [`MIN_VALID_FOR_DENSE`] valid rows is hashed in
+/// full, which vectorizes, and its null rows then get their previous hashes back from a copy of the
+/// chunk. Hashing a null slot is harmless because `hash` can't fail. A sparser chunk, and the last
+/// `len % 64` rows, hash only their valid rows.
+#[inline]
+pub(crate) fn hash_fixed_width_with_nulls<T: Copy, H: Copy>(
+    values: &[T],
+    nulls: &NullBuffer,
+    hashes: &mut [H],
+    hash: impl Fn(T, H) -> H,
+) -> Result<()> {
+    // The chunks below zip the three inputs, which would skip rows if the lengths differed.
+    if nulls.len() != values.len() || hashes.len() != values.len() {
+        return internal_err!(
+            "{} values, {} validity bits, and {} hashes",
+            values.len(),
+            nulls.len(),
+            hashes.len()
+        );
+    }
+    let chunks = nulls.inner().bit_chunks();
+    let (value_chunks, value_tail) = values.as_chunks::<64>();
+    let (hash_chunks, hash_tail) = hashes.as_chunks_mut::<64>();
+    let rows = value_chunks.iter().zip(hash_chunks.iter_mut());
+    for ((values, hashes), valid) in rows.zip(chunks.iter()) {
+        if valid.count_ones() < MIN_VALID_FOR_DENSE {
+            for i in set_bits(valid) {
+                hashes[i] = hash(values[i], hashes[i]);
+            }
+            continue;
+        }
+        let previous = *hashes;
+        for (h, &v) in hashes.iter_mut().zip(values) {
+            *h = hash(v, *h);
+        }
+        for i in set_bits(!valid) {
+            hashes[i] = previous[i];
+        }
+    }
+    for i in set_bits(chunks.remainder_bits()) {
+        hash_tail[i] = hash(value_tail[i], hash_tail[i]);
+    }
+    Ok(())
+}
 
 #[macro_export]
 macro_rules! hash_array {
@@ -97,13 +163,13 @@ macro_rules! hash_array_primitive {
             for (hash, &value) in $hashes.iter_mut().zip(values.iter()) {
                 *hash = $hash_method((value as $ty).to_le_bytes(), *hash);
             }
-        } else {
-            // Slow path: check nulls
-            for i in 0..values.len() {
-                if !array.is_null(i) {
-                    $hashes[i] = $hash_method((values[i] as $ty).to_le_bytes(), $hashes[i]);
-                }
-            }
+        } else if let Some(nulls) = array.nulls() {
+            $crate::hash_funcs::utils::hash_fixed_width_with_nulls(
+                values,
+                nulls,
+                $hashes,
+                |value, hash| $hash_method((value as $ty).to_le_bytes(), hash),
+            )?;
         }
     };
 }
@@ -128,14 +194,16 @@ macro_rules! hash_array_primitive_float {
                 let value = $crate::float_semantics::hash_input(value);
                 *hash = $hash_method(value.to_le_bytes(), *hash);
             }
-        } else {
-            // Slow path: check nulls
-            for i in 0..values.len() {
-                if !array.is_null(i) {
-                    let value = $crate::float_semantics::hash_input(values[i]);
-                    $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
-                }
-            }
+        } else if let Some(nulls) = array.nulls() {
+            $crate::hash_funcs::utils::hash_fixed_width_with_nulls(
+                values,
+                nulls,
+                $hashes,
+                |value, hash| {
+                    let value = $crate::float_semantics::hash_input(value);
+                    $hash_method(value.to_le_bytes(), hash)
+                },
+            )?;
         }
     };
 }
@@ -1294,7 +1362,9 @@ pub(crate) mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::super::{spark_murmur3_hash, spark_xxhash64};
+    use super::{hash_fixed_width_with_nulls, MIN_VALID_FOR_DENSE};
     use arrow::array::{Array, ArrayRef, BinaryArray, Decimal128Array, Int32Array};
+    use arrow::buffer::NullBuffer;
     use datafusion::common::{Result, ScalarValue};
     use datafusion::logical_expr::ColumnarValue;
     use num::BigInt;
@@ -1495,5 +1565,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    type Pattern = Box<dyn Fn(usize) -> bool>;
+
+    /// Validity by row index, chosen to reach every path through the chunk loop.
+    fn patterns(len: usize) -> Vec<(&'static str, Pattern)> {
+        let min_valid = MIN_VALID_FOR_DENSE as usize;
+        vec![
+            ("one null", Box::new(move |i| i != len / 2)),
+            (
+                "MIN_VALID_FOR_DENSE valid rows per chunk",
+                Box::new(move |i| i % 64 >= 64 - min_valid),
+            ),
+            (
+                "one fewer valid row per chunk",
+                Box::new(move |i| i % 64 > 64 - min_valid),
+            ),
+            ("two thirds valid", Box::new(|i| i % 3 != 0)),
+            (
+                "null run longer than a chunk",
+                Box::new(|i| !(1..70).contains(&i)),
+            ),
+            ("all null", Box::new(|_| false)),
+        ]
+    }
+
+    #[test]
+    fn hash_fixed_width_with_nulls_matches_per_row() {
+        let hash = |value: u64, previous: u64| previous.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ value;
+        for len in [1, 63, 64, 65, 127, 128, 129, 200] {
+            for (name, valid) in patterns(len) {
+                // Offset 5 puts the validity bits off a byte boundary.
+                for offset in [0, 5] {
+                    let nulls = NullBuffer::from((0..offset + len).map(&valid).collect::<Vec<_>>())
+                        .slice(offset, len);
+                    let values: Vec<u64> = (0..len as u64).map(|i| i * 7919 + 3).collect();
+                    // Distinct previous hashes, so a null row that loses its hash shows up.
+                    let previous: Vec<u64> = (0..len as u64).map(|i| i * 31 + 1).collect();
+                    let expected: Vec<u64> = (0..len)
+                        .map(|i| {
+                            if nulls.is_valid(i) {
+                                hash(values[i], previous[i])
+                            } else {
+                                previous[i]
+                            }
+                        })
+                        .collect();
+                    let mut hashes = previous.clone();
+                    hash_fixed_width_with_nulls(&values, &nulls, &mut hashes, hash).unwrap();
+                    assert_eq!(hashes, expected, "{name}, len {len}, offset {offset}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hash_fixed_width_with_nulls_length_mismatch_is_error() {
+        let hash = |value: u64, previous: u64| previous ^ value;
+        let nulls = NullBuffer::from(vec![true, false, true]);
+        let values = [1u64, 2, 3];
+        for len in [2, 4] {
+            let mut hashes = vec![0u64; len];
+            assert!(
+                hash_fixed_width_with_nulls(&values, &nulls, &mut hashes, hash).is_err(),
+                "{len} hashes"
+            );
+        }
+        let short_nulls = NullBuffer::from(vec![true, false]);
+        let mut hashes = vec![0u64; 3];
+        assert!(hash_fixed_width_with_nulls(&values, &short_nulls, &mut hashes, hash).is_err());
     }
 }
