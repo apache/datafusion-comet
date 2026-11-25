@@ -39,6 +39,7 @@ import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.CometExecIterator
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -127,7 +128,9 @@ case class CometIcebergWriteExec(
   // CometIcebergNativeScanExec: emit output plus a short human-readable descriptor instead.
   override def stringArgs: Iterator[Any] = {
     val common = nativeOp.getIcebergWrite.getCommon
-    Iterator(output, s"${common.getDataLocation}, ${common.getWriterMode}")
+    Iterator(
+      output,
+      s"${NativeConfig.displayLocation(common.getDataLocation)}, ${common.getWriterMode}")
   }
 
   // Names mirror Spark's stock `BatchWriteHelper` metrics (`numFiles` / `numOutputRows` /

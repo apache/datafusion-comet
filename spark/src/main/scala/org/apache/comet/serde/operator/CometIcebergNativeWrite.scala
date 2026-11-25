@@ -23,6 +23,7 @@ import java.lang.reflect.Modifier
 import java.util.Locale
 
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
@@ -857,7 +858,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         if (!SupportedStorageSchemes.contains(scheme)) {
           Some(s"unsupported storage scheme: $scheme")
         } else if (!LocalStorageSchemes.contains(scheme) && !hasBucketAuthority(location)) {
-          Some(s"$scheme data location has no bucket in its authority: $location")
+          Some(
+            s"$scheme data location has no bucket in its authority: " +
+              NativeConfig.displayLocation(location))
+        } else if (Try(new java.net.URI(location)).isFailure) {
+          Some(s"$scheme data location is not a valid URI")
         } else {
           None
         }
@@ -1095,6 +1100,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
   private val requireSupportedHadoopS3Settings: TriggerRule = ctx =>
     s3DataLocation(ctx).flatMap { location =>
+      // Cannot throw: `requireSupportedStorageScheme`, earlier in `triggers`, declines a location
+      // `URI` cannot parse.
       val dataBucket = NativeConfig.bucketForUri(new java.net.URI(location), Set.empty)
       val s3aCredentials =
         usesS3ACredentialAdapter(ctx.s3HadoopConf, ctx.fileIOProperties, dataBucket)
@@ -1130,10 +1137,13 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         None
       case Some(cls) =>
         Some(
-          s"gs:// data location $location is written through ${cls.getName}, whose fs.gs.* " +
+          s"gs:// data location ${NativeConfig.displayLocation(location)} is written through " +
+            s"${cls.getName}, whose fs.gs.* " +
             "Hadoop configuration is not forwarded to the native writer")
       case None =>
-        Some(s"could not resolve the FileIO for the gs:// data location $location")
+        Some(
+          "could not resolve the FileIO for the gs:// data location " +
+            NativeConfig.displayLocation(location))
     }
 
   // The commit-message assembly that runs on executors after iceberg-rust has already written
@@ -1476,6 +1486,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // includes SparkCatalog's catalog-specific `hadoop.*` overrides.
     val writeHadoopConf =
       effectiveHadoopConf(op, table, op.session.sessionState.newHadoopConf())
+    // Cannot throw: `requireSupportedStorageScheme` declines a location `URI` cannot parse.
     val dataUri = new java.net.URI(dataLocation)
     // Promote the data bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global, mirroring the
     // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data

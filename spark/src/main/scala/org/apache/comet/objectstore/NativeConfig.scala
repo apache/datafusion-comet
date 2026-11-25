@@ -23,6 +23,8 @@ import java.net.URI
 import java.util.Locale
 import java.util.regex.Pattern
 
+import scala.util.Try
+
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.comet.util.Utils
@@ -151,6 +153,55 @@ object NativeConfig {
   /** `scheme://[user@]host[:port]` of `uri`, for messages: no password, path or query. */
   private[comet] def displayAuthority(uri: URI): String =
     s"${lowerScheme(uri).getOrElse("file")}://${authorityWithoutPassword(uri)}"
+
+  /**
+   * `uri` for a message that names a path: no password, query or fragment (where a SAS token or a
+   * signature would be). Other user info shows as `***@`, except an ABFS user, which is the
+   * container. The raw path keeps its percent encoding, and a URI with no user info keeps its own
+   * spelling (`file:/p` and `file:///p` stay apart). A `?` that Hadoop's `Path` encoded as `%3F`
+   * is part of the path and stays. An opaque URI shows only its scheme. An `@` after the
+   * authority may be the end of user info whose `/`, `?` or `#` ended the authority early, so
+   * such a URI shows as `scheme://<unparseable>`, as does a real path, query or fragment with an
+   * `@`, which cannot be told apart from one.
+   */
+  private[comet] def displayPath(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    val at = rawAuthority.lastIndexOf('@')
+    val afterAuthority =
+      Seq(uri.getRawPath, uri.getRawQuery, uri.getRawFragment).flatMap(Option(_))
+    if (uri.isOpaque) {
+      s"${uri.getScheme}:"
+    } else if (afterAuthority.exists(_.contains('@'))) {
+      lowerScheme(uri).fold("<unparseable>")(scheme => s"$scheme://<unparseable>")
+    } else if (at < 0) {
+      val shown = uri.toString
+      val end = shown.indexWhere(c => c == '?' || c == '#')
+      if (end < 0) shown else shown.substring(0, end)
+    } else {
+      val scheme = Option(uri.getScheme).map(_ + ":").getOrElse("")
+      val authority =
+        if (isAbfs(uri)) authorityWithoutPassword(uri)
+        else s"***@${rawAuthority.substring(at + 1)}"
+      s"$scheme//$authority${Option(uri.getRawPath).getOrElse("")}"
+    }
+  }
+
+  private val uriScheme = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*")
+
+  /**
+   * [[displayPath]] of a location held as a string, such as an Iceberg data location. A location
+   * that `URI` cannot parse shows as `scheme://<unparseable>`, or as `<unparseable>` when it has
+   * no `scheme://` prefix, such as `file:/a b` or a plain path.
+   */
+  private[apache] def displayLocation(location: String): String =
+    Try(new URI(location)).map(displayPath).getOrElse {
+      val scheme = location.take(math.max(location.indexOf("://"), 0))
+      if (uriScheme.matcher(scheme).matches()) {
+        s"${scheme.toLowerCase(Locale.ROOT)}://<unparseable>"
+      } else {
+        "<unparseable>"
+      }
+    }
 
   /**
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`

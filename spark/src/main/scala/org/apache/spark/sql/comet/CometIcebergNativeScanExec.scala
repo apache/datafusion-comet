@@ -36,6 +36,7 @@ import org.apache.spark.util.AccumulatorV2
 import com.google.common.base.Objects
 
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeScan
 
@@ -364,7 +365,10 @@ case class CometIcebergNativeScanExec(
     } else {
       ""
     }
-    Iterator(output, s"$metadataLocation, $scanDesc$runtimeFiltersStr", taskCount)
+    Iterator(
+      output,
+      s"${NativeConfig.displayLocation(metadataLocation)}, $scanDesc$runtimeFiltersStr",
+      taskCount)
   }
 
   /**
