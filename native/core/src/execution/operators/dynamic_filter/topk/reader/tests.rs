@@ -75,8 +75,7 @@ fn sanitizing_statistics_preserves_cached_metadata_and_indexes() {
         filtered.row_group(0).column(1),
         cached.row_group(0).column(1)
     );
-    assert!(filtered.column_index().is_some());
-    assert_eq!(filtered.column_index(), cached.column_index());
-    assert!(filtered.offset_index().is_some());
-    assert_eq!(filtered.offset_index(), cached.offset_index());
+    let page_index = filtered.page_index().expect("filtered has a page index");
+    assert!(page_index.is_complete());
+    assert!(Arc::ptr_eq(page_index, cached.page_index().unwrap()));
 }

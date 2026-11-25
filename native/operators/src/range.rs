@@ -97,6 +97,11 @@ fn partition_bounds(
         value.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 
+    // Spark runs no partitions for an empty range, whatever its slice count, which may be 0. A
+    // Comet Native Executor cluster runs one, which must produce no rows.
+    if num_elements <= 0 {
+        return (start, 0);
+    }
     let index = partition as i128;
     let start = start as i128;
     let step = step as i128;
@@ -235,6 +240,21 @@ mod tests {
                     expected,
                     "range({start}, {end}, {step}, {slices}) with {batch_size}-row batches"
                 );
+            }
+        }
+    }
+
+    /// An empty range, which Spark runs in no partitions, produces no rows in partition 0 even
+    /// with no slices.
+    #[tokio::test]
+    async fn test_empty_range_in_one_partition() {
+        let ctx = SessionContext::new();
+        for (start, end, step, slices) in [(1i64, -2i64, 1i64, 4), (0, 0, 1, 0), (5, 10, -1, 1)] {
+            let n = num_elements(start, end, step);
+            let range = range_exec(start, step, n, slices, 0, 8192).unwrap();
+            let mut stream = range.execute(0, ctx.task_ctx()).unwrap();
+            while let Some(batch) = stream.next().await {
+                assert_eq!(batch.unwrap().num_rows(), 0);
             }
         }
     }

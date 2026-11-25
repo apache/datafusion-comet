@@ -1077,6 +1077,9 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
     }
 }
 
+/// Set in the configuration of a Comet Native Executors fragment's session.
+pub(crate) const NATIVE_EXECUTORS_FRAGMENT: &str = "spark.comet.nativeExecutors.fragment";
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -1171,9 +1174,25 @@ pub(crate) fn comet_session_context(
         crate::execution::c_udf::policy::NativeUdfPolicy::from_spark_config(spark_config),
     ));
 
+    // A Comet Native Executors fragment has no ShuffleWriter root, but its output goes to the
+    // cluster's shuffle all the same, so it is checked as if it had one.
+    let fragment_root;
+    let gate_plan = if spark_config
+        .get(NATIVE_EXECUTORS_FRAGMENT)
+        .is_some_and(|value| value == "true")
+    {
+        fragment_root = Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(Default::default())),
+            children: vec![spark_plan.clone()],
+            ..Default::default()
+        };
+        &fragment_root
+    } else {
+        spark_plan
+    };
     configure_skip_partial_aggregation(
         &mut session_config,
-        spark_plan,
+        gate_plan,
         spark_config.get_bool(COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED),
     );
 
