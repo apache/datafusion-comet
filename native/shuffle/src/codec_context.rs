@@ -112,6 +112,10 @@ impl ShuffleCodecContext {
         }
     }
 
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.zstd.as_ref().map_or(0, |cctx| cctx.sizeof())
+    }
+
     /// Test hook for the release-vs-retain contract of the two encode paths.
     #[cfg(test)]
     pub(crate) fn holds_zstd_cctx(&self) -> bool {
