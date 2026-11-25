@@ -216,8 +216,11 @@ jobs:
             --task :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test
       - name: Summarize Iceberg writes across shards
         if: ${{ !cancelled() }}
+        # --require-native fails the job when no write in any shard ran on the
+        # native writer. Iceberg's tests pass on either writer, so without it a
+        # release that makes the gate decline every write goes unnoticed.
         run: |
-          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark, all shards" \
+          python3 dev/ci/summarize-iceberg-writes.py --require-native --title "iceberg-spark, all shards" \
             iceberg-shard-reports
 
   iceberg-spark-extensions:
@@ -272,7 +275,7 @@ jobs:
       - name: Summarize Iceberg writes
         if: ${{ !cancelled() }}
         run: |
-          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark-extensions" \
+          python3 dev/ci/summarize-iceberg-writes.py --require-native --title "iceberg-spark-extensions" \
             apache-iceberg/build/comet-iceberg-writes
       - name: Upload Iceberg write report
         if: ${{ !cancelled() }}

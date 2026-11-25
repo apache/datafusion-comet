@@ -30,8 +30,13 @@ are counted only for the latest attempt of each shard, so a rerun of failed
 jobs does not count a shard twice. The latest attempt is the newest such
 directory, whether or not it holds any report files, so a rerun that recorded
 no writes is reported as missing rather than replaced by an earlier attempt.
-The summary is also appended to $GITHUB_STEP_SUMMARY when that is set. It
-never fails the job.
+The summary is also appended to $GITHUB_STEP_SUMMARY when that is set.
+
+By default it never fails the job. With --require-native it exits non-zero,
+after printing the summary, when no write ran on Comet's native writer. That
+guards against the native writer silently declining every write, as happened
+when an Iceberg release removed a method the eligibility probe resolves: the
+upstream tests still pass, because they do not assert which writer ran.
 """
 
 import argparse
@@ -40,6 +45,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 
 
 SHARD_ATTEMPT = re.compile(r"-shard-(\d+)-attempt-(\d+)$")
@@ -153,19 +159,37 @@ def summarize(title, writes, missing=()):
     return "\n".join(lines) + "\n"
 
 
+def native_writes(writes):
+    return sum(1 for w in writes if w["writer"] == "native")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--title", required=True, help="heading for the summary")
+    parser.add_argument(
+        "--require-native",
+        action="store_true",
+        help="exit non-zero when no write ran on Comet's native writer",
+    )
     parser.add_argument("roots", nargs="+", help="directories holding the report files")
     args = parser.parse_args()
 
-    summary = summarize(args.title, *load(args.roots))
+    writes, missing = load(args.roots)
+    summary = summarize(args.title, writes, missing)
     print(summary)
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
         with open(step_summary, "a", encoding="utf-8") as out:
             out.write(summary + "\n")
+    if args.require_native and native_writes(writes) == 0:
+        print(
+            f"error: none of the {len(writes)} recorded Iceberg writes ran on Comet's native "
+            "writer, so the native writer is declining every write",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
