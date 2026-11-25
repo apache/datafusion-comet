@@ -161,7 +161,12 @@ object CometArrowStream extends Logging {
     val first = buffered.head
     val expectedFields = expected.getFields
     val actualFields = (0 until first.numCols()).map { i =>
-      val col = first.column(i).asInstanceOf[CometVector]
+      val col = first.column(i) match {
+        case c: CometVector => c
+        case other =>
+          throw new IllegalStateException(
+            s"$name expects CometVector type, but column $i is a ${other.getClass.getName}")
+      }
 
       // The Arrow C Stream exports the producer's actual Arrow schema. If the
       // consumer-declared schema has fewer fields, fall back to the producer's

@@ -65,6 +65,12 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
    shuffle key: Comet cannot serialize it for array or struct map keys, so such an exchange
    becomes `CometColumnarExchange`.
 
+5. **Child became row-based after native shuffle was chosen**: when Spark inserts its own
+   `RowToColumnarExec` under a native shuffle, for example under Amazon EMR's nested AQE plan,
+   `EliminateRedundantTransitions` drops the transition and switches the exchange to JVM shuffle,
+   which reads the rows. See the input contract in
+   [Native Shuffle](native_shuffle.md#when-native-shuffle-is-used).
+
 Collated strings are the exception. A hash or range key whose type is a non-`UTF8_BINARY`
 collated string is declined by both Comet paths, so the exchange stays a plain Spark
 `Exchange`. `CometCollationSuite` treats that fallback as the primary line of defense for

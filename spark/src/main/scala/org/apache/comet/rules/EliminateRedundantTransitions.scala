@@ -25,7 +25,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
-import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.comet.util.Utils.containsVariantType
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
@@ -176,6 +176,30 @@ case class EliminateRedundantTransitions(session: SparkSession)
             CometColumnarShuffle,
             _) =>
         s.withNewChildren(Seq(child))
+
+      // Spark also adds `RowToColumnar` even when comet chose native shuffle.
+      // Native shuffle reads only Comet vectors, not Spark's vectors.
+      // Switch to row and drop the transition.
+      case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
+          if CometShuffleExchangeExec.isColumnarShuffleSupported(s, child) =>
+        val columnar = withInfo(
+          s.copy(child = child, shuffleType = CometColumnarShuffle),
+          "Native shuffle switched to JVM columnar shuffle: its child became row-based " +
+            "after native shuffle was chosen")
+        columnar.copyTagsFrom(s)
+        columnar
+
+      // When columnar shuffle can't take the rows, keep native shuffle and convert them to Arrow
+      // with Comet's `CometSparkToColumnarExec` instead of fallback to Spark's `RowToColumnar`
+      case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
+          if CometShuffleExchangeExec.isNativeConversionSupported(s, child) =>
+        val columnar = withInfo(
+          s.copy(child = CometSparkToColumnarExec(child)),
+          "Native shuffle kept, child converted to Arrow with CometSparkToColumnarExec: " +
+            "its child became row-based after native shuffle was chosen and JVM columnar " +
+            "shuffle is not available")
+        columnar.copyTagsFrom(s)
+        columnar
     }
 
     eliminatedPlan match {
