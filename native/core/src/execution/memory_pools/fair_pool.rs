@@ -21,7 +21,7 @@ use std::{
 };
 
 use super::spark_memory::SparkMemory;
-use super::spill_replay::ORDERED_FINAL_AGGREGATE;
+use super::spill_replay::CLUSTERED_FINAL_AGGREGATE;
 use super::task_shared::RunningTasks;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -95,8 +95,8 @@ struct ConsumerUsage {
 }
 
 impl ConsumerUsage {
-    /// Whether the consumer holds more than its low-water mark. DataFusion 56's aggregates reserve
-    /// their initial table when the plan starts, before any batch flows (apache/datafusion#25900),
+    /// Whether the consumer holds more than its low-water mark. The aggregates reserve their
+    /// initial table when the plan starts, before any batch flows (apache/datafusion#25900),
     /// so a first reservation does not show that an operator has started work. A consumer that has
     /// emptied, such as an aggregate that emitted early, is active again once it holds memory, and
     /// one that only gives memory back, such as a sort emitting what it buffered, is not.
@@ -218,14 +218,14 @@ impl Display for CometFairMemoryPool {
 
 /// Whether a request from `consumer` is held to its fair limit and the task's share.
 ///
-/// That is the case for every consumer that can spill, with one exception. DataFusion 55.2
-/// registers `OrderedFinalAggregateStream` as able to spill even when its input is sorted on every
+/// That is the case for every consumer that can spill, with one exception. DataFusion
+/// registers `ClusteredFinalAggregateStream` as able to spill even when its input is sorted on every
 /// grouping key, to work around apache/datafusion#17334, but it builds a spill path only for
 /// partially sorted input. Fully sorted, as in a `CometSortAggregateExec` over a native sort, a
 /// refused request fails the query. So its requests are checked only against the pool, like those
 /// of a consumer that cannot spill. The partially sorted stream still spills when Spark refuses it.
 ///
-/// The exemption goes by name, so it covers every `OrderedFinalAggregateStream`, including a
+/// The exemption goes by name, so it covers every `ClusteredFinalAggregateStream`, including a
 /// pure `PartialMerge` that the planner runs as `Final` over input sorted on some of its keys
 /// (#6880). That one is not a `CometSortAggregateExec` and its input is only partially sorted, but
 /// it is checked only against the pool as well. The planner does not switch a `PartialMerge` over
@@ -241,18 +241,18 @@ impl Display for CometFairMemoryPool {
 /// keys.
 /// `a_sort_that_fills_the_share_leaves_room_for_the_final_aggregate_above_it` checks both.
 fn limited_to_its_share(consumer: &MemoryConsumer) -> bool {
-    consumer.can_spill() && !consumer.name().starts_with(ORDERED_FINAL_AGGREGATE)
+    consumer.can_spill() && !consumer.name().starts_with(CLUSTERED_FINAL_AGGREGATE)
 }
 
-/// The name prefix of the consumer that DataFusion 55.2's `ExternalSorter` registers for what it
-/// buffers. Its merge registers a separate consumer, `ExternalSorterMerge[`, that cannot spill.
+/// The name prefix of the consumer that `ExternalSorter` registers for what it buffers. Its merge
+/// registers a separate consumer, `ExternalSorterMerge[`, that cannot spill.
 const EXTERNAL_SORTER: &str = "ExternalSorter[";
 
 /// Whether `consumer` is a sort's. `ExternalSorter` fails when its first request is refused,
 /// since it has nothing to spill yet, so a sort that has registered but not reserved takes a share
 /// from every consumer that can spill except another sort. The others can keep what they hold
-/// until they have emitted it: DataFusion 55.2's hash aggregates keep their output reserved until
-/// they have emitted all of it, and emit slices of it, whose buffers a sort above is charged for in
+/// until they have emitted it: the hash aggregates keep their output reserved until they have
+/// emitted all of it, and emit slices of it, whose buffers a sort above is charged for in
 /// full. A sort gives memory back before it emits (see [`limited_to_its_share`]) and emits compact
 /// batches, so it needs to leave a sort above it no room.
 fn is_sort(consumer: &MemoryConsumer) -> bool {
@@ -417,9 +417,11 @@ mod tests {
     use datafusion::physical_expr::aggregate::AggregateExprBuilder;
     use datafusion::physical_expr::expressions::col;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-    use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
+    use datafusion::physical_plan::aggregates::{
+        AggregateExec, AggregateMode, GroupClusteringMode, PhysicalGroupBy,
+    };
     use datafusion::physical_plan::sorts::sort::SortExec;
-    use datafusion::physical_plan::{collect, ExecutionPlan, InputOrderMode};
+    use datafusion::physical_plan::{collect, ExecutionPlan};
     use datafusion::prelude::SessionConfig;
     use std::sync::Arc;
 
@@ -607,7 +609,7 @@ mod tests {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 100);
         let sort = spillable("ExternalSorter[0]", &pool);
-        let aggregate = spillable("OrderedFinalAggregateStream[0]", &pool);
+        let aggregate = spillable("ClusteredFinalAggregateStream[0]", &pool);
         hold(&sort, 10);
 
         // Not held to half of the task's 100 bytes, as a second consumer that can spill would be
@@ -685,9 +687,9 @@ mod tests {
         assert_eq!(fake.held(), 90);
     }
 
-    /// DataFusion 56's aggregates reserve their initial table when the plan starts, before any
-    /// batch flows (apache/datafusion#25900), so a consumer takes a share only while it holds more
-    /// than the least it has held since its first reservation.
+    /// The aggregates reserve their initial table when the plan starts, before any batch flows
+    /// (apache/datafusion#25900), so a consumer takes a share only while it holds more than the
+    /// least it has held since its first reservation.
     #[test]
     fn a_consumer_takes_a_share_while_it_holds_more_than_its_low_water_mark() {
         let fake = FakeSpark::with(usize::MAX);
@@ -889,10 +891,11 @@ mod tests {
     }
 
     /// In a `CometSortAggregateExec` over a native sort, the final aggregate's input is sorted on
-    /// every grouping key, so DataFusion runs it as an `OrderedFinalAggregateStream` with no spill
-    /// path, and a refused request fails the query. The aggregate holds nothing while the sort
-    /// reads its input, so the sort can fill the task's share. It must give part of it back before
-    /// the aggregate's first request, which it does whether it emits from one sorted batch or
+    /// every grouping key, so DataFusion runs it as a `ClusteredFinalAggregateStream` with no spill
+    /// path, and a refused request fails the query. While the sort reads its input, the aggregate
+    /// holds only the table it reserves when the plan starts (apache/datafusion#25900), so the
+    /// sort can fill the rest of the task's share. It must give part of it back before the
+    /// aggregate's first request, which it does whether it emits from one sorted batch or
     /// merges sorted runs, with or without its merge reservation, and with 256 or 1024 groups in
     /// each batch.
     #[tokio::test(flavor = "multi_thread")]
@@ -940,22 +943,41 @@ mod tests {
                     let sort = sort_on("b", Arc::clone(&input));
                     collect_with(sort, Arc::clone(&alone) as _, config.clone()).await;
 
-                    // A task share of exactly that.
+                    let final_over = |sort: Arc<SortExec>| {
+                        AggregateExec::try_new(
+                            AggregateMode::Final,
+                            group_by.clone(),
+                            vec![Arc::new(count.clone())],
+                            vec![None],
+                            sort as _,
+                            Arc::clone(&partial_input),
+                        )
+                        .unwrap()
+                    };
+                    // What the aggregate reserves when the plan starts, before any input.
+                    let initial = Arc::new(PeakMemoryPool::new(usize::MAX));
+                    let empty: Arc<dyn ExecutionPlan> =
+                        MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None)
+                            .unwrap();
+                    let aggregate = final_over(sort_on("b", empty));
+                    collect_with(
+                        Arc::new(aggregate),
+                        Arc::clone(&initial) as _,
+                        config.clone(),
+                    )
+                    .await;
+
+                    // A task share of exactly the two.
                     let fake = FakeSpark::with(usize::MAX);
                     let sort = sort_on("b", Arc::clone(&input));
-                    let aggregate = AggregateExec::try_new(
-                        AggregateMode::Final,
-                        group_by.clone(),
-                        vec![Arc::new(count.clone())],
-                        vec![None],
-                        Arc::clone(&sort) as _,
-                        Arc::clone(&partial_input),
-                    )
-                    .unwrap();
-                    // Sorted on every grouping key, so an `OrderedFinalAggregateStream` with no
+                    let aggregate = final_over(Arc::clone(&sort));
+                    // Sorted on every grouping key, so a `ClusteredFinalAggregateStream` with no
                     // spill path.
-                    assert_eq!(aggregate.input_order_mode(), &InputOrderMode::Sorted);
-                    let pool = pool(&fake, alone.peak());
+                    assert_eq!(
+                        aggregate.group_clustering_mode(),
+                        &GroupClusteringMode::Full
+                    );
+                    let pool = pool(&fake, alone.peak() + initial.peak());
                     let output = collect_with(Arc::new(aggregate), pool, config).await;
                     let groups: usize = output.iter().map(RecordBatch::num_rows).sum();
                     let case = format!(
@@ -1017,12 +1039,12 @@ mod tests {
         [distinct, partial, Arc::new(final_agg.unwrap())]
     }
 
-    /// The aggregates above the first one in `distinct_count` hold nothing while it reads its
-    /// input, so it can fill the task's share, and it holds all of its output until it has emitted
-    /// it. With wide values that leaves the `Partial` aggregate too little room, so it emits early,
-    /// and the `Final` aggregate starts while the first one still holds nearly all of the share.
-    /// DataFusion 55.2's `FinalHashAggregateStream` then spills and completes rather than failing
-    /// the query.
+    /// The aggregates above the first one in `distinct_count` hold only the tables they reserve
+    /// when the plan starts (apache/datafusion#25900) while it reads its input, so it can fill the
+    /// rest of the task's share, and it holds all of its output until it has emitted it. With wide
+    /// values that leaves the `Partial` aggregate too little room, so it emits early, and the
+    /// `Final` aggregate starts while the first one still holds nearly all of the share.
+    /// `FinalHashAggregateStream` then spills and completes rather than failing the query.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_final_aggregate_that_starts_while_the_one_below_fills_the_share_spills() {
         let schema = Arc::new(Schema::new(vec![
@@ -1045,10 +1067,26 @@ mod tests {
         let [distinct, _, _] = distinct_count(Arc::clone(&input));
         collect_with(distinct, Arc::clone(&alone) as _, session_config()).await;
 
-        // A task share of exactly that, in a pool built the way `createPlan` builds it, so that
+        // What the aggregates above it reserve when the plan starts, before any input.
+        let empty: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None).unwrap();
+        let [first_alone, _, all] = distinct_count(Arc::clone(&empty));
+        let first_initial = Arc::new(PeakMemoryPool::new(usize::MAX));
+        collect_with(
+            first_alone,
+            Arc::clone(&first_initial) as _,
+            session_config(),
+        )
+        .await;
+        let all_initial = Arc::new(PeakMemoryPool::new(usize::MAX));
+        collect_with(all, Arc::clone(&all_initial) as _, session_config()).await;
+        let above_initial = all_initial.peak() - first_initial.peak();
+
+        // A task share of exactly the two, in a pool built the way `createPlan` builds it, so that
         // the final aggregate reads its spill files back as it would in a task.
         let fake = FakeSpark::with(usize::MAX);
-        let config = MemoryPoolConfig::new(MemoryPoolType::FairUnified, alone.peak());
+        let config =
+            MemoryPoolConfig::new(MemoryPoolType::FairUnified, alone.peak() + above_initial);
         let pool = create_pool(&config, -3020, &RunningTasks::default(), || fake.memory());
         let [distinct, _, final_agg] = distinct_count(input);
         let output = collect_with(Arc::clone(&final_agg) as _, pool, session_config()).await;
@@ -1066,8 +1104,7 @@ mod tests {
     }
 
     /// A sort above a hash aggregate, as for a window or a sort-merge join over an aggregate.
-    /// DataFusion 55.2's hash aggregates keep their output reserved until they have emitted all of
-    /// it, and `ExternalSorter` fails when its first request is refused, since it has nothing to
+    /// The hash aggregates keep their output reserved until they have emitted all of it, and `ExternalSorter` fails when its first request is refused, since it has nothing to
     /// spill yet.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sort_above_a_hash_aggregate_gets_room_for_its_first_batch() {

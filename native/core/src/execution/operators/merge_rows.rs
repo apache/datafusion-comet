@@ -17,7 +17,7 @@
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::kernels::boolean::{and, not};
+use arrow::compute::kernels::boolean::{and, and_not, not};
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -622,10 +622,8 @@ fn process_batch_with_metrics(
     let target_present = eval_bool(&config.is_target_row_present, &batch)?;
 
     let matched_mask = and(&target_present, &source_present)?;
-    // arrow 59's and_not is wrong for inputs with a non-zero offset (apache/arrow-rs#10698).
-    // Go back to and_not once Comet is on arrow 60.
-    let not_matched_mask = and(&source_present, &not(&target_present)?)?;
-    let not_matched_by_source_mask = and(&target_present, &not(&source_present)?)?;
+    let not_matched_mask = and_not(&source_present, &target_present)?;
+    let not_matched_by_source_mask = and_not(&target_present, &source_present)?;
 
     // Vectorized cardinality validation can surface before an unrelated per-row expression error;
     // both paths fail the query, but the error selected can differ from Spark in that rare case.

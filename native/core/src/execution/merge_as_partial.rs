@@ -20,16 +20,16 @@
 //! Spark's PartialMerge mode merges intermediate state buffers and outputs intermediate
 //! state (not final values). DataFusion has no equivalent mode — `Partial` calls
 //! `update_batch` and outputs state, while `Final` calls `merge_batch` and outputs
-//! evaluated results. `PartialReduce` merges state and outputs state, but from DataFusion 56
-//! it emits a group more than once when it runs short of memory, as `Partial` does.
+//! evaluated results. `PartialReduce` merges state and outputs state, but it emits a group
+//! more than once when it runs short of memory, as `Partial` does.
 //!
 //! This wrapper bridges the gap: it redirects `update_batch` calls to `merge_batch`, and it
 //! evaluates to its state, packed into a struct. Under DataFusion's `Partial` mode, which
 //! outputs state, that gives merge semantics with state output. Under `Single` mode, which
 //! spills rather than emit a group twice, the planner unpacks the struct into the state columns.
-//! It does the same under `Final` mode, which DataFusion 55 runs with an ordered aggregate that
-//! spills when the input is sorted on some of the grouping keys. There, `Single` falls back to a
-//! stream whose spill can ask for more than its share of memory (#6880).
+//! It does the same under `Final` mode, which the planner uses when the input is sorted on some
+//! of the grouping keys. There, `Final` runs as a `ClusteredFinalAggregateStream`, which the fair
+//! pool exempts from its fair limit (#6880). #7765 tracks whether `Single` would now do.
 
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};

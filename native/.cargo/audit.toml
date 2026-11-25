@@ -39,8 +39,10 @@ ignore = [
     # the process already holds. Exploiting it needs a network observer timing those signatures.
     "RUSTSEC-2023-0071",
 
-    # zstd 0.13.3 / zstd-safe 7.3.0. Fixed in zstd 0.14.3 / zstd-safe 8.2. arrow-ipc 59 pins
-    # zstd ^0.13, and arrow-ipc 60 moves to ^0.14, so this is blocked on the arrow 60 upgrade.
+    # zstd 0.13.3 / zstd-safe 7.3.0. Fixed in zstd 0.14.3 / zstd-safe 8.2. zstd 0.13 still comes
+    # from Comet's own native/shuffle, and from iceberg and its apache-avro 0.22, which both
+    # require zstd ^0.13. Removing these needs native/shuffle on zstd 0.14 and an iceberg-rust
+    # revision whose iceberg and apache-avro are on it.
     # Comet's own use (native/shuffle) is not affected by these:
     "RUSTSEC-2026-0391", # with_context leaks an abandoned stream. ShuffleCodecContext resets the
                          # session before every frame, which is the upstream fix.

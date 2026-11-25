@@ -177,7 +177,7 @@ pub(crate) mod test_util {
     pub(crate) fn skewed_nested_values(selected_len: usize) -> Vec<ArrayRef> {
         let lengths = || (0..ROWS).flat_map(|_| [selected_len, 128]);
         let offsets = OffsetBuffer::<i32>::from_lengths(lengths());
-        let count = *offsets.last().unwrap();
+        let count = offsets.last();
         let ints: ArrayRef = Arc::new(Int32Array::from_iter_values(0..count));
         let list_of = |item: DataType, values: ArrayRef, nulls: Option<NullBuffer>| -> ArrayRef {
             Arc::new(ListArray::new(
@@ -238,9 +238,7 @@ pub(crate) mod test_util {
         let inner = ListArray::new(
             Arc::new(Field::new("item", DataType::Int32, true)),
             inner_offsets.clone(),
-            Arc::new(Int32Array::from_iter_values(
-                0..*inner_offsets.last().unwrap(),
-            )),
+            Arc::new(Int32Array::from_iter_values(0..inner_offsets.last())),
             Some((0..2 * ROWS * WIDTH).map(|i| i % 13 != 0).collect()),
         );
         let deep: ArrayRef = Arc::new(ListArray::new(

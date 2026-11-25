@@ -408,8 +408,8 @@ A consumer that cannot spill takes what Spark grants. The pool refuses it only w
 total plus the request would exceed `pool_size`, which Spark's own limit on the task is at least as
 tight as unless the deprecated fraction is below `1 / N`.
 
-The pool goes by what a consumer declares, with one exception. DataFusion 55.2 registers
-`OrderedFinalAggregateStream` as able to spill even when its input is sorted on every grouping key,
+The pool goes by what a consumer declares, with one exception. DataFusion registers
+`ClusteredFinalAggregateStream` as able to spill even when its input is sorted on every grouping key,
 as a workaround for [apache/datafusion#17334](https://github.com/apache/datafusion/issues/17334), but
 builds a spill path only for partially sorted input. Fully sorted, as in a `CometSortAggregateExec`
 over a native sort, a refusal fails the query, so the pool checks its requests only against the
@@ -491,14 +491,15 @@ the task's last open native plan closes.
 ### Final aggregates reading their spill files back
 
 `SpillReplayPool` (`spill_replay.rs`) wraps both Comet pools to work around
-[issue #6254](https://github.com/apache/datafusion-comet/issues/6254). Once one of DataFusion 55's
+[issue #6254](https://github.com/apache/datafusion-comet/issues/6254). Once one of DataFusion's
 final aggregates has spilled, it reads its spill files back through an aggregate that cannot spill,
-so a refused `try_grow` there fails the task. When the pool refuses such a request,
-`SpillReplayPool` records it with the pool's `grow` instead, which skips `CometFairMemoryPool`'s
-local checks and carries what Spark does not grant as overcommit. Every other refusal is passed on
-unchanged. `spill_replay.rs` describes how the wrapper recognizes these requests and what that relies
-on in DataFusion. [Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks
-removing it.
+so a refused `try_grow` there fails the task. DataFusion 56 checks for room for this when it picks
+the spill files to merge, but it does not keep that room, so the request can still be refused. When
+the pool refuses such a request, `SpillReplayPool` records it with the pool's `grow` instead, which
+skips `CometFairMemoryPool`'s local checks and carries what Spark does not grant as overcommit.
+Every other refusal is passed on unchanged. `spill_replay.rs` describes how the wrapper recognizes
+these requests and what that relies on in DataFusion.
+[Issue #6583](https://github.com/apache/datafusion-comet/issues/6583) tracks removing it.
 
 ## How DataFusion consumes the pool
 

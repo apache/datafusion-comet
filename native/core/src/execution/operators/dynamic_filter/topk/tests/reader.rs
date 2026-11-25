@@ -51,7 +51,7 @@ async fn live_threshold_reaches_remapped_parquet_column_and_prunes_later_groups(
         .downcast_ref::<DataSourceExec>()
         .unwrap();
     let (_, source, wrapped) = concrete_parquet_source(reader).unwrap();
-    // The rebuilt source keeps the read-error context of a native Parquet scan.
+    // The filtered source keeps the read-error context of a native Parquet scan.
     assert!(wrapped);
     let expression = source.filter().unwrap();
     let consumer = reader_filter(&expression).unwrap();

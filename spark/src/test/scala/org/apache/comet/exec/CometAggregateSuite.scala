@@ -209,7 +209,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .write
         .parquet(path)
       // Sorting on g, the first grouping key, makes DataFusion run the final aggregate as an
-      // OrderedFinalAggregateStream, which spills and reads its spill files back the same way.
+      // ClusteredFinalAggregateStream, which spills and reads its spill files back the same way.
       // Spark drops a sort under an aggregate unless EliminateSorts is excluded. With a 2.5 MiB
       // pool, merging the runs takes nearly all of the aggregate's share. The sort's merge
       // reservation is lowered so that the sort fits in the pool too.
@@ -425,6 +425,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "Expected a Spark partial aggregate only over the local rows:\n" +
               df.queryExecution.executedPlan)
         }
+      }
+    }
+  }
+
+  test("any_value of an array of strings reserves only what it keeps (issue #7541)") {
+    // ANY_VALUE becomes first, whose merge counted the input's whole backing buffers once for each
+    // group. Here that was about 80 MB for 650 KB of strings, more than a 16 MiB pool.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 256, 1, 4)
+        .selectExpr(
+          "CAST(id AS STRING) AS user_id",
+          "transform(sequence(0, 199), x -> concat(lpad(CAST(id AS STRING), 8, '0'), ':', " +
+            "lpad(CAST(x AS STRING), 4, '0'))) AS values")
+        .write
+        .parquet(path)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (16.0 / 2048).toString) {
+        val df = spark.read
+          .parquet(path)
+          .groupBy("user_id")
+          .agg(expr("any_value(values)"))
+        val expected = (0 until 256).map { i =>
+          Row(i.toString, (0 until 200).map(j => f"$i%08d:$j%04d"))
+        }
+        checkCometAnswer(df, expected)
+        assert(
+          collect(df.queryExecution.executedPlan) {
+            case agg: CometBaseAggregateExec if agg.modes == Seq(Final) => agg
+          }.nonEmpty,
+          s"Expected a native final aggregate:\n${df.queryExecution.executedPlan}")
       }
     }
   }
