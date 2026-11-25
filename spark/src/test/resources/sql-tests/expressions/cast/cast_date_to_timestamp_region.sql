@@ -23,11 +23,12 @@ statement
 CREATE TABLE region_dates(y INT, m INT, d INT) USING parquet
 
 -- Cover a historical offset with seconds, the dates around Apia's skipped day,
--- and summer and winter in Sydney after the end of chrono-tz's transition table.
+-- and summer and winter in Sydney after the end of chrono-tz's transition table
+-- and beyond the first 400-year cycle of the JVM table.
 statement
 INSERT INTO region_dates VALUES
   (1850, 1, 1), (2011, 12, 29), (2011, 12, 30), (2011, 12, 31),
-  (2101, 1, 15), (2101, 7, 15)
+  (2101, 1, 15), (2101, 7, 15), (2501, 1, 15), (2501, 7, 15)
 
 query expect_native(cast, make_date)
 SELECT y, m, d, CAST(make_date(y, m, d) AS TIMESTAMP) FROM region_dates

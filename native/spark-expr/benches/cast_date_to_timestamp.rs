@@ -28,6 +28,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 const ROWS: usize = 8192;
+const DAYS_IN_BATCH: usize = 2200;
 
 fn day(year: i32, month: u32, day: u32) -> i32 {
     NaiveDate::from_ymd_opt(year, month, day)
@@ -49,7 +50,9 @@ fn region_offsets() -> Arc<DateOffsets> {
 
 fn bench(c: &mut Criterion) {
     let start = day(2020, 1, 1);
-    let mut days = (start..start + ROWS as i32).collect::<Vec<_>>();
+    let mut days = (0..ROWS)
+        .map(|row| start + (row * DAYS_IN_BATCH / ROWS) as i32)
+        .collect::<Vec<_>>();
     let sorted = Date32Array::from(days.clone());
     days.shuffle(&mut StdRng::seed_from_u64(42));
     let shuffled = Date32Array::from(days);
