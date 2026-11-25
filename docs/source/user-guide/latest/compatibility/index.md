@@ -171,6 +171,47 @@ already-ordered `TakeOrderedAndProject` inputs are tracked in
 An error on a row absent from the final result is not always a mismatch: Spark can also need to
 evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 
+## ANSI division errors in filters and projections
+
+With `spark.sql.ansi.enabled=true`, Spark can raise `DIVIDE_BY_ZERO` even when a condition
+appears to guard the division. Spark's generated filter checks a column for NULL when a
+predicate first needs it. A generated projection can evaluate a repeated expression before
+either operand of an `AND` or `OR`.
+
+With the default code generation settings, Comet raises the same error for both queries in
+[#7480](https://github.com/apache/datafusion-comet/issues/7480). Whether Comet can reproduce
+Spark's evaluation order depends on the surrounding expressions and the consuming operator.
+For example, below a `LIMIT`, moving a division ahead of a filter condition could raise an
+error on a row beyond the limit. Comet keeps the original order in that filter.
+
+When `spark.sql.codegen.hugeMethodLimit` is below its default of 65535 bytes, Comet
+keeps the original filter order because it plans before Spark compiles the stage. This
+matches Spark when the largest compiled method exceeds the limit and Spark switches to
+a standalone filter. If the method fits within the limit (for example, a small filter
+with a limit of 8000 bytes), Spark keeps whole-stage evaluation and can raise
+`DIVIDE_BY_ZERO` on a row Comet skips. At the default limit, a compilation failure
+can still make Spark switch to a standalone filter after Comet has planned for
+whole-stage evaluation.
+
+A computed dividend can also prevent reordering. Suppose a Parquet scan returns a row
+with `x = 0` and `y = NULL`.
+
+```sql
+SELECT x FROM t WHERE y IS NOT NULL AND (x + 10) DIV x > 0
+```
+
+Spark's whole-stage filter divides before checking `y` and raises. `CometFilter` can check
+`y` first and discard the row.
+
+```sql
+SELECT x <> 0 AND ((x + 10) DIV x) + ((x + 10) DIV x) > 1 FROM t
+```
+
+With subexpression elimination enabled, Spark's generated projection computes the repeated
+division before testing `x <> 0` and raises. `CometProject` can return `false` for the row.
+Set `spark.comet.exec.filter.enabled=false` or `spark.comet.exec.project.enabled=false` to
+run the affected operator in Spark.
+
 ## ANSI-mode error classes and messages
 
 Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct

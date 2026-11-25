@@ -3819,6 +3819,53 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("ANSI division with partial readers and shared expressions") {
+    withTempPath { dir =>
+      sql(
+        "SELECT * FROM VALUES (1L, true, true, 2e20D), (0L, NULL, false, 1e20D) AS t(x, p, q, v)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "divisors") {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          val query = "SELECT x FROM divisors WHERE p IS NOT NULL AND abs(10 DIV x) > 0"
+          val filtered = sql(query)
+          assert(!filtered.isEmpty)
+          assert(filtered.rdd.take(1).toSeq == Seq(Row(1L)))
+
+          withTable("division_result") {
+            sql("CREATE TABLE division_result (x BIGINT) USING parquet")
+            for (enabled <- Seq("false", "true")) {
+              withSQLConf(CometConf.COMET_ENABLED.key -> enabled) {
+                val error = intercept[Exception] {
+                  sql(s"INSERT INTO division_result $query").collect()
+                }
+                assert(arithmeticError(error).getErrorClass == "DIVIDE_BY_ZERO")
+              }
+            }
+          }
+
+          // Spark 4.2 evaluates the shared division before testing p and q.
+          val shared =
+            sql("SELECT x FROM divisors WHERE (p OR (q AND 10 DIV x > 0)) AND 10 DIV x < 100")
+          if (isSpark42Plus) checkSparkError(shared, "DIVIDE_BY_ZERO")
+          else checkSparkAnswerAndOperator(shared)
+
+          // For v = 1e20, Spark reuses the first sum (1.0) as the divisor.
+          // Computing the divisor in its written order rounds it to zero.
+          val sum = "(v + (-1e20D)) + 1D"
+          val quotient = "1D / ((v + 1D) + (-1e20D))"
+          checkSparkAnswerAndOperator(
+            s"SELECT $sum, p IS NOT NULL AND $quotient + $quotient > 0D FROM divisors")
+          if (isSpark42Plus) {
+            checkSparkAnswerAndOperator(
+              s"SELECT v FROM divisors WHERE p IS NOT NULL AND $sum > 0D AND $quotient > 0D")
+          }
+        }
+      }
+    }
+  }
+
   test("ANSI support for divide (division by zero)") {
     val data = Seq((Integer.MIN_VALUE, 0))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {

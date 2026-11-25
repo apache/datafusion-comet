@@ -95,6 +95,8 @@ object CometExecRule {
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
 
+  private[apache] val PARTIAL_READER: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.partialReader")
+
   /**
    * Info message for a native operator that keeps a `Scan` over an input that now reads its
    * shuffle directly, because its native plan's leaves do not line up with its inputs.
@@ -801,7 +803,11 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         }
         for {
           bounded <- cap
-          rebuilt <- convertToComet(original.withNewChildren(Seq(bounded)), CometProjectExec)
+          rebuilt <- {
+            val capped = original.withNewChildren(Seq(bounded))
+            capped.unsetTagValue(CometExecRule.PARTIAL_READER)
+            convertToComet(capped, CometProjectExec)
+          }
         } yield {
           // AQE can link the current projection to a materialized logical query stage.
           // Its originalPlan may have an older link; preserve the current direct/inherited tags.
@@ -1066,44 +1072,54 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
-  /** A batch observer must not count rows that a short-circuiting consumer would never read. */
-  private def preserveCollectMetricsRowConsumption(plan: SparkPlan): Unit = {
-    def visit(node: SparkPlan, requiresRowConsumption: Boolean): Unit = {
+  private def preserveRowConsumption(plan: SparkPlan): Unit = {
+    // None means the consumer is external. Metrics require a known materializing consumer,
+    // while division reordering is disabled when a visible consumer can stop mid-batch.
+    def visit(node: SparkPlan, partialReader: Option[Boolean]): Unit = {
       val original = node match {
         case comet: CometExec => comet.originalPlan
         case other => other
       }
-      val childRequiresRowConsumption = original match {
+      val childReader = original match {
         // A join can finish when one input is exhausted without draining the other input.
-        case _: BaseJoinExec => true
+        case _: BaseJoinExec => Some(true)
         // User functions can consume only part of the partition iterator.
-        case _: MapPartitionsExec => true
+        case _: MapPartitionsExec => Some(true)
         // Nonpositive Poisson sampling may return an empty iterator without reading its input.
         case sample: SampleExec
             if sample.withReplacement && sample.upperBound - sample.lowerBound <= 0.0 =>
-          true
+          Some(true)
         case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec |
             _: TakeOrderedAndProjectExec =>
-          true
+          Some(true)
         case windowLimit
             if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
               _.isInstance(windowLimit)) =>
-          true
+          Some(true)
         case _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec =>
-          false
+          Some(false)
         // Even a sort or aggregate may never be polled by an external iterator consumer.
-        case _ => requiresRowConsumption
+        case _ => partialReader
       }
       node match {
-        case observation: CollectMetricsExec if requiresRowConsumption =>
+        case observation: CollectMetricsExec if !partialReader.contains(false) =>
           observation.setTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION, true)
+        case _: FilterExec | _: ProjectExec =>
+          if (partialReader.contains(true)) node.setTagValue(CometExecRule.PARTIAL_READER, ())
+          else node.unsetTagValue(CometExecRule.PARTIAL_READER)
         case _ =>
       }
-      node.children.foreach(visit(_, childRequiresRowConsumption))
+      node.children.foreach(visit(_, childReader))
     }
     // External actions such as foreachPartition or RDD.take can stop reading without adding a
     // physical-plan node. Require a materializing exchange before enabling batch observation.
-    visit(plan, requiresRowConsumption = true)
+    val partial = plan match {
+      // A write can return zero columns after consuming its entire input.
+      case _: DataWritingCommandExec | _: WriteFilesExec | _: V2CommandExec => false
+      // Spark 3.x implements Dataset.isEmpty with executeTake(1) on a zero-column result.
+      case _ => producesObjects(plan) || (!isSpark40Plus && plan.output.isEmpty)
+    }
+    visit(plan, if (partial) Some(true) else None)
   }
 
   /**
@@ -1149,7 +1165,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
     } else {
       val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
-      preserveCollectMetricsRowConsumption(planWithDateEvaluation)
+      preserveRowConsumption(planWithDateEvaluation)
       // The rewrite removes the sorts of each join it converts, so put back any sort a kept
       // operator above still needs. This runs before transform(), which converts the sorts it
       // adds like any other SortExec.
@@ -1539,18 +1555,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
       op.children.foreach(visit(_, childReader))
     }
-    // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many
-    // of them to read, as `take(1)` does. The plan's root is the `DeserializeToObjectExec` that
-    // `Dataset.rdd` adds. When the Dataset ends in a typed operation such as `map`, Spark's
-    // `EliminateSerialization` drops that deserializer together with the operation's serializer,
-    // so the root is the operation itself, which produces objects too, or a typed filter or a
-    // project over it. A Dataset's own plan ends in rows, so no other plan has such a root.
-    def producesObjects(op: SparkPlan): Boolean = op match {
-      case _: ObjectProducerExec => true
-      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
-      case _ => false
-    }
     visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
+  }
+
+  // Dataset.rdd's consumer can stop at any row. EliminateSerialization can remove its
+  // DeserializeToObjectExec, leaving a typed operator, filter or projection at the root.
+  private def producesObjects(op: SparkPlan): Boolean = op match {
+    case _: ObjectProducerExec => true
+    case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+    case _ => false
   }
 
   /**

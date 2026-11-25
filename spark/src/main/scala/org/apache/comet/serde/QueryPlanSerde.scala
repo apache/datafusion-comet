@@ -938,19 +938,26 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] =
+    rewrittenExprToProto(expr, expr, inputs, binding)
+
+  /** Serialize a rewritten expression while keeping its coverage and diagnostics on `expr`. */
+  def rewrittenExprToProto(
+      expr: Expression,
+      rewritten: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean = true): Option[Expr] =
     CometExplainInfo.withExpressionFallbackReasonScope {
       CometMakeDate.unsupportedParentReason(expr) match {
         case Some(reason) =>
           withFallbackReason(expr, reason)
           None
         case None =>
-          val newExpr = DecimalPrecision.promote(expr)
+          val newExpr = DecimalPrecision.promote(rewritten)
           val result = exprToProtoInternal(newExpr, inputs, binding)
           if (!(newExpr eq expr)) {
-            // `promote` rebuilt the tree, so the tags landed on copies that the operator does
+            // The tree was rebuilt, so the tags landed on copies that the operator does
             // not hold. Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk
-            // the operator's own expressions, still see them. Skipped in the common case where
-            // `promote` returned the same tree and there is nothing to lift.
+            // the operator's own expressions, still see them.
             liftCoverageTags(newExpr, expr)
             if (result.isEmpty) {
               liftFallbackReasons(newExpr, expr)
@@ -1042,6 +1049,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    inputs match {
+      case project: ProjectInputs if project.materialized.contains(expr) =>
+        return exprToProtoInternal(project.materialized(expr), inputs, binding)
+      case _ =>
+    }
+
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
       if (!CometConf.isExprEnabled(exprConfName)) {
@@ -1338,25 +1351,39 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * an aggregation always, and in a projection, such as a project or a shuffle's partitioning
    * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
-   * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
-   * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown. Only those that can raise
-   * are kept, see `cannotRaise`.
+   * every row where Spark does not. They are found on demand during operator serialization.
+   * `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
-    // The shared subexpressions that can raise. Find shared nodes in Spark's original trees, then
-    // compare them after decimal promotion. Promotion wraps decimal arithmetic in CheckOverflow,
-    // which `cannotRaise` does not list, so that arithmetic is always kept.
-    lazy val raising: Seq[Expression] =
+    lazy val original: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
         expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote).filterNot(cannotRaise)
+        equivalence.getCommonSubexpressions
       } else {
         Nil
       }
+
+    // Promotion wraps decimal arithmetic in CheckOverflow, so check whether it can raise
+    // after promotion.
+    lazy val raising: Seq[Expression] =
+      original.map(DecimalPrecision.promote).filterNot(cannotRaise)
+  }
+
+  private[apache] def sharedExpressionsBeforePromotion: Seq[Expression] =
+    sharedSubexpressions.value.map(_.original).getOrElse(Nil)
+
+  // Bind exact matches when serializing against these inputs. Parent serializers need
+  // the original tree for canSkipEvaluation, and lambdas have their own binding scope.
+  private[apache] final class ProjectInputs(inputs: Seq[Attribute], aliases: Seq[Alias])
+      extends IndexedSeq[Attribute] {
+    private val attributes = inputs.toVector ++ aliases.map(_.toAttribute)
+    val materialized: Map[Expression, Attribute] =
+      aliases.map(a => DecimalPrecision.promote(a.child) -> a.toAttribute).toMap
+    override def length: Int = attributes.length
+    override def apply(index: Int): Attribute = attributes(index)
   }
 
   /**
