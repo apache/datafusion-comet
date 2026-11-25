@@ -1231,6 +1231,59 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Top-level column names of `schema` whose type differs in some schema of the table's history
+   * (`table.schemas()`), such as an int column promoted to long. Data files written before the
+   * promotion keep the older type, and iceberg-rust compares literals against it incorrectly: the
+   * page index skips every page for range and IN predicates, and the row filter casts the literal
+   * to the older type, so an out-of-range value becomes NULL (apache/iceberg-rust#3122).
+   *
+   * Expiring snapshots with `cleanExpiredMetadata` removes schemas that no retained snapshot
+   * uses, even though files written under them can remain. Iceberg numbers schemas consecutively
+   * from 0, so a gap means the history is incomplete, and every column of a type that a promotion
+   * can produce is returned: long, double, decimal, and, from format v3, timestamp and
+   * timestamp_ns, which a date can be promoted to. The history cannot reveal a file whose type
+   * differs without a recorded schema change, such as one imported by `add_files`, `migrate` or
+   * `snapshot`, or one promoted under metadata from before Iceberg 0.12, which kept only the
+   * current schema.
+   *
+   * Those imports set a name mapping, so a caller reading a table that has one passes
+   * `filesMayBeNarrower = true`. Every column of a type that a file can store in a narrower type
+   * is then returned, as for an incomplete history, and `int` joins the types above (Hive TINYINT
+   * and SMALLINT). Called at serialization time, so it throws on reflection failure.
+   */
+  def promotedColumns(
+      table: Any,
+      schema: Any,
+      filesMayBeNarrower: Boolean = false): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    val findField = getMethod(schema.getClass, "findField", classOf[Int])
+    def typeOf(field: Any): String = fieldTypeOf(field).toString
+    val schemasById = getMethod(table.getClass, "schemas")
+      .invoke(table)
+      .asInstanceOf[java.util.Map[_, _]]
+      .asScala
+    val history = schemasById.values.toSeq
+    val ids = schemasById.keys.map(_.asInstanceOf[Integer].intValue).toSet
+    val historyComplete = ids.nonEmpty && ids.min == 0 && ids.max == ids.size - 1
+    val assumeNarrower = filesMayBeNarrower || !historyComplete
+    val promotableTypes = Set("long", "double", "timestamp", "timestamp_ns") ++
+      (if (filesMayBeNarrower) Some("int") else None)
+    getMethod(schema.getClass, "columns")
+      .invoke(schema)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .filter { column =>
+        val id = fieldIdOf(column).asInstanceOf[AnyRef]
+        val current = typeOf(column)
+        val promotable = current.startsWith("decimal(") || promotableTypes.contains(current)
+        (promotable && assumeNarrower) ||
+        history.exists(older => Option(findField.invoke(older, id)).exists(typeOf(_) != current))
+      }
+      .map(fieldName)
+      .toSet
+  }
+
+  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
