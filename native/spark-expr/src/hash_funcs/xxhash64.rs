@@ -44,11 +44,9 @@ const SPARK_DEFAULT_SEED: i64 = 42;
 /// Compatible arguments at the default seed are delegated to `datafusion-spark`'s
 /// `SparkXxhash64`. The Comet kernel is kept for:
 /// - a non-default seed (`SparkXxhash64` always starts from 42)
-/// - `Struct` (and anything containing one): before DataFusion 56, `SparkXxhash64` did not push
-///   a parent null mask into children, so hidden values of a NULL struct would affect the hash
-///   (fixed by apache/datafusion#25774)
-/// - a `Dictionary` nested in a list/map: before DataFusion 56, `SparkXxhash64` restarted those
-///   hashes from 42 (fixed by apache/datafusion#25813)
+/// - `Struct` (and anything containing one), and a `Dictionary` nested in a list/map. DataFusion
+///   56's `SparkXxhash64` matches Spark for both (apache/datafusion#25774,
+///   apache/datafusion#25813), and #7764 tracks routing them to it.
 /// - wide decimals: `SparkXxhash64` hashes fixed-width little-endian bytes instead
 ///   of Spark's minimal signed big-endian representation
 /// - `Time64`, which `SparkXxhash64` does not dispatch
