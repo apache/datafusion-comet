@@ -306,6 +306,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-avro"
+version = "60.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfd40a71a38e4366b28742cc46912b9289d89e0c858895c8276ac0fc83dacdc6"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "bytes",
+ "crc",
+ "flate2",
+ "indexmap 2.14.2",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "snap",
+ "strum_macros 0.28.0",
+ "uuid",
+ "zstd 0.14.3",
+]
+
+[[package]]
 name = "arrow-buffer"
 version = "60.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3795,7 +3817,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/andygrove/iceberg-rust?rev=62f862468936e6cd66cfb3ac957b8cf567bcfa4f#62f862468936e6cd66cfb3ac957b8cf567bcfa4f"
+source = "git+https://github.com/apache/iceberg-rust?rev=219078c9d8d82cdc431af77a430e07c8fe56bd65#219078c9d8d82cdc431af77a430e07c8fe56bd65"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3803,6 +3825,7 @@ dependencies = [
  "array-init",
  "arrow-arith",
  "arrow-array",
+ "arrow-avro",
  "arrow-buffer",
  "arrow-cast",
  "arrow-ord",
@@ -3832,7 +3855,7 @@ dependencies = [
  "parquet",
  "parquet-geospatial",
  "rand 0.9.5",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "roaring",
  "serde",
  "serde_bytes",
@@ -3854,7 +3877,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/andygrove/iceberg-rust?rev=62f862468936e6cd66cfb3ac957b8cf567bcfa4f#62f862468936e6cd66cfb3ac957b8cf567bcfa4f"
+source = "git+https://github.com/apache/iceberg-rust?rev=219078c9d8d82cdc431af77a430e07c8fe56bd65#219078c9d8d82cdc431af77a430e07c8fe56bd65"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3864,7 +3887,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/andygrove/iceberg-rust?rev=62f862468936e6cd66cfb3ac957b8cf567bcfa4f#62f862468936e6cd66cfb3ac957b8cf567bcfa4f"
+source = "git+https://github.com/apache/iceberg-rust?rev=219078c9d8d82cdc431af77a430e07c8fe56bd65#219078c9d8d82cdc431af77a430e07c8fe56bd65"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6272,6 +6295,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

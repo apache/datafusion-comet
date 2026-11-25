@@ -220,11 +220,18 @@ impl IcebergScanExec {
                 DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
             })?
         };
-        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+        let options = iceberg::arrow::ArrowReaderOptions::builder()
             .with_batch_size(batch_size)
             .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
-            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+            .with_parquet_options(
+                iceberg::arrow::ParquetReadOptions::builder()
+                    .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+                    .build(),
+            )
+            .build();
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+            .with_options(options)
             .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
@@ -278,7 +285,7 @@ impl IcebergScanExec {
                 // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
                 // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
                 // already-sized files here instead of asserting.
-                debug_assert_eq!(delete.file_size_in_bytes(), 0);
+                debug_assert_eq!(delete.file_size_in_bytes(), Some(0));
                 // A deletion vector is range-read from content_offset, and iceberg-rust consults
                 // file_size_in_bytes only on the Parquet delete path. Statting the Puffin file
                 // would be one HEAD per file per Spark partition for a value nothing reads.
@@ -749,7 +756,7 @@ mod tests {
 
         let sized = IcebergScanExec::sized_delete_file(&original, 1234).unwrap();
 
-        assert_eq!(sized.file_size_in_bytes(), 1234);
+        assert_eq!(sized.file_size_in_bytes(), Some(1234));
         assert_eq!(
             IcebergScanExec::sized_delete_file(&sized, 0).unwrap(),
             original
@@ -771,7 +778,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file cannot be statted"
         );
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), Some(0));
     }
 
     // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
@@ -791,7 +798,7 @@ mod tests {
 
         assert_eq!(
             tasks[0].deletes()[0].file_size_in_bytes(),
-            bytes.len() as u64
+            Some(bytes.len() as u64)
         );
     }
 
@@ -811,7 +818,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file is below the Parquet footer minimum"
         );
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), Some(0));
     }
 
     // No deletes means no stats and no error.
