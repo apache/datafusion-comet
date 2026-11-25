@@ -51,6 +51,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withFallback
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
+import org.apache.comet.serde.SupportLevel
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -275,16 +276,28 @@ case class CometScanRule(session: SparkSession)
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
-    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+    val encryptionConfigured = encryptionEnabled(hadoopConf)
+    if (encryptionConfigured && !isEncryptionConfigSupported(hadoopConf)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
     // TODO: Remove this fallback once DataFusion can ignore embedded Arrow schema hints and
     // preserve Spark's ENUM inference without losing Parquet decryption state.
     // https://github.com/apache/datafusion-comet/issues/5477
-    if (encryptionEnabled(hadoopConf) &&
+    if (encryptionConfigured &&
       scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
       withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
+      return None
+    }
+    // DataFusion expects paths like at.list.array when coercing INT96 to microseconds.
+    // It misses legacy paths like at.bag.array, so decoding in nanoseconds can overflow.
+    // TODO: Remove this fallback once Comet pins a DataFusion release that includes
+    // https://github.com/apache/datafusion/pull/26464
+    // https://github.com/apache/datafusion-comet/issues/7029
+    if (encryptionConfigured && containsTimestampInArray(scanExec.requiredSchema)) {
+      withFallbackReason(
+        scanExec,
+        "Parquet scan with encryption configured may overflow INT96 timestamps in legacy arrays")
       return None
     }
     // input_file_name, input_file_block_start, and input_file_block_length read values that
@@ -306,6 +319,15 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     Some(CometScanExec(scanExec, session))
+  }
+
+  private def containsTimestampInArray(dt: DataType): Boolean = dt match {
+    case ArrayType(element, _) =>
+      SupportLevel.containsType(element, classOf[TimestampType], classOf[TimestampNTZType])
+    case StructType(fields) => fields.exists(f => containsTimestampInArray(f.dataType))
+    case MapType(key, value, _) =>
+      containsTimestampInArray(key) || containsTimestampInArray(value)
+    case _ => false
   }
 
   private def transformV2Scan(plan: SparkPlan, scanExec: BatchScanExec): SparkPlan = {

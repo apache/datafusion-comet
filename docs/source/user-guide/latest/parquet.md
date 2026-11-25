@@ -38,6 +38,11 @@ described in [Supported Data Sources](datasources.md#supported-storages).
 The following features are not supported and cause Comet to fall back to Spark:
 
 - Decimals encoded in binary format.
+- Scans configured for Parquet modular encryption that read a timestamp inside an array, including
+  through nested structs or maps. Falling back to Spark avoids the INT96 overflow in legacy lists
+  described under [Reads that differ from Spark](#reads-that-differ-from-spark). Comet checks the
+  requested schema before opening the files, so the fallback also covers standard lists, timestamps
+  stored as INT64, and plaintext files in these scans.
 - `ShortType` columns, by default. When reading Parquet files written by systems other than Spark that contain
   columns with the logical type `UINT_8` (unsigned 8-bit integers), Comet may produce different results than Spark.
   Spark maps `UINT_8` to `ShortType`, but Comet's Arrow-based readers respect the unsigned type and read the data as
@@ -285,9 +290,10 @@ for production, so do not turn it off to avoid an entry on this page.
   `spark.sql.parquet.datetimeRebaseModeInRead` and the file's `org.apache.spark.legacyDateTime`
   metadata ([#5010](https://github.com/apache/datafusion-comet/issues/5010)). The
   [Delta scan](delta.md) rebases.
-- **INT96 timestamps inside legacy-format lists.** INT96 timestamps outside the years 1677 to 2262
-  read back wrong inside lists written in a legacy layout, as Hive and
-  `spark.sql.parquet.writeLegacyFormat=true` write them
+- **INT96 timestamps inside legacy-format lists.** In scans without Parquet modular encryption
+  configured, Comet returns incorrect values for INT96 timestamps outside the nanosecond range
+  (roughly 1677 to 2262) in legacy lists, such as those written by Hive or by Spark with
+  `spark.sql.parquet.writeLegacyFormat=true`
   ([#7029](https://github.com/apache/datafusion-comet/issues/7029)).
 - **BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY column
   without the UTF8 annotation that is read as `string`, through the read schema or
