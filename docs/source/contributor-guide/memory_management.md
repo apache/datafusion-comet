@@ -425,7 +425,7 @@ keys. That one is not a `CometSortAggregateExec` and its input is only partially
 likewise checked only against the pool and Spark's grant. A `PartialMerge` over input sorted on
 every grouping key stays on the hash aggregate, since the final aggregate has no spill path there.
 
-Three details matter for tuning:
+Four details matter for tuning:
 
 - The pool is task-shared (see below), so the consumers that divide the task's share include those
   of every native plan in the task, not just the plan making the request. A consumer that can
@@ -454,7 +454,24 @@ Three details matter for tuning:
   the task's whole share, because the limit is then zero. Spark lets such a consumer hold more than
   `off_heap_size / running_tasks` while other tasks have not yet asked for memory. A larger
   `spark.memory.offHeap.size`, a smaller `spark.comet.batchSize` or `spark.comet.exec.memoryPool=greedy_unified`
-  avoids it, and the migration guide says so too.
+  avoids it, and the migration guide says so too. If `spark.comet.exec.sort.coalesceInput.enabled`
+  is set, turning it off also avoids it for a sort over a shuffle with many small blocks, as
+  described next.
+- With `spark.comet.exec.sort.coalesceInput.enabled=true`, `CometSort` puts a consumer that cannot
+  spill in front of the sort, which combines small input batches, such as shuffle blocks from many
+  map tasks, before the sort buffers them. It reserves the batches it holds plus the combined copy,
+  which counts a buffer once per column that uses it, and releases that
+  before the sort reserves the combined batch, so it holds nothing while the sort takes a batch. A
+  combined batch is larger than the blocks it replaces, so a sort whose share is very close to the
+  least it can run with may still fail with the error above where the blocks fit, as it can with a
+  full-size batch from any other input. A combined batch holds at most half the sort's in-place
+  threshold, 512 KiB by default, so the sort reserves at most about that threshold for it. That cap
+  is kept between 64 KiB and 4 MiB, so with a threshold below 128 KiB or above 8 MiB it is not half.
+  While it holds a group, its reservation, like any that cannot spill, lowers the share of the
+  task's consumers that can spill, such as another plan's sort in the same task. When the pool
+  refuses it a reservation, it passes the next 64 small batches through, then asks again. It is
+  not used when another Spark consumer in the task already holds execution memory, since Spark
+  could spill that consumer to grant its reservation.
 
 ### Task-shared pools and their lifetime
 
@@ -583,8 +600,10 @@ unbounded, so nobody charged for them at allocation time. Whether they are charg
 on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
 every batch it retains, and the hash join build side reserves `get_record_batch_memory_size` for
 each incoming batch; both read buffer sizes off the `ArrayData` and apply equally to imported
-buffers. So an imported batch that a sort or join has buffered _is_ reserved in Comet's pool, and
-through a unified pool is charged to Spark. The same batch held by an operator that does not reserve
+buffers. The coalescer that can sit in front of a native sort also reserves the batches it holds,
+at twice their size to cover the combined copy. So an imported batch that a sort, a join or that
+coalescer has buffered _is_ reserved in Comet's pool, and through a unified pool is charged to
+Spark. The same batch held by an operator that does not reserve
 (a projection or filter, or `ScanExec` itself between polls) is charged to nothing.
 
 **Native → JVM (`CometExecIterator`).** DataFusion produces the batch in Rust, and whether it is

@@ -399,6 +399,27 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("filter", defaultValue = true)
   val COMET_EXEC_SORT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sort", defaultValue = true)
+  val COMET_EXEC_SORT_COALESCE_INPUT_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.sort.coalesceInput.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: whether `CometSort` combines small input batches before sorting them. " +
+          "A shuffle with many map tasks and many partitions gives each reduce task many tiny " +
+          "Arrow batches. DataFusion's sort then merges one stream per batch, at least when it " +
+          "spills or sorts on more than one key, which is slow. Batches pass through " +
+          "unchanged until a task's sort input is large enough that the sort would merge " +
+          "instead of sorting in place, so small sorts are not affected. After that, batches " +
+          "with fewer rows than half of `spark.comet.batchSize`, and fewer than 512, are " +
+          "combined into batches of at most `spark.comet.batchSize` rows and half of " +
+          "DataFusion's in-place sort threshold in bytes, 512 KiB by default, kept between 64 " +
+          "KiB and 4 MiB. The threshold is " +
+          "`spark.comet.datafusion.execution.sort_in_place_threshold_bytes`, which takes " +
+          "effect with `spark.comet.exec.respectDataFusionConfigs=true`. A sort with a " +
+          "limit is not affected. Off by default: a combined batch is larger than the batches " +
+          "it replaces, so a sort with a very small memory share can fail with \"Not enough " +
+          "memory to continue external sort\" where the original batches fit.")
+      .booleanConf
+      .createWithDefault(false)
   val COMET_EXEC_LOCAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localLimit", defaultValue = true)
   val COMET_EXEC_GLOBAL_LIMIT_ENABLED: ConfigEntry[Boolean] =

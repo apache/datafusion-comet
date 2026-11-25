@@ -341,6 +341,50 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native sort combines small shuffle blocks before it spills") {
+    val value = "sort-coalesce-input-" * 8
+    withTempPath { path =>
+      // 80 files, read as 80 scan partitions below, so the shuffle has 80 map tasks. A
+      // repartition in the query would not do: Spark collapses it into the one above it.
+      spark
+        .createDataFrame((0 until 40000).map(index => (index, value)))
+        .repartition(80)
+        .write
+        .parquet(path.getAbsolutePath)
+
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        Seq(true, false).foreach { enabled =>
+          withSQLConf(
+            SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1024",
+            SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1",
+            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+            CometConf.COMET_BATCH_SIZE.key -> "1024",
+            CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+            CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+            "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+            CometConf.COMET_EXEC_SORT_COALESCE_INPUT_ENABLED.key -> enabled.toString) {
+            // 80 map tasks write to 2 partitions, so each sort task reads 80 blocks of about
+            // 250 rows, more than the input that passes through before combining starts.
+            val sorted = sql("SELECT * FROM tbl")
+              .repartition(2, $"_1")
+              .sortWithinPartitions($"_1".desc)
+            val (_, plan) = checkSparkAnswerAndOperator(sorted)
+            val sorts = collect(plan) { case sort: CometSortExec => sort }
+            assert(sorts.nonEmpty, s"Expected a native sort:\n$plan")
+            val combined = sorts.map(_.metrics("coalesced_input_batches").value).sum
+            val spilled = sorts.map(_.metrics("spill_count").value).sum
+            assert(spilled > 0L, s"The sort did not spill (enabled=$enabled):\n$plan")
+            if (enabled) {
+              assert(combined > 0L, s"The sort did not combine any input batches:\n$plan")
+            } else {
+              assert(combined == 0L, s"The sort combined input batches while disabled:\n$plan")
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("failed non-shuffle native stage attempts preserve disk spill metrics") {
     val failureRow = 8192
     val compressibleValue = "non-shuffle-failed-spill-metrics-" * 8

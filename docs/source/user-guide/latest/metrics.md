@@ -111,6 +111,20 @@ predicates, so neither counter alone measures MIN/MAX savings. Page-index and de
 retain their existing `page_index_rows_pruned` and `pushdown_rows_pruned` counters. There are no
 separate evaluated/pruned row counters on the aggregate.
 
+### CometSort
+
+Native sorts report these additional metrics:
+
+| Metric                                                        | Description                                                                                         |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `number of spills`                                            | Number of times the sort spilled to disk.                                                           |
+| `total spilled bytes`                                         | Bytes written to sort spill files.                                                                  |
+| `number of small input batches combined into larger ones`     | Small input batches, such as shuffle blocks from many map tasks, combined before the sort.          |
+| `number of batches produced by combining small input batches` | Batches the sort received from that combining. Zero means the sort got its input batches unchanged. |
+
+The combining is off unless `spark.comet.exec.sort.coalesceInput.enabled=true`. Its time is included
+in the sort's `total time`.
+
 ### Hash Joins
 
 With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins
