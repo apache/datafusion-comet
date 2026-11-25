@@ -93,6 +93,7 @@ use crate::execution::operators::iceberg_partition_path::{
     partition_to_path, CometLocationGenerator,
 };
 use crate::execution::operators::iceberg_partition_value::PartitionValueCalculator;
+use crate::parquet::objectstore::url_redaction::redacted_url_display;
 
 /// The writer every partition gets: iceberg-rust's own data file writer, rolling Parquet files
 /// that report what they hold in memory.
@@ -464,7 +465,10 @@ impl CountedOutput {
             .ok_or_else(|| {
                 iceberg::Error::new(
                     ErrorKind::Unexpected,
-                    format!("{path} is not the data file this output was made for"),
+                    format!(
+                        "{} is not the data file this output was made for",
+                        redacted_url_display(path)
+                    ),
                 )
             })
     }
@@ -472,7 +476,10 @@ impl CountedOutput {
     fn unsupported(operation: &str, path: &str) -> iceberg::Error {
         iceberg::Error::new(
             ErrorKind::FeatureUnsupported,
-            format!("{operation} is not supported on the output of data file {path}"),
+            format!(
+                "{operation} is not supported on the output of data file {}",
+                redacted_url_display(path)
+            ),
         )
     }
 }
@@ -703,15 +710,20 @@ async fn delete_task_files(file_io: &FileIO, locations: Vec<String>) {
     for location in &locations {
         match file_io.delete(location).await {
             Ok(()) => deleted += 1,
-            Err(e) => log::warn!(
-                "Failed to delete data file {location} left by a failed Iceberg write task: {e}"
-            ),
+            Err(e) => log::warn!("{}", delete_failure_message(location, &e)),
         }
     }
     log::info!(
         "Deleted {deleted} of {} data file(s) left by a failed Iceberg write task",
         locations.len()
     );
+}
+
+fn delete_failure_message(location: &str, error: &dyn fmt::Display) -> String {
+    format!(
+        "Failed to delete data file {} left by a failed Iceberg write task: {error}",
+        redacted_url_display(location)
+    )
 }
 
 /// How many rows the rolling writer may take before it re-checks the target file size.
@@ -919,8 +931,14 @@ impl ExecutionPlan for IcebergWriteExec {
 impl fmt::Debug for IcebergWriteExec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IcebergWriteExec")
-            .field("metadata_location", &self.common.metadata_location)
-            .field("data_location", &self.common.data_location)
+            .field(
+                "metadata_location",
+                &redacted_url_display(&self.common.metadata_location),
+            )
+            .field(
+                "data_location",
+                &redacted_url_display(&self.common.data_location),
+            )
             .field("operation_id", &self.common.operation_id)
             .field("writer_mode", &self.writer_mode)
             .field("partition_id", &self.partition_id)
@@ -934,7 +952,9 @@ impl DisplayAs for IcebergWriteExec {
         write!(
             f,
             "IcebergWriteExec: metadata_location={}, data_location={}, operation_id={}",
-            self.common.metadata_location, self.common.data_location, self.common.operation_id
+            redacted_url_display(&self.common.metadata_location),
+            redacted_url_display(&self.common.data_location),
+            self.common.operation_id
         )
     }
 }
@@ -2380,6 +2400,7 @@ fn compression_from_proto(codec: i32, level: Option<i32>) -> DFResult<Compressio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parquet::objectstore::url_redaction::tests::assert_no_url_marker;
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::stream::BoxStream;
@@ -2440,6 +2461,46 @@ mod tests {
         assert!(!file_io.exists(&first).await.unwrap());
         assert!(!file_io.exists(&second).await.unwrap());
         assert!(!file_io.exists(&never_written).await.unwrap());
+    }
+
+    #[test]
+    fn counted_output_errors_do_not_echo_credentials() {
+        let path = "s3://alice:SECRET@bucket/t/f.parquet?sig=SAS-MARKER#FRAG-MARKER";
+
+        let unsupported = CountedOutput::unsupported("read", path).to_string();
+        let mismatched = CountedOutput::default()
+            .file(path)
+            .expect_err("an output made for no file serves none")
+            .to_string();
+
+        for (err, expected) in [
+            (
+                unsupported,
+                "read is not supported on the output of data file s3://***@bucket/t/f.parquet",
+            ),
+            (
+                mismatched,
+                "s3://***@bucket/t/f.parquet is not the data file this output was made for",
+            ),
+        ] {
+            assert_no_url_marker(&err);
+            assert!(err.contains(expected), "expected '{expected}' in: {err}");
+        }
+    }
+
+    #[test]
+    fn delete_failure_message_does_not_echo_credentials() {
+        let message = delete_failure_message(
+            "s3://alice:SECRET@bucket/t/f.parquet?sig=SAS-MARKER#FRAG-MARKER",
+            &"no such key",
+        );
+
+        assert_no_url_marker(&message);
+        assert_eq!(
+            message,
+            "Failed to delete data file s3://***@bucket/t/f.parquet left by a failed Iceberg \
+             write task: no such key"
+        );
     }
 
     #[test]
@@ -2992,6 +3053,8 @@ mod tests {
         use tempfile::TempDir;
 
         use crate::execution::memory_pools::testing::PeakMemoryPool;
+        use crate::parquet::objectstore::url_redaction::tests::assert_no_url_marker;
+        use datafusion::physical_plan::empty::EmptyExec;
 
         fn user_schema() -> SchemaRef {
             Arc::new(ArrowSchema::new(vec![
@@ -3178,6 +3241,57 @@ mod tests {
                 .file_path()
                 .contains(temp_dir.path().to_str().unwrap()));
             assert!(data_files[0].file_path().ends_with(".parquet"));
+        }
+
+        #[test]
+        fn plan_display_does_not_echo_credentials() {
+            let schema = iceberg_user_schema();
+            let spec = PartitionSpec::builder(Arc::new(schema.clone()))
+                .build()
+                .unwrap();
+            let common = IcebergWriteCommon {
+                metadata_location: "s3://alice:SECRET@bucket/t/metadata/v1.json?sig=SAS-MARKER"
+                    .to_string(),
+                ..(*common(
+                    "s3://bucket/t/data?sig=SAS-MARKER#FRAG-MARKER".to_string(),
+                    serde_json::to_string(&spec).unwrap(),
+                    serde_json::to_string(&schema).unwrap(),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                ))
+                .clone()
+            };
+            let exec = IcebergWriteExec::try_new(
+                Arc::new(EmptyExec::new(user_schema())),
+                IcebergWrite {
+                    common: Some(common),
+                    partition_id: None,
+                    task_attempt_id: None,
+                },
+            )
+            .unwrap();
+
+            let shown = datafusion::physical_plan::displayable(&exec)
+                .one_line()
+                .to_string();
+
+            assert_no_url_marker(&shown);
+            assert!(
+                shown.contains(
+                    "IcebergWriteExec: metadata_location=s3://***@bucket/t/metadata/v1.json, \
+                     data_location=s3://bucket/t/data, operation_id=test-op"
+                ),
+                "{shown}"
+            );
+
+            let debug = format!("{exec:?}");
+            assert_no_url_marker(&debug);
+            assert!(
+                debug.contains(
+                    "metadata_location: \"s3://***@bucket/t/metadata/v1.json\", \
+                     data_location: \"s3://bucket/t/data\""
+                ),
+                "{debug}"
+            );
         }
 
         // Manifest encoding and output-batch construction run after the writer has closed and can

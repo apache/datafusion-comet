@@ -65,6 +65,7 @@ use url::Url;
 
 use crate::cloud::s3::policy_locations::{LocationIndex, PolicyLocations, RefreshError};
 use crate::parquet::objectstore::s3_blob_fs_support::BlobHostPromotingS3Storage;
+use crate::parquet::objectstore::url_redaction::redacted_url_display;
 
 /// Fetches the provider's current policy locations for a bucket. It may block, as a JVM call does;
 /// the storage runs it through [`run_blocking`].
@@ -116,20 +117,23 @@ fn bucket_and_key(path: &str) -> Result<(String, &str)> {
     let url = Url::parse(path).map_err(|e| {
         Error::new(
             ErrorKind::DataInvalid,
-            format!("Invalid S3 path {path}: {e}"),
+            format!("Invalid S3 path {}: {e}", redacted_url_display(path)),
         )
     })?;
     let bucket = url.host_str().ok_or_else(|| {
         Error::new(
             ErrorKind::DataInvalid,
-            format!("S3 path {path} has no bucket"),
+            format!("S3 path {} has no bucket", redacted_url_display(path)),
         )
     })?;
     let prefix = format!("{}://{bucket}/", url.scheme());
     let key = path.strip_prefix(&prefix).ok_or_else(|| {
         Error::new(
             ErrorKind::DataInvalid,
-            format!("Invalid S3 path {path}: should start with {prefix}"),
+            format!(
+                "Invalid S3 path {}: should start with {prefix}",
+                redacted_url_display(path)
+            ),
         )
     })?;
     Ok((bucket.to_string(), key))
@@ -689,6 +693,7 @@ impl FileWrite for LocationScopedFileWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parquet::objectstore::url_redaction::tests::assert_no_url_marker;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn denied() -> Error {
@@ -1561,6 +1566,26 @@ mod tests {
                 .contains("Invalid policy locations for bucket b"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn bucket_and_key_errors_do_not_echo_credentials() {
+        for (path, expected) in [
+            (
+                "s3://alice:SECRET@bucket/t/f.parquet?sig=SAS-MARKER#FRAG-MARKER",
+                "Invalid S3 path s3://***@bucket/t/f.parquet: should start with s3://bucket/",
+            ),
+            (
+                "s3://bucket:notaport/f?sig=SAS-MARKER",
+                "Invalid S3 path s3://<unparseable>: invalid port number",
+            ),
+            ("s3:/f?sig=SAS-MARKER", "S3 path s3:/f has no bucket"),
+            ("s3:///f?sig=SAS-MARKER", "S3 path s3:///f has no bucket"),
+        ] {
+            let err = bucket_and_key(path).expect_err(path).to_string();
+            assert_no_url_marker(&err);
+            assert!(err.contains(expected), "expected '{expected}' in: {err}");
+        }
     }
 
     #[test]
