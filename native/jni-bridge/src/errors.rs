@@ -899,6 +899,20 @@ fn spark_exception(spark_error: &SparkError) -> JvmException<'static> {
     }
 }
 
+/// The `CannotReadFile` error a scan should raise for `error`, if it is a per-file read failure,
+/// classified the same way the JNI conversion does. A `SparkError` the reader raised itself keeps
+/// its own type, so this returns `None` for it. The scan calls this where it still knows which
+/// file failed, so that file can be named in the error.
+pub fn file_read_error(error: &DataFusionError) -> Option<SparkError> {
+    if extract_spark_payload(error).is_some() {
+        return None;
+    }
+    match try_classify_file_read_error(error)? {
+        cannot_read @ SparkError::CannotReadFile { .. } => Some(cannot_read),
+        _ => None,
+    }
+}
+
 /// Classify a `DataFusionError` as a per-file read failure by TYPED variant (not message text),
 /// returning `SparkError::CannotReadFile` if so. This is the structured replacement for the
 /// previous JVM-side substring matching on error prose.
@@ -2248,5 +2262,42 @@ mod tests {
         assert!(
             try_classify_file_read_error(&DataFusionError::Internal("bug".to_string())).is_none()
         );
+    }
+
+    /// A `CannotReadFile` the scan attached as `External` keeps its structured exception under the
+    /// `Context` and `Shared` wrappers a repartition or a hash join build side adds, as it does bare.
+    #[test]
+    fn external_cannot_read_file_survives_context_and_shared() {
+        let external = || {
+            DataFusionError::External(Box::new(SparkError::CannotReadFile {
+                file_path: "file:/tmp/part-0.parquet".to_string(),
+                message: "corrupt footer".to_string(),
+            }))
+        };
+        let cases = [
+            ("bare", external()),
+            (
+                "context",
+                DataFusionError::Context("repartition".to_string(), Box::new(external())),
+            ),
+            ("shared", DataFusionError::Shared(Arc::new(external()))),
+            (
+                "shared context",
+                DataFusionError::Shared(Arc::new(DataFusionError::Context(
+                    "repartition".to_string(),
+                    Box::new(external()),
+                ))),
+            ),
+        ];
+        for (label, source) in cases {
+            let error = CometError::from(source);
+            match jvm_exception(&error) {
+                JvmException::Spark { json } => {
+                    assert!(json.contains("CannotReadFile"), "{label}: {json}");
+                    assert!(json.contains("part-0.parquet"), "{label}: {json}");
+                }
+                other => panic!("{label}: expected a Spark exception, got {other:?}"),
+            }
+        }
     }
 }

@@ -34,6 +34,7 @@ use datafusion::physical_plan::{
     DisplayFormatType, SortOrderPushdownResult,
 };
 use datafusion_comet_common::SparkError;
+use datafusion_comet_jni_bridge::errors::file_read_error;
 use datafusion_datasource::{
     file_stream::FileOpener,
     morsel::{Morsel, MorselPlan, MorselPlanner, Morselizer},
@@ -188,7 +189,8 @@ struct FileContext<T> {
 impl MorselPlanner for FileContext<Box<dyn MorselPlanner>> {
     fn plan(self: Box<Self>) -> Result<Option<MorselPlan>> {
         let Self { inner, path } = *self;
-        let Some(mut plan) = inner.plan()? else {
+        // Opening the file (reading its footer) can fail here or in the pending planner below.
+        let Some(mut plan) = inner.plan().map_err(|error| with_file_path(error, &path))? else {
             return Ok(None);
         };
         let morsels = plan
@@ -213,10 +215,10 @@ impl MorselPlanner for FileContext<Box<dyn MorselPlanner>> {
             .collect();
         if let Some(pending) = plan.take_pending_planner() {
             plan.set_pending_planner(async move {
-                Ok(Box::new(FileContext {
-                    inner: pending.await?,
-                    path,
-                }) as Box<dyn MorselPlanner>)
+                let inner = pending
+                    .await
+                    .map_err(|error| with_file_path(error, &path))?;
+                Ok(Box::new(FileContext { inner, path }) as Box<dyn MorselPlanner>)
             });
         }
         Ok(Some(plan.with_morsels(morsels).with_planners(planners)))
@@ -228,27 +230,40 @@ impl Morsel for FileContext<Box<dyn Morsel>> {
         let Self { inner, path } = *self;
         inner
             .into_stream()
-            .map_err(move |error| {
-                // Conversion runs inside this file's stream, before batches from other files mix.
-                if let DataFusionError::External(source) = &error {
-                    if let Some(SparkError::ParquetTimestampOverflow { .. }) =
-                        source.downcast_ref::<SparkError>()
-                    {
-                        return SparkError::ParquetTimestampOverflow {
-                            file_path: path.to_string(),
-                        }
-                        .into();
-                    }
-                }
-                error
-            })
+            .map_err(move |error| with_file_path(error, &path))
             .boxed()
+    }
+}
+
+/// Name the file in a file-level error raised while planning or reading it. This runs inside the
+/// file's own planner and stream, before batches from other files mix, so `path` is the file that
+/// failed. Without it a read failure reaches the JVM with no path, and the JVM falls back to every
+/// file of the task.
+fn with_file_path(error: DataFusionError, path: &str) -> DataFusionError {
+    if let DataFusionError::External(source) = &error {
+        if let Some(SparkError::ParquetTimestampOverflow { .. }) =
+            source.downcast_ref::<SparkError>()
+        {
+            return SparkError::ParquetTimestampOverflow {
+                file_path: path.to_string(),
+            }
+            .into();
+        }
+    }
+    match file_read_error(&error) {
+        Some(SparkError::CannotReadFile { message, .. }) => SparkError::CannotReadFile {
+            file_path: path.to_string(),
+            message,
+        }
+        .into(),
+        _ => error,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parquet::errors::ParquetError;
 
     #[derive(Debug)]
     struct FailedMorsel(SparkError);
@@ -298,5 +313,68 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, DataFusionError::External(source)
             if matches!(source.downcast_ref::<SparkError>(), Some(SparkError::DivideByZero))));
+    }
+
+    fn cannot_read_path(error: &DataFusionError) -> Option<&str> {
+        let DataFusionError::External(source) = error else {
+            return None;
+        };
+        match source.downcast_ref::<SparkError>() {
+            Some(SparkError::CannotReadFile { file_path, .. }) => Some(file_path),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn read_failures_name_the_failed_file() {
+        let path = "file:///tmp/t/part-00001.parquet";
+        let corrupt = DataFusionError::ParquetError(Box::new(ParquetError::General(
+            "Failed to fetch metadata for file tmp/t/part-00001.parquet: Invalid Parquet file. \
+             Corrupt footer"
+                .to_string(),
+        )));
+        let named = with_file_path(corrupt, path);
+        assert_eq!(cannot_read_path(&named), Some(path));
+        // The native message is kept as the cause.
+        assert!(named.to_string().contains("Corrupt footer"));
+
+        let wrapped = DataFusionError::Context(
+            "open".to_string(),
+            Box::new(DataFusionError::ParquetError(Box::new(ParquetError::EOF(
+                "unexpected end of file".to_string(),
+            )))),
+        );
+        assert_eq!(cannot_read_path(&with_file_path(wrapped, path)), Some(path));
+    }
+
+    #[test]
+    fn other_errors_keep_their_type() {
+        let path = "file:///tmp/t/part-00001.parquet";
+        // A Spark error the reader raised itself.
+        let missing_ids = DataFusionError::ParquetError(Box::new(ParquetError::External(
+            Box::new(SparkError::ParquetMissingFieldIds {
+                file_path: "tmp/t/part-00001.parquet".to_string(),
+            }),
+        )));
+        let error = with_file_path(missing_ids, path);
+        assert!(matches!(&error, DataFusionError::ParquetError(pe)
+            if matches!(pe.as_ref(), ParquetError::External(inner)
+                if matches!(inner.downcast_ref::<SparkError>(),
+                    Some(SparkError::ParquetMissingFieldIds { .. })))));
+
+        // A missing file stays a file-not-found error.
+        let not_found = DataFusionError::ParquetError(Box::new(ParquetError::General(
+            "Failed to fetch metadata for file tmp/t/gone.parquet: Object Store error: \
+             Object at location tmp/t/gone.parquet not found: No such file or directory"
+                .to_string(),
+        )));
+        assert!(cannot_read_path(&with_file_path(not_found, path)).is_none());
+
+        // An I/O error can come from spill or shuffle, so it is not a file read failure.
+        let io = DataFusionError::IoError(std::io::Error::other("disk full"));
+        assert!(matches!(
+            with_file_path(io, path),
+            DataFusionError::IoError(_)
+        ));
     }
 }
