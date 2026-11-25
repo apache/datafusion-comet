@@ -301,9 +301,9 @@ pub struct DvScanFile {
 
 /// Execution-memory-pool reservation covering one file's expanded DV row selectors across
 /// their *entire* lifetime attached to a scan -- from `build_access_plan`'s construction
-/// through DataFusion 54.1's reader normalizing the attached [`ParquetAccessPlan`]
-/// (`create_initial_plan`'s deep clone plus `into_overall_row_selection`'s combined
-/// `RowSelection`; see [`reader_peak_bytes`]) -- attached to the file's [`PartitionedFile`]
+/// through DataFusion's reader normalizing the attached [`ParquetAccessPlan`]
+/// (`create_initial_plan`'s deep clone plus the reader's transient copies; see
+/// [`reader_peak_bytes`]) -- attached to the file's [`PartitionedFile`]
 /// extensions alongside its [`ParquetAccessPlan`]. The reservation's lifetime is tied to the
 /// `PartitionedFile` it is attached to, so it is released back to the pool exactly when the
 /// plan is dropped (query completion or an early-terminated scan), never held open longer.
@@ -364,10 +364,14 @@ const VEC_GROWTH_CAPACITY_FACTOR: usize = 2;
 /// is tiny still pays this floor.
 const MIN_VEC_CAPACITY_SELECTORS: usize = 4;
 
-/// Conservative upper bound, in bytes, on the peak allocation live while DataFusion 54.1's
-/// reader normalizes one file's attached [`ParquetAccessPlan`]. This, not the plan's own
-/// retained selector bytes, is what the steady-state reservation must cover. Three allocations
-/// can be live at once when `into_overall_row_selection` returns:
+/// Conservative upper bound, in bytes, on the peak allocation live while DataFusion's reader
+/// normalizes one file's attached [`ParquetAccessPlan`]. This, not the plan's own retained
+/// selector bytes, is what the steady-state reservation must cover. Three allocations can be
+/// live at once. Term 3 was measured against DataFusion 55's file-level combined selection;
+/// DataFusion 56 moves each row group's selection into the push decoder instead, and the
+/// copies that replaced it (the decoder's `peek_next_row_group` clone of the remaining row
+/// groups, and the active row group's clone) are at most `selectors`, so term 3 still covers
+/// them:
 ///
 /// 1. **Attached original** (`selectors`, exact): `create_initial_plan` deep-clones the plan
 ///    while the original stays reachable from the file's `extensions`. The original's `Vec`s
@@ -2108,10 +2112,10 @@ mod tests {
         assert!(matches!(err, GeneralError(_)), "unexpected error: {err:?}");
     }
 
-    /// Replays DataFusion 54.1's REAL reader-normalization path (not a reimplementation of
-    /// it): clones the attached plan exactly as `create_initial_plan` does, calls the actual,
-    /// public `ParquetAccessPlan::into_overall_row_selection` DataFusion will call from
-    /// `build_stream`, and recovers the resulting `RowSelection`'s TRUE backing `Vec` capacity
+    /// Replays DataFusion 55's reader-normalization path: clones the attached plan exactly as
+    /// `create_initial_plan` does, calls `ParquetAccessPlan::into_overall_row_selection`, which
+    /// DataFusion 55 called from `build_stream` and whose combined selection is at least as
+    /// large as the per-row-group copies DataFusion 56 makes instead, and recovers the resulting `RowSelection`'s TRUE backing `Vec` capacity
     /// (not its length) -- the same quantity `reader_peak_bytes` bounds. Exercising the real
     /// dependency rather than a model of it means this test keeps working (or fails loudly)
     /// across future `datafusion`/`parquet` upgrades that change either crate's growth
@@ -2160,8 +2164,8 @@ mod tests {
         // `out[0]`'s extensions) and the clone are live at once, exactly like the real reader.
         let cloned_plan = attached_plan.clone();
         let metadata = read_metadata_with_page_index(&path);
-        // Deprecated in DataFusion 56 in favor of row-group-local entries; these tests still model
-        // the reader's file-level selection peak.
+        // DataFusion 56's reader no longer builds this file-level selection. Its capacity still
+        // bounds the per-row-group copies that replaced it (see `reader_peak_bytes`).
         #[allow(deprecated)]
         let combined = cloned_plan
             .into_overall_row_selection(metadata.row_groups())
@@ -2232,8 +2236,8 @@ mod tests {
         let retained_selectors = total_selectors(&attached_plan);
         let cloned_plan = attached_plan.clone();
         let metadata = read_metadata_with_page_index(&path);
-        // Deprecated in DataFusion 56 in favor of row-group-local entries; these tests still model
-        // the reader's file-level selection peak.
+        // DataFusion 56's reader no longer builds this file-level selection. Its capacity still
+        // bounds the per-row-group copies that replaced it (see `reader_peak_bytes`).
         #[allow(deprecated)]
         let combined = cloned_plan
             .into_overall_row_selection(metadata.row_groups())
@@ -2332,8 +2336,8 @@ mod tests {
         let mut clone_for_combining = attached_plan.clone();
         clone_for_combining.scan_selection(0, all_select);
         let metadata = read_metadata_with_page_index(&path);
-        // Deprecated in DataFusion 56 in favor of row-group-local entries; these tests still model
-        // the reader's file-level selection peak.
+        // DataFusion 56's reader no longer builds this file-level selection. Its capacity still
+        // bounds the per-row-group copies that replaced it (see `reader_peak_bytes`).
         #[allow(deprecated)]
         let combined = clone_for_combining
             .into_overall_row_selection(metadata.row_groups())
