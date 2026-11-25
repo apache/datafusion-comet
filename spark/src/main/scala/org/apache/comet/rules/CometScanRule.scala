@@ -1037,6 +1037,11 @@ case class CometScanRule(session: SparkSession)
             false
           case None => true
         }
+        val noUserInfoLocations = !taskValidation.hasUserInfoLocation || {
+          fallbackReasons += "Iceberg scan references a data/delete file location with user " +
+            "info in its authority, which Comet's native Iceberg reader cannot open"
+          false
+        }
 
         // iceberg-rust's HDFS client cannot use an executor's delegation tokens: opendal builds
         // every client for a synthetic nameservice, and the client looks tokens up by that name.
@@ -1319,7 +1324,8 @@ case class CometScanRule(session: SparkSession)
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
-          metadataSchemeSupported && storageFamiliesConsistent && partitionTypesSupported &&
+          noUserInfoLocations && metadataSchemeSupported && storageFamiliesConsistent &&
+          partitionTypesSupported &&
           unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
           nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported &&
@@ -1767,6 +1773,10 @@ object CometScanRule extends Logging {
     // First data/delete location with a readable scheme but no URL host (see
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
+    // Whether a data/delete location carries user info in its authority. The object-store and
+    // HDFS storages reject it, and a `file` location resolves to a different local path; true =>
+    // decline, with a reason that does not repeat the location.
+    var hasUserInfoLocation = false
 
     // Classify one data/delete file location; see `icebergReadableSchemes` for why that allowlist
     // is narrower than the Parquet native gate. Runs per data and delete file, so the scheme and
@@ -1774,17 +1784,24 @@ object CometScanRule extends Logging {
     def inspectLocation(rawPath: String): Unit = {
       val uri =
         try new URI(rawPath)
-        catch { case _: java.net.URISyntaxException => return }
+        catch {
+          case _: java.net.URISyntaxException =>
+            if (NativeConfig.hasUserInfo(rawPath)) hasUserInfoLocation = true
+            return
+        }
       // A schemeless local path routes to iceberg-rust's LocalFs and needs no host.
       val scheme = uri.getScheme
       if (scheme == null) {
-        fileSchemes += "file"
+        if (NativeConfig.hasUserInfo(uri)) hasUserInfoLocation = true
+        else fileSchemes += "file"
         return
       }
       if (!isAdmittedIcebergScheme(scheme, s3CompliantSchemes)) {
         unsupportedSchemes += scheme
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
+      } else if (NativeConfig.hasUserInfo(uri)) {
+        hasUserInfoLocation = true
       } else {
         fileSchemes += scheme
         if (scheme == "hdfs") {
@@ -1870,6 +1887,7 @@ object CometScanRule extends Logging {
       hdfsAuthorities.toSet,
       hdfsDirectories.toSet,
       hostlessLocation,
+      hasUserInfoLocation,
       requiredFieldIds)
   }
 
@@ -1898,4 +1916,5 @@ case class IcebergTaskValidationResult(
     hdfsAuthorities: Set[String],
     hdfsDirectories: Set[String],
     hostlessLocation: Option[String],
+    hasUserInfoLocation: Boolean,
     requiredFieldIds: Set[Int])

@@ -126,6 +126,26 @@ object NativeConfig {
 
   private val trailingPort = Pattern.compile(":[0-9]*$")
 
+  /** True when the URI's raw authority carries user info (`user@host`, `user:password@host`). */
+  private[comet] def hasUserInfo(uri: URI): Boolean =
+    Option(uri.getRawAuthority).exists(_.contains('@'))
+
+  private val userInfoAuthority = Pattern.compile("^(?:[A-Za-z][A-Za-z0-9+.-]*:)?//[^/?#]*@")
+
+  private val urlTabOrNewline = Pattern.compile("[\\t\\r\\n]")
+
+  /**
+   * The text form of `hasUserInfo(URI)`, for a location `java.net.URI` rejects, such as one with
+   * an unencoded space: true when the text between `//` (after an optional scheme) and the first
+   * `/`, `?` or `#` contains `@`. The location is first cleaned as WHATWG URL parsing, and so
+   * iceberg-rust, cleans it: tabs and newlines are removed, and C0 controls and spaces are
+   * trimmed from both ends.
+   */
+  private[comet] def hasUserInfo(location: String): Boolean = {
+    val cleaned = urlTabOrNewline.matcher(location).replaceAll("").trim
+    userInfoAuthority.matcher(cleaned).find()
+  }
+
   /** The raw authority without user info, which native drops from every non-ABFS URI. */
   private def hostAndPort(uri: URI): String = {
     val rawAuthority = Option(uri.getRawAuthority).getOrElse("")

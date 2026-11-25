@@ -856,6 +856,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         val scheme = storageScheme(location)
         if (!SupportedStorageSchemes.contains(scheme)) {
           Some(s"unsupported storage scheme: $scheme")
+        } else if (NativeConfig.hasUserInfo(location)) {
+          Some(s"$scheme data location carries user info in its authority")
         } else if (!LocalStorageSchemes.contains(scheme) && !hasBucketAuthority(location)) {
           Some(s"$scheme data location has no bucket in its authority: $location")
         } else {

@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.util.Random
 
 import org.apache.commons.io.FileUtils
-import org.apache.iceberg.{DataFiles, FileFormat, Table}
+import org.apache.iceberg.{DataFiles, FileFormat, FileMetadata, Table}
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkEnv
 import org.apache.spark.paths.SparkPath
@@ -762,6 +762,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
    * Plans `SELECT id` over an Iceberg table whose data files sit at `dataFiles`, applies
    * `CometScanRule` with native Iceberg scans enabled and `hadoopConf` set on the session, and
    * returns the scans the rule claimed plus the fallback reasons it left on the ones it declined.
+   * Each of `deleteFiles` is added as a position delete file that applies to every data file.
    * `catalogProps` are set on the catalog before its first use, so its FileIO is built with them.
    * The warehouse, and so the table metadata, sits on the fake `hdfs://` filesystem
    * (`metadataPrefix`): the native reader opens every file through one storage chosen from the
@@ -773,7 +774,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       hadoopConf: Seq[(String, String)] = Seq.empty,
       catalogProps: Seq[(String, String)] = Seq.empty,
       metadataPrefix: String = FakeHdfsSchemeFileSystem.PREFIX,
-      sparkConf: Seq[(String, String)] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
+      sparkConf: Seq[(String, String)] = Seq.empty,
+      deleteFiles: Seq[String] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
     // A catalog of its own, so no test reads another's cached catalog or warehouse.
     val catalog = s"hdfs_gate_${UUID.randomUUID().toString.take(8)}"
     var claimed = Seq.empty[CometBatchScanExec]
@@ -803,6 +805,21 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
               .build())
         }
         append.commit()
+        if (deleteFiles.nonEmpty) {
+          val rowDelta = table.newRowDelta()
+          deleteFiles.foreach { path =>
+            rowDelta.addDeletes(
+              FileMetadata
+                .deleteFileBuilder(table.spec())
+                .ofPositionDeletes()
+                .withPath(path)
+                .withFormat(FileFormat.PARQUET)
+                .withFileSizeInBytes(1024)
+                .withRecordCount(1)
+                .build())
+          }
+          rowDelta.commit()
+        }
 
         // The Spark plan first, with Comet off, then the rule alone: no execution.
         var sparkPlan: SparkPlan = null
@@ -1090,6 +1107,87 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
         reasons.exists(_.contains("cannot authenticate to HDFS with delegation tokens")),
         s"expected the Kerberos fall-back reason for $location, got: $reasons")
     }
+  }
+
+  private val userInfoReason = "Iceberg scan references a data/delete file location with user " +
+    "info in its authority, which Comet's native Iceberg reader cannot open"
+
+  private def assertDeclinedForUserInfo(
+      claimed: Seq[CometBatchScanExec],
+      reasons: Set[String],
+      expected: String = userInfoReason): Unit = {
+    assert(claimed.isEmpty, s"a location with user info must not be claimed, reasons: $reasons")
+    assert(reasons.contains(expected), s"expected the user-info fall-back reason, got: $reasons")
+    assert(
+      !reasons.exists(r => r.contains("alice") || r.contains("SECRET")),
+      s"a reason echoes the user info: $reasons")
+  }
+
+  test("iceberg scan: data files with user info in their authority are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    Seq(
+      "hdfs://alice@nn.example.com:8020/warehouse/db/t/a.parquet",
+      "hdfs://alice:SECRET@nn.example.com:8020/warehouse/db/t/a.parquet",
+      "s3://alice:SECRET@bucket/warehouse/db/t/a.parquet",
+      // `URI` rejects the space, so only the text of the authority can be read.
+      "s3://alice:p ss@bucket/warehouse/db/t/a.parquet").foreach { location =>
+      withClue(location) {
+        val (claimed, reasons) = planIcebergScanOverHdfs(Seq(location))
+        assertDeclinedForUserInfo(claimed, reasons)
+      }
+    }
+  }
+
+  test("iceberg scan: an S3-compliant alias data file with user info is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("blob://alice:SECRET@bucket/warehouse/db/t/a.parquet"),
+      hadoopConf = Seq(CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY -> "blob"))
+    assertDeclinedForUserInfo(claimed, reasons)
+  }
+
+  test("iceberg scan: a delete file with user info in its authority is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      deleteFiles = Seq("hdfs://alice:SECRET@nn.example.com:8020/warehouse/db/t/d.parquet"))
+    assertDeclinedForUserInfo(claimed, reasons)
+  }
+
+  test("iceberg scan: a file data file with user info in its authority is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("file://alice@localhost/tmp/warehouse/db/t/a.parquet"),
+      metadataPrefix = "")
+    assertDeclinedForUserInfo(claimed, reasons)
+  }
+
+  test("iceberg scan: a schemeless data file with user info in its authority is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("//alice:SECRET@bucket/warehouse/db/t/a.parquet"),
+      metadataPrefix = "")
+    assertDeclinedForUserInfo(claimed, reasons)
+  }
+
+  test("iceberg scan: an HDFS file with user info is not probed for an encryption zone") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // With a key provider set, every HDFS directory the scan reads is listed, and a failed
+    // listing names the directory in its reason.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://alice:SECRET@nn.example.com:8020/warehouse/db/t/a.parquet"),
+      hadoopConf = Seq("hadoop.security.key.provider.path" -> "kms://http@kms.invalid:9600/kms"))
+    assertDeclinedForUserInfo(claimed, reasons)
+  }
+
+  test("iceberg scan: an @ in a data file path after the authority is not user info") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/email=a@b.com/a.parquet"))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    val (_, s3Reasons) =
+      planIcebergScanOverHdfs(Seq("s3://bucket/warehouse/db/t/email=a@b.com/a.parquet"))
+    assert(!s3Reasons.exists(_.contains("user info")), s3Reasons)
   }
 }
 
