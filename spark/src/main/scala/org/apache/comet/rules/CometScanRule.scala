@@ -1627,7 +1627,7 @@ object CometScanRule extends Logging {
         root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
           !objectStoreAcceptsPath(root.uri))
       .map(root =>
-        s"$scanName cannot open path '${root.uri}': object_store " +
+        s"$scanName cannot open path '${NativeConfig.displayPath(root.uri)}': object_store " +
           "rejects it (e.g. an unsupported character in the path)")
   }
 

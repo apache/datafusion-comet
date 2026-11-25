@@ -153,6 +153,38 @@ object NativeConfig {
     s"${lowerScheme(uri).getOrElse("file")}://${authorityWithoutPassword(uri)}"
 
   /**
+   * `uri` for a message that names a path: no password, query or fragment (where a SAS token or a
+   * signature would be). Other user info shows as `***@`, except an ABFS user, which is the
+   * container. The raw path keeps its percent encoding, and a URI with no user info keeps its own
+   * spelling (`file:/p` and `file:///p` stay apart). A `?` that Hadoop's `Path` encoded as `%3F`
+   * is part of the path and stays. An opaque URI shows only its scheme. An `@` after the
+   * authority may be the end of user info whose `/`, `?` or `#` ended the authority early, so
+   * such a URI shows as `scheme://<unparseable>`, as does a real path, query or fragment with an
+   * `@`, which cannot be told apart from one.
+   */
+  private[comet] def displayPath(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    val at = rawAuthority.lastIndexOf('@')
+    val afterAuthority =
+      Seq(uri.getRawPath, uri.getRawQuery, uri.getRawFragment).flatMap(Option(_))
+    if (uri.isOpaque) {
+      s"${uri.getScheme}:"
+    } else if (afterAuthority.exists(_.contains('@'))) {
+      lowerScheme(uri).fold("<unparseable>")(scheme => s"$scheme://<unparseable>")
+    } else if (at < 0) {
+      val shown = uri.toString
+      val end = shown.indexWhere(c => c == '?' || c == '#')
+      if (end < 0) shown else shown.substring(0, end)
+    } else {
+      val scheme = Option(uri.getScheme).map(_ + ":").getOrElse("")
+      val authority =
+        if (isAbfs(uri)) authorityWithoutPassword(uri)
+        else s"***@${rawAuthority.substring(at + 1)}"
+      s"$scheme//$authority${Option(uri.getRawPath).getOrElse("")}"
+    }
+  }
+
+  /**
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
    * when it is unset or blank, as native `is_hdfs_scheme` decides.
    */
