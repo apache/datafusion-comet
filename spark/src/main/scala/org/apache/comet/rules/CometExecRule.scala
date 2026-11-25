@@ -1345,9 +1345,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`). Spark's
       // generated code for an aggregate shares them whatever
       // spark.sql.subexpressionElimination.enabled says, and other operators only when it is on.
+      // Only a project shares however Spark runs it. A filter in whole-stage code does not
+      // through Spark 4.1, and an aggregate's expressions mix its functions' inputs, which
+      // share, with its results.
       val nativeOp = QueryPlanSerde.withSharedSubexpressions(
         op.expressions,
-        alwaysShared = op.isInstanceOf[BaseAggregateExec]) {
+        alwaysShared = op.isInstanceOf[BaseAggregateExec],
+        certain = op.isInstanceOf[ProjectExec]) {
         if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
           val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
           childOp.foreach(builder.addChildren)

@@ -1338,25 +1338,41 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * an aggregation always, and in a projection, such as a project or a shuffle's partitioning
    * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
-   * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
-   * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown. Only those that can raise
-   * are kept, see `cannotRaise`.
+   * every row where Spark does not, or sends to Spark an expression the dispatcher could run. A
+   * dispatched expression falls back where it and Spark could evaluate one of them, or one it
+   * repeats itself, on different rows, see `skipsSharedSubexpression`. They are found on the
+   * first `canShortCircuitNulls` call for the operator (or `skipsSharedSubexpression`), so an
+   * operator without an argument to skip never runs `EquivalentExpressions`. `None` outside
+   * `withSharedSubexpressions`, where they are unknown. `canSkipEvaluation` counts only those
+   * that can raise, see `cannotRaise`.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
-  private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
-    // The shared subexpressions that can raise. Find shared nodes in Spark's original trees, then
-    // compare them after decimal promotion. Promotion wraps decimal arithmetic in CheckOverflow,
-    // which `cannotRaise` does not list, so that arithmetic is always kept.
-    lazy val raising: Seq[Expression] =
+  private final class SharedSubexpressions(
+      expressions: Seq[Expression],
+      alwaysShared: Boolean,
+      val certain: Boolean) {
+    // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
+    lazy val common: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
-        val equivalence = new EquivalentExpressions
-        expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote).filterNot(cannotRaise)
+        commonSubexpressions(expressions)
       } else {
         Nil
       }
+
+    // The shared subexpressions that can raise. Promotion wraps decimal arithmetic in
+    // CheckOverflow, which `cannotRaise` does not list, so that arithmetic is always kept.
+    lazy val raising: Seq[Expression] = common.filterNot(cannotRaise)
+  }
+
+  /**
+   * The subexpressions that occur more than once in `expressions`, decimal-promoted so they
+   * compare equal to the promoted trees the serde converts.
+   */
+  private def commonSubexpressions(expressions: Seq[Expression]): Seq[Expression] = {
+    val equivalence = new EquivalentExpressions
+    expressions.foreach(equivalence.addExprTree(_))
+    equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
   }
 
   /**
@@ -1413,11 +1429,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * with the expressions Spark evaluates together, or no argument is skipped. `alwaysShared` is
    * for an aggregation, whose shared subexpressions Spark's generated code evaluates for every
    * row whatever `spark.sql.subexpressionElimination.enabled` says. An aggregation that Spark
-   * runs without generated code shares none when it is off, and stays eager in Comet.
+   * runs without generated code shares none when it is off, and stays eager in Comet. `certain`
+   * says whether Spark shares among `expressions` however it runs the operator. It does for a
+   * project, a shuffle's keys and a TakeOrderedAndProject's list. A filter's condition, which
+   * whole-stage code evaluates without elimination through Spark 4.1, a sort's keys, a top-k
+   * ordering and a join are uncertain, as is an aggregation, whose expressions hold both its
+   * functions' inputs and its results.
    */
-  def withSharedSubexpressions[T](expressions: Seq[Expression], alwaysShared: Boolean = false)(
-      f: => T): T =
-    sharedSubexpressions.withValue(Some(new SharedSubexpressions(expressions, alwaysShared)))(f)
+  def withSharedSubexpressions[T](
+      expressions: Seq[Expression],
+      alwaysShared: Boolean = false,
+      certain: Boolean)(f: => T): T =
+    sharedSubexpressions.withValue(
+      Some(new SharedSubexpressions(expressions, alwaysShared, certain)))(f)
 
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
@@ -1439,12 +1463,55 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Subexpression elimination never shares a leaf, such as a column or a literal
     skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      // Avoid decimal promotion when Spark shares nothing.
-      s.raising.isEmpty || !skippable.exists { expr =>
-        DecimalPrecision.promote(expr).exists(e => s.raising.exists(_.semanticEquals(e)))
-      }
+      !holdsSharedSubexpression(skippable, s.raising)
     }
   }
+
+  /**
+   * Whether a node of `expr` can skip a child holding a subexpression that Spark and the
+   * dispatcher may evaluate on different rows. Spark evaluates one the operator's expressions
+   * share for every row, but the dispatcher, compiling `expr` alone, can skip it and so miss an
+   * ANSI error. While subexpression elimination is on, the dispatcher evaluates one `expr` itself
+   * repeats for every row, and so can raise where Spark skips it. Where Spark is `certain` to
+   * eliminate what the operator shares, a subexpression counts when it is only one of the two,
+   * such as a repeat in a conditional branch, which Spark does not hoist. Elsewhere both count.
+   * They count whether or not they can raise. False outside `withSharedSubexpressions`.
+   */
+  def skipsSharedSubexpression(expr: Expression): Boolean =
+    sharedSubexpressions.value.exists { s =>
+      lazy val repeated =
+        if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
+        else Nil
+      def counts(e: Expression): Boolean =
+        !s.certain || s.common.exists(_.semanticEquals(e)) != repeated.exists(_.semanticEquals(e))
+      expr.exists { node =>
+        val skippable = node match {
+          // the divisor is evaluated first, so only the dividend (`left`) can be skipped
+          case _: DivModLike | _: Pmod => node.children.take(1)
+          // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
+          case _: StringLocate => node.children.init
+          // `ArrayJoin` evaluates a nullable replacement first and skips the rest when it is NULL
+          case j: ArrayJoin if j.nullReplacement.exists(_.nullable) => node.children.init
+          // Spark 3.x codegen evaluates both children first; 4.0 rewrites it to `ArrayInsert`
+          case _: ArrayAppend => Nil
+          // Spark's codegen evaluates children in order and skips the rest after a NULL one
+          case _ => node.children.drop(1)
+        }
+        !skippable.forall(_.isInstanceOf[LeafExpression]) &&
+        holdsSharedSubexpression(skippable, s.common ++ repeated, counts)
+      }
+    }
+
+  private def holdsSharedSubexpression(
+      exprs: Seq[Expression],
+      shared: Seq[Expression],
+      counts: Expression => Boolean = _ => true): Boolean =
+    // Avoid decimal promotion when Spark shares nothing.
+    shared.nonEmpty && exprs.exists { expr =>
+      DecimalPrecision
+        .promote(expr)
+        .exists(e => shared.exists(_.semanticEquals(e)) && counts(e))
+    }
 
   /**
    * Whether `expr` cannot raise an error for any row, so Comet may evaluate it for rows that
@@ -1616,7 +1683,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean): Option[(CodegenDispatchFallback, Expr)] = handler match {
     case h: CodegenDispatchFallback =>
-      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+      h.dispatchDeclineReason(expr) match {
+        case Some(reason) =>
+          withFallbackReason(
+            expr,
+            s"${CometExplainInfo.exprDisplayName(expr)}: codegen dispatch: $reason")
+          None
+        case None =>
+          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+      }
     case _ => None
   }
 
