@@ -93,13 +93,16 @@ use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::file_error_context::{ParquetErrorContext, SparkReaderBatchSize};
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::{
-    object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
+    object_store_url_key, prepare_object_store_with_configs, requests_nested_timestamp,
+    ObjectStoreBackend,
 };
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
 use datafusion::physical_expr::expressions::Literal;
@@ -113,6 +116,7 @@ use arrow::array::{
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
+use datafusion::physical_plan::execution_plan::EmissionType;
 use datafusion::physical_plan::filter::FilterExecBuilder;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -141,6 +145,19 @@ use std::{
 
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
+
+fn streams_checked_nested_timestamps(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {
+        return scan
+            .downcast_to_file_source::<ParquetErrorContext>()
+            .is_some_and(|(config, _)| SparkReaderBatchSize::for_scan(config).is_some());
+    }
+    plan.properties().emission_type != EmissionType::Final
+        && plan
+            .children()
+            .iter()
+            .any(|child| streams_checked_nested_timestamps(child.as_ref()))
+}
 
 /// Return a copy of a `Map` type with only the outer entries `value` field marked nullable, keeping
 /// the key field non-nullable and every nested key/value type byte-for-byte unchanged. Any non-`Map`
@@ -561,7 +578,7 @@ impl PhysicalPlanner {
         common: &spark_operator::NativeScanCommon,
         object_store_url: ObjectStoreUrl,
         object_store_backend: ObjectStoreBackend,
-        files: Vec<PartitionedFile>,
+        mut files: Vec<PartitionedFile>,
         rebase_from_file_metadata: bool,
         datetime_rebase_mode_in_read: &str,
         int96_rebase_mode_in_read: &str,
@@ -626,6 +643,17 @@ impl PhysicalPlanner {
 
         let default_values = self.parse_default_values(common, &required_schema)?;
 
+        let has_data_filters = common.has_data_filters || !common.data_filters.is_empty();
+        let size = common.parquet_reader_batch_size.unwrap_or_default();
+        if !has_data_filters && size > 0 && requests_nested_timestamp(&required_schema) {
+            let size = Arc::new(SparkReaderBatchSize {
+                spark: size as usize,
+                comet: self.session_ctx.copied_config().batch_size(),
+            });
+            for file in &mut files {
+                file.extensions.insert_arc(Arc::clone(&size));
+            }
+        }
         let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
 
         let scan = init_datasource_exec(
@@ -636,7 +664,7 @@ impl PhysicalPlanner {
             object_store_backend,
             file_groups,
             Some(projection_vector),
-            if common.has_data_filters || !common.data_filters.is_empty() {
+            if has_data_filters {
                 Some(data_filters?)
             } else {
                 None
@@ -1810,11 +1838,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                // FilterExec merges its output up to its own batch size, 8192 rows by default.
-                // Use the session batch size so it doesn't build batches bigger than that.
+                // Coalescing can poll a later, overflowing Parquet batch before a
+                // LIMIT sees its first match. With target 1 DataFusion forwards
+                // each nonempty filtered batch intact (bypass threshold = target / 2).
+                let batch_size = if streams_checked_nested_timestamps(child.native_plan.as_ref()) {
+                    1
+                } else {
+                    self.session_ctx.copied_config().batch_size()
+                };
                 let filter: Arc<dyn ExecutionPlan> = Arc::new(
                     FilterExecBuilder::new(predicate, Arc::clone(&child.native_plan))
-                        .with_batch_size(self.session_ctx.copied_config().batch_size())
+                        .with_batch_size(batch_size)
                         .build()?,
                 );
 

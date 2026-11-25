@@ -31,6 +31,7 @@ import scala.reflect.runtime.universe.TypeTag
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
+import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field => ArrowField, FieldType, Schema => ArrowSchema}
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
@@ -41,7 +42,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -92,6 +93,20 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  private def arrowWriterBuilder(
+      path: Path,
+      arrowField: ArrowField): ExampleParquetWriter.Builder = {
+    val arrowSchema = new ArrowSchema(Collections.singletonList(arrowField))
+    val metadata = Collections.singletonMap(
+      "ARROW:schema",
+      Base64.getEncoder.encodeToString(arrowSchema.serializeAsMessage()))
+    ExampleParquetWriter
+      .builder(path)
+      .withDictionaryEncoding(true)
+      .withExtraMetaData(metadata)
+      .withConf(spark.sessionState.newHadoopConf())
+  }
+
   // Spark ignores ARROW:schema during Parquet schema inference:
   // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
   // With binaryAsString, Spark maps unannotated BINARY to StringType:
@@ -110,17 +125,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           ArrowType.Binary.INSTANCE,
           new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
         Collections.emptyList[ArrowField]())
-      val arrowSchema = new ArrowSchema(Collections.singletonList(arrowField))
-      val metadata = Collections.singletonMap(
-        "ARROW:schema",
-        Base64.getEncoder.encodeToString(arrowSchema.serializeAsMessage()))
-      val writer = ExampleParquetWriter
-        .builder(path)
-        .withType(parquetSchema)
-        .withDictionaryEncoding(true)
-        .withExtraMetaData(metadata)
-        .withConf(spark.sessionState.newHadoopConf())
-        .build()
+      val writer = arrowWriterBuilder(path, arrowField).withType(parquetSchema).build()
 
       try {
         Seq(
@@ -470,6 +475,54 @@ abstract class ParquetReadSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  test("TIMESTAMP_MILLIS overflow in a nested Arrow dictionary respects Spark's read batch") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "dictionary-timestamp.parquet")
+      val schema = MessageTypeParser.parseMessageType(
+        "message root { optional group s { optional int64 ts (TIMESTAMP_MILLIS); } }")
+      val ts = new ArrowField(
+        "ts",
+        new FieldType(
+          true,
+          new ArrowType.Timestamp(TimeUnit.MILLISECOND, "UTC"),
+          new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val struct = new ArrowField(
+        "s",
+        FieldType.nullable(ArrowType.Struct.INSTANCE),
+        Collections.singletonList(ts))
+      val writer = arrowWriterBuilder(path, struct).withType(schema).build()
+      try {
+        Seq(7L, 7L, Long.MaxValue / 1000 + 1).foreach { millis =>
+          val row = new SimpleGroup(schema)
+          row.addGroup("s").add("ts", millis)
+          writer.write(row)
+        }
+      } finally {
+        writer.close()
+      }
+
+      val batchSize = SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key
+      withSQLConf(batchSize -> "2", CometConf.COMET_BATCH_SIZE.key -> "3") {
+        val df = spark.read.parquet(path.toString)
+        checkSparkAnswerAndOperator(df.limit(1), Seq(classOf[CometNativeScanExec]))
+        checkSparkAnswerAndOperator(
+          df.where("monotonically_increasing_id() = 0").limit(1),
+          Seq(classOf[CometNativeScanExec], classOf[CometFilterExec]))
+        assert(df.queryExecution.toRdd.take(1).head.getStruct(0, 1).getLong(0) == 7000L)
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkErr.exists(e => causeChain(e).last.isInstanceOf[ArithmeticException]))
+        assert(cometErr.exists(e => causeChain(e).last.isInstanceOf[ArithmeticException]))
+      }
+      withSQLConf(batchSize -> "3", CometConf.COMET_BATCH_SIZE.key -> "2") {
+        val errorClass =
+          if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+        val error = checkSparkError(spark.read.parquet(path.toString).limit(1), errorClass)
+        assert(error.getCause.isInstanceOf[ArithmeticException])
       }
     }
   }

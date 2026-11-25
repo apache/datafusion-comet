@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -181,7 +182,14 @@ case class CometNativeScanExec(
     // NativeScanCommon protobuf. Same approach as FileSourceScanLike.pushedDownFilters
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
-      val base = nativeOp.getNativeScan.getCommon
+      val commonBuilder = nativeOp.getNativeScan.getCommon.toBuilder
+      if (dataFilters.isEmpty) {
+        val sqlConf = relation.sparkSession.sessionState.conf
+        val readSchema = StructType(relation.partitionSchema.fields ++ requiredSchema.fields)
+        val vectorized = ParquetUtils.isBatchReadSupportedForSchema(sqlConf, readSchema)
+        commonBuilder.setParquetReaderBatchSize(
+          if (vectorized) sqlConf.parquetVectorizedReaderBatchSize else 1)
+      }
       val scalarSubqueryFilters = dataFilters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
       scalarSubqueryFilters.foreach { f =>
@@ -196,7 +204,6 @@ case class CometNativeScanExec(
           Literal.create(s.eval(null), s.dataType)
         })
       if (resolvedFilters.nonEmpty) {
-        val commonBuilder = base.toBuilder
         commonBuilder.setHasDataFilters(true)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
@@ -205,10 +212,8 @@ case class CometNativeScanExec(
               logWarning(s"Could not serialize resolved scalar subquery filter: $filter")
           }
         }
-        commonBuilder.build().toByteArray
-      } else {
-        base.toByteArray
       }
+      commonBuilder.build().toByteArray
     }
 
     // Get file partitions from CometScanExec (handles bucketing, etc.)

@@ -18,7 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
-use crate::parquet::file_error_context::ParquetErrorContext;
+use crate::parquet::file_error_context::{ParquetErrorContext, SparkReaderBatchSize};
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
@@ -129,6 +129,11 @@ pub(crate) fn init_datasource_exec(
     // existing safe cast for filtered scans and use checked conversion only when every value is
     // necessarily read.
     spark_parquet_options.checked_timestamp_overflow = data_filters.is_none();
+    spark_parquet_options.checked_dictionary_timestamp_overflow = file_groups
+        .iter()
+        .flatten()
+        .next()
+        .is_some_and(|file| file.extensions.get::<SparkReaderBatchSize>().is_some());
     spark_parquet_options.rebase_from_file_metadata = rebase_from_file_metadata;
     spark_parquet_options.datetime_rebase_mode_in_read = datetime_rebase_mode_in_read.to_string();
     spark_parquet_options.int96_rebase_mode_in_read = int96_rebase_mode_in_read.to_string();

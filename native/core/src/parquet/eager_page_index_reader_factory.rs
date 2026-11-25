@@ -94,7 +94,9 @@
 //! bring it back.
 
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{
+    projects_nested_dictionary_timestamp_millis, SparkParquetOptions,
+};
 use crate::parquet::schema_adapter::{
     check_file_conversions, RejectOnNonEmpty, NANOS_TIMESTAMP_KEY, REPEATED_PRIMITIVE_KEY,
 };
@@ -142,6 +144,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::parquet::objectstore::http_metrics::HttpRequestMetrics;
+
+/// Shared by the initial and replacement planners for one file occurrence.
+#[derive(Debug, Default)]
+pub(super) struct ReplanFooter(pub OnceLock<Arc<ParquetMetaData>>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanIoSource {
@@ -482,19 +488,44 @@ fn spark_enum_schema(schema: &SchemaDescriptor) -> ParquetResult<Option<Schema>>
     )))
 }
 
+fn has_arrow_schema(file: &FileMetaData) -> bool {
+    file.key_value_metadata().is_some_and(|key_values| {
+        key_values
+            .iter()
+            .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
+    })
+}
+
+// Keep Comet's ordinary batching when footer bounds prove that converting
+// every TIMESTAMP_MILLIS in the file is safe, even for a short consumer.
+fn may_overflow_millis(metadata: &ParquetMetaData) -> bool {
+    use parquet::file::statistics::Statistics;
+    metadata
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .any(|(index, column)| {
+            column.converted_type() == ConvertedType::TIMESTAMP_MILLIS
+                && metadata.row_groups().iter().any(|group| {
+                    let Some(Statistics::Int64(stats)) = group.column(index).statistics() else {
+                        return true;
+                    };
+                    stats.min_opt().and_then(|v| v.checked_mul(1_000)).is_none()
+                        || stats.max_opt().and_then(|v| v.checked_mul(1_000)).is_none()
+                })
+        })
+}
+
 /// Arrow restores advisory `ARROW:schema` types that can differ from Spark's physical Parquet
 /// interpretation. Replace that hint with physical inference and the ENUM string mapping.
 /// Rebuild only the returned metadata; the shared cache retains the original footer.
 /// https://github.com/apache/datafusion-comet/issues/5477
 fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<ParquetMetaData>> {
     let file = metadata.file_metadata();
-    let has_arrow_schema = file.key_value_metadata().is_some_and(|key_values| {
-        key_values
-            .iter()
-            .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
-    });
     let enum_schema = spark_enum_schema(file.schema_descr())?;
-    if !has_arrow_schema && enum_schema.is_none() {
+    if !has_arrow_schema(file) && enum_schema.is_none() {
         return Ok(metadata);
     }
 
@@ -662,6 +693,10 @@ impl AsyncFileReader for EagerPageIndexReader {
         &'a mut self,
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+        let replan_footer = self.partitioned_file.extensions.get_arc::<ReplanFooter>();
+        if let Some(metadata) = replan_footer.as_ref().and_then(|footer| footer.0.get()) {
+            return std::future::ready(Ok(Arc::clone(metadata))).boxed();
+        }
         // Forward decryption properties like `CachedParquetFileReader` does. Only override the
         // policy for non-encrypted opens; see module docs for why.
         let object_meta = self.partitioned_file.object_meta.clone();
@@ -783,11 +818,25 @@ impl AsyncFileReader for EagerPageIndexReader {
                         column.self_type().get_basic_info().repetition()
                             == parquet::basic::Repetition::REPEATED
                     });
-                if !needs_check {
+                let replan_footer = replan_footer
+                    .filter(|_| has_arrow_schema(file) && may_overflow_millis(&metadata));
+                if !needs_check && replan_footer.is_none() {
                     return Ok(metadata);
                 }
                 let schema =
                     parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
+                if let Some(footer) = replan_footer.filter(|_| {
+                    projects_nested_dictionary_timestamp_millis(
+                        &schema,
+                        required,
+                        conversion_options,
+                    )
+                }) {
+                    let _ = footer.0.set(Arc::clone(&metadata));
+                }
+                if !needs_check {
+                    return Ok(metadata);
+                }
                 let schema = mark_parquet_leaves(&schema, file.schema_descr());
                 let rejection = check_file_conversions(
                     Arc::clone(required),

@@ -3042,6 +3042,7 @@ pub(crate) mod test {
     ) -> Result<RecordBatch, DataFusionError> {
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.allow_cast_unsigned_ints = true;
+        spark_parquet_options.checked_dictionary_timestamp_overflow = true;
         let mut stream = scan_parquet(batch, required_schema, spark_parquet_options)?;
         stream.next().await.unwrap()
     }
@@ -4506,6 +4507,52 @@ pub(crate) mod test {
             values.values().to_vec(),
             vec![1_000_000i64, 2_000_000, 3_000_000]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_dictionary_timestamp_millis_checks_overflow() -> Result<(), DataFusionError> {
+        use datafusion_comet_common::{error_chain, SparkError};
+
+        let millis: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![Some(0), None, Some(0), Some(1)]),
+            Arc::new(TimestampMillisecondArray::from(vec![7, i64::MAX])),
+        )?);
+        let batch = struct_batch(Field::new("ts", millis.data_type().clone(), true), millis)?;
+        let schema = struct_schema(vec![Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]);
+
+        let valid = roundtrip(&batch.slice(0, 3), Arc::clone(&schema)).await?;
+        let values = valid.column(0).as_struct().column(0);
+        assert_eq!(
+            values.as_primitive::<TimestampMicrosecondType>(),
+            &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000)])
+        );
+
+        let err = roundtrip(&batch, Arc::clone(&schema)).await.unwrap_err();
+        assert!(
+            matches!(
+                error_chain(&err).find_map(|e| e.downcast_ref::<SparkError>()),
+                Some(SparkError::ParquetTimestampOverflow { .. })
+            ),
+            "{err}"
+        );
+
+        let mut filtered = default_options();
+        filtered.checked_dictionary_timestamp_overflow = true;
+        filtered.checked_timestamp_overflow = false;
+        for options in [default_options(), filtered] {
+            let mut stream = scan_parquet(&batch, Arc::clone(&schema), options)?;
+            let unchecked = stream.next().await.unwrap()?;
+            let values = unchecked.column(0).as_struct().column(0);
+            assert_eq!(
+                values.as_primitive::<TimestampMicrosecondType>(),
+                &TimestampMicrosecondArray::from(vec![Some(7_000), None, Some(7_000), None])
+            );
+        }
         Ok(())
     }
 
