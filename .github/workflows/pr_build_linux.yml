@@ -770,6 +770,47 @@ jobs:
           upload-test-reports: true
           skip-native-build: true
 
+  legacy-iceberg-writes:
+    needs: [lint, build-native]
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    name: Iceberg writes (Spark 3.5, Iceberg ${{ matrix.iceberg_version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: amd64/rust
+      env:
+        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
+    strategy:
+      fail-fast: false
+      matrix:
+        iceberg_version: ['1.5.2', '1.7.2']
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Download native library
+        uses: ./.github/actions/download-artifact-retry
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+
+      - name: Run Iceberg write suites
+        uses: ./.github/actions/java-test
+        with:
+          artifact_name: legacy-iceberg-${{ matrix.iceberg_version }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          maven_opts: -Pspark-3.5 -Pscala-2.12 -Diceberg.spark.runtime.version=${{ matrix.iceberg_version }}
+          suites: |
+            org.apache.comet.CometIcebergWriteActionSuite
+            org.apache.comet.CometIcebergWriteDetectionSuite
+            org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
+          skip-native-build: true
+          upload-test-reports: true
+
   # TPC-H correctness test - verifies benchmark queries produce correct results.
   # Runs in cache-refresh-only mode for its two cache entries: the SF=1 dataset,
   # which is expensive to regenerate, and main's shared `java-maven` entry. Only
