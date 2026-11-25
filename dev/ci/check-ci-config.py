@@ -1763,6 +1763,16 @@ def check_fork_runs():
                 f"{BRIDGE_WORKFLOW} must read runs of {FORK_WORKFLOW.name}; any other name "
                 f"reports \"no fork CI\" on every pull request"
             )
+        full_cron = re.search(r"^\s*const FULL_CRON = '([^']+)';", body, re.M)
+        found = full_cron.group(1) if full_cron else None
+        schedule = re.search(r"^  schedule:\n((?:    .*\n)+)", body, re.M)
+        crons = re.findall(r"^    - cron: '([^']+)'", schedule.group(1), re.M) if schedule else []
+        if found not in crons:
+            failures.append(
+                f"{BRIDGE_WORKFLOW}'s FULL_CRON ({found or 'not found'}) must be one of its "
+                f"`schedule:` crons {crons}, or every scheduled pass is a quick one and older "
+                f"pull requests are never synced"
+            )
         if re.search(r"uses:\s*actions/checkout@", body):
             failures.append(
                 f"{BRIDGE_WORKFLOW} checks out code. It runs with `checks: write` on data from a "
