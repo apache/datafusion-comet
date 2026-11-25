@@ -367,11 +367,7 @@ const MIN_VEC_CAPACITY_SELECTORS: usize = 4;
 /// Conservative upper bound, in bytes, on the peak allocation live while DataFusion's reader
 /// normalizes one file's attached [`ParquetAccessPlan`]. This, not the plan's own retained
 /// selector bytes, is what the steady-state reservation must cover. Three allocations can be
-/// live at once. Term 3 was measured against DataFusion 55's file-level combined selection;
-/// DataFusion 56 moves each row group's selection into the push decoder instead, and the
-/// copies that replaced it (the decoder's `peek_next_row_group` clone of the remaining row
-/// groups, and the active row group's clone) are at most `selectors`, so term 3 still covers
-/// them:
+/// live at once:
 ///
 /// 1. **Attached original** (`selectors`, exact): `create_initial_plan` deep-clones the plan
 ///    while the original stays reachable from the file's `extensions`. The original's `Vec`s
@@ -384,13 +380,18 @@ const MIN_VEC_CAPACITY_SELECTORS: usize = 4;
 ///    which `intersect_row_selections` builds with a `from_fn` generator whose `size_hint()` is
 ///    `(0, None)`. Each row group's `Vec` therefore starts empty and doubles as it grows, and
 ///    since row groups are intersected independently the capacity floor is paid per row group.
-/// 3. **Per-run combined selection** (`<= VEC_GROWTH_CAPACITY_FACTOR * (selectors +
-///    num_row_groups) + MIN_VEC_CAPACITY_SELECTORS * num_row_groups`):
-///    `into_overall_row_selection` collects each contiguous run of row groups into a new
-///    `RowSelection` through a `FlatMap` whose `size_hint().0` is 0, so a run of `len`
-///    selectors allocates at most `MIN_VEC_CAPACITY_SELECTORS + VEC_GROWTH_CAPACITY_FACTOR *
-///    len`. `len` is the run's share of `selectors` plus one `RowSelector::select(num_rows)` per
-///    `RowGroupAccess::Scan` row group, and there are at most `num_row_groups` runs.
+/// 3. **The decoder's copies** (`<= selectors`, exact): the opener moves each row group's
+///    selection out of the clone into the push decoder, so no file-level selection is built.
+///    The decoder clones the queued row groups' selections in `peek_next_row_group`, at each
+///    row-group boundary, and clones the active row group's selection when it starts reading
+///    it. `Vec::clone` allocates exactly the length, and the two copies never hold the same
+///    row group, so together they are at most `selectors`.
+///
+/// The formula charges term 3 as `VEC_GROWTH_CAPACITY_FACTOR * (selectors + num_row_groups) +
+/// MIN_VEC_CAPACITY_SELECTORS * num_row_groups`, which is more than the decoder's copies need.
+/// That is the size of the file-level combined selection an earlier reader built, and the
+/// measured peaks below were taken on that reader. Tightening it needs a measurement of the
+/// current reader (#7766).
 ///
 /// In bytes, with the constants above: `(5 * selectors + 10 * num_row_groups) *
 /// size_of::<RowSelector>()`. Checked against two measured worst cases:
@@ -425,7 +426,7 @@ fn reader_peak_bytes(selectors: usize, num_row_groups: usize) -> Result<usize, E
         .checked_mul(MIN_VEC_CAPACITY_SELECTORS)
         .ok_or_else(overflow)?;
     let clone_term = clone_growth.checked_add(clone_floor).ok_or_else(overflow)?;
-    // Term 3: into_overall_row_selection's per-run combined-selection allocation.
+    // Term 3: the decoder's copies, charged as a file-level combined selection (see above).
     let combined_growth = selectors
         .checked_mul(VEC_GROWTH_CAPACITY_FACTOR)
         .ok_or_else(overflow)?;
@@ -708,8 +709,8 @@ async fn attach_access_plan(
 
     // Pre-reserve the admission bound *before* calling build_access_plan: this bound covers
     // both construction's own transient peak AND the larger peak DataFusion's reader hits
-    // later while normalizing the attached plan (`create_initial_plan`'s deep clone plus
-    // `into_overall_row_selection`'s combined RowSelection) -- see admission_bound_bytes and
+    // later while reading the attached plan (`create_initial_plan`'s deep clone plus the
+    // decoder's copies of the selections) -- see admission_bound_bytes and
     // reader_peak_bytes. Reserving first means a rejection happens before any large `Vec` is
     // allocated, not after -- see reader_peak_bytes's doc comment for the measured worst
     // cases. The error message names this as a construction-phase rejection (contains
@@ -909,7 +910,7 @@ mod tests {
 
     /// Write a two-row-group parquet file (`2 * rows_per_group` total rows, split evenly via
     /// an explicit `max_row_group_size`); returns its size. Used by tests exercising
-    /// `into_overall_row_selection`'s per-`Scan`-group boundary-selector term.
+    /// term 3's per-`Scan`-group boundary-selector term.
     fn write_two_row_groups(path: &std::path::Path, rows_per_group: i64) -> i64 {
         write_parquet_with_properties(
             path,
@@ -2112,14 +2113,13 @@ mod tests {
         assert!(matches!(err, GeneralError(_)), "unexpected error: {err:?}");
     }
 
-    /// Replays DataFusion 55's reader-normalization path: clones the attached plan exactly as
-    /// `create_initial_plan` does, calls `ParquetAccessPlan::into_overall_row_selection`, which
-    /// DataFusion 55 called from `build_stream` and whose combined selection is at least as
-    /// large as the per-row-group copies DataFusion 56 makes instead, and recovers the resulting `RowSelection`'s TRUE backing `Vec` capacity
-    /// (not its length) -- the same quantity `reader_peak_bytes` bounds. Exercising the real
-    /// dependency rather than a model of it means this test keeps working (or fails loudly)
-    /// across future `datafusion`/`parquet` upgrades that change either crate's growth
-    /// strategy.
+    /// Checks the reservation against the combined selection that `reader_peak_bytes` charges
+    /// for term 3: clones the attached plan as `create_initial_plan` does, builds the
+    /// file-level selection with the deprecated `ParquetAccessPlan::into_overall_row_selection`,
+    /// and recovers that `RowSelection`'s TRUE backing `Vec` capacity (not its length). The
+    /// reader does not call `into_overall_row_selection`. Its copies of the selections are
+    /// smaller (see `reader_peak_bytes`), so this checks the formula, not the reader's own
+    /// allocations. #7766 tracks measuring the reader instead.
     ///
     /// This test (and `..._with_a_scan_row_group` below) covers the NO-page-index-pruning
     /// path only: neither ever calls `scan_selection` on the clone, so `retained_selectors`
@@ -2164,8 +2164,7 @@ mod tests {
         // `out[0]`'s extensions) and the clone are live at once, exactly like the real reader.
         let cloned_plan = attached_plan.clone();
         let metadata = read_metadata_with_page_index(&path);
-        // DataFusion 56's reader no longer builds this file-level selection. Its capacity still
-        // bounds the per-row-group copies that replaced it (see `reader_peak_bytes`).
+        // The combined selection that term 3 charges for. The reader does not build it.
         #[allow(deprecated)]
         let combined = cloned_plan
             .into_overall_row_selection(metadata.row_groups())
@@ -2180,7 +2179,7 @@ mod tests {
             * size_of::<RowSelector>();
         assert!(
             peak_bytes <= reservation.0.size(),
-            "the real DataFusion/parquet reader path's peak ({peak_bytes} bytes: \
+            "the peak that reader_peak_bytes models ({peak_bytes} bytes: \
              {retained_selectors} retained selectors x 2 live plan copies + \
              {combined_capacity} combined-selection Vec capacity) must fit the reservation \
              ({} bytes)",
@@ -2188,10 +2187,10 @@ mod tests {
         );
     }
 
-    /// Same replay as `reader_path_peak_fits_the_reservation`, but with a two-row-group file
+    /// Same check as `reader_path_peak_fits_the_reservation`, but with a two-row-group file
     /// where only the first group has any deletions -- the second stays `RowGroupAccess::Scan`
-    /// (no `RowSelection`), exercising `into_overall_row_selection`'s one-`select`-per-
-    /// `Scan`-group term that a naive `k * total_selectors` bound would miss entirely. Like
+    /// (no `RowSelection`), exercising the combined selection's one-`select`-per-`Scan`-group
+    /// term that a naive `k * total_selectors` bound would miss entirely. Like
     /// that test, this one never calls `scan_selection` on the clone, so it exercises the
     /// NO-page-index-pruning path only (clone length == clone capacity here); see the doc
     /// comment there for why `retained_selectors` is exact in this test and why the assertion
@@ -2236,8 +2235,7 @@ mod tests {
         let retained_selectors = total_selectors(&attached_plan);
         let cloned_plan = attached_plan.clone();
         let metadata = read_metadata_with_page_index(&path);
-        // DataFusion 56's reader no longer builds this file-level selection. Its capacity still
-        // bounds the per-row-group copies that replaced it (see `reader_peak_bytes`).
+        // The combined selection that term 3 charges for. The reader does not build it.
         #[allow(deprecated)]
         let combined = cloned_plan
             .into_overall_row_selection(metadata.row_groups())
@@ -2250,13 +2248,13 @@ mod tests {
             * size_of::<RowSelector>();
         assert!(
             peak_bytes <= reservation.0.size(),
-            "the real reader path's peak with a Scan row group present ({peak_bytes} bytes) \
+            "the modelled peak with a Scan row group present ({peak_bytes} bytes) \
              must fit the reservation ({} bytes)",
             reservation.0.size()
         );
     }
 
-    /// Replays the page-index-pruning path that drives peak memory the highest: clones
+    /// Checks the page-index-pruning case that drives the bound the highest: clones
     /// the attached plan (mirroring `create_initial_plan`), then intersects the clone's
     /// row-group `Selection` with a synthetic, all-selecting page `RowSelection` via
     /// `ParquetAccessPlan::scan_selection` -- the EXACT call `access_plan.rs`'s row-group
@@ -2277,7 +2275,8 @@ mod tests {
     /// to length, since `Vec::clone` allocates exactly `with_capacity(len)`), and asserts
     /// `attached_len + clone_capacity + combined_capacity` fits the reservation. Unlike
     /// `reader_path_peak_fits_the_reservation`, this test does NOT model the clone as exact --
-    /// it is the one that would have caught the original under-count.
+    /// it is the one that would have caught the original under-count. As there, the combined
+    /// selection is what term 3 charges for, not an allocation the reader makes (#7766).
     #[tokio::test]
     async fn reader_path_peak_fits_the_reservation_with_page_pruning() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2331,13 +2330,11 @@ mod tests {
         );
 
         // A second, independently-reconstructed intersected clone (identical content, so the
-        // SAME deterministic capacity) feeds into_overall_row_selection, mirroring how the
-        // real reader calls it on the plan AFTER page pruning has already mutated it in place.
+        // SAME deterministic capacity) feeds into_overall_row_selection, built from the plan
+        // AFTER page pruning has mutated it, as term 3 assumes.
         let mut clone_for_combining = attached_plan.clone();
         clone_for_combining.scan_selection(0, all_select);
         let metadata = read_metadata_with_page_index(&path);
-        // DataFusion 56's reader no longer builds this file-level selection. Its capacity still
-        // bounds the per-row-group copies that replaced it (see `reader_peak_bytes`).
         #[allow(deprecated)]
         let combined = clone_for_combining
             .into_overall_row_selection(metadata.row_groups())
@@ -2350,7 +2347,7 @@ mod tests {
             (attached_len + clone_capacity + combined_capacity) * size_of::<RowSelector>();
         assert!(
             peak_bytes <= reservation.0.size(),
-            "the real reader path's peak WITH page-index pruning firing against the clone \
+            "the modelled peak WITH page-index pruning firing against the clone \
              ({peak_bytes} bytes: {attached_len} attached selectors + {clone_capacity} \
              intersected-clone Vec capacity + {combined_capacity} combined-selection Vec \
              capacity) must fit the reservation ({} bytes)",
