@@ -71,6 +71,8 @@ fn position<O: OffsetSizeTrait>(
         DataType::LargeUtf8 => typed_position!(LargeStringArray),
         _ => {}
     }
+    // The registered DataFusion UDF also accepts structs, whose fields have historically been
+    // compared by ordinal even when their names differ.
     rows.evaluate::<SparkArrayPositionFunc>(spark_equality_by_ordinal)
 }
 

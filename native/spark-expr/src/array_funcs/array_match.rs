@@ -22,8 +22,7 @@ use std::sync::Arc;
 
 use crate::float_semantics::{compare_float_array_scalar, compare_floats, spark_equality};
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, GenericListArray, ListArray, OffsetSizeTrait,
-    PrimitiveArray,
+    Array, ArrayRef, AsArray, GenericListArray, ListArray, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
@@ -63,13 +62,6 @@ pub(super) fn invoke_with_mask<M: ScalarUDFImpl + MatchOperation<i32>>(
         let Some(list) = array.as_list_opt::<i32>() else {
             return exec_err!("{} takes a list, got {}", udf.name(), array.data_type());
         };
-        // array_contains accepts a null scalar of any type. For array_remove, let
-        // the row matcher validate the element type even when the needle is null.
-        if op == Operator::IsNotDistinctFrom
-            && matches!(needle, ColumnarValue::Scalar(value) if value.is_null())
-        {
-            return Ok(Arc::new(BooleanArray::new_null(list.len())));
-        }
         if let ColumnarValue::Scalar(
             value @ (ScalarValue::Float32(Some(_)) | ScalarValue::Float64(Some(_))),
         ) = needle
@@ -108,6 +100,7 @@ pub(super) struct MatchRows<'a, O: OffsetSizeTrait> {
     pub array: &'a GenericListArray<O>,
     pub needles: ArrayRef,
     pub nulls: Option<NullBuffer>,
+    scalar: bool,
 }
 
 impl<'a, O: OffsetSizeTrait> MatchRows<'a, O> {
@@ -126,6 +119,7 @@ impl<'a, O: OffsetSizeTrait> MatchRows<'a, O> {
             array,
             needles,
             nulls,
+            scalar: matches!(needle, ColumnarValue::Scalar(_)),
         })
     }
 
@@ -156,7 +150,7 @@ impl<'a, O: OffsetSizeTrait> MatchRows<'a, O> {
     /// Each row's element range in the flattened values and its needle index.
     /// A null array or needle gives an empty range.
     pub fn iter(&self) -> impl Iterator<Item = (Range<usize>, usize)> + '_ {
-        let scalar = self.needles.len() == 1;
+        let scalar = self.scalar;
         let nulls = self.nulls.as_ref();
         self.array
             .value_offsets()

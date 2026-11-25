@@ -17,12 +17,12 @@
 
 use std::sync::Arc;
 
-use super::array_match::{invoke_with_mask, MatchOperation, MatchRows};
+use super::array_match::{invoke_match, invoke_with_mask, MatchOperation, MatchRows};
 use super::set_bits_before;
-use arrow::array::{Array, ArrayRef, BooleanArray, BooleanBufferBuilder, ListArray};
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, ListArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::DataType;
-use datafusion::common::Result;
+use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{
     ColumnarValue, Operator, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -62,6 +62,14 @@ impl ScalarUDFImpl for SparkFloatArrayContains {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if matches!(args.args.as_slice(), [_, ColumnarValue::Scalar(value)] if value.is_null()) {
+            return invoke_match(self, args, |array, _| {
+                let Some(list) = array.as_list_opt::<i32>() else {
+                    return exec_err!("{} takes a list, got {}", self.name(), array.data_type());
+                };
+                Ok(Arc::new(BooleanArray::new_null(list.len())))
+            });
+        }
         invoke_with_mask(self, args, Operator::IsNotDistinctFrom, from_mask)
     }
 }
@@ -111,7 +119,7 @@ mod tests {
     use super::super::test_util::list;
     use super::*;
     use crate::float_semantics::{compare_floats, EDGE_VALUES};
-    use arrow::array::{AsArray, Float64Array, Int32Array, StructArray};
+    use arrow::array::{Float64Array, Int32Array, StructArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
     use datafusion::common::ScalarValue;
