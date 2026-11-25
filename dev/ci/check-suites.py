@@ -42,6 +42,7 @@ if __name__ == "__main__":
         "org.apache.comet.CometIcebergSchedulerFailureSuite", # manual, multiple hosts + SIGKILL
         "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
         "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapterBridgeSuite", # manual test suite
+        "org.apache.comet.exec.CometNativeExecutorsSuite", # manual, needs comet-scheduler and comet-executor binaries
         "org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite", # dedicated version matrix
         "org.apache.spark.sql.comet.CometPlanStabilitySuite", # abstract
         "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite", # abstract
