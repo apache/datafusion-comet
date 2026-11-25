@@ -84,7 +84,7 @@ That push run is for the caches and nothing else, so it runs in **cache-refresh-
 the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
 two stopping before their query passes), plus the short `Lint` job the native build depends on. The
 lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, give it
+runner-minutes a push and about 20. If you add a job to `pr_build_linux.yml`, give it
 `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
 `dev/ci/check-ci-config.py` fails the build if you forget.
 
@@ -141,10 +141,28 @@ Some things to know:
   controls the workflow that produced it. A green fork run is a good sign, not a merge gate. The
   queue is the gate, and it tests your change merged with `main` and everything queued ahead of it,
   where the fork run tests your branch head alone.
-- **Caches are cold unless `main` builds.** A branch restores caches saved on its own ref or on your
-  fork's default branch, and a run on your fork's `main` saves them only when it builds. A push to
-  `main` that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
-  nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
+- **Sync your fork's `main` to warm its caches.** A branch restores caches saved on its own ref or
+  on your fork's default branch, and only a run on your fork's `main` saves the Maven and cargo
+  caches, so this helps only when `main` is your fork's default branch. A push to `main` that adds
+  nothing to upstream, such as syncing your fork, runs the Linux build in cache-refresh-only mode,
+  which saves both and runs no test suites. If your fork's `main` already matches upstream, a sync
+  has nothing to push, so the first refresh comes with the next sync that moves `main`. A sync made
+  by a workflow that uses `GITHUB_TOKEN`, such as a scheduled sync action, starts no other workflow
+  (see
+  [Triggering a workflow from a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)),
+  so it warms nothing. In a warm run of the same mode on upstream `main`
+  ([45050546538](https://github.com/apache/datafusion-comet/actions/runs/45050546538)), the lint,
+  the native build and the two TPC jobs took 16.5 minutes of job time, and about 20 with the
+  preflight and change detection jobs. A cold first refresh takes longer, and if Maven Central
+  throttles it, a job can fail before it saves anything. Re-run that push run's failed jobs once the
+  throttling clears: the run is still on `main`, so the caches save when those jobs pass. The
+  refresh warms only the default profile's Maven dependencies. The Celeborn jobs build with
+  `-Pspark-3.5,scala-2.12,celeborn-reflection-compatibility`, so they still download the Spark 3.5
+  and Scala 2.12 dependencies from Maven Central, and can still be throttled after a sync. A `main`
+  that carries commits of its own runs the PR tier instead, which saves the Maven and cargo caches
+  only when it builds, so one with only docs commits stays cold. When your fork's `main` is cold,
+  every branch run downloads its Maven dependencies from Maven Central, which can throttle it, and
+  rebuilds the native library. A run of the PR tier on a fork with cold
   caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
   23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run that also
   routes to the Spark SQL and Iceberg suites took 89 minutes and about 650 runner-minutes. Their
