@@ -83,3 +83,35 @@ SELECT A FROM test_cat.db.case_pair WHERE a < 2
 
 statement
 DROP TABLE test_cat.db.case_pair
+
+-- The same pair as struct children, which the batch adaptation matches by name too.
+statement
+DROP TABLE IF EXISTS test_cat.db.case_struct
+
+statement
+CREATE TABLE test_cat.db.case_struct (id INT, s STRUCT<a: INT, A: INT>) USING iceberg
+
+statement
+INSERT INTO test_cat.db.case_struct VALUES
+  (1, named_struct('a', 1, 'A', 20)), (2, named_struct('a', 3, 'A', 40))
+
+query
+SELECT id, s FROM test_cat.db.case_struct ORDER BY id
+
+query
+SELECT id, s.a FROM test_cat.db.case_struct ORDER BY id
+
+query
+SELECT id, s.A FROM test_cat.db.case_struct ORDER BY id
+
+query
+SELECT id, s.A, s.a FROM test_cat.db.case_struct ORDER BY id
+
+query
+SELECT id, s.a FROM test_cat.db.case_struct WHERE s.A = 40 ORDER BY id
+
+query
+SELECT id, s.A FROM test_cat.db.case_struct WHERE s.a = 3 ORDER BY id
+
+statement
+DROP TABLE test_cat.db.case_struct

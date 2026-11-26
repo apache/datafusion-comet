@@ -1576,8 +1576,8 @@ class CometIcebergNativeSuite
 
   // iceberg-rust binds an equality delete's key by name, and rejects a case-insensitive name that
   // matches two columns. The delete's key is taken from the task schema, spelled exactly as in it,
-  // so the binding is case sensitive. The query reads neither column, as the batch adaptation
-  // after iceberg-rust rejects a read of two columns that differ only by case.
+  // so the binding is case sensitive. The query reads neither column, so `id` is referenced only
+  // by the delete; the issue 5540 tests below read both.
   test("equality delete on a column whose name differs from another only by case") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
