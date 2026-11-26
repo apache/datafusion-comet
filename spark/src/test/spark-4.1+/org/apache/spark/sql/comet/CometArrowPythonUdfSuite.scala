@@ -20,8 +20,10 @@
 package org.apache.spark.sql.comet
 
 import java.io.File
+import java.nio.file.Files
 import java.util.{Base64, Collections}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicLong
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
@@ -30,7 +32,7 @@ import scala.sys.process._
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.{SparkException, TaskKilled}
+import org.apache.spark.{SparkEnv, SparkException, TaskKilled}
 import org.apache.spark.api.python.{PythonEvalType, PythonException, SimplePythonFunction}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -592,13 +594,16 @@ class CometArrowPythonUdfSuite extends CometTestBase {
 
   /**
    * Runs `job` in a job group, waits until `started` exists, cancels the group, and checks that
-   * the task ends as killed.
+   * the task ends as killed. Returns the time from the cancel to the task's end.
    */
-  private def assertCancelKillsTask(started: File)(job: => Any): Unit = {
+  private def assertCancelKillsTask(started: File)(job: => Any): FiniteDuration = {
     val killed = new CountDownLatch(1)
+    val killedAt = new AtomicLong()
     val listener = new SparkListener {
       override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = taskEnd.reason match {
-        case _: TaskKilled => killed.countDown()
+        case _: TaskKilled =>
+          killedAt.set(System.nanoTime())
+          killed.countDown()
         case _ =>
       }
     }
@@ -616,10 +621,11 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         assert(deadline.hasTimeLeft(), "the UDF did not start")
         Thread.sleep(50)
       }
+      val cancelledAt = System.nanoTime()
       spark.sparkContext.cancelJobGroup(group)
-      // The monitor waits spark.python.task.killTimeout, 2 seconds, before interrupting.
       assert(killed.await(30, TimeUnit.SECONDS), "the task running the UDF was not killed")
       intercept[SparkException](ThreadUtils.awaitResult(running, 30.seconds))
+      (killedAt.get() - cancelledAt).nanos
     } finally {
       // Cancel again when an assertion failed first, so a looping task does not outlive the test.
       spark.sparkContext.cancelJobGroup(group)
@@ -641,6 +647,16 @@ class CometArrowPythonUdfSuite extends CometTestBase {
     arrowUdf("loop", pickledCommand(loop, "LongType()"), LongType)
   }
 
+  /**
+   * Checks that the monitor gave the call `spark.python.task.killTimeout` before interrupting it.
+   * It starts the timeout no earlier than the cancel.
+   */
+  private def assertWaitedForKillTimeout(elapsed: FiniteDuration): Unit = {
+    val killTimeout =
+      SparkEnv.get.conf.getTimeAsMs("spark.python.task.killTimeout", "2s").millis
+    assert(elapsed >= killTimeout, s"the call was interrupted $elapsed after the cancel")
+  }
+
   test("killing a task interrupts its running native Arrow UDF") {
     assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
 
@@ -649,10 +665,11 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       val udf = loopingUdf(started)
       withSQLConf(
         CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_INTERRUPT_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         val df = spark.range(0, 1, 1, 1).select(udf(col("id")))
         assert(isNative(df))
-        assertCancelKillsTask(started)(df.collect())
+        assertWaitedForKillTimeout(assertCancelKillsTask(started)(df.collect()))
       }
     }
   }
@@ -668,12 +685,13 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       val udf = loopingUdf(started, "a[0].as_py() == 1")
       withSQLConf(
         CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_INTERRUPT_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "1") {
         val df = spark.read.parquet(path).select(udf(col("id")))
         assert(isNative(df))
         val marker = started.getCanonicalPath
-        assertCancelKillsTask(started) {
+        val elapsed = assertCancelKillsTask(started) {
           // Takes the first row, then completes the task once the second is in the UDF. Releasing
           // the plan then waits for that call.
           df.rdd
@@ -685,6 +703,36 @@ class CometArrowPythonUdfSuite extends CometTestBase {
             }
             .collect()
         }
+        assertWaitedForKillTimeout(elapsed)
+      }
+    }
+  }
+
+  test("killing a task lets its running native Arrow UDF finish by default") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    withTempDir { dir =>
+      val path = new File(dir, "data").getCanonicalPath
+      spark.range(0, 2, 1, 1).write.parquet(path)
+      val calls = new File(dir, "calls")
+      // Each call appends "c" when it starts, which also signals the start, and "d" once it has
+      // slept past the kill timeout.
+      val sleep = "(lambda ns: (exec('def f(a):\\n    import time\\n" +
+        "    open(\"" + calls.getCanonicalPath + "\", \"a\").write(\"c\")\\n" +
+        "    time.sleep(4)\\n" +
+        "    open(\"" + calls.getCanonicalPath + "\", \"a\").write(\"d\")\\n" +
+        "    return a\\n', ns), ns['f'])[1])({})"
+      val udf = arrowUdf("sleep", pickledCommand(sleep, "LongType()"), LongType)
+      withSQLConf(
+        CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "1") {
+        val df = spark.read.parquet(path).select(udf(col("id")))
+        assert(isNative(df))
+        val elapsed = assertCancelKillsTask(calls)(df.collect())
+        // The running call finished instead of being interrupted, and no later call ran Python.
+        assert(new String(Files.readAllBytes(calls.toPath)) == "cd")
+        assert(elapsed >= 3.seconds, s"the task ended $elapsed after the cancel")
       }
     }
   }

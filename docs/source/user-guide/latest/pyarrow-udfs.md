@@ -165,17 +165,18 @@ lock, so multiple partitions may be slower than Spark's separate Python workers;
 that release the lock can still run concurrently. Python execution stays synchronous on JVM input
 paths and hands off other async tasks when it runs on a Tokio worker. `pyspark.TaskContext.get()`
 returns `None` inside a native UDF. A native extension crash or `os._exit` terminates the executor
-process. Once a task is killed, its later Python calls do not run. A call still running
-`spark.python.task.killTimeout` (2 seconds by default) after the kill gets `comet.TaskKilled` raised
-in it, a `BaseException` that an `except Exception` block does not catch. It is raised once per
-call, so `finally` blocks and context managers can clean up, and a call that catches it and keeps
-running is not interrupted again. Python handles the exception only when it next runs Python
-bytecode, so a call blocked in native code, such as a long PyArrow kernel that released the
-interpreter lock, keeps the task's core until that code returns. The exception can also arrive
-between a lock's `acquire()` and the `try` block that releases it, as in `logging` before Python
-3.13, and then the lock stays held for every task in the executor's shared interpreter. Set
-`spark.comet.exec.nativeArrowPythonUDF.interruptOnKill.enabled=false` to let a killed task's
-running call return on its own instead. A failing UDF raises Spark's `PythonException`
+process. Once a task is killed, its later Python calls do not run, but a call that is already
+running keeps the task's core until it returns. Setting
+`spark.comet.exec.nativeArrowPythonUDF.interruptOnKill.enabled=true` raises `comet.TaskKilled` in a
+call still running `spark.python.task.killTimeout` (2 seconds by default) after the kill, a
+`BaseException` that an `except Exception` block does not catch. It is raised once per call, so
+`finally` blocks and context managers can clean up, and a call that catches it and keeps running is
+not interrupted again. Python handles the exception only when it next runs Python bytecode, so a
+call blocked in native code, such as a long PyArrow kernel that released the interpreter lock,
+keeps the task's core until that code returns. The exception can also arrive between a lock's
+`acquire()` and the `try` block that releases it, as in `logging` before Python 3.13, and then the
+lock stays held for every task in the executor's shared interpreter. This is why the setting is
+off by default. A failing UDF raises Spark's `PythonException`
 with its Python traceback, which PySpark raises as `pyspark.errors.PythonException`. Errors outside
 the UDF's own code, such as a result of the wrong length or type, are still reported as Comet native
 errors. The operator reports the time spent in

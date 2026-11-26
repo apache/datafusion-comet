@@ -628,10 +628,10 @@ object CometConf extends ShimCometConf {
           "once the call has run for spark.python.task.killTimeout after the kill. The " +
           "exception can arrive while Python code holds a lock it would release in a later " +
           "`finally` block, leaving the lock held for every task in the executor's shared " +
-          "interpreter. When disabled, a killed task waits for its running call to return. " +
-          "Either way, the task's later calls do not run.")
+          "interpreter, so this is off by default and a killed task waits for its running " +
+          "call to return. Either way, the task's later calls do not run.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)

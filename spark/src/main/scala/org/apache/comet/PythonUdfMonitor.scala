@@ -30,8 +30,8 @@ import org.apache.spark.internal.Logging
  * that destroys the worker of a killed task. A native UDF runs in the embedded interpreter on the
  * task thread instead, where neither a Java interrupt nor a stopped input reaches it. So one
  * daemon thread per task polls its kill state. Once the task is killed, its later calls fail
- * without entering Python. A call still running `spark.python.task.killTimeout` after the kill
- * gets an exception raised in it, once so that its cleanup can run, unless that is disabled.
+ * without entering Python. If enabled, a call still running `spark.python.task.killTimeout` after
+ * the kill gets an exception raised in it, once so that its cleanup can run.
  */
 object PythonUdfMonitor extends Logging {
 
