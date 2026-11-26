@@ -1801,6 +1801,37 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan uses Parquet timestamp encodings for conversion checks") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      for (encoding <- Seq("INT96", "TIMESTAMP_MICROS")) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> encoding) {
+            spark.sql("select TIMESTAMP'2020-01-01 00:00:01' as t").write.parquet(path)
+          }
+          for (pushdown <- Seq(false, true)) {
+            withSQLConf(
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+              for (readType <- Seq("string", "decimal(20,0)")) {
+                withClue(s"$encoding -> $readType, row filters $pushdown: ") {
+                  val df = spark.read.schema(s"t $readType").parquet(path)
+                  checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+                  assert(
+                    sparkError.isDefined && cometError.isDefined,
+                    s"$sparkError, $cometError")
+                }
+              }
+              checkSparkAnswerAndOperator(spark.read.schema("t timestamp").parquet(path))
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("native scan rejects nested Parquet conversions Spark rejects") {
     // Regression guard for #5671. Spark's vectorized reader runs
     // `ParquetVectorUpdaterFactory.getUpdater` on every leaf column, nested or not, so the
