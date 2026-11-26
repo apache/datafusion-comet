@@ -315,6 +315,20 @@ class CometCodegenSuite
     }
   }
 
+  test("a ScalaUDF later sort key runs a TopK on Spark with ANSI off") {
+    // Spark's TopK ordering evaluates a later sort key only for the rows whose earlier keys
+    // tie, and a user-defined function can raise in any mode, so Comet must not evaluate it for
+    // every row (https://github.com/apache/datafusion-comet/issues/7246).
+    spark.udf.register("strictLen", (s: String) => s.length)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withSubjects("a", "bb", "ccc") {
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT s FROM t ORDER BY s, strictLen(s) LIMIT 2"),
+          "can fail on rows that Spark's ordering skips")
+      }
+    }
+  }
+
   test("disabled mode bypasses the dispatcher") {
     // When the per-feature config is off, `CometScalaUDF.convert` returns None and the enclosing
     // operator falls back to Spark. The dispatcher's counters must not move.
@@ -3091,6 +3105,35 @@ class CometCodegenSuite
         checkSparkAnswerAndFallbackReason(
           query,
           "expression has no native path so the plan falls back to Spark")
+      }
+    }
+  }
+
+  test("divide-by-zero through dispatched ScalaUDF surfaces SparkArithmeticException") {
+    // Native arithmetic on the result of a dispatched ScalaUDF must surface the same Spark
+    // exception and error class as Spark, not CometNativeException.
+    checkDispatchedUdfError("SELECT 1 / identity_int(a) FROM t", "DIVIDE_BY_ZERO")
+  }
+
+  test("integer overflow through dispatched ScalaUDF surfaces SparkArithmeticException") {
+    // A second SparkError variant through the same path.
+    checkDispatchedUdfError("SELECT identity_int(a) + 2147483647 FROM t", "ARITHMETIC_OVERFLOW")
+  }
+
+  /**
+   * Runs `query` over `t (a INT)` holding 0 and 1 with ANSI enabled, where the query applies
+   * native arithmetic to the result of the dispatched ScalaUDF `identity_int`, and checks that
+   * Comet fails with the same exception and `errorClass` as Spark.
+   */
+  private def checkDispatchedUdfError(query: String, errorClass: String): Unit = {
+    spark.udf.register("identity_int", (i: java.lang.Integer) => i)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("t") {
+        sql("CREATE TABLE t (a INT) USING parquet")
+        sql("INSERT INTO t VALUES (0), (1)")
+        assertCodegenRan {
+          checkSparkError(sql(query), errorClass)
+        }
       }
     }
   }

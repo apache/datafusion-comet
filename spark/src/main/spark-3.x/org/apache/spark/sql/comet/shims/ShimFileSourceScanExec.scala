@@ -17,18 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.iceberg
-
-import org.apache.spark.sql.connector.catalog.TableCatalog
-import org.apache.spark.sql.execution.SparkPlan
+package org.apache.spark.sql.comet.shims
 
 /**
- * Spark 3.5+: CTAS and RTAS run their write as a nested `AppendData` or `OverwriteByExpression`
- * query, which is planned and reported like any other write, so no create or replace exec writes
- * a table itself.
+ * Positions of the filter arguments in the `FileSourceScanExec` constructor, used to rebuild a
+ * scan through `makeCopy` with new filters. The constructor is `FileSourceScanExec(relation,
+ * output, requiredSchema, partitionFilters, ...)`.
  */
-private[iceberg] object IcebergTableAsSelectShim {
-
-  /** The catalog `plan` writes through, when `plan` is a CTAS or RTAS exec. */
-  def writeCatalog(plan: SparkPlan): Option[TableCatalog] = None
+object ShimFileSourceScanExec {
+  val partitionFiltersIndex: Int = 3
+  val dataFiltersIndex: Int = 6
 }

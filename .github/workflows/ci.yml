@@ -161,6 +161,7 @@ jobs:
       && (github.event_name != 'push' || github.repository == 'apache/datafusion-comet'
           || github.workflow == 'Comet CI (fork run)')
     runs-on: ubuntu-slim
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -241,6 +242,17 @@ jobs:
       - name: Check CI config invariants
         run: python3 dev/ci/check-ci-config.py
 
+      - name: Check docs site copy
+        run: |
+          if ! command -v rsync; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends rsync
+          fi
+          python3 dev/ci/test-docs-site-copy.py
+
+      - name: Check docs permission boundary
+        run: python3 dev/ci/test-docs-permissions.py
+
       - name: Install actionlint
         # Pure network, and preflight gates every other job, so a single reset
         # connection here would fail the whole run. Download to a file rather
@@ -276,6 +288,7 @@ jobs:
     name: Detect changes
     needs: preflight
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     # `actions: read` is for dev/ci/nightly-base.py, which lists previous
     # scheduled runs to pick the nightly's diff base.
     permissions:
@@ -320,6 +333,7 @@ jobs:
           PR_BASE_REF:  ${{ github.event.pull_request.base.ref }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY:   ${{ github.repository }}
+          REF:          ${{ github.ref }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
@@ -416,10 +430,12 @@ jobs:
     #   merge queue           linux, full            -> profiles: pr
     #   nightly               all                    -> profiles: nightly
     #   push to main          linux                  -> cache-refresh-only
+    #   sync of a fork's main linux                  -> cache-refresh-only
     #
     # Only push to main sets `build_linux` without `build_linux_full`, which is
-    # the whole point: the queue has already tested that tree, so the push run
-    # is there for the caches alone. A `labeled` run and the nightly set only
+    # the whole point: the queue has already tested that tree (or, for a fork
+    # sync, the tree adds nothing to upstream), so the push run is there for
+    # the caches alone. A `labeled` run and the nightly set only
     # the third, and then run just the profiles the PR and queue tiers skip.
     if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
@@ -680,6 +696,7 @@ jobs:
       - iceberg_1_10
       - iceberg_1_11
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - name: Summarize upstream results
         env:
@@ -721,6 +738,7 @@ jobs:
       actions: read
       issues: write
     runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/github-script@v9
         with:

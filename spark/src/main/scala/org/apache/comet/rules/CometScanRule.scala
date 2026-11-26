@@ -32,7 +32,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -47,7 +47,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withFallbackReason, withFallbackReasons}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
@@ -100,11 +100,6 @@ case class CometScanRule(session: SparkSession)
         NativeConfig.resolveLibhdfsSchemes(relationSession.sessionState.newHadoopConf()))
 
     def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
-      // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep a peer scan
-      // Spark-native for canonical symmetry in SMJ self-joins (SPARK-32509).
-      case scan if scan.getTagValue(CometScanRule.SKIP_COMET_SCAN_TAG).isDefined =>
-        withFallbackReason(scan, "AQE DPP region fallback (Spark < 3.5)")
-
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
@@ -197,19 +192,6 @@ case class CometScanRule(session: SparkSession)
       return withFallbackReason(
         scanExec,
         s"Metadata column(s) ${unsupportedMetadataColNames.mkString(", ")} is not supported")
-    }
-
-    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
-    // CometPlanAdaptiveDynamicPruningFilters cannot run. Fall back this scan to Spark so that
-    // Spark's PlanAdaptiveDynamicPruningFilters handles the SAB natively. Comet's narrower
-    // CometSpark34AqeDppFallbackRule (queryStagePrepRule on 3.4) then tags any matching BHJ's
-    // build-side broadcast so Spark's rule can match it via sameResult. See
-    // CometSpark34AqeDppFallbackRule's class docstring.
-    //
-    // On 3.5+, CometPlanAdaptiveDynamicPruningFilters rewrites SABs directly and this fallback
-    // is not needed.
-    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      return withFallbackReason(scanExec, "AQE Dynamic Partition Pruning requires Spark 3.5+")
     }
 
     scanExec.relation match {
@@ -1354,21 +1336,6 @@ case class CometScanRule(session: SparkSession)
     }
   }
 
-  /**
-   * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
-   *
-   * Non-AQE DPP (PlanDynamicPruningFilters) runs before Comet rules and produces
-   * SubqueryBroadcastExec/SubqueryExec which Spark's execution framework resolves. AQE DPP
-   * (PlanAdaptiveDynamicPruningFilters) runs after Comet rules and searches for
-   * BroadcastHashJoinExec. It doesn't recognize Comet operators, so it can't create DPP filters
-   * correctly.
-   */
-  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
-    e.exists {
-      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
-      case _ => false
-    }
-
   private def metadataCols(plan: SparkPlan): Seq[String] = {
     plan.expressions.collect {
       case a: Attribute if a.isMetadataCol => a.name
@@ -1678,15 +1645,6 @@ object CometScanRule extends Logging {
   // private[comet] (not [rules]) so contrib scan extensions can apply the same gate.
   private[comet] def objectStoreAcceptsPath(uri: URI): Boolean =
     probeObjectStore(uri.toString)
-
-  /**
-   * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain
-   * Spark scan rather than converted to a Comet scan. Written by
-   * [[CometSpark34AqeDppFallbackRule]] on Spark < 3.5. See that rule's class docstring for the
-   * rationale.
-   */
-  val SKIP_COMET_SCAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
-    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
    * Schemes Comet's native Iceberg scan can open, loaded from the native storage factory over JNI

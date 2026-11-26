@@ -33,8 +33,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
-import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType, withSharedSubexpressions}
+import org.apache.comet.serde.{Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, laterSortKeyThatCanFail, supportedSortType, withSharedSubexpressions}
 import org.apache.comet.serde.operator.CometSink
 
 object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
@@ -62,6 +62,10 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
     }
     if (!supportedSortType(op, op.sortOrder)) {
       return Unsupported(Some("unsupported data type in sort order"))
+    }
+    laterSortKeyThatCanFail(op.sortOrder).foreach { s =>
+      return Incompatible(
+        Some(s"sort key ${s.child.sql} can fail on rows that Spark's ordering skips"))
     }
     Compatible()
   }
