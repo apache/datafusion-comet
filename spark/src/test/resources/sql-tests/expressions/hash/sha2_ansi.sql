@@ -19,12 +19,15 @@
 
 -- NULL payloads must skip the ANSI cast of bits, even when the string is invalid.
 -- Mixed column values keep the short-circuit check in runtime evaluation.
+-- COALESCE(1) writes one file so NULL and non-NULL payloads share a batch.
 statement
 CREATE TABLE test_sha2_ansi_string(payload STRING, bits STRING) USING parquet
 
 statement
-INSERT INTO test_sha2_ansi_string VALUES
+INSERT INTO test_sha2_ansi_string
+SELECT /*+ COALESCE(1) */ payload, bits FROM VALUES
   (NULL, 'invalid'), ('hello', '256'), ('hello', NULL), (NULL, '256')
+AS v(payload, bits)
 
 query expect_native(sha2)
 SELECT sha2(payload, CAST(bits AS INT)) FROM test_sha2_ansi_string
@@ -33,8 +36,10 @@ statement
 CREATE TABLE test_sha2_ansi_binary(payload BINARY, bits STRING) USING parquet
 
 statement
-INSERT INTO test_sha2_ansi_binary VALUES
+INSERT INTO test_sha2_ansi_binary
+SELECT /*+ COALESCE(1) */ payload, bits FROM VALUES
   (NULL, 'invalid'), (X'0080FF', '256'), (X'0080FF', NULL), (NULL, '256')
+AS v(payload, bits)
 
 query expect_native(sha2)
 SELECT sha2(payload, CAST(bits AS INT)) FROM test_sha2_ansi_binary
