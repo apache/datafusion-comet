@@ -17,7 +17,7 @@
 
 use crate::CaseWhenExpr;
 use arrow::{
-    datatypes::{DataType, Schema},
+    datatypes::{DataType, Field, FieldRef, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::common::Result;
@@ -106,6 +106,19 @@ impl PhysicalExpr for IfExpr {
         }
     }
 
+    fn return_field(&self, input_schema: &Schema) -> Result<FieldRef> {
+        let field = Field::new(
+            format!("{self}"),
+            self.data_type(input_schema)?,
+            self.nullable(input_schema)?,
+        );
+        Ok(Arc::new(
+            self.case_expr
+                .branch_metadata(input_schema)?
+                .add_to_field(field),
+        ))
+    }
+
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         self.case_expr.evaluate(batch)
     }
@@ -131,10 +144,13 @@ mod tests {
     use arrow::array::Int32Array;
     use arrow::{array::StringArray, datatypes::*};
     use datafusion::common::cast::as_int32_array;
+    use datafusion::common::{DataFusionError, ScalarValue};
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{binary, col, lit};
 
     use super::*;
+
+    const EXTENSION_TYPE_NAME_KEY: &str = "ARROW:extension:name";
 
     /// Create an If expression
     fn if_fn(
@@ -192,6 +208,49 @@ mod tests {
         let expected = &Int32Array::from(vec![Some(123), Some(999), Some(999), Some(123)]);
         assert_eq!(expected, result);
 
+        Ok(())
+    }
+
+    #[test]
+    fn return_field_keeps_branch_metadata() -> Result<()> {
+        let tagged = |name: &str, extension_name: &str| {
+            Field::new(name, DataType::Binary, true)
+                .with_metadata([(EXTENSION_TYPE_NAME_KEY, extension_name)])
+        };
+        let schema = Schema::new(vec![
+            Field::new("p", DataType::Boolean, true),
+            tagged("g1", "geoarrow.wkb"),
+            tagged("g2", "geoarrow.wkb"),
+            tagged("j", "arrow.json"),
+        ]);
+        let c = |name: &str| col(name, &schema).unwrap();
+        fn extension_name(field: &Field) -> Option<&str> {
+            field
+                .metadata()
+                .get(EXTENSION_TYPE_NAME_KEY)
+                .map(String::as_str)
+        }
+
+        // Both branches carry the extension type
+        let expr = IfExpr::new(c("p"), c("g1"), c("g2"));
+        let field = expr.return_field(&schema)?;
+        assert_eq!(field.name(), &expr.to_string());
+        assert_eq!(field.data_type(), &DataType::Binary);
+        assert!(field.is_nullable());
+        assert_eq!(extension_name(&field), Some("geoarrow.wkb"));
+
+        // A NULL branch does not erase the other branch's extension type
+        let field = IfExpr::new(c("p"), c("g1"), lit(ScalarValue::Null)).return_field(&schema)?;
+        assert_eq!(field.data_type(), &DataType::Binary);
+        assert_eq!(extension_name(&field), Some("geoarrow.wkb"));
+
+        // Differing extension types are a planning error
+        let err = IfExpr::new(c("p"), c("g1"), c("j"))
+            .return_field(&schema)
+            .unwrap_err();
+        assert!(matches!(err, DataFusionError::Plan(_)), "{err}");
+        assert!(err.to_string().contains("geoarrow.wkb"), "{err}");
+        assert!(err.to_string().contains("arrow.json"), "{err}");
         Ok(())
     }
 

@@ -25,11 +25,12 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::nullif;
 use arrow::datatypes::{
-    ArrowNativeType, ArrowPrimitiveType, BinaryType, ByteArrayType, DataType, LargeBinaryType,
-    LargeUtf8Type, Schema, Utf8Type,
+    ArrowNativeType, ArrowPrimitiveType, BinaryType, ByteArrayType, DataType, Field, FieldRef,
+    LargeBinaryType, LargeUtf8Type, Schema, Utf8Type,
 };
 use arrow::record_batch::RecordBatch;
 use datafusion::common::cast::as_boolean_array;
+use datafusion::common::metadata::{coerced_fields_metadata, FieldMetadata};
 use datafusion::common::{
     exec_err, internal_datafusion_err, internal_err, DataFusionError, Result, ScalarValue,
 };
@@ -112,8 +113,6 @@ pub fn create_if_expr(
 /// type. DataFusion's struct union may instead match by name, pairing different positions when
 /// names differ only in case.
 fn merge_branch_types(left_type: &DataType, right_type: &DataType) -> Option<DataType> {
-    use arrow::datatypes::FieldRef;
-
     fn field(left: &FieldRef, right: &FieldRef) -> Option<FieldRef> {
         Some(Arc::new(
             left.as_ref()
@@ -264,6 +263,18 @@ impl CaseWhenExpr {
             .chain(&self.flat_else_expr)
     }
 
+    /// The metadata of the result field, merged from the branch values' fields as DataFusion's
+    /// `CASE` and `coalesce` merge theirs: the earlier branch wins for each key, an extension
+    /// name is kept with the extension parameters of the branch that supplied it, an untyped
+    /// NULL contributes nothing, and differing extension names are a planning error.
+    pub(crate) fn branch_metadata(&self, input_schema: &Schema) -> Result<FieldMetadata> {
+        let fields = self
+            .values()
+            .map(|value| value.return_field(input_schema))
+            .collect::<Result<Vec<_>>>()?;
+        coerced_fields_metadata(fields.iter().map(Arc::as_ref))
+    }
+
     /// The result type, if every expression that Spark evaluates for only some of the rows can
     /// be evaluated for all of them and the result is a type that [`merge`] handles.
     fn eager_result_type(&self, input_schema: &Schema) -> Option<DataType> {
@@ -386,6 +397,17 @@ impl PhysicalExpr for CaseWhenExpr {
             Some(else_expr) => else_expr.nullable(input_schema),
             None => Ok(true),
         }
+    }
+
+    fn return_field(&self, input_schema: &Schema) -> Result<FieldRef> {
+        let field = Field::new(
+            format!("{self}"),
+            self.data_type(input_schema)?,
+            self.nullable(input_schema)?,
+        );
+        Ok(Arc::new(
+            self.branch_metadata(input_schema)?.add_to_field(field),
+        ))
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
@@ -913,10 +935,17 @@ mod tests {
         TimestampMicrosecondArray,
     };
     use arrow::compute::cast;
-    use arrow::datatypes::{Field, FieldRef, TimeUnit, TimestampMicrosecondType};
+    use arrow::datatypes::{Metadata, TimeUnit, TimestampMicrosecondType};
     use datafusion::physical_expr::expressions::{col, lit};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::projection::ProjectionExec;
+    use datafusion::physical_plan::ExecutionPlan;
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
+    use std::collections::HashMap;
+
+    const EXTENSION_TYPE_NAME_KEY: &str = "ARROW:extension:name";
+    const EXTENSION_TYPE_METADATA_KEY: &str = "ARROW:extension:metadata";
 
     fn value_types() -> Vec<DataType> {
         vec![
@@ -1522,6 +1551,150 @@ mod tests {
             vec![(c("p"), c("a"))],
             Some(lit(ScalarValue::Int64(None)))
         ));
+    }
+
+    fn extension_name(field: &Field) -> Option<&str> {
+        field
+            .metadata()
+            .get(EXTENSION_TYPE_NAME_KEY)
+            .map(String::as_str)
+    }
+
+    /// A nullable Binary field with the given metadata
+    fn tagged(name: &str, metadata: &[(&str, &str)]) -> Field {
+        Field::new(name, DataType::Binary, true)
+            .with_metadata(metadata.iter().copied().collect::<Metadata>())
+    }
+
+    #[test]
+    fn return_field_merges_branch_metadata() {
+        let schema = Schema::new(vec![
+            Field::new("p", DataType::Boolean, true),
+            Field::new("q", DataType::Boolean, true),
+            tagged(
+                "g1",
+                &[(EXTENSION_TYPE_NAME_KEY, "geoarrow.wkb"), ("k", "v1")],
+            ),
+            tagged(
+                "g2",
+                &[
+                    (EXTENSION_TYPE_NAME_KEY, "geoarrow.wkb"),
+                    (EXTENSION_TYPE_METADATA_KEY, "{\"crs\": null}"),
+                    ("k", "v2"),
+                    ("only_g2", "2"),
+                ],
+            ),
+            Field::new("b", DataType::Binary, false),
+        ]);
+        let c = |name: &str| col(name, &schema).unwrap();
+        let field = |when_then: Vec<WhenThen>, else_expr: Option<Arc<dyn PhysicalExpr>>| {
+            let expr = CaseWhenExpr::try_new(when_then, else_expr).unwrap();
+            let field = expr.return_field(&schema).unwrap();
+            assert_eq!(field.data_type(), &expr.data_type(&schema).unwrap());
+            assert_eq!(field.is_nullable(), expr.nullable(&schema).unwrap());
+            assert_eq!(field.name(), &expr.to_string());
+            field
+        };
+
+        // The earlier branch wins for each key, and the extension name comes with the parameters
+        // of the branch that supplied it, so g1's bare name does not take g2's parameters
+        let merged = field(vec![(c("p"), c("g1"))], Some(c("g2")));
+        assert_eq!(
+            merged.metadata(),
+            &HashMap::from([
+                (
+                    EXTENSION_TYPE_NAME_KEY.to_string(),
+                    "geoarrow.wkb".to_string()
+                ),
+                ("k".to_string(), "v1".to_string()),
+                ("only_g2".to_string(), "2".to_string()),
+            ])
+        );
+        let merged = field(vec![(c("p"), c("g2"))], Some(c("g1")));
+        assert_eq!(
+            merged
+                .metadata()
+                .get(EXTENSION_TYPE_METADATA_KEY)
+                .map(String::as_str),
+            Some("{\"crs\": null}")
+        );
+        assert_eq!(merged.metadata().get("k").map(String::as_str), Some("v2"));
+
+        // A branch without metadata, an untyped NULL, a typed NULL or no ELSE does not drop the
+        // metadata of the other branch
+        for else_expr in [
+            None,
+            Some(lit(ScalarValue::Null)),
+            Some(lit(ScalarValue::Binary(None))),
+            Some(c("b")),
+        ] {
+            let f = field(vec![(c("p"), c("g1"))], else_expr);
+            assert_eq!(extension_name(&f), Some("geoarrow.wkb"));
+            assert_eq!(f.metadata().get("k").map(String::as_str), Some("v1"));
+        }
+        let f = field(vec![(c("p"), lit(ScalarValue::Null))], Some(c("g1")));
+        assert_eq!(f.data_type(), &DataType::Binary);
+        assert_eq!(extension_name(&f), Some("geoarrow.wkb"));
+
+        // The branches of an IF or CASE in the ELSE contribute as well
+        let nested = Arc::new(IfExpr::new(c("q"), c("b"), c("g2")));
+        let f = field(vec![(c("p"), c("g1"))], Some(nested));
+        assert_eq!(extension_name(&f), Some("geoarrow.wkb"));
+        assert_eq!(f.metadata().get("only_g2").map(String::as_str), Some("2"));
+
+        // No branch has metadata
+        assert!(field(vec![(c("p"), c("b"))], Some(c("b")))
+            .metadata()
+            .is_empty());
+    }
+
+    /// The output schema of a projection, which is what reaches the JVM, carries the metadata
+    #[test]
+    fn projection_schema_keeps_branch_metadata() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Boolean, true),
+            tagged("g1", &[(EXTENSION_TYPE_NAME_KEY, "geoarrow.wkb")]),
+            tagged("g2", &[(EXTENSION_TYPE_NAME_KEY, "geoarrow.wkb")]),
+        ]));
+        let c = |name: &str| col(name, &schema).unwrap();
+        let case_when = CaseWhenExpr::try_new(vec![(c("p"), c("g1"))], Some(c("g2"))).unwrap();
+        let if_expr = IfExpr::new(c("p"), c("g1"), c("g2"));
+        let projection = ProjectionExec::try_new(
+            vec![
+                (
+                    Arc::new(case_when) as Arc<dyn PhysicalExpr>,
+                    "c".to_string(),
+                ),
+                (Arc::new(if_expr) as Arc<dyn PhysicalExpr>, "i".to_string()),
+            ],
+            Arc::new(EmptyExec::new(Arc::clone(&schema))),
+        )
+        .unwrap();
+        for field in projection.schema().fields() {
+            assert_eq!(
+                extension_name(field),
+                Some("geoarrow.wkb"),
+                "{}",
+                field.name()
+            );
+        }
+    }
+
+    #[test]
+    fn return_field_rejects_differing_extension_names() {
+        let schema = Schema::new(vec![
+            Field::new("p", DataType::Boolean, true),
+            tagged("g", &[(EXTENSION_TYPE_NAME_KEY, "geoarrow.wkb")]),
+            tagged("j", &[(EXTENSION_TYPE_NAME_KEY, "arrow.json")]),
+        ]);
+        let c = |name: &str| col(name, &schema).unwrap();
+        let err = CaseWhenExpr::try_new(vec![(c("p"), c("g"))], Some(c("j")))
+            .unwrap()
+            .return_field(&schema)
+            .unwrap_err();
+        assert!(matches!(err, DataFusionError::Plan(_)), "{err}");
+        assert!(err.to_string().contains("geoarrow.wkb"), "{err}");
+        assert!(err.to_string().contains("arrow.json"), "{err}");
     }
 
     #[test]
