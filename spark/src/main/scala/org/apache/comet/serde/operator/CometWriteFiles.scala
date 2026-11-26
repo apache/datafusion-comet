@@ -105,7 +105,7 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     }
 
     NativeWriteUtils
-      .legacyDatetimeRebaseWriteReason(op.child.output)
+      .datetimeRebaseWriteReason(op.child.output)
       .foreach(reason => return Unsupported(Some(reason)))
 
     Incompatible(Some("Parquet write support is highly experimental"))

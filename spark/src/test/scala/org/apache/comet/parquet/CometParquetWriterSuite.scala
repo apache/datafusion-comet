@@ -53,7 +53,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.hadoop.fs.RecordingFileSystem
 import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
@@ -95,6 +95,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+          SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           nativeWriteAllowIncompatKey -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -117,6 +119,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+          SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           nativeWriteAllowIncompatKey -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -149,6 +153,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           val nativeOutput = new File(dir, "native-output").getAbsolutePath
           val commonConf = Seq(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+            SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
             CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -305,6 +311,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
           withSQLConf(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+            SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
             "spark.sql.adaptive.enabled" -> adaptive.toString,
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
             nativeWriteAllowIncompatKey -> "true",
@@ -717,6 +725,181 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
           val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
           assertNoCometNativeWriteExec(plan)
+        }
+      }
+    }
+  }
+
+  for {
+    mode <- Seq("CORRECTED", "LEGACY", "EXCEPTION")
+    dataType <- Seq("DATE", "TIMESTAMP", "TIMESTAMP_NTZ")
+  } {
+    test(s"datetime rebase $mode with $dataType preserves Spark writer behavior") {
+      withTempPath { dir =>
+        withNativeWriter {
+          withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS") {
+            val boundary = if (dataType == "DATE") "1582-10-15" else "1899-12-31 23:59:59"
+            val values = spark
+              .range(0, 6, 1, 1)
+              .selectExpr(
+                "id",
+                s"""CAST(CASE id
+                 |WHEN 0 THEN '1000-01-01 12:34:56'
+                 |WHEN 1 THEN '1582-10-14 12:34:56'
+                 |WHEN 2 THEN '$boundary'
+                 |WHEN 3 THEN '2026-01-01 12:34:56'
+                 |END AS $dataType) AS value""".stripMargin)
+            val source = materializeAsCometSource(
+              values.selectExpr(
+                "id",
+                "value AS scalar",
+                "named_struct('at', value) AS struct_value",
+                s"IF(id = 4, array(), array(value, CAST(NULL AS $dataType))) AS array_value",
+                "IF(value IS NULL, map(), map(value, 1)) AS map_key",
+                "IF(id = 4, map(), map('event', value)) AS map_value",
+                "named_struct('events', array(named_struct('at', value))) AS nested"),
+              new File(dir, "source").getAbsolutePath)
+
+            withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode) {
+              source.columns.filterNot(_ == "id").foreach { name =>
+                withClue(s"$name: ") {
+                  val needsFallback = mode != "CORRECTED" && dataType != "TIMESTAMP_NTZ"
+                  val rejectsAncient = needsFallback && mode == "EXCEPTION"
+                  val df = source.select("id", name)
+                  val writable = if (rejectsAncient) df.filter("id >= 3") else df
+                  val outputPath = new File(dir, s"output-$name").getAbsolutePath
+                  val plan = captureWritePlan(path => writable.write.parquet(path), outputPath)
+                  if (needsFallback) assertNoCometNativeWriteExec(plan)
+                  else {
+                    val reasons = plan.flatMap(
+                      _.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty))
+                    withClue(s"Fallback reasons: ${reasons.mkString(", ")}. ") {
+                      assertHasCometNativeWriteExec(plan)
+                    }
+                  }
+
+                  val legacy = needsFallback && mode == "LEGACY"
+                  val baseline = new File(dir, s"spark-$name").getAbsolutePath
+                  withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    writable.write.parquet(baseline)
+                    for (readMode <- Seq("CORRECTED", "LEGACY", "EXCEPTION")) {
+                      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> readMode) {
+                        checkAnswer(spark.read.parquet(outputPath), spark.read.parquet(baseline))
+                        if (!legacy) checkAnswer(spark.read.parquet(outputPath), writable)
+                      }
+                    }
+                  }
+                  assertDatetimeRebaseMetadata(outputPath, legacy)
+
+                  if (rejectsAncient) {
+                    val (failedPlan, error) = captureFailedWritePlan(
+                      df.filter("id < 3")
+                        .write
+                        .parquet(new File(dir, s"rejected-$name").getAbsolutePath))
+                    assertNoCometNativeWriteExec(failedPlan)
+                    assert(
+                      causeChain(error).exists(e =>
+                        Option(e.getMessage).exists(_.contains("WRITE_ANCIENT_DATETIME"))),
+                      s"Expected Spark's ancient datetime rejection, got $error")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (mode <- Seq("LEGACY", "EXCEPTION")) {
+    test(s"datetime rebase $mode keeps schemas without datetime fields in the native writer") {
+      withTempPath { dir =>
+        withNativeWriter {
+          withSQLConf(
+            SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode,
+            SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> mode) {
+            val df = spark.range(0, 3).selectExpr("id", "array(id) AS a")
+            val outputPath = new File(dir, "output").getAbsolutePath
+            val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+            assertHasCometNativeWriteExec(plan)
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              checkAnswer(spark.read.parquet(outputPath), df)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (timestampType <- Seq("INT96", "TIMESTAMP_MICROS", "TIMESTAMP_MILLIS")) {
+    test(s"datetime rebase timestamp modes follow $timestampType output") {
+      withTempPath { dir =>
+        withNativeWriter {
+          val df = materializeAsCometSource(
+            spark.sql("SELECT TIMESTAMP'2026-01-01 12:34:56' AS ts"),
+            new File(dir, "source").getAbsolutePath)
+          for {
+            mode <- Seq("LEGACY", "EXCEPTION")
+            datetimeMode <- Seq("CORRECTED", mode)
+          } {
+            val int96Mode = if (datetimeMode == "CORRECTED") mode else "CORRECTED"
+            withSQLConf(
+              SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> timestampType,
+              SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> datetimeMode,
+              SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> int96Mode) {
+              val outputPath = new File(dir, s"$mode-$datetimeMode").getAbsolutePath
+              val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+              val effectiveMode = if (timestampType == "INT96") int96Mode else datetimeMode
+              if (effectiveMode == "CORRECTED") assertHasCometNativeWriteExec(plan)
+              else assertNoCometNativeWriteExec(plan)
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                checkAnswer(spark.read.parquet(outputPath), df)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("datetime rebase write modes come from SQLConf rather than writer options") {
+    withTempPath { dir =>
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          spark.sql("SELECT DATE'1000-01-01' AS d"),
+          new File(dir, "source").getAbsolutePath)
+        val corrected = captureWritePlan(
+          path => df.write.option("datetimeRebaseMode", "EXCEPTION").parquet(path),
+          new File(dir, "corrected").getAbsolutePath)
+        assertHasCometNativeWriteExec(corrected)
+        withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "EXCEPTION") {
+          val (plan, error) = captureFailedWritePlan(
+            df.write
+              .option("datetimeRebaseMode", "CORRECTED")
+              .parquet(new File(dir, "rejected").getAbsolutePath))
+          assertNoCometNativeWriteExec(plan)
+          assert(causeChain(error).exists(e =>
+            Option(e.getMessage).exists(_.contains("WRITE_ANCIENT_DATETIME"))))
+        }
+      }
+    }
+  }
+
+  private def assertDatetimeRebaseMetadata(outputPath: String, legacy: Boolean): Unit = {
+    val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+    assert(partFiles.nonEmpty)
+    partFiles.foreach { file =>
+      val input = HadoopInputFile.fromPath(
+        new Path(file.getAbsolutePath),
+        spark.sparkContext.hadoopConfiguration)
+      Using.resource(ParquetFileReader.open(input)) { reader =>
+        val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
+        assert(metadata.get("org.apache.spark.version") == SPARK_VERSION_SHORT)
+        assert(metadata.containsKey("org.apache.spark.legacyDateTime") == legacy)
+        assert(!metadata.containsKey("org.apache.spark.legacyINT96"))
+        assert(metadata.containsKey("org.apache.spark.timeZone") == legacy)
+        if (legacy) {
+          assert(metadata.get("org.apache.spark.timeZone") == "America/Halifax")
         }
       }
     }
@@ -2800,6 +2983,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
       // read the generated Parquet file and write with Comet native writer
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
         // enable experimental native writes
         nativeWriteAllowIncompatKey -> "true",
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",

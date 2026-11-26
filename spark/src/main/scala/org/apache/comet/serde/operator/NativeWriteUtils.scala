@@ -320,35 +320,34 @@ object NativeWriteUtils {
     }.getOrElse(false)
 
   /**
-   * A fallback reason when the session asks for a LEGACY datetime rebase on write, or `None`.
+   * A fallback reason when Spark's writer would rebase or reject datetime values, or `None`.
    *
    * The native writer always writes proleptic Gregorian (corrected) datetime values and stamps
-   * `org.apache.spark.version` with no legacy markers. Honoring a LEGACY write rebase mode would
-   * require rebasing the values and stamping `org.apache.spark.legacyDateTime` /
-   * `org.apache.spark.legacyINT96`, so fall back to Spark rather than silently ignoring the
-   * requested mode and letting readers trust a "corrected" marker over legacy-intent data.
-   * TIMESTAMP_NTZ is exempt because Spark never rebases NTZ values on write.
+   * `org.apache.spark.version` with no legacy markers. Spark's ParquetWriteSupport reads write
+   * rebase modes from SQLConf, not writer options. Dates use the datetime mode; timestamps use
+   * the mode for Spark's configured output timestamp type. TIMESTAMP_NTZ is exempt because Spark
+   * never rebases NTZ values on write.
    */
-  def legacyDatetimeRebaseWriteReason(output: Seq[Attribute]): Option[String] = {
+  def datetimeRebaseWriteReason(output: Seq[Attribute]): Option[String] = {
+    val conf = SQLConf.get
     val hasDate = output.exists(a => SupportLevel.containsType(a.dataType, classOf[DateType]))
     val hasTimestamp =
       output.exists(a => SupportLevel.containsType(a.dataType, classOf[TimestampType]))
-    // getConf also reads the 3.x legacy alias keys. Both modes default to EXCEPTION on 3.x and
-    // to CORRECTED on 4.0+.
-    def isLegacy(mode: Any): Boolean = mode.toString == "LEGACY"
-    val datetimeLegacy = (hasDate || hasTimestamp) &&
-      isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE))
-    val int96Legacy =
-      hasTimestamp && isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE))
-    val legacyModeKeys =
-      (if (datetimeLegacy) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key) else Nil) ++
-        (if (int96Legacy) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key) else Nil)
-    if (legacyModeKeys.isEmpty) {
+    val writesInt96 = conf.getConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE).toString == "INT96"
+    val modeKeys =
+      (if (hasDate || (hasTimestamp && !writesInt96)) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE)
+       else Nil) ++
+        (if (hasTimestamp && writesInt96) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE)
+         else Nil)
+    val unsupportedModes = modeKeys
+      .map(key => key.key -> conf.getConf(key).toString)
+      .filter { case (_, mode) => mode != "CORRECTED" }
+    if (unsupportedModes.isEmpty) {
       None
     } else {
       Some(
-        "Native Parquet write always writes corrected (proleptic Gregorian) datetime values " +
-          s"and does not support LEGACY rebase mode (${legacyModeKeys.mkString(", ")})")
+        "Native Parquet write only supports CORRECTED datetime rebase mode: " +
+          unsupportedModes.map { case (key, mode) => s"$key=$mode" }.mkString(", "))
     }
   }
 
