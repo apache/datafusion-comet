@@ -192,6 +192,15 @@ partitioned and bucketed writes fall back to Spark, as do writes with
 behavior are not reproduced, as listed under [Known Issues](#known-issues). Iceberg writes use a
 different native writer, described on the [Iceberg](iceberg.md#writes) page.
 
+Writes with `DATE` or `TIMESTAMP` fields, including nested fields, fall back to Spark when the
+applicable rebase mode is `LEGACY` or `EXCEPTION`. Dates use
+`spark.sql.parquet.datetimeRebaseModeInWrite`. Timestamps use
+`spark.sql.parquet.int96RebaseModeInWrite` when `spark.sql.parquet.outputTimestampType=INT96`,
+and `spark.sql.parquet.datetimeRebaseModeInWrite` otherwise. `TIMESTAMP_NTZ` fields do not
+require rebasing. With `CORRECTED`, the native writer records `org.apache.spark.version` in
+each file's footer, so Spark reads ancient values unchanged under every
+`spark.sql.parquet.datetimeRebaseModeInRead` setting.
+
 The native writer supports local and HDFS destinations, and S3 writes that the S3A magic committer
 commits. Spark 4.1 configures that committer by default when spark-hadoop-cloud is on the
 classpath, and earlier versions for a bucket that sets
@@ -312,18 +321,6 @@ for production, so do not turn it off to avoid an entry on this page.
 
 With `spark.comet.write.parquet.enabled=true`:
 
-- **The `EXCEPTION` rebase mode is ignored.** On Spark 3.5, whose default rebase mode is
-  `EXCEPTION`, the native writer writes dates before October 15, 1582 and timestamps before
-  January 1, 1900 that Spark refuses to write
-  ([#7047](https://github.com/apache/datafusion-comet/issues/7047)). With
-  `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (or
-  `spark.sql.parquet.int96RebaseModeInWrite=LEGACY` for a timestamp column) Comet falls back to
-  Spark, because the native writer cannot rebase values to the hybrid calendar. Each file the
-  native writer does produce carries the `org.apache.spark.version` footer key, so Spark treats it
-  as written by Spark 3.0 or later and reads the values back unchanged under every
-  `spark.sql.parquet.datetimeRebaseModeInRead` setting. Files written by a Comet build that
-  predates that key have no version, and Spark then fails to read their pre-1582 values under its
-  default read mode on 3.5, or reads them shifted by several days under `LEGACY`.
 - **`spark.sql.parquet.outputTimestampType` and `spark.sql.parquet.writeLegacyFormat` are
   ignored.** Timestamps are always written as `INT64` microseconds, never as Spark's default
   `INT96`, so with `TIMESTAMP_MILLIS` they keep the sub-millisecond digits that Spark drops. Spark's

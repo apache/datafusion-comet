@@ -89,7 +89,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
             }
 
             NativeWriteUtils
-              .legacyDatetimeRebaseWriteReason(cmd.query.output)
+              .datetimeRebaseWriteReason(cmd.query.output)
               .foreach(reason => return Unsupported(Some(reason)))
 
             Incompatible(Some("Parquet write support is highly experimental"))
