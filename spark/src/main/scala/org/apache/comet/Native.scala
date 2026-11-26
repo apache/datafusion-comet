@@ -152,6 +152,25 @@ class Native extends NativeBase {
   @native def getShufflePartitionOffsets(plan: Long): Array[Long]
 
   /**
+   * Whether the native query plan runs a Python UDF in the embedded interpreter.
+   *
+   * @param plan
+   *   the address to native query plan.
+   */
+  @native def hasPythonUdf(plan: Long): Boolean
+
+  /**
+   * Binds the native query plan's Python UDFs to the token of its Spark task, which
+   * `NativeBase.killPythonUdfs` takes. Must precede the first `executePlan`.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @param task
+   *   the token of the plan's task, unique in this process.
+   */
+  @native def setPythonUdfTask(plan: Long, task: Long): Unit
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan

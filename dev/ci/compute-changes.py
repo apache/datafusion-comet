@@ -152,6 +152,7 @@ FILTERS = {
         "spark/src/main/java/org/apache/comet/vector/**",
         "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java",
         "spark/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/src/main/scala/org/apache/comet/PythonUdfMonitor.scala",
         "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala",
         "spark/src/main/scala/org/apache/comet/vector/**",
         "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",

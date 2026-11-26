@@ -541,6 +541,9 @@ pub(crate) struct ExecutionContext {
     pub id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
+    /// The JVM's token for the Spark task running the plan, set when the JVM stops the plan's
+    /// Python UDFs on a kill
+    pub python_udf_task: Option<i64>,
     /// The number of partitions
     pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
@@ -730,6 +733,7 @@ impl ExecutionContext {
     pub(crate) fn planner(&self, partition: i32) -> PhysicalPlanner {
         PhysicalPlanner::new(Arc::clone(&self.session_ctx), partition)
             .with_exec_id(self.id)
+            .with_python_udf_task(self.python_udf_task)
             .with_strict_timestamp_labels(self.strict_timestamp_labels)
             .with_sql_text_pool(&self.spark_plan)
             .with_task_context(self.task_context.clone())
@@ -905,6 +909,7 @@ pub(crate) fn create_execution_context(
     Ok(Box::new(ExecutionContext {
         id,
         spark_plan,
+        python_udf_task: None,
         partition_count,
         root_op: None,
         scans: vec![],
@@ -1867,6 +1872,40 @@ fn string_arg(env: &Env, value: &JString, export: &str, arg: &str) -> CometResul
 fn get_execution_context<'a>(id: i64) -> CometResult<&'a mut ExecutionContext> {
     unsafe { (id as *mut ExecutionContext).as_mut() }
         .ok_or_else(|| CometError::Internal("Native execution context handle is null".to_string()))
+}
+
+/// Whether the plan evaluates a Python UDF in the embedded interpreter, which the JVM then
+/// stops when the task is killed.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_hasPythonUdf(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jboolean {
+    fn contains_python_udf(op: &Operator) -> bool {
+        matches!(op.op_struct, Some(OpStruct::ArrowPythonUdf(_)))
+            || op.children.iter().any(contains_python_udf)
+    }
+    try_unwrap_or_throw(&e, |_| {
+        Ok(contains_python_udf(
+            &get_execution_context(exec_context)?.spark_plan,
+        ))
+    })
+}
+
+/// Sets the JVM's token for the plan's Spark task, which `NativeBase.killPythonUdfs` takes to
+/// stop the plan's Python UDFs. Must precede the first `executePlan`, which creates them.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setPythonUdfTask(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    task: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        get_execution_context(exec_context)?.python_udf_task = Some(task);
+        Ok(())
+    })
 }
 
 /// Returns the partition offsets published by a finished native shuffle write.

@@ -217,6 +217,9 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    /// The JVM's token for the Spark task running the plan, if the JVM stops its Arrow UDFs
+    /// when the task is killed.
+    python_udf_task: Option<i64>,
     /// What feeds the block's input leaves (`Scan` and `ShuffleScan`) in place of the JVM. Set
     /// when Comet runs outside a Spark executor, which also means there is no JVM to call; see
     /// [`crate::execution::native_executors`].
@@ -251,6 +254,7 @@ impl PhysicalPlanner {
             output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            python_udf_task: None,
             native_inputs: None,
         }
     }
@@ -346,6 +350,11 @@ impl PhysicalPlanner {
 
     pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
         self.exec_context_id = exec_context_id;
+        self
+    }
+
+    pub fn with_python_udf_task(mut self, python_udf_task: Option<i64>) -> Self {
+        self.python_udf_task = python_udf_task;
         self
     }
 
@@ -1791,6 +1800,7 @@ impl PhysicalPlanner {
                     udf.max_records_per_batch,
                     udf.max_bytes_per_batch,
                     udf.accept_array_like_results,
+                    self.python_udf_task,
                 )?);
                 Ok((
                     scans,
