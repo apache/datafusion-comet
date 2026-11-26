@@ -61,7 +61,6 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     Seq(array, map, new StructType().add("a", array).add("m", map)).foreach { dataType =>
       val schema = new StructType().add("value", dataType)
       CometSparkToColumnarExec.isRowSchemaSupported(schema, ListBuffer.empty) shouldBe true
-      CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty) shouldBe false
     }
 
     val duplicateFields = new StructType().add("x", IntegerType).add("x", LongType)

@@ -231,9 +231,10 @@ private[rules] object MakeDateEvaluation {
 
       val original = node match {
         case scan: CometScanExec =>
-          scan.wrapped.copy(
-            partitionFilters = scan.partitionFilters,
-            dataFilters = scan.dataFilters)
+          CometScanUtils.copyScanWithFilters(
+            scan.wrapped,
+            scan.partitionFilters,
+            scan.dataFilters)
         case scan: CometNativeScanExec => scan.sparkFallback(Nil)
         case native: CometExec => native.originalPlan
         case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
@@ -444,7 +445,7 @@ private[rules] object MakeDateEvaluation {
       val rebuilt = node match {
         case _: RowToColumnarExec | _: CometSparkToColumnarExec if childReason.isDefined =>
           children.head
-        case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec
+        case _: ColumnarToRowExec | _: CometColumnarToRowExec
             if childReason.isDefined && !children.head.supportsColumnar =>
           children.head
         case native: CometExec if fallbackReason.isDefined || children != node.children =>

@@ -66,6 +66,7 @@ datafusion-datasource = { workspace = true }
 datafusion-spark = { workspace = true }
 once_cell = "1.18.0"
 datafusion-comet-common = { workspace = true }
+datafusion-comet-local = { path = "../local" }
 datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
@@ -173,6 +174,10 @@ harness = false
 
 [[bench]]
 name = "parquet_timestamp_conversion"
+harness = false
+
+[[bench]]
+name = "parquet_field_resolution"
 harness = false
 
 [[bench]]

@@ -156,7 +156,6 @@ FILTERS = {
         "spark/src/main/scala/org/apache/comet/vector/**",
         "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
         "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
-        "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
@@ -205,7 +204,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-4.0/**",
         "!spark/src/main/spark-4.1/**",
         "!spark/src/main/spark-4.2/**",
@@ -233,7 +231,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.1/**",
@@ -261,7 +258,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -289,7 +285,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -621,10 +616,11 @@ def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
     `event` is {"name", "action", "label", "labels", "base", "repository",
-    "head_repository"}: the workflow event name, the pull_request action, the
-    label just added on a `labeled` event, the labels currently on the pull
-    request, the branch it targets, the repository the workflow runs in, and
-    the repository the pull request's branch lives in.
+    "head_repository", "ref"}: the workflow event name, the pull_request action,
+    the label just added on a `labeled` event, the labels currently on the pull
+    request, the branch it targets, the repository the workflow runs in, the
+    repository the pull request's branch lives in, and the pushed or triggering
+    git ref.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -679,6 +675,13 @@ def release_branch_allows(job, event):
 
 def compute(files, event):
     """Return {job: bool}, folding the path filter and the event policy."""
+    # A push to a fork's main that adds nothing to upstream, such as a sync, has
+    # nothing to test, but only caches written on the fork's main reach its
+    # branches. Run the Linux build's cache refresh, as a push to main does
+    # upstream, or every fork branch run downloads each Maven dependency from
+    # Central.
+    if not files and is_fork_push(event) and event.get("ref") == "refs/heads/main":
+        return {name: name == "build_linux" for name in FILTERS}
     return {
         name: event_allows(name, event) and matches(patterns, files)
         for name, patterns in FILTERS.items()
@@ -695,6 +698,7 @@ def event_from_env():
         "base": os.environ.get("PR_BASE_REF", ""),
         "repository": os.environ.get("REPOSITORY", ""),
         "head_repository": os.environ.get("PR_HEAD_REPO", ""),
+        "ref": os.environ.get("REF", ""),
     }
 
 

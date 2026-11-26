@@ -23,9 +23,9 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 
@@ -33,7 +33,6 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{partition2Proto, schema2Proto}
@@ -60,8 +59,15 @@ case class CometCsvNativeScanExec(
   // The native operator holds the object store options, so the plan's text leaves it out.
   override def stringArgs: Iterator[Any] = Iterator(output)
 
+  // Two scans of the same files must compare equal so Spark reuses their exchanges and stages.
+  // That needs normalized output attribute ids and the wrapped scan's canonical form, and no
+  // serialization state, which differs between otherwise identical copies.
   override protected def doCanonicalize(): SparkPlan = {
-    CometCsvNativeScanExec(nativeOp, output, originalPlan, serializedPlanOpt)
+    CometCsvNativeScanExec(
+      nativeOp,
+      output.map(QueryPlan.normalizeExpressions(_, output)),
+      if (originalPlan == null) null else originalPlan.doCanonicalize(),
+      SerializedPlan(None))
   }
 
   override def equals(obj: Any): Boolean = {
@@ -97,65 +103,31 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       val timeZone = sessionState.conf.sessionLocalTimeZone
       new CSVOptions(csvScan.options.asScala.toMap, columnPruning, timeZone)
     }
-    val hadoopConf =
-      sessionState.newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
-    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
-    val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
-    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+    // The Hadoop conf comes from the scan's read options with their case preserved, matching
+    // Spark's CSVScan.createReaderFactory, so per-read settings like fs.s3a.endpoint reach native.
+    val input = CometScanUtils.prepareNativeFileScan(
       "Native CSV scan",
-      inputPartitions.view.flatMap(_.files.view.map(_.pathUri)),
-      s3CompliantSchemes,
-      libhdfsSchemes,
-      isBucketedScan = false)
-    if (multiStoreReason.nonEmpty) {
-      // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
-      withFallbackReason(op, multiStoreReason.get)
-      withFallbackReason(op.wrapped, multiStoreReason.get)
-      return None
-    }
-    // The options of every scheme the scan reads, or a decline for the ABFS layouts one
-    // resolution cannot serve. Checked before the split below so that its reason is reported.
-    val fileUris = inputPartitions.view.flatMap(_.files).map(_.pathUri)
-    val objectStoreOptions =
-      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
-        case Right(options) => options
-        case Left(reason) =>
-          // CometExecRule falls back to the wrapped Spark scan, so it carries the reason too.
-          withFallbackReason(op, reason)
-          withFallbackReason(op.wrapped, reason)
-          return None
-      }
-    // Native planning reads each partition through one object store.
-    val filePartitions = CometScanUtils.splitPartitionsByStore(
-      inputPartitions,
-      file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
-    // Spark 3.4 reports a one-partition scan as SinglePartition and plans no exchange above it,
-    // so the operators above rely on the scan's partition count.
-    if (filePartitions.length != inputPartitions.length &&
-      !op.wrapped.outputPartitioning.isInstanceOf[UnknownPartitioning]) {
-      val reason = "Native CSV scan would split a partition that mixes object stores, but " +
-        "Spark planned the operators above it for the scan's own partitioning"
-      withFallbackReason(op, reason)
-      withFallbackReason(op.wrapped, reason)
-      return None
+      op,
+      csvScan.options.asCaseSensitiveMap.asScala.toMap) match {
+      case Right(input) => input
+      case Left(reason) =>
+        // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
+        withFallbackReason(op, reason)
+        withFallbackReason(op.wrapped, reason)
+        return None
     }
     val csvOptionsProto = csvOptions2Proto(options)
     val dataSchemaProto = schema2Proto(csvScan.dataSchema)
-    val readSchemaFieldNames = csvScan.readDataSchema.fieldNames
-    val projectionVector = csvScan.dataSchema.zipWithIndex
-      .filter { case (field, _) =>
-        readSchemaFieldNames.contains(field.name)
-      }
-      .map(_._2.asInstanceOf[Integer])
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema)
-    val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
+    val partitionsProto =
+      input.filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
 
-    csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
+    csvScanBuilder.putAllObjectStoreOptions(input.objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)
     csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
     csvScanBuilder.addAllDataSchema(dataSchemaProto.asJava)
-    csvScanBuilder.addAllProjectionVector(projectionVector.asJava)
+    csvScanBuilder.addAllProjectionVector(
+      CometScanUtils.projectionVector(csvScan.dataSchema, csvScan.readDataSchema).asJava)
     csvScanBuilder.addAllPartitionSchema(partitionSchemaProto.asJava)
     Some(builder.setCsvScan(csvScanBuilder).build())
   }
