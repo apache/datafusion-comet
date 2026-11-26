@@ -36,6 +36,7 @@ use crate::parquet::datetime_rebase::SPARK_VERSION_METADATA_KEY;
 use crate::parquet::parquet_support::is_hdfs_scheme;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
+use crate::parquet::timestamp_write::{conversion_bytes, millis_schema, to_millis};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
@@ -371,6 +372,8 @@ pub struct ParquetWriterExec {
     output_schema: Option<SchemaRef>,
     /// Spark version recorded in the footer as `org.apache.spark.version`, if any.
     spark_version: Option<String>,
+    spark_schema_json: Option<String>,
+    timestamp_millis: bool,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
     /// The output stream of the file at `output_path`, when the JVM created that file. The writer
@@ -412,6 +415,8 @@ impl ParquetWriterExec {
             column_names,
             output_schema,
             spark_version: None,
+            spark_schema_json: None,
+            timestamp_millis: false,
             object_store_options,
             output_stream: None,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -423,6 +428,16 @@ impl ParquetWriterExec {
     /// `ParquetWriteSupport` does.
     pub fn with_spark_version(mut self, spark_version: Option<String>) -> Self {
         self.spark_version = spark_version;
+        self
+    }
+
+    pub fn with_spark_schema_json(mut self, schema: Option<String>) -> Self {
+        self.spark_schema_json = schema;
+        self
+    }
+
+    pub fn with_timestamp_millis(mut self, enabled: bool) -> Self {
+        self.timestamp_millis = enabled;
         self
     }
 
@@ -632,6 +647,8 @@ impl ExecutionPlan for ParquetWriterExec {
                     self.object_store_options.clone(),
                 )?
                 .with_spark_version(self.spark_version.clone())
+                .with_spark_schema_json(self.spark_schema_json.clone())
+                .with_timestamp_millis(self.timestamp_millis)
                 .with_output_stream(self.output_stream.clone()),
             )),
             _ => Err(DataFusionError::Internal(
@@ -687,7 +704,7 @@ impl ExecutionPlan for ParquetWriterExec {
         // `org.apache.spark.timeZone`, or readers will silently read shifted values. An empty
         // version is skipped: readers compare versions lexicographically, so it would sort below
         // 3.0.0 and make the file read as legacy.
-        let key_value_metadata = self
+        let mut key_value_metadata = self
             .spark_version
             .as_ref()
             .filter(|version| !version.is_empty())
@@ -696,16 +713,29 @@ impl ExecutionPlan for ParquetWriterExec {
                     SPARK_VERSION_METADATA_KEY.to_string(),
                     version.clone(),
                 )]
-            });
+            })
+            .unwrap_or_default();
+        if let Some(json) = &self.spark_schema_json {
+            key_value_metadata.push(KeyValue::new(
+                "org.apache.spark.sql.parquet.row.metadata".to_string(),
+                json.clone(),
+            ));
+        }
         let props = WriterProperties::builder()
             .set_compression(compression)
-            .set_key_value_metadata(key_value_metadata)
+            .set_coerce_types(true)
+            .set_key_value_metadata(Some(key_value_metadata))
             .build();
 
         let object_store_options = self.object_store_options.clone();
+        let write_schema = if self.timestamp_millis {
+            Arc::new(millis_schema(&output_schema))
+        } else {
+            Arc::clone(&output_schema)
+        };
         let mut writer = Self::create_arrow_writer(
             &part_file,
-            Arc::clone(&output_schema),
+            Arc::clone(&write_schema),
             props,
             runtime_env,
             &object_store_options,
@@ -714,6 +744,7 @@ impl ExecutionPlan for ParquetWriterExec {
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
+        let timestamp_millis = self.timestamp_millis;
 
         // Write batches
         let write_task = async move {
@@ -747,10 +778,31 @@ impl ExecutionPlan for ParquetWriterExec {
                     batch
                 };
 
+                let batch_to_write = if timestamp_millis {
+                    let bytes: usize = renamed_batch
+                        .columns()
+                        .iter()
+                        .map(|a| conversion_bytes(&a.to_data()))
+                        .sum();
+                    reservation.try_resize(writer.memory_size() + bytes)?;
+                    let columns = renamed_batch
+                        .columns()
+                        .iter()
+                        .map(to_millis)
+                        .collect::<Result<Vec<_>>>()?;
+                    RecordBatch::try_new_with_options(
+                        Arc::clone(&write_schema),
+                        columns,
+                        &RecordBatchOptions::new().with_match_field_names(false),
+                    )?
+                } else {
+                    renamed_batch
+                };
                 writer
-                    .write(&renamed_batch)
+                    .write(&batch_to_write)
                     .await
                     .map_err(|e| write_error(e, "Failed to write batch"))?;
+                drop(batch_to_write);
                 // The writer cannot spill, so a row group the pool will not grant fails the task.
                 reservation.try_resize(writer.memory_size())?;
 
@@ -1210,6 +1262,53 @@ mod tests {
             "{error}"
         );
         assert_eq!(pool.reserved(), 0, "the failed write kept its reservation");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_conversion_reserves_memory_before_allocating() -> Result<()> {
+        use arrow::array::TimestampMicrosecondArray;
+
+        let values = TimestampMicrosecondArray::from(vec![123456; 1000]).with_timezone("UTC");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "ts",
+            values.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)])?;
+        let temp_dir = tempfile::tempdir()?;
+        let writer = writer_of(
+            vec![batch],
+            format!("file://{}/part.parquet", temp_dir.path().display()),
+            ParquetCompression::None,
+        )?
+        .with_timestamp_millis(true);
+        let pool = Arc::new(PeakMemoryPool::new(16));
+        let memory_pool: Arc<dyn MemoryPool> = pool.clone();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(memory_pool)
+            .build_arc()?;
+        let context = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+        let mut stream = writer.execute(0, context.task_ctx())?;
+        let error = stream
+            .try_next()
+            .await
+            .expect_err("the conversion buffer exceeds the pool");
+        assert!(
+            matches!(error, DataFusionError::ResourcesExhausted(_)),
+            "{error}"
+        );
+        drop(stream);
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(
+            writer
+                .metrics()
+                .unwrap()
+                .sum_by_name("rows_written")
+                .unwrap()
+                .as_usize(),
+            0
+        );
         Ok(())
     }
 

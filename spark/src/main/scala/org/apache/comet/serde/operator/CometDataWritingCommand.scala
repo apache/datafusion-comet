@@ -89,6 +89,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
             }
 
             NativeWriteUtils
+              .unsupportedParquetWriteSettings(cmd.query.output, session.sessionState.conf)
+              .foreach(reason => return Unsupported(Some(reason)))
+
+            NativeWriteUtils
               .legacyDatetimeRebaseWriteReason(cmd.query.output)
               .foreach(reason => return Unsupported(Some(reason)))
 
@@ -133,6 +137,9 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .setSparkVersion(SPARK_VERSION_SHORT)
+        .setOutputTimestampType(
+          op.session.sessionState.conf.getConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE).toString)
+        .setSparkSchemaJson(cmd.query.schema.json)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
         .addAllOutputSchema(schema2Proto(
           cmd.query.schema.fields.toIndexedSeq,

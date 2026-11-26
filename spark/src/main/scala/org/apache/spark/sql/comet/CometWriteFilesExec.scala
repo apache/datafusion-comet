@@ -161,7 +161,9 @@ case class CometWriteFilesExec(
     val dataSchema = CometUtils.fromAttributes(description.dataColumns)
 
     val taskWrite = NativeWriteTask(
-      nativeOp = nativeOp,
+      nativeOp = nativeOp.toBuilder
+        .setParquetWriter(nativeOp.getParquetWriter.toBuilder.setSparkSchemaJson(dataSchema.json))
+        .build(),
       dataColumnNames = dataSchema.fields.map(_.name).toSeq,
       outputSchema = schema2Proto(
         dataSchema.fields.toIndexedSeq,

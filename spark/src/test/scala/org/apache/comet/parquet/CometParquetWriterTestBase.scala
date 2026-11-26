@@ -43,6 +43,7 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
       CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
       nativeWriteAllowIncompatKey -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
   }
 

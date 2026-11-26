@@ -207,6 +207,11 @@ For Iceberg, iceberg-rust labels `timestamptz` columns `Timestamp(Microsecond, "
 Iceberg scan adapts its batches to the Spark schema, which relabels them `"UTC"`. Iceberg's
 partition transforms (`years`, `months`, `days` and `hours`) are defined in UTC.
 
+The native Parquet writer captures the output timestamp type in its protobuf on the driver.
+`TIMESTAMP_MILLIS` floors TIMESTAMP microseconds to milliseconds, while TIMESTAMP_NTZ stays in
+microseconds. INT96 timestamp output and the legacy Parquet layout fall back to Spark. See
+[Parquet compatibility](../user-guide/latest/parquet.md#writes-that-differ-from-spark).
+
 The native CSV scan, which is only enabled for testing, parses a timestamp without an offset as
 UTC. Spark parses it in the CSV `timeZone` option, which defaults to the session timezone, so
 `CometScanRule` falls back when the read schema has a `TimestampType` column and that timezone is
