@@ -507,10 +507,10 @@ POLICY_CASES = [
     (fork_pr(head=UPSTREAM), PR_TIER),
     (fork_pr(base="branch-1.1"), QUEUE_TIER | NIGHTLY_TIER),
     # A push to a fork's branch is the contributor's pull request tier and
-    # nothing more: not main's cache refresh or site deploy (`docs` publishes to
-    # asf-site), and not the queue's or the nightly's suites. That holds for the
-    # fork's default branch too; a push that adds nothing to upstream selects no
-    # file (see dev/ci/fork-push-changed-files.sh).
+    # nothing more: not the site deploy (`docs` publishes to asf-site), and not
+    # the queue's or the nightly's suites. That holds for the fork's default
+    # branch too, except that a sync of it, which adds no file to upstream, runs
+    # the Linux build's cache refresh (see COMPUTE_CASES below).
     ({"name": "push", "repository": FORK}, PR_TIER),
     # A pull request opened inside a fork leaves the PR tier to the branch push
     # that already ran it, so the same commit is not tested twice, but a label
@@ -519,6 +519,32 @@ POLICY_CASES = [
     (fork_pr(repository=FORK, head=FORK, labels=["run-iceberg-tests"]), ICEBERG_OPT_IN),
     # Upstream, push stays the cache refresh and the site deploy.
     ({"name": "push", "repository": UPSTREAM}, {"docs", "build_linux", "build_macos"}),
+]
+
+# compute() cases: (event, changed files, the outputs that must be true). These
+# cover what POLICY_CASES cannot, a push whose file list is empty.
+FORK_MAIN_PUSH = {"name": "push", "repository": FORK, "ref": "refs/heads/main"}
+FORK_BRANCH_PUSH = {"name": "push", "repository": FORK, "ref": "refs/heads/feature"}
+UPSTREAM_MAIN_PUSH = {"name": "push", "repository": UPSTREAM, "ref": "refs/heads/main"}
+NATIVE_SOURCE = ["native/core/src/lib.rs"]
+COMPUTE_CASES = [
+    # A sync of a fork's main adds nothing to upstream, and runs the Linux build
+    # in cache-refresh-only mode (`build_linux` without `build_linux_full`) so
+    # the fork's branches can restore its Maven and cargo caches.
+    (FORK_MAIN_PUSH, [], {"build_linux"}),
+    # A fork's main that does add something runs the PR tier, as a branch does.
+    (FORK_MAIN_PUSH, NATIVE_SOURCE, PR_TIER),
+    (FORK_BRANCH_PUSH, NATIVE_SOURCE, PR_TIER),
+    (FORK_BRANCH_PUSH, [], set()),
+    (UPSTREAM_MAIN_PUSH, NATIVE_SOURCE, {"build_linux", "build_macos"}),
+    (UPSTREAM_MAIN_PUSH, [], set()),
+    # Only a push refreshes, and only to main itself.
+    ({"name": "schedule", "repository": FORK, "ref": "refs/heads/main"}, [], set()),
+    ({"name": "push", "repository": FORK, "ref": "refs/heads/fix/main"}, [], set()),
+    # A push with a missing or empty ref never refreshes. event_from_env gives
+    # an empty one when REF is unset.
+    ({"name": "push", "repository": FORK}, [], set()),
+    ({"name": "push", "repository": FORK, "ref": ""}, [], set()),
 ]
 
 
@@ -838,6 +864,23 @@ def check_event_policy():
     return not failures
 
 
+def check_compute():
+    module = load_filters()
+    failures = []
+    for event, files, expected in COMPUTE_CASES:
+        actual = {job for job, flag in module.compute(files, event).items() if flag}
+        if actual != expected:
+            failures.append(
+                f"{event['name']} to {event.get('ref')} in {event['repository']} with files {files}: "
+                f"unexpectedly selected {sorted(actual - expected) or 'nothing'}, "
+                f"unexpectedly skipped {sorted(expected - actual) or 'nothing'} "
+                f"(see compute in dev/ci/compute-changes.py)"
+            )
+    for failure in failures:
+        print(f"compute: {failure}")
+    return not failures
+
+
 # The environment variables `event_from_env` in compute-changes.py reads, and
 # the `github` context expression ci.yml's `Compute outputs` step must set each
 # one from. A typo in an expression is as silent as a missing variable: both
@@ -850,6 +893,7 @@ EVENT_ENV_SOURCES = {
     "PR_BASE_REF": "github.event.pull_request.base.ref",
     "PR_HEAD_REPO": "github.event.pull_request.head.repo.full_name",
     "REPOSITORY": "github.repository",
+    "REF": "github.ref",
 }
 ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
 ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
@@ -1869,11 +1913,88 @@ def check_scheduled_workflows_stay_upstream():
     return not failures
 
 
+def check_docs_permission_boundary():
+    """Keep dependency builds away from the site publishing token."""
+    path = WORKFLOWS / "docs.yaml"
+    jobs = job_blocks(path)
+    build = jobs.get("build-docs", "")
+    deploy = jobs.get("deploy-docs", "")
+    caller = job_blocks(CI_WORKFLOW).get("docs", "")
+    failures = []
+    for label, block, permission in (
+        ("caller", caller, "write"),
+        ("build-docs", build, "read"),
+        ("deploy-docs", deploy, "write"),
+    ):
+        if not re.search(rf"^    permissions:\n      contents: {permission}\n(?=    \S|\Z)", block, re.M):
+            failures.append(f"{label} must grant only contents: {permission}")
+    checkout_steps = re.findall(
+        r"      - name: [^\n]+\n        uses: actions/checkout@[^\n]+(?:\n          [^\n]+|\n        with:)*",
+        build,
+    )
+    checkout_count = len(re.findall(r"uses: actions/checkout@", build))
+    if (not checkout_count or len(checkout_steps) != checkout_count
+            or any("persist-credentials: false" not in step for step in checkout_steps)):
+        failures.append("every build checkout must disable persisted credentials")
+    build_steps = re.split(r"^      - ", build, flags=re.M)[1:]
+    uploads = [step for step in build_steps
+               if re.search(r"^        uses: \./\.github/actions/upload-artifact-retry$", step, re.M)]
+    if (len(uploads) != 1 or
+            re.findall(r"^          include-hidden-files: (.+)$", uploads[0], re.M) != ["true"]):
+        failures.append("the site upload must include hidden files such as .buildinfo")
+    if not re.search(r"^    needs: build-docs$", deploy, re.M):
+        failures.append("deploy-docs must depend on the build")
+    steps = re.split(r"^      - ", deploy, flags=re.M)[1:]
+    uses = [re.findall(r"^(?:uses:|        uses:) (\S+)", step, re.M) for step in steps]
+    runs = [re.findall(r"^(?:run:|        run:)", step, re.M) for step in steps]
+    if (len(steps) != 4 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
+            or len(uses[1]) != 1 or not uses[1][0].startswith("actions/checkout@")
+            or uses[2] != ["./trusted/.github/actions/download-artifact-retry"]
+            or uses[3] or runs[0] or runs[1] or runs[2] or len(runs[3]) != 1
+            or not re.search(r"^          ref: asf-site$", steps[0], re.M)
+            or not re.search(r"^          path: asf-site$", steps[0], re.M)
+            or not re.search(r"^          ref: \$\{\{ github.sha \}\}$", steps[1], re.M)
+            or not re.search(r"^          path: trusted$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout: \|\n            /\.asf.yaml\n            /\.github/actions/download-artifact-retry/$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout-cone-mode: false$", steps[1], re.M)
+            or re.findall(r"^          name: (.+)$", steps[2], re.M) != ["comet-docs-site"]
+            or re.findall(r"^          path: (.+)$", steps[2], re.M) != ["site-output"]
+            or not re.search(r"^          persist-credentials: false$", steps[1], re.M)):
+        failures.append("the writer must check out the site and trusted metadata before downloading the artifact")
+    if len(steps) == 4:
+        artifact_refs = [line.strip() for line in steps[3].splitlines() if "site-output" in line]
+        if artifact_refs != ["../site-output/ \\"]:
+            failures.append("the writer may use site-output only as the rsync source")
+        for required in ("--exclude '/.git'", "--exclude '/.asf.yaml'", "--exclude '/.nojekyll'",
+                         "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll"):
+            if required not in steps[3]:
+                failures.append(f"the writer must protect metadata: {required}")
+        commands = [line.strip() for line in steps[3].splitlines()]
+        try:
+            after_copy = commands[commands.index("./") + 1:]
+        except ValueError:
+            after_copy = []
+        if after_copy != [
+            "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll",
+            "git status --porcelain", 'if [ "$(git status --porcelain)" != "" ]; then',
+            'git config user.name "github-actions[bot]"',
+            'git config user.email "github-actions[bot]@users.noreply.github.com"',
+            "git add --all", "git commit -m 'Publish built docs triggered by ${{ github.sha }}'",
+            "git push || git push --force", "fi",
+        ]:
+            failures.append("the writer must run only the expected commands after copying the site")
+    for failure in failures:
+        print(f"docs permissions: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_compute() and ok
     ok = check_event_env() and ok
     ok = check_docs_deploy_guard() and ok
+    ok = check_docs_permission_boundary() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok

@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, GetStructField, In, InSet, IntegralDivide, Literal, Lower, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp, Upper}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -47,7 +47,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def arithmeticError(error: Throwable): SparkThrowable =
     causeChain(error)
       .collectFirst {
-        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // SparkArithmeticException is private[spark] in Spark 3.x, so this cross-version test
         // cannot pattern match on its type directly.
         case error: SparkThrowable
             if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
@@ -195,6 +195,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case result => fail(s"Expected both Spark and Comet to fail, got $result")
           }
         }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: a shared subexpression that cannot raise does not force a fallback") {
+    withParquetTable(Seq((Some(1), "Bad"), (None, "7"), (None, null)), "nonnulls") {
+      withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+        // Upper(_2) is shared by the last two children, which are skipped on a row that reaches n=1
+        // at its first child. Spark evaluates it for every row, but it cannot fail, so skipping it
+        // shows nothing.
+        val df = spark.table("nonnulls")
+        val shared = Upper(df.col("_2").expr)
+        checkSparkAnswerAndImpl(
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(1, Seq(df.col("_1").expr, shared, Lower(shared))))),
+          native = Seq("atleastnnonnulls"))
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: a shared field of a struct does not force a fallback") {
+    withParquetTable(Seq((Some((1, "Bad")), 1), (None, 2), (Some((2, null)), 3)), "nonnulls") {
+      withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+        // Both the field and the Upper of it are shared by the last two children, as when the structs
+        // an explode produces are cleaned up with na.drop. Reading a field never fails.
+        val df = spark.table("nonnulls")
+        val name = GetStructField(df.col("_1").expr, 1)
+        checkSparkAnswerAndImpl(
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(1, Seq(df.col("_2").expr, Upper(name), Lower(Upper(name)))))),
+          native = Seq("atleastnnonnulls"))
       }
     }
   }
@@ -2419,7 +2452,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("null IN empty list honours legacy null-in-empty behavior") {
     // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
-    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // in effect (SPARK-44550): on by default on Spark 3.5 and whenever ANSI
     // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
     // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
     // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
@@ -2448,7 +2481,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               col("a").isin(),
               !col("a").isin(),
               getColumnFromExpression(emptySet))
-            val legacyEnabled = !CometSparkSessionExtensions.isSpark35Plus ||
+            val legacyEnabled =
               legacy.map(_.toBoolean).getOrElse(!isSpark40Plus || !ansi.toBoolean)
             if (!legacyEnabled) {
               checkSparkAnswerAndImpl(df, native = Seq("in", "inset"))
@@ -2466,7 +2499,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("make_date is not evaluated by empty IN predicates") {
-    assume(isSpark35Plus, "Spark 3.4 always uses legacy empty-IN evaluation")
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
       "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
@@ -3020,7 +3052,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
-    // Spark 3.4/3.5 throw `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
+    // Spark 3.5 throws `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
     // short. Spark 4.x routes them through `MathUtils.negateExact` and agrees with Comet, which
     // always renders `SparkError::ArithmeticOverflow` with the Spark type name.
     def sparkOverflowMsg(dtype: String): String =
@@ -3637,12 +3669,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       ("INT", Int.MinValue.toLong, Int.MaxValue.toLong, "ARITHMETIC_OVERFLOW"),
       ("BIGINT", Long.MinValue, Long.MaxValue, "ARITHMETIC_OVERFLOW"))) {
     test(s"ANSI integral overflow fidelity - $sqlType") {
-      val expectedErrorClass =
-        if (errorClass == "BINARY_ARITHMETIC_OVERFLOW" && !isSpark35Plus) {
-          "_LEGACY_ERROR_TEMP_2044"
-        } else {
-          errorClass
-        }
       val cases = Seq(
         ("+", "try_add", max, 1L),
         ("+", "try_add", min, -1L),
@@ -3678,7 +3704,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
             val expected = structured(sparkError)
             val actual = structured(cometError)
-            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(expected.getErrorClass == errorClass, query)
             assert(actual.getClass == expected.getClass, query)
             assert(actual.getErrorClass == expected.getErrorClass, query)
             assert(actual.getSqlState == expected.getSqlState, query)

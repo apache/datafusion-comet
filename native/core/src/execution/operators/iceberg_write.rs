@@ -58,8 +58,8 @@ use iceberg::arrow::arrow_struct_to_literal;
 use iceberg::io::{FileIO, FileMetadata, FileRead, FileWrite, InputFile, OutputFile, Storage};
 use iceberg::spec::{
     DataFile, DataFileBuilder, DataFileFormat, Literal, ManifestWriterBuilder, PartitionKey,
-    PartitionSpec, PartitionSpecRef, Schema as IcebergSchema, SchemaRef as IcebergSchemaRef,
-    Struct as IcebergStruct, StructType,
+    PartitionSpec, PartitionSpecRef, PrimitiveType, Schema as IcebergSchema,
+    SchemaRef as IcebergSchemaRef, Struct as IcebergStruct, StructType, Type,
 };
 use iceberg::writer::base_writer::data_file_writer::{DataFileWriter, DataFileWriterBuilder};
 use iceberg::writer::file_writer::location_generator::{
@@ -1498,6 +1498,22 @@ fn parse_iceberg_schema(json: &str) -> DFResult<IcebergSchemaRef> {
     let schema: IcebergSchema = serde_json::from_str(json).map_err(|e| {
         DataFusionError::Internal(format!("Failed to parse iceberg schema JSON: {e}"))
     })?;
+    // iceberg-java writes no column for a top-level `unknown` field.
+    let fields = schema.as_struct().fields();
+    let kept: Vec<_> = fields
+        .iter()
+        .filter(|f| *f.field_type != Type::Primitive(PrimitiveType::Unknown))
+        .cloned()
+        .collect();
+    if kept.len() == fields.len() {
+        return Ok(Arc::new(schema));
+    }
+    let schema = IcebergSchema::builder()
+        .with_schema_id(schema.schema_id())
+        .with_identifier_field_ids(schema.identifier_field_ids())
+        .with_fields(kept)
+        .build()
+        .map_err(|e| DataFusionError::Internal(format!("Failed to prune iceberg schema: {e}")))?;
     Ok(Arc::new(schema))
 }
 
@@ -1607,10 +1623,16 @@ fn decorate_batch_with_field_ids(
     batch: RecordBatch,
     target_schema: &SchemaRef,
 ) -> DFResult<RecordBatch> {
-    if batch.num_columns() != target_schema.fields().len() {
+    // `unknown` columns arrive as Null; `parse_iceberg_schema` dropped their fields.
+    let columns: Vec<&ArrayRef> = batch
+        .columns()
+        .iter()
+        .filter(|c| c.data_type() != &DataType::Null)
+        .collect();
+    if columns.len() != target_schema.fields().len() {
         return Err(DataFusionError::Plan(format!(
             "Iceberg write column count mismatch: arrow batch has {} columns but schema has {}",
-            batch.num_columns(),
+            columns.len(),
             target_schema.fields().len()
         )));
     }
@@ -1619,9 +1641,8 @@ fn decorate_batch_with_field_ids(
         safe: false,
         ..Default::default()
     };
-    let casted: Vec<ArrayRef> = batch
-        .columns()
-        .iter()
+    let casted: Vec<ArrayRef> = columns
+        .into_iter()
         .zip(target_schema.fields().iter())
         .map(|(col, target)| {
             arrow::compute::cast_with_options(col, target.data_type(), &cast_options)
@@ -4594,6 +4615,21 @@ mod tests {
             assert!(format!("{err}").contains("column count mismatch"));
         }
 
+        #[tokio::test]
+        async fn decorate_batch_drops_null_columns() {
+            let schema = iceberg_user_schema();
+            let target = Arc::new(iceberg::arrow::schema_to_arrow_schema(&schema).unwrap());
+            let original = batch(&[1, 2], &["a", "b"]);
+            let mut fields = original.schema().fields().to_vec();
+            fields.insert(1, Arc::new(Field::new("u", DataType::Null, true)));
+            let mut columns = original.columns().to_vec();
+            columns.insert(1, arrow::array::new_null_array(&DataType::Null, 2));
+            let with_null =
+                RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), columns).unwrap();
+            let decorated = decorate_batch_with_field_ids(with_null, &target).unwrap();
+            assert_eq!(decorated.schema(), target);
+        }
+
         /// A spec whose only partition field is a `void` transform, as iceberg-java's
         /// `UpdatePartitionSpec` leaves a format-version-1 spec after `DROP PARTITION FIELD`.
         /// Built by deserialising the spec JSON rather than through `PartitionSpec::builder`,
@@ -5321,7 +5357,7 @@ mod tests {
         /// refusal fails, are limited only by Spark.
         #[test]
         fn only_a_fanout_write_is_held_to_a_share_of_the_pool() {
-            use crate::execution::memory_pools::testing::spillable;
+            use crate::execution::memory_pools::testing::{hold, spillable};
             use crate::execution::memory_pools::{
                 create_memory_pool_with_fake_spark, MemoryPoolConfig, MemoryPoolType,
             };
@@ -5339,10 +5375,11 @@ mod tests {
                 let pool = create_memory_pool_with_fake_spark(&config, task_attempt_id, usize::MAX);
                 let sort = spillable("ExternalSorter[0]", &pool);
                 let write = write_consumer(0, writer_mode).register(&pool);
+                hold(&sort, 10);
 
-                // A write that can spill divides the task's 100 bytes with the sort, so it is
-                // refused at its half. One that cannot takes more, and what it holds comes out of
-                // the sort's share.
+                // A write that can spill divides the task's 100 bytes with the sort, which is
+                // active, so it is refused at its half. One that cannot takes more, and what it
+                // holds comes out of the sort's share.
                 write.try_grow(50).unwrap();
                 assert_eq!(
                     write.try_grow(1).is_err(),
@@ -5350,7 +5387,7 @@ mod tests {
                     "{writer_mode:?}"
                 );
                 assert_eq!(
-                    sort.try_grow(50).is_ok(),
+                    sort.try_grow(40).is_ok(),
                     held_to_a_share,
                     "{writer_mode:?}"
                 );

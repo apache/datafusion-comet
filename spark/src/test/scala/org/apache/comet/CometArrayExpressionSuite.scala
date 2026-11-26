@@ -34,7 +34,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, LongType, StringType, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, CometSequence, Compatible, ExprOuterClass, Incompatible, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
@@ -326,7 +326,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_prepend") {
-    assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -1677,7 +1676,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // drops the earlier entry under `LAST_WIN`, so `CometLiteral` declines expansion under either
   // policy and Spark evaluates the projection.
   test("folded map literal with duplicate keys falls back (multirow)") {
-    assume(isSpark35Plus)
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
         withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
@@ -1694,7 +1692,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // check has to compare keys the way `ArrayBasedMapBuilder` does, through
   // `TypeUtils.getInterpretedOrdering`.
   test("folded map literal with duplicate binary keys falls back (multirow)") {
-    assume(isSpark35Plus)
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
         withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
@@ -1738,7 +1735,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_insert on non-null element array from local table scan (#4789)") {
-    assume(isSpark35Plus)
     withLocalTableScanNoFold {
       import testImplicits._
       val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")

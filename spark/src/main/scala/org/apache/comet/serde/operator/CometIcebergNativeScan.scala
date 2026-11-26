@@ -1500,34 +1500,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           residualEntries += pools.residuals.size
           perPartition += pools.build(partitionBuilder)
         }
-      case other if other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD" =>
-        // Spark 3.4's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
-        // DPP removes every split of a scan that reports SinglePartition. Among supported
-        // versions, only Spark 3.4 infers SinglePartition from one execution partition,
-        // which may be a single split or a group of splits. Other fully pruned scans take
-        // the DataSourceRDD branch above: ungrouped scans have no partitions, while grouped
-        // scans may retain empty partitions. Preserve Spark's empty
-        // execution partition so global aggregates still run and scans in the same native block
-        // retain matching partition counts when no exchange separates them.
-        // Re-querying scan.toBatch.planInputPartitions() to verify is unreliable because
-        // Iceberg's Scan state after filter() doesn't always reflect post-DPP partitions on
-        // a re-call (V2 scan state is one-shot for the materialized inputRDD). Matched by class
-        // name because ParallelCollectionRDD is private[spark].
-        logDebug(
-          "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
-            "preserving empty execution partitions")
-        other.partitions.foreach { _ =>
-          perPartition +=
-            new IcebergPartitionPlanData(
-              Array.emptyByteArray,
-              Array.empty,
-              Array.empty,
-              Array.empty)
-        }
       case other =>
         throw new IllegalStateException(
-          "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
-            s"got ${other.getClass.getName}")
+          s"Expected DataSourceRDD from BatchScanExec, got ${other.getClass.getName}")
     }
 
     // Log deduplication summary
