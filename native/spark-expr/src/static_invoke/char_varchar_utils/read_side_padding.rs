@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::checked_output_size;
 use arrow::array::builder::GenericStringBuilder;
 use arrow::array::cast::as_dictionary_array;
 use arrow::array::types::Int32Type;
@@ -244,7 +245,6 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     Ok(ColumnarValue::Array(pad_strings::<T, _>(
         string_array.iter(),
         string_array.is_ascii(),
-        string_array.value_data().len(),
         truncate,
         pad_type,
         pad_string,
@@ -263,12 +263,9 @@ fn spark_read_side_padding_scalar<T: OffsetSizeTrait>(
         ColumnarValue::Array(array) => Some(array.len()),
         ColumnarValue::Scalar(_) => None,
     };
-    // A scalar contributes no capacity floor: reserving its bytes for every row could
-    // exceed the 32-bit offsets of the output.
     let result = pad_strings::<T, _>(
         std::iter::repeat_n(value, num_rows.unwrap_or(1)),
         value.is_none_or(str::is_ascii),
-        0,
         truncate,
         pad_type.clone(),
         pad_string,
@@ -283,85 +280,113 @@ fn spark_read_side_padding_scalar<T: OffsetSizeTrait>(
     }
 }
 
-/// Pads each of `strings`. `ascii` says every string is ASCII. When `pad_type` is an array,
-/// `min_capacity` is a floor for the output's data buffer, covering rows that pass through
-/// untruncated. When `pad_type` is a scalar, the buffer is sized from the length alone and
-/// `min_capacity` is ignored.
-fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a str>>>(
+fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a str>> + Clone>(
     strings: I,
     ascii: bool,
-    min_capacity: usize,
     truncate: bool,
     pad_type: ColumnarValue,
     pad_string: &str,
     is_left_pad: bool,
 ) -> Result<ArrayRef, DataFusionError> {
+    let limit = if T::IS_LARGE {
+        i64::MAX as usize
+    } else {
+        i32::MAX as usize
+    };
+    pad_strings_with_limit::<T, _>(
+        strings,
+        ascii,
+        truncate,
+        pad_type,
+        pad_string,
+        is_left_pad,
+        limit,
+    )
+}
+
+fn pad_strings_with_limit<
+    'a,
+    T: OffsetSizeTrait,
+    I: ExactSizeIterator<Item = Option<&'a str>> + Clone,
+>(
+    strings: I,
+    ascii: bool,
+    truncate: bool,
+    pad_type: ColumnarValue,
+    pad_string: &str,
+    is_left_pad: bool,
+    limit: usize,
+) -> Result<ArrayRef, DataFusionError> {
+    let padder = Padder {
+        pad: PadPattern::new(pad_string),
+        ascii,
+        truncate,
+        is_left_pad,
+    };
     match pad_type {
         ColumnarValue::Array(array_int) => {
-            let int_pad_array = array_int.as_primitive::<Int32Type>();
-
-            // Every row is padded to its target length, so the sum of the target
-            // lengths sizes the output (exactly, for ASCII input), except when a
-            // row is longer than its target and passes through untruncated. Null
-            // lengths produce null rows and are skipped: the values under null
-            // slots are unspecified and must not size the output.
-            let mut data_capacity = 0usize;
-            let mut max_length = 0usize;
-            for length in int_pad_array.iter().flatten() {
-                let length = length.max(0) as usize;
-                data_capacity = data_capacity.saturating_add(length);
-                max_length = max_length.max(length);
-            }
-            let mut builder = GenericStringBuilder::<T>::with_capacity(
-                strings.len(),
-                data_capacity.max(min_capacity),
-            );
-            let padder = Padder {
-                pad: PadPattern::new(pad_string, max_length),
-                ascii,
-                truncate,
-                is_left_pad,
-            };
-
-            for (string, length) in strings.zip(int_pad_array) {
-                match (string, length) {
-                    (Some(string), Some(length)) => {
-                        if length >= 0 {
-                            padder.append(&mut builder, string, length as usize);
-                        } else {
-                            builder.append_value("");
-                        }
-                    }
-                    // Spark's StringRPad/StringLPad are null-intolerant: a null
-                    // string or a null length yields a null row.
-                    _ => builder.append_null(),
-                }
-            }
-            Ok(Arc::new(builder.finish()))
+            let lengths = array_int.as_primitive::<Int32Type>();
+            let rows = strings
+                .zip(lengths)
+                .map(|(string, length)| match (string, length) {
+                    (Some(_), Some(length)) if length < 0 => Some(("", 0)),
+                    (Some(string), Some(length)) => Some((string, length as usize)),
+                    _ => None,
+                });
+            pad_rows::<T, _>(rows, padder, limit)
         }
-        ColumnarValue::Scalar(const_pad_length) => {
-            let length = 0.max(i32::try_from(const_pad_length)?) as usize;
-
-            let mut builder = GenericStringBuilder::<T>::with_capacity(
-                strings.len(),
-                strings.len().saturating_mul(length),
-            );
-            let padder = Padder {
-                pad: PadPattern::new(pad_string, length),
-                ascii,
-                truncate,
-                is_left_pad,
-            };
-
-            for string in strings {
-                match string {
-                    Some(string) => padder.append(&mut builder, string, length),
-                    _ => builder.append_null(),
-                }
-            }
-            Ok(Arc::new(builder.finish()))
+        ColumnarValue::Scalar(length) => {
+            let length = i32::try_from(length)?.max(0) as usize;
+            pad_rows::<T, _>(strings.map(|s| s.map(|s| (s, length))), padder, limit)
         }
     }
+}
+
+fn pad_rows<
+    'a,
+    T: OffsetSizeTrait,
+    I: ExactSizeIterator<Item = Option<(&'a str, usize)>> + Clone,
+>(
+    rows: I,
+    mut padder: Padder<'_>,
+    limit: usize,
+) -> Result<ArrayRef, DataFusionError> {
+    let function = if !padder.truncate {
+        "read_side_padding"
+    } else if padder.is_left_pad {
+        "lpad"
+    } else {
+        "rpad"
+    };
+    let mut capacity = 0usize;
+    let mut max_padding = 0;
+    for (string, length) in rows.clone().flatten() {
+        let (string, padding) = padder.parts(string, length);
+        let bytes = padder
+            .pad
+            .byte_len(padding)
+            .and_then(|n| n.checked_add(string.len()));
+        let bytes = checked_output_size(function, bytes, limit)?;
+        capacity = checked_output_size(function, capacity.checked_add(bytes), limit)?;
+        max_padding = max_padding.max(padding);
+    }
+    // Materialize only padding that a non-null row actually needs, after checking the total.
+    let pattern_chars = padder.pad.char_offsets.len() - 1;
+    if let Some(repetitions) = max_padding.checked_div(pattern_chars) {
+        padder.pad.buffer = padder.pad.pattern.repeat(repetitions);
+        padder
+            .pad
+            .buffer
+            .push_str(&padder.pad.pattern[..padder.pad.char_offsets[max_padding % pattern_chars]]);
+    }
+    let mut builder = GenericStringBuilder::<T>::with_capacity(rows.len(), capacity);
+    for row in rows {
+        match row {
+            Some((string, length)) => padder.append(&mut builder, string, length),
+            None => builder.append_null(),
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 /// The padding pattern, materialized as a repeating buffer so that padding a row
@@ -377,42 +402,32 @@ struct PadPattern<'a> {
 }
 
 impl<'a> PadPattern<'a> {
-    /// Builds a pattern that can supply up to `max_chars` padding characters.
-    fn new(pattern: &'a str, max_chars: usize) -> Self {
+    fn new(pattern: &'a str) -> Self {
         let char_offsets: Vec<usize> = pattern
             .char_indices()
             .map(|(i, _)| i)
             .chain(std::iter::once(pattern.len()))
             .collect();
-        let pattern_chars = char_offsets.len() - 1;
-        let buffer = if pattern_chars == 0 {
-            String::new()
-        } else {
-            pattern.repeat(max_chars.div_ceil(pattern_chars))
-        };
         Self {
             pattern,
             char_offsets,
-            buffer,
+            buffer: String::new(),
         }
     }
 
-    /// Returns a slice holding exactly `chars` characters of the repeating pattern,
-    /// or an empty slice if the pattern itself is empty. `chars` must not exceed the
-    /// `max_chars` the pattern was built with.
-    #[inline]
-    fn slice(&self, chars: usize) -> &str {
+    fn byte_len(&self, chars: usize) -> Option<usize> {
         let pattern_chars = self.char_offsets.len() - 1;
         if pattern_chars == 0 {
-            return "";
+            return Some(0);
         }
-        let bytes = if self.pattern.len() == pattern_chars {
-            // One byte per character (the default single space), so no offset lookup.
-            chars
-        } else {
-            (chars / pattern_chars) * self.pattern.len() + self.char_offsets[chars % pattern_chars]
-        };
-        &self.buffer[..bytes]
+        (chars / pattern_chars)
+            .checked_mul(self.pattern.len())?
+            .checked_add(self.char_offsets[chars % pattern_chars])
+    }
+
+    #[inline]
+    fn slice(&self, chars: usize) -> &str {
+        &self.buffer[..self.byte_len(chars).unwrap()]
     }
 }
 
@@ -428,7 +443,27 @@ struct Padder<'a> {
 }
 
 impl Padder<'_> {
-    /// Appends `string`, padded or truncated to `length` characters, to `builder`.
+    fn parts<'a>(&self, string: &'a str, length: usize) -> (&'a str, usize) {
+        let char_len = if self.ascii {
+            string.len()
+        } else {
+            string.chars().count()
+        };
+        if length < char_len && self.truncate {
+            let end = if self.ascii {
+                length
+            } else {
+                string
+                    .char_indices()
+                    .nth(length)
+                    .map_or(string.len(), |(i, _)| i)
+            };
+            (&string[..end], 0)
+        } else {
+            (string, length.saturating_sub(char_len))
+        }
+    }
+
     #[inline]
     fn append<T: OffsetSizeTrait>(
         &self,
@@ -436,33 +471,8 @@ impl Padder<'_> {
         string: &str,
         length: usize,
     ) {
-        // Spark's UTF8String uses char count, not grapheme count
-        // https://stackoverflow.com/a/46290728
-        let char_len = if self.ascii {
-            string.len()
-        } else {
-            string.chars().count()
-        };
-
-        if length <= char_len {
-            if self.truncate {
-                let idx = if self.ascii {
-                    length
-                } else {
-                    string
-                        .char_indices()
-                        .nth(length)
-                        .map(|(i, _)| i)
-                        .unwrap_or(string.len())
-                };
-                builder.append_value(&string[..idx]);
-            } else {
-                builder.append_value(string);
-            }
-            return;
-        }
-
-        let padding = self.pad.slice(length - char_len);
+        let (string, padding) = self.parts(string, length);
+        let padding = self.pad.slice(padding);
         let (first, second) = if self.is_left_pad {
             (padding, string)
         } else {
@@ -480,6 +490,136 @@ impl Padder<'_> {
 mod tests {
     use super::*;
     use arrow::array::{Int32Array, StringArray};
+
+    #[test]
+    fn oversized_padding_fails_before_allocating() {
+        for pad in [spark_lpad, spark_rpad, spark_read_side_padding] {
+            for args in [
+                vec![utf8(&[Some("a"), Some("b")]), len_scalar(i32::MAX)],
+                vec![
+                    utf8_scalar(Some("a")),
+                    len_array(&[Some(i32::MAX), Some(i32::MAX)]),
+                ],
+                vec![utf8(&[Some("")]), len_scalar(i32::MAX), pad_scalar("中")],
+                vec![
+                    utf8_scalar(Some("")),
+                    len_scalar(i32::MAX),
+                    pad_scalar("中"),
+                ],
+                vec![utf8(&vec![Some("a"); 8192]), len_scalar(10_000_000)],
+            ] {
+                let error = pad(&args).unwrap_err().to_string();
+                assert!(error.contains("output size"), "{error}");
+                assert!(error.contains("reduce spark.comet.batchSize"), "{error}");
+            }
+        }
+    }
+
+    fn check_padding_byte_limits<T: OffsetSizeTrait>() {
+        let input =
+            arrow::array::GenericStringArray::<T>::from(vec![Some("é"), None, Some("long")]);
+        for (truncate, size, expected) in [
+            (true, 7, vec![Some("é中a"), None, Some("l")]),
+            (false, 10, vec![Some("é中a"), None, Some("long")]),
+        ] {
+            let lengths = len_array(&[Some(3), Some(i32::MAX), Some(1)]);
+            let error = pad_strings_with_limit::<T, _>(
+                input.iter(),
+                false,
+                truncate,
+                lengths.clone(),
+                "中ab",
+                false,
+                size - 1,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("output size"));
+            let out = pad_strings_with_limit::<T, _>(
+                input.iter(),
+                false,
+                truncate,
+                lengths,
+                "中ab",
+                false,
+                size,
+            )
+            .unwrap();
+            assert_eq!(out.as_string::<T>().iter().collect::<Vec<_>>(), expected);
+            assert_eq!(out.as_string::<T>().value_data().len(), size);
+        }
+    }
+
+    #[test]
+    fn padding_checks_bytes_and_batch_totals_for_both_offset_widths() {
+        check_padding_byte_limits::<i32>();
+        check_padding_byte_limits::<i64>();
+        let pattern = PadPattern::new("中");
+        assert_eq!(pattern.byte_len(usize::MAX), None);
+    }
+
+    #[test]
+    fn unused_padding_does_not_allocate_or_count_toward_limit() {
+        for pad in [spark_lpad, spark_rpad, spark_read_side_padding] {
+            for args in [
+                vec![utf8(&[None, None]), len_scalar(i32::MAX)],
+                vec![utf8(&[]), len_scalar(i32::MAX)],
+                vec![utf8(&[Some("a")]), len_scalar(i32::MAX), pad_scalar("")],
+                vec![
+                    utf8(&[Some("a")]),
+                    len_array(&[Some(i32::MAX)]),
+                    pad_scalar(""),
+                ],
+            ] {
+                let out = pad(&args).unwrap().to_array(0).unwrap();
+                assert!(out.as_string::<i32>().value_data().len() <= 1);
+            }
+        }
+        let input = arrow::array::StringArray::from(vec![Some("hidden"), Some("abc"), None]);
+        let slice = input.slice(1, 2);
+        let out = pad_strings_with_limit::<i32, _>(
+            slice.iter(),
+            true,
+            true,
+            len_scalar(1),
+            "long pattern",
+            false,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            out.as_string::<i32>(),
+            &StringArray::from(vec![Some("a"), None])
+        );
+        let out = pad_strings_with_limit::<i32, _>(
+            slice.iter(),
+            true,
+            true,
+            len_array(&[Some(-1), Some(i32::MAX)]),
+            "中",
+            false,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            out.as_string::<i32>(),
+            &StringArray::from(vec![Some(""), None])
+        );
+    }
+
+    #[test]
+    fn dictionary_padding_uses_the_same_output_guard() {
+        let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
+        let dictionary =
+            DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 1]), values).unwrap();
+        let args = [
+            ColumnarValue::Array(Arc::new(dictionary)),
+            len_scalar(i32::MAX),
+        ];
+        assert!(spark_rpad(&args)
+            .unwrap_err()
+            .to_string()
+            .contains("output size"));
+    }
 
     fn utf8(values: &[Option<&str>]) -> ColumnarValue {
         ColumnarValue::Array(Arc::new(StringArray::from(values.to_vec())) as ArrayRef)
@@ -811,6 +951,11 @@ mod tests {
         let wide = "x".repeat(1 << 20);
         let rows = 4096;
         let lengths = len_array(&vec![Some(1); rows]);
+        let args = vec![utf8_scalar(Some(&wide)), lengths.clone()];
+        assert!(spark_read_side_padding(&args)
+            .unwrap_err()
+            .to_string()
+            .contains("output size"));
         for pad in [spark_lpad, spark_rpad] {
             let args = vec![utf8_scalar(Some(&wide)), lengths.clone(), pad_scalar("0")];
             let result = pad(&args).unwrap().to_array(rows).unwrap();

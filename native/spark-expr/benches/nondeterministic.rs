@@ -62,6 +62,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ("rand", Arc::new(RandExpr::new(SEED))),
             ("randn", Arc::new(RandnExpr::new(SEED))),
             ("rand_str", Arc::new(RandStrExpr::new(16, SEED))),
+            ("rand_str_64", Arc::new(RandStrExpr::new(64, SEED))),
             ("uuid", Arc::new(UuidExpr::new(SEED))),
             (
                 "monotonically_increasing_id",

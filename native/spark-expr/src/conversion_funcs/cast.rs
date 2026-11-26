@@ -38,7 +38,9 @@ use crate::conversion_funcs::temporal::{
     is_df_cast_from_timestamp_spark_compatible,
 };
 use crate::conversion_funcs::utils::spark_cast_postprocess;
-use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
+use crate::utils::{
+    array_with_timezone, cast_timestamp_to_ntz, checked_output_size, timestamp_ntz_to_timestamp,
+};
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
@@ -67,7 +69,9 @@ use base64::Engine;
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+#[cfg(test)]
 use datafusion_comet_common::decode_utf8_spark_lossy;
+use datafusion_comet_common::write_utf8_spark_lossy;
 use std::{
     fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
@@ -920,6 +924,64 @@ fn write_bracketed<W: Write>(
     out.write_char(']')
 }
 
+struct StringOutputSize {
+    size: Option<usize>,
+    limit: usize,
+}
+
+impl Write for StringOutputSize {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.add(Some(value.len()))
+    }
+}
+
+impl StringOutputSize {
+    fn add(&mut self, bytes: Option<usize>) -> std::fmt::Result {
+        self.size = self.size.and_then(|n| n.checked_add(bytes?));
+        match self.size {
+            Some(n) if n <= self.limit => Ok(()),
+            _ => Err(std::fmt::Error),
+        }
+    }
+}
+
+fn binary_string_output_size<O: OffsetSizeTrait>(
+    input: &GenericByteArray<GenericBinaryType<O>>,
+    style: Option<BinaryOutputStyle>,
+    limit: usize,
+) -> DataFusionResult<usize> {
+    let mut size = StringOutputSize {
+        size: Some(0),
+        limit,
+    };
+    for value in input.iter().flatten() {
+        let result = match style {
+            None | Some(BinaryOutputStyle::Utf8) => write_utf8_spark_lossy(value, &mut size),
+            Some(BinaryOutputStyle::Basic) => write_bracketed(&mut size, value, ", ", write_i8),
+            Some(BinaryOutputStyle::Base64) => {
+                size.add((value.len() / 3).checked_mul(4).and_then(|n| {
+                    n.checked_add(if value.len() % 3 == 0 {
+                        0
+                    } else {
+                        value.len() % 3 + 1
+                    })
+                }))
+            }
+            Some(BinaryOutputStyle::Hex) => size.add(value.len().checked_mul(2)),
+            Some(BinaryOutputStyle::HexDiscrete) => size.add(
+                value
+                    .len()
+                    .checked_mul(3)
+                    .and_then(|n| n.checked_add(if value.is_empty() { 2 } else { 1 })),
+            ),
+        };
+        if result.is_err() {
+            break;
+        }
+    }
+    checked_output_size("binary-to-string cast", size.size, limit)
+}
+
 /// Casts a binary array to a string array. Without a binary output style, or with the `UTF8`
 /// style, the bytes are decoded the way the JVM's `new String(bytes, UTF_8)` does, replacing each
 /// ill-formed sequence with U+FFFD. Spark's `Cast` keeps the bytes, so the strings match what
@@ -935,6 +997,19 @@ fn write_bracketed<W: Write>(
 fn cast_binary_to_string<O: OffsetSizeTrait>(
     array: &dyn Array,
     spark_cast_options: &SparkCastOptions,
+) -> Result<ArrayRef, ArrowError> {
+    let limit = if O::IS_LARGE {
+        i64::MAX as usize
+    } else {
+        i32::MAX as usize
+    };
+    cast_binary_to_string_with_limit::<O>(array, spark_cast_options, limit)
+}
+
+fn cast_binary_to_string_with_limit<O: OffsetSizeTrait>(
+    array: &dyn Array,
+    spark_cast_options: &SparkCastOptions,
+    limit: usize,
 ) -> Result<ArrayRef, ArrowError> {
     let input = array
         .as_any()
@@ -966,16 +1041,18 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     );
     let mut valid_prefix = "";
     let mut checked = false;
-    if utf8_style && 2 * live_bytes >= end - start {
+    if utf8_style && live_bytes >= (end - start).div_ceil(2) {
         checked = true;
         let data = input.value_data();
         match std::str::from_utf8(&data[start..end]) {
             Ok(valid) => {
                 // An offset splits a code point only if it points at a continuation byte.
-                if offsets.iter().all(|offset| {
-                    let offset = offset.as_usize();
-                    offset == end || !matches!(data[offset], 0x80..=0xBF)
-                }) {
+                if end - start <= limit
+                    && offsets.iter().all(|offset| {
+                        let offset = offset.as_usize();
+                        offset == end || !matches!(data[offset], 0x80..=0xBF)
+                    })
+                {
                     // Reuse a buffer only when the reader owns it and the rows fill at least
                     // half of its allocation. A slice of a large array shares the whole
                     // allocation, and memory accounting such as a sort's charges all of it to
@@ -1021,21 +1098,37 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         }
     }
 
-    let value_bytes = live_bytes;
-    // Upper bound on the encoded length so the value buffer is allocated once. For the
-    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x and the bytes after the first
-    // ill-formed sequence at up to 3x, since U+FFFD takes three bytes; a batch that was not
-    // checked is sized for valid input. Base64 rounds up to a full 4-char group via div_ceil,
-    // which already covers the group padding.
-    let capacity = match spark_cast_options.binary_output_style {
-        None | Some(BinaryOutputStyle::Utf8) if checked => {
-            valid_prefix.len() + 3 * value_bytes.saturating_sub(valid_prefix.len())
+    let style = spark_cast_options.binary_output_style;
+    let upper = match style {
+        None | Some(BinaryOutputStyle::Utf8) => live_bytes.checked_mul(3),
+        Some(BinaryOutputStyle::Basic) => live_bytes
+            .checked_mul(6)
+            .and_then(|n| n.checked_add(num_rows.checked_mul(2)?)),
+        Some(BinaryOutputStyle::Base64) => live_bytes
+            .div_ceil(3)
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(num_rows.saturating_sub(1).checked_mul(4)?)),
+        Some(BinaryOutputStyle::Hex) => live_bytes.checked_mul(2),
+        Some(BinaryOutputStyle::HexDiscrete) => live_bytes
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(num_rows.checked_mul(2)?)),
+    };
+    let capacity = if let Some(upper) = upper.filter(|&n| n <= limit) {
+        // Keep the existing tight reservation for a mostly valid UTF-8 batch. The separate
+        // upper bound also covers rows whose offsets split a code point in the valid prefix.
+        if utf8_style {
+            if checked {
+                let prefix = valid_prefix.len().min(live_bytes);
+                prefix + 3 * (live_bytes - prefix)
+            } else {
+                live_bytes
+            }
+        } else {
+            upper
         }
-        None | Some(BinaryOutputStyle::Utf8) => value_bytes,
-        Some(BinaryOutputStyle::Basic) => 6 * value_bytes + 2 * num_rows,
-        Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3),
-        Some(BinaryOutputStyle::Hex) => 2 * value_bytes,
-        Some(BinaryOutputStyle::HexDiscrete) => 3 * value_bytes + 2 * num_rows,
+    } else {
+        binary_string_output_size(input, style, limit)
+            .map_err(|e| ArrowError::ComputeError(e.to_string()))?
     };
 
     let mut builder = GenericStringBuilder::<O>::with_capacity(num_rows, capacity);
@@ -1074,7 +1167,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                             .get(row_start..row_end.min(valid_prefix.len()))
                             .unwrap_or("");
                         builder.write_str(validated).and_then(|()| {
-                            builder.write_str(&decode_utf8_spark_lossy(&value[validated.len()..]))
+                            write_utf8_spark_lossy(&value[validated.len()..], &mut builder)
                         })
                     }
                 }
@@ -1125,6 +1218,103 @@ mod tests {
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
+
+    fn check_binary_cast_limits<O: OffsetSizeTrait>() {
+        let input = GenericByteArray::<GenericBinaryType<O>>::from(vec![
+            Some(&[0xff, 0x80][..]),
+            None,
+            Some(&b"a"[..]),
+            Some(&b""[..]),
+        ]);
+        for style in [
+            None,
+            Some(BinaryOutputStyle::Utf8),
+            Some(BinaryOutputStyle::Basic),
+            Some(BinaryOutputStyle::Base64),
+            Some(BinaryOutputStyle::Hex),
+            Some(BinaryOutputStyle::HexDiscrete),
+        ] {
+            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+            options.binary_output_style = style;
+            let expected = cast_binary_to_string::<O>(&input, &options).unwrap();
+            let size = expected.as_string::<O>().value_data().len();
+            let error =
+                cast_binary_to_string_with_limit::<O>(&input, &options, size - 1).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("binary-to-string cast output size"),
+                "{error}"
+            );
+            assert!(error.to_string().contains("reduce spark.comet.batchSize"));
+            let actual = cast_binary_to_string_with_limit::<O>(&input, &options, size).unwrap();
+            assert_eq!(actual.as_ref(), expected.as_ref());
+        }
+    }
+
+    #[test]
+    fn binary_cast_checks_each_style_at_the_exact_batch_limit() {
+        check_binary_cast_limits::<i32>();
+        check_binary_cast_limits::<i64>();
+        let mut size = StringOutputSize {
+            size: Some(usize::MAX),
+            limit: usize::MAX,
+        };
+        assert!(size.write_str("a").is_err());
+        assert_eq!(size.size, None);
+    }
+
+    #[test]
+    fn binary_cast_limit_handles_surrogates_and_split_code_points() {
+        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let input = BinaryArray::from(vec![&[0xed, 0xa0, 0x80][..]]);
+        let out = cast_binary_to_string_with_limit::<i32>(&input, &options, 3).unwrap();
+        assert_eq!(out.as_string::<i32>().value(0), "\u{fffd}");
+        assert!(cast_binary_to_string_with_limit::<i32>(&input, &options, 2).is_err());
+        // The whole buffer validates, but each row needs a replacement character.
+        let input = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 1, 2].into()),
+            Buffer::from("é".as_bytes()),
+            None,
+        );
+        assert!(cast_binary_to_string_with_limit::<i32>(&input, &options, 5).is_err());
+        let out = cast_binary_to_string_with_limit::<i32>(&input, &options, 6).unwrap();
+        assert_eq!(
+            out.as_string::<i32>(),
+            &StringArray::from(vec!["\u{fffd}", "\u{fffd}"])
+        );
+    }
+
+    #[test]
+    fn binary_cast_limit_ignores_hidden_bytes_and_counts_base64_per_row() {
+        let input = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 64, 65, 66].into()),
+            Buffer::from(vec![b'a'; 66]),
+            Some(NullBuffer::from(vec![false, true, true])),
+        );
+        let mut options = scan_cast_options();
+        for style in [
+            None,
+            Some(BinaryOutputStyle::Utf8),
+            Some(BinaryOutputStyle::Basic),
+            Some(BinaryOutputStyle::Base64),
+            Some(BinaryOutputStyle::Hex),
+            Some(BinaryOutputStyle::HexDiscrete),
+        ] {
+            options.binary_output_style = style;
+            let visible = input.slice(1, 2);
+            let expected = cast_binary_to_string::<i32>(&visible, &options).unwrap();
+            let size = expected.as_string::<i32>().value_data().len();
+            let out = cast_binary_to_string_with_limit::<i32>(&input, &options, size).unwrap();
+            assert!(out.is_null(0));
+            assert_eq!(out.slice(1, 2).as_ref(), expected.as_ref());
+            assert!(cast_binary_to_string_with_limit::<i32>(&input, &options, size - 1).is_err());
+            for null in [input.slice(0, 1), input.slice(0, 0)] {
+                let out = cast_binary_to_string_with_limit::<i32>(&null, &options, 0).unwrap();
+                assert!(out.as_string::<i32>().value_data().is_empty());
+            }
+        }
+    }
 
     #[test]
     fn test_cast_to_dictionary_is_rejected() {

@@ -17,7 +17,8 @@
 
 use crate::nondetermenistic_funcs::internal::StatefulSeedValueGenerator;
 use crate::nondetermenistic_funcs::rand::XorShiftRandom;
-use arrow::array::{RecordBatch, StringBuilder};
+use crate::utils::checked_output_size;
+use arrow::array::{new_empty_array, RecordBatch, StringBuilder};
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
@@ -61,6 +62,30 @@ impl RandStrExpr {
             state_holder: Arc::new(Mutex::new(None)),
         }
     }
+
+    fn evaluate_with_limit(&self, batch: &RecordBatch, limit: usize) -> Result<ColumnarValue> {
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(ColumnarValue::Array(new_empty_array(&DataType::Utf8)));
+        }
+        checked_output_size("randstr value", Some(self.length), limit)?;
+        let capacity =
+            checked_output_size("randstr batch", num_rows.checked_mul(self.length), limit)?;
+
+        let mut state = self.state_holder.lock().unwrap();
+        let rng = state.get_or_insert_with(|| XorShiftRandom::from_init_seed(self.seed));
+
+        let mut builder = StringBuilder::with_capacity(num_rows, capacity);
+        let mut buf = String::with_capacity(self.length);
+        for _ in 0..num_rows {
+            buf.clear();
+            for _ in 0..self.length {
+                buf.push(next_rand_char(rng) as char);
+            }
+            builder.append_value(&buf);
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+    }
 }
 
 impl Display for RandStrExpr {
@@ -94,27 +119,7 @@ impl PhysicalExpr for RandStrExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let num_rows = batch.num_rows();
-
-        let mut state = self.state_holder.lock().unwrap();
-        let rng = state.get_or_insert_with(|| XorShiftRandom::from_init_seed(self.seed));
-
-        // Every row produces a `length`-character string; pre-size both builder buffers and build
-        // each string in a reused buffer. Every character is ASCII, so pushing keeps this a single
-        // pass with no UTF-8 validation scan and no per-row allocation.
-        // `saturating_mul` keeps the pre-size hint from overflowing on adversarially huge length
-        // literals; it only affects the initial capacity, not correctness.
-        let mut builder =
-            StringBuilder::with_capacity(num_rows, num_rows.saturating_mul(self.length));
-        let mut buf = String::with_capacity(self.length);
-        for _ in 0..num_rows {
-            buf.clear();
-            for _ in 0..self.length {
-                buf.push(next_rand_char(rng) as char);
-            }
-            builder.append_value(&buf);
-        }
-        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+        self.evaluate_with_limit(batch, i32::MAX as usize)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -249,5 +254,54 @@ mod tests {
             streamed.extend(collect_strs(&expr, &empty_batch(n)));
         }
         assert_eq!(streamed, eval_strs(6, 7, 7));
+    }
+
+    #[test]
+    fn oversized_output_is_rejected_before_rng_initialization() {
+        for (length, rows) in [(i32::MAX as usize + 1, 1), (1 << 30, 2)] {
+            let expr = RandStrExpr::new(length, 42);
+            let err = expr.evaluate(&empty_batch(rows)).unwrap_err();
+            assert!(err.to_string().contains("exceeds 2147483647 bytes"));
+            assert!(expr.state_holder.lock().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn empty_batch_with_huge_length_does_not_initialize_rng() {
+        let expr = RandStrExpr::new(usize::MAX, 42);
+        let result = expr
+            .evaluate(&empty_batch(0))
+            .unwrap()
+            .into_array(0)
+            .unwrap();
+        assert_eq!(result.data_type(), &DataType::Utf8);
+        assert_eq!(result.len(), 0);
+        assert!(expr.state_holder.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn size_arithmetic_overflow_is_an_error() {
+        let expr = RandStrExpr::new(2, 42);
+        let err = expr.evaluate(&empty_batch(usize::MAX)).unwrap_err();
+        assert!(err.to_string().contains("arithmetic overflow"));
+        assert!(expr.state_holder.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn small_limit_failure_preserves_rng_sequence() {
+        let expr = RandStrExpr::new(6, 7);
+        let batch = empty_batch(2);
+        assert!(expr.evaluate_with_limit(&batch, 11).is_err());
+
+        let first = expr.evaluate_with_limit(&batch, 12).unwrap();
+        let first = first.into_array(2).unwrap();
+        let first = first.as_any().downcast_ref::<StringArray>().unwrap();
+        let mut values = (0..2)
+            .map(|i| first.value(i).to_string())
+            .collect::<Vec<_>>();
+
+        assert!(expr.evaluate_with_limit(&empty_batch(3), 17).is_err());
+        values.extend(collect_strs(&expr, &batch));
+        assert_eq!(values, eval_strs(6, 7, 4));
     }
 }

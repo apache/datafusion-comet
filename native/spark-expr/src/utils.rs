@@ -26,6 +26,7 @@ use arrow::{
     },
     buffer::BooleanBuffer,
 };
+use datafusion::common::exec_err;
 use datafusion::logical_expr::EmitTo;
 use std::sync::Arc;
 
@@ -37,6 +38,18 @@ use arrow::{
     temporal_conversions::as_datetime,
 };
 use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
+
+pub(crate) fn checked_output_size(
+    function: &str,
+    size: Option<usize>,
+    limit: usize,
+) -> datafusion::common::Result<usize> {
+    match size {
+        Some(size) if size <= limit => Ok(size),
+        Some(size) => exec_err!("{function} output size {size} exceeds {limit} bytes; reduce spark.comet.batchSize"),
+        None => exec_err!("{function} output size arithmetic overflow (limit {limit} bytes); reduce spark.comet.batchSize"),
+    }
+}
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.

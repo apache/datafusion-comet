@@ -17,7 +17,7 @@
 
 use arrow::array::builder::BinaryBuilder;
 use arrow::array::ArrayRef;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::spark_base64;
@@ -78,6 +78,40 @@ fn criterion_benchmark(c: &mut Criterion) {
         ];
         b.iter(|| black_box(spark_base64(black_box(&args)).unwrap()))
     });
+
+    let mut group = c.benchmark_group("base64_output_size");
+    for (name, value_len, null_every) in [
+        ("large", 4096, 10),
+        ("line_boundary", 58, 2),
+        ("variable", 512, 10),
+    ] {
+        let mut builder = BinaryBuilder::new();
+        let mut state = 42u64;
+        for i in 0..size {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            if i % null_every == 0 {
+                builder.append_null();
+            } else {
+                let len = if name == "variable" {
+                    (state >> 32) as usize % value_len
+                } else {
+                    value_len
+                };
+                builder.append_value(vec![b'a'; len]);
+            }
+        }
+        let input: ArrayRef = Arc::new(builder.finish());
+        for chunk in [false, true] {
+            let args = [
+                ColumnarValue::Array(Arc::clone(&input)),
+                ColumnarValue::Scalar(ScalarValue::Boolean(Some(chunk))),
+            ];
+            group.bench_function(BenchmarkId::new(name, chunk), |b| {
+                b.iter(|| black_box(spark_base64(black_box(&args)).unwrap()))
+            });
+        }
+    }
+    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
