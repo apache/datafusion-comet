@@ -514,3 +514,11 @@ harness = false
 [[bench]]
 name = "at_least_n_non_nulls"
 harness = false
+
+[[bench]]
+name = "lazy_logical"
+harness = false
+
+[[bench]]
+name = "decimal_groups"
+harness = false

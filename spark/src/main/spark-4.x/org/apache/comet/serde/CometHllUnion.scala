@@ -39,16 +39,10 @@ object CometHllUnion extends CometExpressionSerde[HllUnion] {
       "with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState " +
       "22000), so the message and error class differ even though both engines fail."
 
-  private val hll4AuxReason =
-    "An input sketch in the updatable HLL_4 form carrying auxiliary-map entries is rejected " +
-      "with an error, where Spark reads it: the bundled Rust decoder reads the compact " +
-      "auxiliary layout in both forms and would otherwise return a silently wrong estimate. " +
-      "Comet only ever writes HLL_8, so this affects sketch columns produced elsewhere."
-
   override def getUnsupportedReasons(): Seq[String] = Seq(nonLiteralAllowReason)
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(incompatReason, errorReason, hll4AuxReason)
+    Seq(incompatReason, errorReason)
 
   override def getSupportLevel(expr: HllUnion): SupportLevel = {
     if (!expr.third.foldable) {

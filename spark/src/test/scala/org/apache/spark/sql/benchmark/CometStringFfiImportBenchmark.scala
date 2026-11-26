@@ -24,7 +24,7 @@ import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.util.QueryExecutionListener
@@ -37,15 +37,13 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  *
  * arrow-rs builds FFI-imported string arrays without checking UTF-8, so Comet validates every
  * imported `Utf8` column and decodes it if it is invalid. The data here is always valid, so the
- * cases measure the validation pass that every query crossing an import site pays. Two import
- * sites carry most string data:
- *   - `ScanExec`, which receives batches from JVM operators. Here it is fed by Spark's Parquet
- *     reader converted to Arrow.
- *   - native columnar-to-row conversion, which imports native batches back from the JVM.
+ * cases measure the validation pass that every query crossing an import site pays. The import
+ * site here is `ScanExec`, which receives batches from JVM operators. It is fed by Spark's
+ * Parquet reader converted to Arrow.
  *
- * Each case that crosses an import site is paired with a control that does the same work without
- * one: the native Parquet scan for `ScanExec`, and the JVM conversion for columnar-to-row. When
- * comparing a build with and without validation, the controls should not move.
+ * The imported case is paired with a control that does the same work without an import: the
+ * native Parquet scan. When comparing a build with and without validation, the control should not
+ * move.
  *
  * To run this benchmark:
  * {{{
@@ -80,7 +78,7 @@ object CometStringFfiImportBenchmark extends CometBenchmarkBase {
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
     // Every value is distinct, so dictionary pages would fall back anyway. Disabling them keeps
-    // both import sites on plain `Utf8` arrays rather than depending on where the fallback lands.
+    // the import site on plain `Utf8` arrays rather than depending on where the fallback lands.
     sparkSession.conf.set("parquet.enable.dictionary", "false")
 
     sparkSession
@@ -165,36 +163,6 @@ object CometStringFfiImportBenchmark extends CometBenchmarkBase {
     benchmark.run()
   }
 
-  /** Wide string columns returned to Spark as rows. */
-  def columnarToRowImportBenchmark(values: Int, kind: String): Unit = {
-    val benchmark =
-      new Benchmark(s"Columnar to row of wide $kind strings", values.toLong, output = output)
-    val query = "SELECT s FROM parquetV1Table"
-    val nativeScan = cometConf :+ (CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true")
-
-    benchmark.addCase("Spark") { _ =>
-      spark.sql(query).noop()
-    }
-
-    addVerifiedCase(
-      benchmark,
-      "Comet, JVM columnar to row (no import)",
-      query,
-      nativeScan :+ (CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false"),
-      required = classOf[CometColumnarToRowExec],
-      excluded = classOf[CometNativeColumnarToRowExec])
-
-    addVerifiedCase(
-      benchmark,
-      "Comet, native columnar to row (imported)",
-      query,
-      nativeScan :+ (CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true"),
-      required = classOf[CometNativeColumnarToRowExec],
-      excluded = classOf[CometColumnarToRowExec])
-
-    benchmark.run()
-  }
-
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024 // 1M rows
 
@@ -214,10 +182,6 @@ object CometStringFfiImportBenchmark extends CometBenchmarkBase {
 
           runBenchmark(s"FFI String Import - Scan ($kind)") {
             scanImportBenchmark(values, kind)
-          }
-
-          runBenchmark(s"FFI String Import - Columnar to Row ($kind)") {
-            columnarToRowImportBenchmark(values, kind)
           }
         }
       }

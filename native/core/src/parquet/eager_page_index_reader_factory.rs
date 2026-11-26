@@ -545,14 +545,11 @@ fn is_int96(column: &ColumnDescPtr) -> bool {
     column.physical_type() == parquet::basic::Type::INT96
 }
 
-/// INT64 leaf with a timestamp logical / converted annotation (millis, micros, or nanos).
-fn is_annotated_int64_timestamp(column: &ColumnDescPtr) -> bool {
+/// An unannotated INT64 can carry an Arrow timestamp hint but Spark reads it as a long.
+fn is_unannotated_int64(column: &ColumnDescPtr) -> bool {
     column.physical_type() == parquet::basic::Type::INT64
-        && (matches!(column.logical_type_ref(), Some(LogicalType::Timestamp(_)))
-            || matches!(
-                column.converted_type(),
-                ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS
-            ))
+        && column.logical_type_ref().is_none()
+        && column.converted_type() == ConvertedType::NONE
 }
 
 /// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
@@ -595,10 +592,7 @@ fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
                 // `ARROW:schema` can restore Timestamp over unannotated INT64 (ArrowWriter
                 // seconds). Spark reads the Parquet type, so the footer check must too.
                 if matches!(field.data_type(), DataType::Timestamp(_, _))
-                    && column.is_some_and(|column| {
-                        column.physical_type() == parquet::basic::Type::INT64
-                            && !is_annotated_int64_timestamp(column)
-                    })
+                    && column.is_some_and(is_unannotated_int64)
                 {
                     field = field.with_data_type(DataType::Int64);
                 }
@@ -809,11 +803,19 @@ impl AsyncFileReader for EagerPageIndexReader {
                 let file = metadata.file_metadata();
                 let columns = file.schema_descr().columns();
                 // Only this check sees the Parquet type of a timestamp leaf, so the
-                // `TIMESTAMP(NANOS)` and INT96 rejections are deferred from here even without
-                // row filters.
-                let has_parquet_typed_leaf = columns
-                    .iter()
-                    .any(|column| is_nanos_timestamp(column) || is_int96(column));
+                // `TIMESTAMP(NANOS)`, INT96, and unannotated INT64 with an Arrow hint require
+                // the footer check even without row filters. The runtime Arrow timestamp unit
+                // cannot distinguish an INT96 timestamp[s] hint from a plain INT64 seconds hint.
+                let has_arrow_schema = file.key_value_metadata().is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|entry| entry.key == ARROW_SCHEMA_META_KEY)
+                });
+                let has_parquet_typed_leaf = columns.iter().any(|column| {
+                    is_nanos_timestamp(column)
+                        || is_int96(column)
+                        || (has_arrow_schema && is_unannotated_int64(column))
+                });
                 let needs_check = *row_filters
                     || has_parquet_typed_leaf
                     || columns.iter().any(|column| {

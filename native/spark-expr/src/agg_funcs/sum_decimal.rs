@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::Decimal128Bounds;
 use crate::{decimal_sum_overflow_error, EvalMode, SparkError, SparkErrorWithContext};
 use arrow::array::{
     cast::AsArray,
@@ -366,7 +367,8 @@ struct SumDecimalGroupsAccumulator {
     sum: Vec<Option<i128>>,
     is_empty: Vec<bool>,
     result_type: DataType,
-    precision: u8,
+    /// The values a sum of the result precision holds
+    bounds: Decimal128Bounds,
     eval_mode: EvalMode,
     expr_id: Option<u64>,
     registry: Arc<crate::QueryContextMap>,
@@ -384,7 +386,7 @@ impl SumDecimalGroupsAccumulator {
             sum: Vec::new(),
             is_empty: Vec::new(),
             result_type,
-            precision,
+            bounds: Decimal128Bounds::new(precision),
             eval_mode,
             expr_id,
             registry,
@@ -418,7 +420,7 @@ impl SumDecimalGroupsAccumulator {
         let running_sum = self.sum[group_index].unwrap_or(0);
         let (new_sum, is_overflow) = running_sum.overflowing_add(value);
 
-        if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
+        if is_overflow || !self.bounds.contains(new_sum) {
             if self.eval_mode == EvalMode::Ansi {
                 let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
@@ -478,14 +480,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
                                 None
                             } else {
                                 match sum {
-                                    Some(v)
-                                        if Decimal128Type::is_valid_decimal_precision(
-                                            v,
-                                            self.precision,
-                                        ) =>
-                                    {
-                                        Some(v)
-                                    }
+                                    Some(v) if self.bounds.contains(v) => Some(v),
                                     _ => None,
                                 }
                             }
@@ -507,14 +502,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
                                 None
                             } else {
                                 match sum {
-                                    Some(v)
-                                        if Decimal128Type::is_valid_decimal_precision(
-                                            v,
-                                            self.precision,
-                                        ) =>
-                                    {
-                                        Some(v)
-                                    }
+                                    Some(v) if self.bounds.contains(v) => Some(v),
                                     _ => None,
                                 }
                             }
@@ -591,7 +579,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
             let right = that_sum_val.unwrap();
             let (new_sum, is_overflow) = left.overflowing_add(right);
 
-            if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
+            if is_overflow || !self.bounds.contains(new_sum) {
                 if self.eval_mode == EvalMode::Ansi {
                     let error = decimal_sum_overflow_error("sum");
                     return Err(self.wrap_error_with_context(error));
@@ -776,6 +764,47 @@ mod tests {
         let result = acc.evaluate(EmitTo::All).unwrap();
         let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(result.value(0), 40); // 10 + 30 = 40
+    }
+
+    #[test]
+    fn grouped_latches_at_the_result_precision_below_38() {
+        use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+        // Inputs within their declared precision need more than 10^10 rows to reach a sum
+        // precision below 38, so only a unit test can check that the latch uses the result
+        // precision there.
+        let data_type = DataType::Decimal128(25, 2);
+        let max = 10_i128.pow(25) - 1;
+        let decimals = |values: Vec<i128>| -> ArrayRef {
+            Arc::new(Decimal128Array::from(values).with_data_type(data_type.clone()))
+        };
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            let new_acc = || {
+                SumDecimalGroupsAccumulator::new(
+                    data_type.clone(),
+                    25,
+                    eval_mode,
+                    None,
+                    crate::create_query_context_map(),
+                )
+            };
+            // Group 0 reaches the largest value that fits and group 1 goes one past it.
+            let mut updated = new_acc();
+            let update = updated.update_batch(&[decimals(vec![max, max, 1])], &[0, 1, 1], None, 2);
+            let mut merged = new_acc();
+            let is_empty: ArrayRef = Arc::new(BooleanArray::from(vec![false; 3]));
+            let merge = merged.merge_batch(&[decimals(vec![max, max, 1]), is_empty], &[0, 1, 1], 2);
+            for (result, mut acc) in [(update, updated), (merge, merged)] {
+                if eval_mode == EvalMode::Ansi {
+                    assert!(result.is_err());
+                } else {
+                    result.unwrap();
+                    let sums = acc.evaluate(EmitTo::All).unwrap();
+                    let sums = sums.as_primitive::<Decimal128Type>();
+                    assert_eq!(sums.iter().collect::<Vec<_>>(), vec![Some(max), None]);
+                }
+            }
+        }
     }
 
     /// `merge_batch` must consume every row — previously it asserted

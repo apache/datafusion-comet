@@ -33,8 +33,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
-import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType, withSharedSubexpressions}
+import org.apache.comet.serde.{Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, laterSortKeyThatCanFail, supportedSortType, withSharedSubexpressions}
 import org.apache.comet.serde.operator.CometSink
 
 object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
@@ -62,6 +62,10 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
     }
     if (!supportedSortType(op, op.sortOrder)) {
       return Unsupported(Some("unsupported data type in sort order"))
+    }
+    laterSortKeyThatCanFail(op.sortOrder).foreach { s =>
+      return Incompatible(
+        Some(s"sort key ${s.child.sql} can fail on rows that Spark's ordering skips"))
     }
     Compatible()
   }
@@ -155,6 +159,7 @@ case class CometTakeOrderedAndProjectExec(
     if (childRDD.getNumPartitions == 0 || limit == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)
     } else {
+      val sqlConf = CapturedSQLConf.capture()
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
         childRDD
       } else {
@@ -178,6 +183,7 @@ case class CometTakeOrderedAndProjectExec(
               serializedTopK,
               numParts,
               idx,
+              sqlConf,
               child.output.map(_.dataType))
           }
         }
@@ -207,6 +213,7 @@ case class CometTakeOrderedAndProjectExec(
           serializedFinalPlan,
           1,
           0,
+          sqlConf,
           finalOutputTypes)
         setSubqueries(it.id, this)
 

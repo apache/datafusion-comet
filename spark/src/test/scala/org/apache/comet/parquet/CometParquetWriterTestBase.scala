@@ -19,12 +19,14 @@
 
 package org.apache.comet.parquet
 
+import java.io.File
+import java.nio.charset.Charset
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.util.control.NonFatal
 
 import org.apache.spark.CometListenerBusUtils
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -32,6 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.hadoop.fs.RecordingFileSystem
 
 abstract class CometParquetWriterTestBase extends CometTestBase {
 
@@ -43,7 +46,67 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
   }
 
+  // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
+  // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
+  protected def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      df.write.parquet(sourcePath)
+    }
+    spark.read.parquet(sourcePath)
+  }
+
   /** The opt-in config key for native writes, which moved with the operator on Spark 4.0+. */
+  /**
+   * Runs `write` with a source of `rows` rows in `partitions` partitions, see the overload below.
+   */
+  protected def withRecordingFileSystem(rows: Int, partitions: Int)(
+      write: (DataFrame, String) => Unit): Unit = {
+    val session = spark
+    import session.implicits._
+    withRecordingFileSystem(
+      (1 to rows).map(i => (i, s"str_$i")).toDF("id", "name").repartition(partitions))(write)
+  }
+
+  /**
+   * Runs `write` with `source` read natively from a local copy, and the path to write it to,
+   * while RecordingFileSystemCommitProtocol puts the write's task files on
+   * [[RecordingFileSystem]], whose recordings start empty and are cleared afterwards.
+   *
+   * The output directory's name has a space, `%`, `#`, `?` and a non-ASCII character, which a
+   * path has to keep as it passes from the commit protocol to Hadoop. The character is left out
+   * when the JVM cannot encode it in a file name, as in a container with the POSIX locale, where
+   * even the job's own cleanup of the directory fails.
+   */
+  protected def withRecordingFileSystem(source: => DataFrame)(
+      write: (DataFrame, String) => Unit): Unit =
+    withTempPath { dir =>
+      val nonAscii = if (canEncodeInFileName('\u00e9')) "\u00e9" else ""
+      val outputPath = new File(dir, s"output dir %#?$nonAscii.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(source, sourcePath)
+        RecordingFileSystem.reset()
+        RecordingFileSystemCommitProtocol.reset()
+        try {
+          withSQLConf(
+            SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
+              classOf[RecordingFileSystemCommitProtocol].getName,
+            s"fs.${RecordingFileSystem.SCHEME}.impl" -> classOf[RecordingFileSystem].getName) {
+            write(df, outputPath)
+          }
+        } finally {
+          RecordingFileSystem.reset()
+          RecordingFileSystemCommitProtocol.reset()
+        }
+      }
+    }
+
+  /** Whether the JVM can name a file with `c`, which depends on `sun.jnu.encoding`. */
+  private def canEncodeInFileName(c: Char): Boolean = {
+    val encoding = System.getProperty("sun.jnu.encoding", "UTF-8")
+    Charset.isSupported(encoding) && Charset.forName(encoding).newEncoder().canEncode(c)
+  }
+
   protected def nativeWriteAllowIncompatKey: String =
     if (isSpark40Plus) {
       CometConf.COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT.key

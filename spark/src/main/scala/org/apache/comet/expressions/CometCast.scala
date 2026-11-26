@@ -21,13 +21,14 @@ package org.apache.comet.expressions
 
 import scala.util.Try
 
+import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DateType, DecimalType, MapType, NullType, NumericType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
-import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SparkFixes, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -81,6 +82,11 @@ object CometCast
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
+      .toBoolean
+
+  private def allowNegativeScaleOfDecimal: Boolean =
+    SQLConf.get
+      .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
       .toBoolean
 
   // Spark rounds the shortest decimal string form of the value (`Double.toString`) rather
@@ -197,6 +203,12 @@ object CometCast
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
+        castBuilder.setDecimalZeroAnyExponent(
+          SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
+        castBuilder.setDecimalTinyToZero(SparkFixes.castsTinyStringToDecimalZero(SPARK_VERSION))
+        // Spark does not apply the 38 integral-digit limit to a string cast to decimal with
+        // spark.sql.legacy.allowNegativeScaleOfDecimal.
+        castBuilder.setDecimalSkipIntegralDigitLimit(allowNegativeScaleOfDecimal)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
@@ -301,23 +313,18 @@ object CometCast
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
-        from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
-          // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
-          // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
-          // field or map entry does reach it, and there DATE to INT reinterprets the day count
-          // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
-          // dates have their own rule above.
+        // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
+        // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
+        // field or map entry does reach it, and there DATE to INT reinterprets the day count
+        // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
+        // dates have their own rule above.
+        combineSupportLevels(from_struct.fields.zip(to_struct.fields).map { case (a, b) =>
           if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
-            return unsupported(fromType, toType)
+            unsupported(fromType, toType)
+          } else {
+            isSupported(a.dataType, b.dataType, timeZoneId, evalMode)
           }
-          isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-            case Compatible(_, _) =>
-            // all good
-            case other =>
-              return other
-          }
-        }
-        Compatible()
+        })
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported. As with struct
@@ -326,11 +333,10 @@ object CometCast
           isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
           unsupported(fromType, toType)
         } else {
-          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-            case Compatible(_, _) =>
-              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
-            case other => other
-          }
+          combineSupportLevels(
+            Seq(
+              isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode),
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)))
         }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
@@ -384,9 +390,7 @@ object CometCast
         // which produces scientific notation (e.g. "1.23E+4"). Comet matches this behavior.
         // When the config is disabled, negative-scale decimals cannot be created in Spark,
         // so we mark this as incompatible to avoid native execution on unexpected inputs.
-        val allowNegativeScale = SQLConf.get
-          .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
-          .toBoolean
+        val allowNegativeScale = allowNegativeScaleOfDecimal
         if (allowNegativeScale) Compatible()
         else Incompatible(Some(negativeScaleDecimalToStringReason))
       case _: DecimalType =>
@@ -397,16 +401,9 @@ object CometCast
       case DataTypes.BinaryType =>
         Compatible()
       case StructType(fields) =>
-        for (field <- fields) {
-          isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
-            case s: Incompatible =>
-              return s
-            case u: Unsupported =>
-              return u
-            case _ =>
-          }
-        }
-        Compatible()
+        combineSupportLevels(fields.map { field =>
+          isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode)
+        })
       case _ => unsupported(fromType, DataTypes.StringType)
     }
   }
@@ -582,6 +579,49 @@ object CometCast
   private[comet] def canProduceNullMapKey(cast: Cast): Boolean =
     evalMode(cast) == CometEvalMode.TRY && mayNullMapKey(cast.child.dataType, cast.dataType)
 
+  /**
+   * Whether `cast` cannot raise an error for any value. A TRY cast returns NULL for a value it
+   * cannot convert, and so does a LEGACY cast between the atomic types listed here. An ANSI cast
+   * cannot fail only where the conversion is always exact, such as a widening one or a string to
+   * its bytes. A cast to or from a timestamp is excluded in every mode: the Rust kernels go
+   * through chrono, which rejects years Spark accepts, and raise even for TRY. So is a cast from
+   * a date to a string, whose Rust formatting raises in every mode for such a year. Both are
+   * checked at any depth, since a nested cast applies the same kernels to each element, field,
+   * key and value (https://github.com/apache/datafusion-comet/issues/7471).
+   */
+  private[comet] def cannotFail(cast: Cast): Boolean = {
+    val from = cast.child.dataType
+    val to = cast.dataType
+    !failsInAnyMode(cast) && (evalMode(cast) match {
+      case CometEvalMode.TRY => true
+      case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
+      case _ if from.isInstanceOf[StringType] && to == DataTypes.BinaryType => true
+      case _ => keyCastCannotFail(from, to)
+    })
+  }
+
+  /**
+   * Whether `cast` can raise whatever its eval mode: a cast to or from a timestamp, or from a
+   * date to a string, at any depth, as `cannotFail` describes.
+   */
+  private def failsInAnyMode(cast: Cast): Boolean = {
+    val from = cast.child.dataType
+    val to = cast.dataType
+    val hasTimestamp = Seq(from, to).exists(
+      SupportLevel.containsType(_, classOf[TimestampType], classOf[TimestampNTZType]))
+    val dateToString = SupportLevel.containsType(from, classOf[DateType]) &&
+      SupportLevel.containsType(to, classOf[StringType])
+    hasTimestamp || dateToString
+  }
+
+  // Timestamps are left out because `cannotFail` rejects them before reaching this check.
+  private def isAtomicCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | DataTypes.BooleanType | DataTypes.BinaryType |
+        DataTypes.DateType =>
+      true
+    case _ => false
+  }
+
   private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
       case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
@@ -635,5 +675,16 @@ object CometCast
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {
     Unsupported(Some(s"Cast from $fromType to $toType is not supported"))
+  }
+
+  /**
+   * Nested casts report the most restrictive child support level. `Unsupported` wins over
+   * `Incompatible`, which wins over `Compatible`. Child order must not change the result.
+   */
+  private def combineSupportLevels(levels: Iterable[SupportLevel]): SupportLevel = {
+    levels
+      .collectFirst { case u: Unsupported => u }
+      .orElse(levels.collectFirst { case i: Incompatible => i })
+      .getOrElse(Compatible())
   }
 }

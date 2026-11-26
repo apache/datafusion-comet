@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.sort.SortShuffleManager
+import org.apache.spark.sql.comet.CapturedSQLConf
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleReadMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
@@ -37,7 +38,8 @@ import org.apache.comet.{CometConf, CometShuffleBlockIterator}
 class CometShuffledBatchRDD(
     var dependency: ShuffleDependency[Int, _, _],
     val metrics: Map[String, SQLMetric],
-    partitionSpecs: Array[ShufflePartitionSpec])
+    partitionSpecs: Array[ShufflePartitionSpec],
+    private[comet] val nativeBatchCoalescing: Option[Int] = None)
     extends RDD[ColumnarBatch](dependency.rdd.context, Nil) {
 
   def this(dependency: ShuffleDependency[Int, _, _], metrics: Map[String, SQLMetric]) = {
@@ -47,9 +49,21 @@ class CometShuffledBatchRDD(
       Array.tabulate(dependency.partitioner.numPartitions)(i => CoalescedPartitionSpec(i, i + 1)))
   }
 
+  private val sqlConf = CapturedSQLConf.capture()
+
   dependency.rdd.context.setLocalProperty(
     SortShuffleManager.FETCH_SHUFFLE_BLOCKS_IN_BATCH_ENABLED_KEY,
     SQLConf.get.fetchShuffleBlocksInBatch.toString)
+
+  /** Only the local native shuffle decoder supports producer batching. */
+  private[comet] def supportsNativeBatchCoalescing: Boolean = dependency match {
+    case native: CometShuffleDependency[_, _, _] if native.shuffleType == CometNativeShuffle =>
+      native.shuffleHandle.isInstanceOf[CometNativeShuffleHandle[_, _]]
+    case _ => false
+  }
+
+  private[comet] def withNativeBatchCoalescing(maxRows: Int): CometShuffledBatchRDD =
+    new CometShuffledBatchRDD(dependency, metrics, partitionSpecs.clone(), Some(maxRows))
 
   // Start without waiting so constructing a join or union can start every independent input.
   // Spark resolves dependencies on the submitting thread before queueing a downstream job;
@@ -166,7 +180,7 @@ class CometShuffledBatchRDD(
    */
   def computeAsShuffleBlockIterator(
       split: Partition,
-      context: TaskContext): CometShuffleBlockIterator = {
+      context: TaskContext): CometShuffleBlockIterator = sqlConf.withConf {
     val readerAndMetrics: (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) =
       createReader(split, context)
     // Register before CometExecIterator so Spark's LIFO completion order closes the native stream
@@ -180,11 +194,16 @@ class CometShuffledBatchRDD(
       CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt)
   }
 
-  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    val reader: CometShuffleReader[_, _] = createReader(split, context)._1
-    // TODO: Reads IPC by native code
-    reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
-  }
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] =
+    sqlConf.withConf {
+      val reader: CometShuffleReader[_, _] = createReader(split, context)._1
+      val batches = (reader, nativeBatchCoalescing) match {
+        case (local: CometBlockStoreShuffleReader[_, _], Some(maxRows)) =>
+          local.readWithCoalescing(maxRows)
+        case _ => reader.read()
+      }
+      batches.asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
+    }
 
   override def clearDependencies(): Unit = {
     super.clearDependencies()
