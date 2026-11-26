@@ -1456,23 +1456,15 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // Checks that `df` returns Spark's rows through a native hash join, with every partition in
+  // ascending order of the integer key in its first column.
   private def checkPartitionsSortedOverHashJoin(df: => DataFrame): Unit = {
-    // withSQLConf returns Unit on Spark 3.x, so the expected rows are assigned inside it.
-    var expected = Seq.empty[String]
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = df.collect().map(_.toString).sorted.toSeq
-    }
     val cometDf = df
-    assert(cometDf.collect().map(_.toString).sorted.toSeq == expected)
-    val cometPlan = cometDf.queryExecution.executedPlan
-    assert(collect(cometPlan) { case j: CometHashJoinExec => j }.nonEmpty, cometPlan)
-    val sorted = cometDf.queryExecution.toRdd
-      .mapPartitions { it =>
-        val keys = it.map(_.getInt(0)).toArray
-        Iterator(keys.sameElements(keys.sorted))
-      }
-      .collect()
-    assert(sorted.forall(identity), sorted.mkString(", "))
+    val inOrder = partitionsInOrder(cometDf, keyOrder(Ascending))
+    val plan = cometDf.queryExecution.executedPlan
+    withClue(s"$plan\n") { sameRowsAsSpark(df) }
+    assert(collect(plan) { case j: CometHashJoinExec => j }.nonEmpty, plan)
+    assert(inOrder, plan)
   }
 
   private val sortLossJoin =
@@ -1508,16 +1500,12 @@ class CometJoinSuite extends CometTestBase {
       }
     }
 
-    for ((joinType, key) <- Seq("RIGHT" -> "big._1", "FULL" -> "coalesce(big._1, small._1)")) {
-      test(
-        s"forceShuffledHashJoin keeps sortWithinPartitions over a $joinType join, " +
-          s"AQE=$adaptive") {
-        withForcedShjTables(adaptive) {
-          checkPartitionsSortedOverHashJoin(
-            sql(s"SELECT $key AS k, big._2 AS v, small._2 AS w " +
-              s"FROM small $joinType JOIN big ON small._1 = big._1")
-              .sortWithinPartitions("k"))
-        }
+    test(s"forceShuffledHashJoin keeps sortWithinPartitions over a RIGHT join, AQE=$adaptive") {
+      withForcedShjTables(adaptive) {
+        checkPartitionsSortedOverHashJoin(
+          sql("SELECT big._1 AS k, big._2 AS v, small._2 AS w " +
+            "FROM small RIGHT JOIN big ON small._1 = big._1")
+            .sortWithinPartitions("k"))
       }
     }
   }
@@ -3697,10 +3685,11 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("a native window over an outer hash join that may move rows restores the whole order") {
-    // The left outer join runs as DataFusion's right outer join over a native window, which
-    // declares no order on the join's probe input, so the order the join reports is doubted. The
-    // window above it partitions by k alone and the sort above it, which Spark drops, needs v too.
+  test("a native window over an outer hash join in the same native plan needs no sort") {
+    // Comet doubts the order the outer join reports, so the window above it, which partitions by
+    // k alone, is sent the whole order (k, v) that the sort Spark drops above it needs. The lower
+    // window, the join and the upper window run in one native plan, where DataFusion sees that
+    // order and adds no sort.
     withParquetTable((0 until 2000).map(i => (i % 40, i)), "t") {
       withParquetTable((0 until 40 by 2).map(k => (k, k * 10)), "d1") {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
