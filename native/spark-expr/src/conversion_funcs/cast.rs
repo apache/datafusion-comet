@@ -159,6 +159,41 @@ impl Cast {
                 && matches!(self.data_type, Int8 | Int16 | Int32 | Int64)
                 && self.cast_options.eval_mode != EvalMode::Ansi)
     }
+
+    /// Whether the cast cannot fail for any value, whatever it costs: what
+    /// [`Self::cannot_fail`] accepts, and casts:
+    /// - from an integer to a `Decimal128` with enough integral digits for any value of the
+    ///   integer, which never overflows
+    /// - from an integer, a floating point number, a boolean or a `Decimal128` to a string, which
+    ///   formats any value. A date or timestamp is left out: Arrow's formatter, which those casts
+    ///   use, cannot format a value outside the range of `chrono`, which Spark can hold. So is a
+    ///   binary, whose cast depends on the output style and decodes UTF-8, and a struct, list or
+    ///   map, whose cast formats each element with these rules and others.
+    pub(crate) fn cannot_fail_at_any_cost(&self, input_schema: &Schema) -> bool {
+        use DataType::*;
+        if self.cannot_fail(input_schema) {
+            return true;
+        }
+        let Ok(from) = self.child.data_type(input_schema) else {
+            return false;
+        };
+        match (&from, &self.data_type) {
+            (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
+                let digits = match from {
+                    Int8 => 3,
+                    Int16 => 5,
+                    Int32 => 10,
+                    _ => 19,
+                };
+                *scale >= 0 && i16::from(*precision) - i16::from(*scale) >= digits
+            }
+            (
+                Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Boolean | Decimal128(_, _),
+                Utf8,
+            ) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Spark cast options
@@ -1121,10 +1156,158 @@ fn fills(buffer: &Buffer, used: usize) -> bool {
 mod tests {
     use super::*;
     use arrow::array::{
-        BinaryArray, Decimal128Array, ListArray, NullArray, PrimitiveArray, StringArray,
+        BinaryArray, BooleanArray, Decimal128Array, Float32Array, Float64Array, ListArray,
+        NullArray, PrimitiveArray, StringArray,
     };
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
+    use arrow::datatypes::{Field, Fields, Int32Type, TimeUnit, TimestampMicrosecondType};
+
+    /// Whether a cast from `from` to `to` cannot fail, as `cannot_fail` and as
+    /// `cannot_fail_at_any_cost` decide
+    fn cast_cannot_fail(from: &DataType, to: &DataType, eval_mode: EvalMode) -> (bool, bool) {
+        let schema = Schema::new(vec![Field::new("a", from.clone(), true)]);
+        let child = Arc::new(datafusion::physical_expr::expressions::Column::new("a", 0));
+        let cast = Cast::new(
+            child,
+            to.clone(),
+            SparkCastOptions::new(eval_mode, "UTC"),
+            None,
+            None,
+        );
+        (
+            cast.cannot_fail(&schema),
+            cast.cannot_fail_at_any_cost(&schema),
+        )
+    }
+
+    #[test]
+    fn test_cannot_fail_casts_succeed_on_extreme_values_in_every_mode() {
+        let arrays: Vec<(ArrayRef, DataType)> = vec![
+            (
+                Arc::new(Int8Array::from(vec![i8::MIN, i8::MAX])),
+                DataType::Decimal128(3, 0),
+            ),
+            (
+                Arc::new(Int16Array::from(vec![i16::MIN, i16::MAX])),
+                DataType::Decimal128(7, 2),
+            ),
+            (
+                Arc::new(Int32Array::from(vec![i32::MIN, i32::MAX])),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                Arc::new(Int64Array::from(vec![i64::MIN, i64::MAX])),
+                DataType::Decimal128(38, 19),
+            ),
+            (
+                Arc::new(Int8Array::from(vec![i8::MIN, i8::MAX])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(Int16Array::from(vec![i16::MIN, i16::MAX])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(Int32Array::from(vec![i32::MIN, i32::MAX])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(Int64Array::from(vec![i64::MIN, i64::MAX])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(Float32Array::from(vec![
+                    f32::MIN,
+                    f32::MAX,
+                    f32::NAN,
+                    f32::NEG_INFINITY,
+                    -0.0,
+                ])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(Float64Array::from(vec![
+                    f64::MIN,
+                    f64::MAX,
+                    f64::NAN,
+                    f64::INFINITY,
+                    f64::MIN_POSITIVE,
+                ])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(BooleanArray::from(vec![true, false])),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(
+                    Decimal128Array::from(vec![-(10_i128.pow(38) - 1), 10_i128.pow(38) - 1, 0])
+                        .with_precision_and_scale(38, 0)
+                        .unwrap(),
+                ),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(
+                    Decimal128Array::from(vec![-(10_i128.pow(38) - 1), 10_i128.pow(38) - 1, 0])
+                        .with_precision_and_scale(38, 38)
+                        .unwrap(),
+                ),
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(
+                    Decimal128Array::from(vec![-(10_i128.pow(38) - 1), 10_i128.pow(38) - 1, 0])
+                        .with_precision_and_scale(38, -2)
+                        .unwrap(),
+                ),
+                DataType::Utf8,
+            ),
+        ];
+        for (array, to) in arrays {
+            let from = array.data_type().clone();
+            for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                // Only `NullShortCircuit` leaves them unmasked, so `AND`, `OR` and `IN` still
+                // skip them for the rows they decide
+                let claimed = cast_cannot_fail(&from, &to, mode);
+                assert_eq!(claimed, (false, true), "{from} {to} {mode:?}");
+                let result =
+                    cast_array(Arc::clone(&array), &to, &SparkCastOptions::new(mode, "UTC"))
+                        .unwrap_or_else(|e| panic!("{from} {to} {mode:?}: {e}"));
+                assert_eq!(result.null_count(), 0, "{from} {to} {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_casts_that_can_fail_are_not_claimed() {
+        use DataType::*;
+        let cases = [
+            // One integral digit too few for the integer
+            (Int8, Decimal128(4, 2)),
+            (Int16, Decimal128(4, 0)),
+            (Int32, Decimal128(12, 3)),
+            (Int64, Decimal128(18, 0)),
+            // A negative scale
+            (Int32, Decimal128(20, -1)),
+            // Arrow's formatter fails outside the range of chrono
+            (Date32, Utf8),
+            (Timestamp(TimeUnit::Microsecond, Some("UTC".into())), Utf8),
+            (Timestamp(TimeUnit::Microsecond, None), Utf8),
+            // Depends on the output style and decodes UTF-8
+            (Binary, Utf8),
+            (Decimal256(40, 0), Utf8),
+            (List(Arc::new(Field::new("item", Int32, true))), Utf8),
+            // Only a Utf8 target is claimed
+            (Int32, LargeUtf8),
+        ];
+        for (from, to) in cases {
+            for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                let claimed = cast_cannot_fail(&from, &to, mode);
+                assert_eq!(claimed, (false, false), "{from} {to} {mode:?}");
+            }
+        }
+    }
 
     #[test]
     fn test_cast_to_dictionary_is_rejected() {
