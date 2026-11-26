@@ -45,6 +45,10 @@ INSERT INTO test_arith VALUES (10, 3, 10, 3, 10.5, 3.2, 10.5, 3.2), (0, 1, 0, 1,
 query
 SELECT a + b, a - b, a * b, a / b, a % b FROM test_arith
 
+-- Keep the inner TRY overflow check when balancing legacy integer arithmetic.
+query
+SELECT try_add(a, b) + b, try_multiply(a, a) * b FROM test_arith
+
 query
 SELECT la + lb, la - lb, la * lb, la / lb, la % lb FROM test_arith
 

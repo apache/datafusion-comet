@@ -19,6 +19,28 @@ under the License.
 
 # Operator Compatibility
 
+## Observations
+
+`CollectMetricsExec`, used by `DataFrame.observe`, preserves Spark's observation counters while
+passing the original Arrow batches between native operators. Metric expressions still execute
+in Spark over row views of each batch; the data is not copied into a row-based pipeline.
+Spark retains ownership of accumulator publication, observation listeners, resets and snapshots.
+
+This path requires native input and is enabled by `spark.comet.exec.collectMetrics.enabled`.
+Observations retain Spark execution when a consumer can stop reading mid-batch. This includes
+limits, joins, `Dataset.mapPartitions`, replacement sampling at a nonpositive rate, and external
+actions such as `foreachPartition` or `rdd.take`, which do not introduce a physical-plan node.
+The final row iterator is therefore
+treated as potentially partial, even when the eventual action reads all rows. A local sort or
+aggregate does not remove this restriction: an external consumer may never request its output,
+so Spark may leave its input unread while native stream setup fetches a batch.
+
+A materializing shuffle or broadcast exchange allows columnar observations in its producer
+subtree, unless another short-circuiting consumer intervenes. This preserves native observation
+in aggregation and shuffle pipelines while keeping counters aligned with Spark's consumption.
+Direct observations and write pipelines without such an exchange retain Spark collection;
+writer nodes alone do not enable columnar observations.
+
 ## Empty Relations
 
 On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
@@ -71,6 +93,26 @@ TopK, and ranking window order keys run natively under both default and nondefau
 ([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
 searches boundaries over a nullable nested key still runs on Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
+
+Spark's TopK (`TakeOrderedAndProject`, an `ORDER BY` with a `LIMIT`) evaluates a sort key after
+the first only for the rows whose earlier keys tie. Comet evaluates every key over the whole batch,
+so under `spark.sql.ansi.enabled=true` a later key such as `b + 1` could raise
+`ARITHMETIC_OVERFLOW` on a row that Spark never evaluates it for. Under ANSI a TopK therefore runs
+on Spark when Comet cannot show that a later sort key never fails
+([#7246](https://github.com/apache/datafusion-comet/issues/7246)). With
+`spark.sql.ansi.enabled=false`, where most invalid inputs give NULL instead of an error, a TopK
+runs on Spark only when a later key uses an expression that Spark can raise for in any mode, such
+as `element_at` on an array with an index that may be 0, `slice` with a start that may be 0 or a
+length that may be negative, `array_insert` with a position that may be 0, `sequence` with bounds
+that are not constants, `rlike` with a pattern that is not a constant, or a user-defined function.
+It also runs on Spark when a later key still evaluates in ANSI mode, such as `b + 1` in the
+ordering of a view created with ANSI on. In either mode,
+`spark.comet.operator.TakeOrderedAndProjectExec.allowIncompatible=true` runs such a TopK in
+Comet. With ANSI off, a later key that casts to or from a timestamp runs in Comet, and like any
+other expression it can raise for a year beyond what Comet's timestamp casts support
+([#7471](https://github.com/apache/datafusion-comet/issues/7471)). A sort without a `LIMIT` that
+has no exchange beneath it, such as `SORT BY`, still runs in Comet and can raise such an error
+([#7470](https://github.com/apache/datafusion-comet/issues/7470)).
 
 ## Hash Aggregation
 
@@ -167,11 +209,14 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   (`stddev`, `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `covar_samp`). These run
   natively as plain aggregations but not as window functions
   ([#4766](https://github.com/apache/datafusion-comet/issues/4766)).
-- `min` / `max` on timestamp-without-time-zone, interval, or nested (array / struct) input types, and `sum` /
-  `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type support as
-  the batch aggregates, so these fall back in both contexts.
+- `min` / `max` on timestamp-without-time-zone, interval, or array input types, and `sum` / `avg` on year-month
+  or day-time interval input types. Windowed aggregates inherit the same input-type support as the batch
+  aggregates, so these fall back in both contexts.
 - `min` / `max` on string or binary input types. These run natively as plain aggregations but not as window
   functions.
+- `min` / `max` on struct input types. A struct whose fields are all supported `min` / `max` types other than
+  `float` and `double` runs natively as a plain aggregation, but not as a window function. Other structs fall
+  back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
 - `avg` or `try_avg` on `DECIMAL(p, s)` with an expanding frame when `p >= 28`, because Spark can preserve
@@ -197,6 +242,9 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation (e.g.
+  `UTF8_LCASE`). The native window finds partitions and peers by comparing keys byte by byte, which splits values
+  that the collation ties.
 
 A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
 supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the

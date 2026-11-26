@@ -456,7 +456,7 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
 
   // Native parents can evaluate operands for the whole batch. These expressions are safe
   // on rows where Spark skips them after a NULL operand or an IN match.
-  private def canEvaluateEagerly(expr: Expression): Boolean = expr match {
+  private[comet] def canEvaluateEagerly(expr: Expression): Boolean = expr match {
     case _: Literal | _: Attribute => true
     case _: CreateArray | _: CreateNamedStruct =>
       expr.children.forall(canEvaluateEagerly)
