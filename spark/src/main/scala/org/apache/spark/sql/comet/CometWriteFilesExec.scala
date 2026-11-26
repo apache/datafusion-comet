@@ -27,6 +27,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.FileAlreadyExistsException
 import org.apache.hadoop.mapreduce.{TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.spark.{TaskContext, TaskOutputFileAlreadyExistException}
 import org.apache.spark.internal.Logging
@@ -340,6 +341,7 @@ object CometWriteFilesExec extends Logging {
       hadoopConf: Configuration): Unit = {
     val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
       .setCompression(codec)
+      .setBlockSize(ParquetOutputFormat.getLongBlockSize(hadoopConf))
       .clearColumnNames()
       .addAllColumnNames(taskWrite.dataColumnNames.asJava)
       .clearOutputSchema()

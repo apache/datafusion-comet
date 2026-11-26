@@ -1087,6 +1087,8 @@ message ParquetWriter {
   // logic reads it back to tell files written by Spark 3.0+ from older ones. Optional so native
   // callers such as tests can omit it; when absent or empty the key is not written.
   optional string spark_version = 11;
+  // `parquet.block.size`. When absent or not positive, row groups are bounded by row count only.
+  optional int64 block_size = 12;
 }
 
 enum AggregateMode {

@@ -528,9 +528,8 @@ the executor.
 
 - `ParquetWriterExec` writes one file per task and reserves parquet-rs's estimate of the file's
   in-progress row group (`ArrowWriter::memory_size`). The estimate counts encoded pages, encoder
-  buffers, dictionaries and Bloom filters. The writer keeps parquet-rs's default row-group limit of
-  1Mi rows and sets no byte limit, so a wide schema can hold a large row group
-  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)). A file that is neither local
+  buffers, dictionaries and Bloom filters. A row group is bounded by parquet-rs's default of 1Mi
+  rows and by `parquet.block.size` (128 MiB by default). A file that is neither local
   nor on HDFS, such as one the S3A magic committer hands out, is written through a Hadoop output
   stream, and the reservation then also includes the 1 MiB buffer that batches the writes to it.
   The stream's own buffers, such as S3A's upload buffers (`fs.s3a.fast.upload.buffer`), are not
