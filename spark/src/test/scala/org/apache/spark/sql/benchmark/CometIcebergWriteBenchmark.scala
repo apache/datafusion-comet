@@ -30,7 +30,9 @@ import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeScanExec, CometScanExec, CometSparkToColumnarExec, IcebergWriteExec}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.v2.AppendDataExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
@@ -86,6 +88,11 @@ import org.apache.comet.iceberg.IcebergReflection
  * is 4194304 rows). They require a nullable Parquet source without null values, reject fallback,
  * warm both writers once, then alternate them for five measured writes each. Table preparation,
  * plan checks and Spark read-back checks are outside the write-and-commit timer.
+ *
+ * Pass `narrow [rows]` to compare the same writers on an unpartitioned table with a required
+ * field inside an optional struct. This deterministic corpus defaults to 40000000 rows and
+ * approximates the workload reported in #7155. The iceberg-java arm uses Spark's V2 append
+ * writer. Each arm warms up once and measures four writes in alternating order.
  */
 object CometIcebergWriteBenchmark extends CometBenchmarkBase {
 
@@ -179,6 +186,8 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
    *   has the required ordering a sort node makes visible. Without this check a hash-distributed
    *   but unordered write would pass the exchange check while silently running the fanout writer
    *   under the clustered label, and the clustered writer would never be measured.
+   * @param targetSchema
+   *   the DDL for a required-field workload. Other workloads derive the schema from the source.
    */
   private case class Workload(
       title: String,
@@ -190,7 +199,8 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       expectedRowsAfter: Long,
       expectShuffle: Option[Boolean],
       expectSort: Option[Boolean],
-      requiredFields: Boolean = false)
+      targetSchema: Option[String] = None,
+      compression: String = "snappy")
 
   private def workloads(values: Int): Seq[Workload] = {
     val insert = s"INSERT INTO $targetTable SELECT * FROM parquetV1Table"
@@ -299,14 +309,17 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    val narrow = mainArgs.headOption.contains("narrow")
+    val requiredOnly = mainArgs.headOption.contains("required")
     require(
-      mainArgs.isEmpty || (mainArgs.head == "required" && mainArgs.length <= 2),
-      "Usage: CometIcebergWriteBenchmark [required [rows]]")
-    val requiredOnly = mainArgs.nonEmpty
-    val rowCount = mainArgs.lift(1).map(_.toInt).getOrElse(4 * 1024 * 1024)
+      mainArgs.isEmpty || ((requiredOnly || narrow) && mainArgs.length <= 2),
+      "Usage: CometIcebergWriteBenchmark [required|narrow [rows]]")
+    val rowCount = mainArgs.lift(1).map(_.toInt).getOrElse {
+      if (narrow) 40000000 else 4 * 1024 * 1024
+    }
     require(rowCount >= sourceFiles, s"rows must be at least $sourceFiles")
     if (!icebergOnClasspath) {
-      require(!requiredOnly, "The required-field benchmark needs Iceberg on the classpath")
+      require(mainArgs.isEmpty, "The required-field benchmark needs Iceberg on the classpath")
       // scalastyle:off println
       println("Iceberg is not on the classpath; skipping. Build with an Iceberg-enabled profile.")
       // scalastyle:on println
@@ -320,16 +333,26 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         withTempPath { dir =>
           withTempTable("parquetV1Table") {
             try {
-              if (!requiredOnly) {
+              if (narrow) {
+                val input = spark
+                  .range(0, values.toLong, 1, sourceFiles)
+                  .selectExpr(
+                    "CAST(id AS INT) AS id",
+                    "named_struct('value', CAST(id % 997 AS INT)) AS payload",
+                    "CAST(id AS DOUBLE) * 0.25 AS measure")
+                saveAsParquetV1Table(input.write, dir.getCanonicalPath + "/narrowParquetV1")
+              } else {
+                if (!requiredOnly) {
+                  saveAsParquetV1Table(
+                    spark.sql(corpusQuery(includeNulls = true)).repartition(sourceFiles).write,
+                    dir.getCanonicalPath + "/parquetV1")
+                  workloads(values).foreach(runWorkload(_, values))
+                }
                 saveAsParquetV1Table(
-                  spark.sql(corpusQuery(includeNulls = true)).repartition(sourceFiles).write,
-                  dir.getCanonicalPath + "/parquetV1")
-                workloads(values).foreach(runWorkload(_, values))
+                  spark.sql(corpusQuery(includeNulls = false)).repartition(sourceFiles).write,
+                  dir.getCanonicalPath + "/requiredParquetV1")
               }
-              saveAsParquetV1Table(
-                spark.sql(corpusQuery(includeNulls = false)).repartition(sourceFiles).write,
-                dir.getCanonicalPath + "/requiredParquetV1")
-              runRequiredWorkloads(values)
+              runRequiredWorkloads(values, narrow)
             } finally {
               spark.sql(s"DROP TABLE IF EXISTS $targetTable")
             }
@@ -339,12 +362,15 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     }
   }
 
-  private def runRequiredWorkloads(values: Int): Unit = {
+  private def runRequiredWorkloads(values: Int, narrow: Boolean): Unit = {
+    // The narrow case matches the end-to-end comparison in #7155. The wide cases keep the
+    // split operator in both arms to compare the task writers under the same write topology.
+    val javaSplit = !narrow
     val commonConfs = Seq(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> javaSplit.toString,
       CometConf.COMET_BATCH_SIZE.key -> "8192",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       // One file per scan partition; verify the actual count instead of inferring it from files.
@@ -361,19 +387,50 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       val source = spark.table("parquetV1Table")
       require(source.schema.fields.forall(_.nullable), "required source must be nullable")
       require(source.rdd.getNumPartitions == sourceFiles, "unexpected source partition count")
+      if (narrow) {
+        require(source.inputFiles.length == sourceFiles, "unexpected source file count")
+        require(
+          source.schema("payload").dataType.asInstanceOf[StructType]("value").nullable,
+          "the nested source field must be nullable")
+      }
       val columns = source.columns.mkString(", ")
-      val digest = s"count(*), sum(CAST(xxhash64($columns) AS DECIMAL(38,0)))"
+      val allColumnDigest = s"count(*), sum(CAST(xxhash64($columns) AS DECIMAL(38,0)))"
+      val digest = if (narrow) {
+        s"$allColumnDigest, count(CASE WHEN id IS NULL OR id < 0 OR id >= $values OR " +
+          "NOT (payload.value <=> (id % 997)) OR " +
+          "NOT (measure <=> CAST(id AS DOUBLE) * 0.25) THEN 1 END)"
+      } else allColumnDigest
       var expected = Row.empty
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val nulls = source.columns.map(c => s"$c IS NULL").mkString(" OR ")
-        require(
-          spark.sql(s"SELECT * FROM parquetV1Table WHERE $nulls LIMIT 1").isEmpty,
-          "required source must contain no null values")
+        if (!narrow) {
+          val nulls = source.columns.map(c => s"$c IS NULL").mkString(" OR ")
+          require(
+            spark.sql(s"SELECT * FROM parquetV1Table WHERE $nulls LIMIT 1").isEmpty,
+            "required source must contain no null values")
+        }
         expected = spark.sql(s"SELECT $digest FROM parquetV1Table").head()
+        require(expected.getLong(0) == values.toLong, "unexpected source row count")
+        if (narrow) {
+          require(expected.getLong(2) == 0, "source values do not match the narrow corpus")
+        }
       }
-      Seq(false, true).foreach { partitioned =>
+      val targetSchema = if (narrow) {
+        "(id INT NOT NULL, payload STRUCT<value: INT NOT NULL>, measure DOUBLE)"
+      } else {
+        source.schema.fields
+          .map(f => s"${f.name} ${f.dataType.sql} NOT NULL")
+          .mkString("(", ", ", ")")
+      }
+      val partitioning = if (narrow) Seq(false) else Seq(false, true)
+      val iterations = if (narrow) 4 else 5
+      partitioning.foreach { partitioned =>
+        val title = if (narrow) {
+          "narrow required struct, unpartitioned"
+        } else {
+          s"required fields, ${if (partitioned) "partitioned and sorted" else "unpartitioned"}"
+        }
         val workload = Workload(
-          s"required fields, ${if (partitioned) "partitioned and sorted" else "unpartitioned"}",
+          title,
           partitionSpec = if (partitioned) s"PARTITIONED BY ($partitionColumn)" else "",
           properties =
             Seq("'write.distribution-mode'='none'", "'write.spark.fanout.enabled'='false'"),
@@ -383,7 +440,8 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
           expectedRowsAfter = values.toLong,
           expectShuffle = Some(false),
           expectSort = Some(partitioned),
-          requiredFields = true)
+          targetSchema = Some(targetSchema),
+          compression = if (narrow) "zstd" else "snappy")
         val benchmark = new Benchmark(
           workload.title,
           values.toLong,
@@ -408,8 +466,13 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
             s"offHeapEnabled=${spark.conf.get("spark.memory.offHeap.enabled")}, " +
             s"offHeapSize=${spark.conf.get("spark.memory.offHeap.size")}")
         benchmark.out.println(
-          s"Settings: ${commonConfs.mkString(", ")}; " +
-            s"properties=${workload.properties.mkString(", ")}; compression=snappy")
+          s"Settings: ${commonConfs.mkString(", ")}, " +
+            s"${SQLConf.ANSI_ENABLED.key}=${spark.conf.get(SQLConf.ANSI_ENABLED.key)}, " +
+            s"properties=${workload.properties.mkString(", ")}, " +
+            s"sourceCompression=snappy, targetCompression=${workload.compression}")
+        if (narrow) {
+          benchmark.out.println(s"Target schema: $targetSchema")
+        }
         val samples = writerArms.map(arm => arm.name -> mutable.ArrayBuffer.empty[Double]).toMap
         var requiredProjection = Seq.empty[String]
         def writeAndCheck(arm: Arm, timer: Benchmark.Timer): Unit = {
@@ -421,7 +484,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
               timer.stopTiming()
             }
           }
-          val projections = verifyRequiredPlan(arm, workload, plans)
+          val projections = verifyRequiredPlan(arm, workload, plans, narrow)
           if (requiredProjection.isEmpty) requiredProjection = projections
           require(
             projections == requiredProjection,
@@ -433,13 +496,13 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
           }
           if (timer.iteration < 0) {
             benchmark.out.println(
-              s"${arm.name}, ${arm.confs.mkString(", ")}\n" +
+              s"${arm.name}, ${arm.confs.mkString(", ")}, Spark read-back rows=${expected.getLong(0)}\n" +
                 plans.mkString("\n--\n"))
           }
         }
         // Use the same full write and read-back to warm each arm, then alternate the timed arms.
         writerArms.foreach(arm => writeAndCheck(arm, new Benchmark.Timer(-1)))
-        (0 until 5).foreach { round =>
+        (0 until iterations).foreach { round =>
           val order = if (round % 2 == 0) writerArms else writerArms.reverse
           order.foreach { arm =>
             val result = benchmark.measure(values.toLong, 1)(writeAndCheck(arm, _))
@@ -448,7 +511,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
               f"elapsed_ms=${result.avgMs}%.3f, rows_per_second=${values * 1000.0 / result.avgMs}%.3f")
           }
         }
-        val javaMean = samples(writerArms.head.name).sum / 5
+        val javaMean = samples(writerArms.head.name).sum / iterations
         writerArms.foreach { arm =>
           val times = samples(arm.name)
           val mean = times.sum / times.size
@@ -463,18 +526,34 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
   private def verifyRequiredPlan(
       arm: Arm,
       workload: Workload,
-      plans: Seq[SparkPlan]): Seq[String] = {
+      plans: Seq[SparkPlan],
+      narrow: Boolean): Seq[String] = {
     val writers = collectAcross(plans) { case w: CometIcebergWriteExec => w }
     require(writers.nonEmpty == arm.expectNativeWrite, s"${arm.name}: wrong writer\n$plans")
     if (!arm.expectNativeWrite) {
+      val javaWriters = if (narrow) {
+        collectAcross(plans) { case w: AppendDataExec => w }
+      } else {
+        collectAcross(plans) { case w: IcebergWriteExec => w }
+      }
       require(
-        collectAcross(plans) { case w: IcebergWriteExec => w }.nonEmpty,
-        s"${arm.name}: split writer is missing\n$plans")
+        javaWriters.nonEmpty,
+        s"${arm.name}: expected iceberg-java writer is missing\n$plans")
     }
     val projections = collectAcross(plans) {
       case p: ProjectExec if p.projectList.exists(_.exists(_.isInstanceOf[AssertNotNull])) => p
     }
     require(projections.nonEmpty, s"${arm.name}: Spark assertions are missing\n$plans")
+    if (narrow) {
+      val assertionPaths = projections
+        .flatMap(_.projectList)
+        .flatMap(_.collect { case a: AssertNotNull =>
+          a.walkedTypePath
+        })
+      require(
+        assertionPaths.contains(Seq("id")) && assertionPaths.contains(Seq("payload", "value")),
+        s"${arm.name}: expected assertions on id and payload.value, found $assertionPaths")
+    }
     writers.foreach { writer =>
       require(
         collectAcross(Seq(writer)) {
@@ -489,7 +568,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     }
     require(
       collectAcross(plans) {
-        case p: CometScanExec => p
+        case p: CometScanExec if !narrow => p
         case p: CometNativeScanExec => p
       }.nonEmpty,
       s"${arm.name}: Comet scan is missing\n$plans")
@@ -645,23 +724,16 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
    */
   private def resetTable(workload: Workload): Unit = {
     spark.sql(s"DROP TABLE IF EXISTS $targetTable")
-    val properties = Seq("'format-version'='2'", "'write.parquet.compression-codec'='snappy'") ++
-      workload.properties
+    val properties = Seq(
+      "'format-version'='2'",
+      s"'write.parquet.compression-codec'='${workload.compression}'") ++ workload.properties
     // `WHERE false` takes the schema from the source without writing anything, which avoids
     // restating the corpus as DDL and keeps the two in step.
-    val schema = if (workload.requiredFields) {
-      spark
-        .table("parquetV1Table")
-        .schema
-        .fields
-        .map(f => s"${f.name} ${f.dataType.sql} NOT NULL")
-        .mkString("(", ", ", ")")
-    } else ""
     val source =
-      if (workload.requiredFields) "" else "AS SELECT * FROM parquetV1Table WHERE false"
+      if (workload.targetSchema.isDefined) "" else "AS SELECT * FROM parquetV1Table WHERE false"
     spark.sql(s"""
       CREATE TABLE $targetTable
-      $schema
+      ${workload.targetSchema.getOrElse("")}
       USING iceberg
       ${workload.partitionSpec}
       TBLPROPERTIES (${properties.mkString(", ")})
@@ -672,7 +744,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       // defaulting to fanout. `DISTRIBUTED BY PARTITION` keeps the hash exchange so the case still
       // shuffles; `LOCALLY ORDERED BY` adds the per-task sort the clustered writer needs to keep a
       // single file open without erroring when a partition it already closed would reappear.
-      if (workload.requiredFields) {
+      if (workload.targetSchema.isDefined) {
         spark.sql(s"ALTER TABLE $targetTable WRITE ORDERED BY $col")
         // WRITE ORDERED BY also switches distribution to range; keep only its local sort.
         spark.sql(

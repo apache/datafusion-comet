@@ -143,18 +143,18 @@ inputs that already supply Arrow batches remain eligible for fixed fields and ca
 cast error instead of iceberg-java's Parquet error.
 
 The conversion accepts the recursive types supported by `RowArrowReader` and requires proof that
-string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` follows
-native inputs through preserving Spark operators and projections, including attributes, struct
-fields and construction, `If` branches, assertions, and validated string literals. It also accepts
-`MapKeys` over proven map input and `MapFromArrays` when both arrays preserve valid strings; Spark
-uses these to rebuild maps whose struct values need field alignment. Unproven row
-sources or other string-producing expressions, including string-bearing collection transforms,
-keep the JVM writer: importing invalid UTF-8 into Arrow could change the stored bytes. The writer's
-table and schema eligibility checks still apply.
+string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` traces
+inputs from Comet operators through Spark operators and projections that preserve strings. It
+supports attributes, struct fields and construction, `If` branches, assertions, and validated
+string literals. It also accepts `MapKeys` over proven map input and `MapFromArrays` when both
+arrays preserve valid strings. Spark uses these to rebuild maps whose struct values need field
+alignment. Unproven row sources or other string-producing expressions, including string-bearing
+collection transforms, keep the JVM writer: importing invalid UTF-8 into Arrow could change the
+stored bytes. The writer's table and schema eligibility checks still apply.
 
-Other inputs must already be Comet native operators. This is why a write fed directly by a
-`LocalTableScanExec` (`INSERT ... VALUES`, a local
-DataFrame) stays on the JVM writer unless `spark.comet.exec.localTableScan.enabled` is also set.
+Other inputs must already come from Comet operators. This is why a write fed directly by a
+`LocalTableScanExec` (`INSERT ... VALUES`, a local DataFrame) stays on the JVM writer unless
+`spark.comet.exec.localTableScan.enabled` is also set.
 
 `CometIcebergWriteExec` is row-based (it emits the commit message row) over a columnar child, so
 Spark inserts a columnar-to-row transition beneath it. `EliminateRedundantTransitions` removes that
