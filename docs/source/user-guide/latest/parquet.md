@@ -212,6 +212,14 @@ page-index, and bloom-filter pruning happen regardless of this flag whenever Spa
 `spark.sql.parquet.filterPushdown` is on, except for filters that compare `FLOAT` or `DOUBLE` values,
 which do not prune while this flag is on (see [Floating-point Number Comparison](compatibility/floating-point.md)).
 
+With `spark.sql.parquet.binaryAsString=true`, filters on a top-level string column prune as usual
+when Comet reads it as Arrow `Utf8`, as it does for strings written by Spark. When Comet reads
+the column as Arrow `Binary`, as it normally does for Parquet `ENUM` and unannotated `BINARY`,
+`IS [NOT] NULL` can still prune, as can `=` and `IN` when their literals contain no `U+FFFD`.
+Ranges and `LIKE` compare decoded strings and cannot use the column's statistics to skip row
+groups. A range such as `value < 'two'` on an `ENUM` column can therefore read more row groups
+with the setting on than with it off.
+
 ### Row Group Assignment to Splits
 
 Spark and DataFusion's native Parquet scans use different rules to decide which row groups belong to a
@@ -293,10 +301,14 @@ for production, so do not turn it off to avoid an entry on this page.
   without the UTF8 annotation that is read as `string`, through the read schema or
   `spark.sql.parquet.binaryAsString=true`. Spark keeps the bytes. In a struct field, list element
   or map value, Comet replaces each ill-formed sequence with `U+FFFD`, as described in
-  [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). Top-level
-  values, and map keys at any depth, reach an Arrow string array unchecked, which keeps keys that
-  differ only in such bytes distinct: they match Spark in a release build, and a debug build
-  panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
+  [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). With
+  `spark.sql.parquet.binaryAsString=true`, Comet also replaces these sequences in top-level columns
+  it reads as Arrow `Binary`. A top-level `BINARY` column with a `JSON` annotation or an embedded
+  `ARROW:schema` that declares it `Utf8` reaches Arrow without UTF-8 validation even with the
+  setting on. Through a read schema, top-level values reach an Arrow string array unchecked, as
+  do map keys at any depth, which keeps keys that differ only in such bytes distinct: they match
+  Spark in a release build, and a debug build panics on top-level values
+  ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
 - **`TIMESTAMP_MILLIS` values that overflow when converted to microseconds.** In nested fields, and
   in every column of a scan that has data filters, Comet returns NULL where Spark fails with
