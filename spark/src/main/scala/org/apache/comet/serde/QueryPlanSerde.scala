@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -1443,6 +1444,140 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         DecimalPrecision.promote(expr).exists(e => s.raising.exists(_.semanticEquals(e)))
       }
     }
+  }
+
+  /**
+   * Whether `expr` cannot raise an error for any row, so Comet may evaluate it for rows that
+   * Spark skips. It answers from Spark's semantics, independently of the Rust function
+   * `cannot_fail` in `case_when.rs`, which judges the physical expressions it is given. It is
+   * conservative: an allowed expression whose children also cannot fail. Anything not listed is
+   * treated as able to fail.
+   */
+  def cannotFail(expr: Expression): Boolean = {
+    def numeric: Boolean = expr.dataType.isInstanceOf[NumericType]
+    def nonAnsiNumeric(evalMode: EvalMode.Value): Boolean = evalMode != EvalMode.ANSI && numeric
+    // Floating-point arithmetic never overflows into an error, even in ANSI mode
+    def floating: Boolean = expr.dataType == FloatType || expr.dataType == DoubleType
+    val nodeCannotFail = expr match {
+      case _: Attribute | _: BoundReference | _: Literal => true
+      case _: GetStructField => true
+      case _: BinaryComparison | _: And | _: Or | _: Not | _: IsNull | _: IsNotNull => true
+      case _: In | _: InSet | _: Greatest | _: Least => true
+      case _: If | _: CaseWhen | _: Coalesce | _: IsNaN | _: NaNvl => true
+      case _: KnownFloatingPointNormalized | _: NormalizeNaNAndZero => true
+      case _: Substring | _: Upper | _: Lower | _: Length | _: OctetLength | _: BitLength => true
+      case _: StringTrim | _: StringTrimLeft | _: StringTrimRight => true
+      case _: StringReplace | _: InitCap => true
+      // These fail only when the result would exceed 2GB, more than a row can hold
+      case _: ConcatWs => true
+      case c: Concat => c.children.nonEmpty && c.dataType == StringType
+      case _: Reverse => expr.dataType == StringType
+      case _: Year | _: Quarter | _: Month | _: DayOfMonth | _: DayOfWeek | _: WeekDay |
+          _: DayOfYear | _: Hour | _: Minute | _: Second =>
+        true
+      case _: Murmur3Hash | _: XxHash64 | _: Md5 | _: Sha1 | _: Sha2 | _: Crc32 => true
+      // Invalid input gives NaN or NULL, and a floating-point floor or ceil saturates to a long
+      case _: Floor | _: Ceil | _: Sqrt | _: Exp | _: Log | _: Signum => true
+      // Rounding an integer fails on overflow in ANSI mode; a decimal is never treated as safe
+      case r: Round => roundCannotFail(r.dataType, r.ansiEnabled)
+      case r: BRound => roundCannotFail(r.dataType, r.ansiEnabled)
+      case c: Cast => CometCast.cannotFail(c)
+      case _: UnaryPositive => true
+      case u: UnaryMinus => floating || (!u.failOnError && numeric)
+      case a: Abs => floating || (!a.failOnError && numeric)
+      case a: Add => floating || nonAnsiNumeric(a.evalMode)
+      case s: Subtract => floating || nonAnsiNumeric(s.evalMode)
+      case m: Multiply => floating || nonAnsiNumeric(m.evalMode)
+      case d: Divide => nonAnsiNumeric(d.evalMode)
+      case d: IntegralDivide => nonAnsiNumeric(d.evalMode)
+      case r: Remainder => nonAnsiNumeric(r.evalMode)
+      case p: Pmod => nonAnsiNumeric(p.evalMode)
+      case _ => false
+    }
+    nodeCannotFail && expr.children.forall(cannotFail)
+  }
+
+  private def roundCannotFail(dataType: DataType, ansiEnabled: Boolean): Boolean =
+    dataType match {
+      case FloatType | DoubleType => true
+      case ByteType | ShortType | IntegerType | LongType => !ansiEnabled
+      case _ => false
+    }
+
+  /**
+   * The first sort key after the first that can fail. Spark's ordering evaluates a sort key only
+   * for the rows whose earlier keys tie, but Comet evaluates every key over the whole batch, so
+   * such a key may raise on a row that Spark skips
+   * (https://github.com/apache/datafusion-comet/issues/7246). Under ANSI any key that
+   * `cannotFail` does not accept counts. Otherwise a key counts when `raisesInAnyMode` flags it,
+   * or when it holds a node still in ANSI mode that `cannotFail` does not accept, such as `b + 1`
+   * in the ordering of a view created with ANSI on.
+   */
+  def laterSortKeyThatCanFail(sortOrder: Seq[SortOrder]): Option[SortOrder] = {
+    val canFail: Expression => Boolean =
+      if (SQLConf.get.ansiEnabled) e => !cannotFail(e)
+      else e => raisesInAnyMode(e) || e.exists(n => hasAnsiEvalMode(n) && !cannotFail(n))
+    sortOrder.drop(1).find(s => canFail(s.child))
+  }
+
+  /**
+   * Whether `expr` was resolved in ANSI mode, whatever the session's setting is now. A view keeps
+   * the configs it was created with, so its expressions keep their ANSI eval mode when it is
+   * queried with ANSI off. Like `raisesInAnyMode`, it is best-effort: it covers arithmetic, casts
+   * and the expressions listed here (https://github.com/apache/datafusion-comet/issues/7585).
+   */
+  private def hasAnsiEvalMode(expr: Expression): Boolean = expr match {
+    case u: UnaryMinus => u.failOnError
+    case a: Abs => a.failOnError
+    case r: Round => r.ansiEnabled
+    case r: BRound => r.ansiEnabled
+    case e: ElementAt => e.failOnError
+    case g: GetArrayItem => g.failOnError
+    case e: Elt => e.failOnError
+    // Spark 4.1 keeps the arithmetic eval mode inside a `NumericEvalContext`, so read it by name
+    case a: Add => a.evalMode == EvalMode.ANSI
+    case s: Subtract => s.evalMode == EvalMode.ANSI
+    case m: Multiply => m.evalMode == EvalMode.ANSI
+    case d: Divide => d.evalMode == EvalMode.ANSI
+    case d: IntegralDivide => d.evalMode == EvalMode.ANSI
+    case r: Remainder => r.evalMode == EvalMode.ANSI
+    case p: Pmod => p.evalMode == EvalMode.ANSI
+    case c: Cast => c.evalMode == EvalMode.ANSI
+    case _ => expr.productIterator.contains(EvalMode.ANSI)
+  }
+
+  /**
+   * With ANSI off, whether `expr` can still raise on a row that Spark's ordering skips, because
+   * Spark raises for it in every mode. Comet 1.2 ran every TopK in Comet, so this only adds
+   * safety over that release even though the list is best-effort
+   * (https://github.com/apache/datafusion-comet/issues/7585). A Rust kernel that raises where
+   * Spark does not, such as a timestamp cast of a year beyond chrono's range, raises in a
+   * projection too and is left to its own issue
+   * (https://github.com/apache/datafusion-comet/issues/7471).
+   */
+  private def raisesInAnyMode(expr: Expression): Boolean = {
+    def constantWhere(e: Expression)(ok: Int => Boolean): Boolean =
+      e.foldable && (e.eval() match {
+        case null => true
+        case v: Int => ok(v)
+        case _ => false
+      })
+    expr.find {
+      // assert_true is replaced by If(_, null, RaiseError) before planning
+      case _: RaiseError | _: UserDefinedExpression => true
+      // element_at(array, 0) raises INVALID_INDEX_OF_ZERO in every mode
+      case e: ElementAt =>
+        e.left.dataType.isInstanceOf[ArrayType] && !(e.right.foldable && e.right.eval() != 0)
+      // an invalid pattern raises in every mode
+      case r: RLike => !r.right.foldable
+      // slice raises for a start of 0 or a negative length in every mode
+      case s: Slice => !(constantWhere(s.start)(_ != 0) && constantWhere(s.length)(_ >= 0))
+      // array_insert raises INVALID_INDEX_OF_ZERO in every mode
+      case a: ArrayInsert => !constantWhere(a.posExpr)(_ != 0)
+      // sequence raises for bounds that do not match the step in every mode
+      case s: Sequence => !s.children.forall(_.foldable)
+      case _ => false
+    }.isDefined
   }
 
   /**

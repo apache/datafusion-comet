@@ -94,6 +94,26 @@ TopK, and ranking window order keys run natively under both default and nondefau
 searches boundaries over a nullable nested key still runs on Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
+Spark's TopK (`TakeOrderedAndProject`, an `ORDER BY` with a `LIMIT`) evaluates a sort key after
+the first only for the rows whose earlier keys tie. Comet evaluates every key over the whole batch,
+so under `spark.sql.ansi.enabled=true` a later key such as `b + 1` could raise
+`ARITHMETIC_OVERFLOW` on a row that Spark never evaluates it for. Under ANSI a TopK therefore runs
+on Spark when Comet cannot show that a later sort key never fails
+([#7246](https://github.com/apache/datafusion-comet/issues/7246)). With
+`spark.sql.ansi.enabled=false`, where most invalid inputs give NULL instead of an error, a TopK
+runs on Spark only when a later key uses an expression that Spark can raise for in any mode, such
+as `element_at` on an array with an index that may be 0, `slice` with a start that may be 0 or a
+length that may be negative, `array_insert` with a position that may be 0, `sequence` with bounds
+that are not constants, `rlike` with a pattern that is not a constant, or a user-defined function.
+It also runs on Spark when a later key still evaluates in ANSI mode, such as `b + 1` in the
+ordering of a view created with ANSI on. In either mode,
+`spark.comet.operator.TakeOrderedAndProjectExec.allowIncompatible=true` runs such a TopK in
+Comet. With ANSI off, a later key that casts to or from a timestamp runs in Comet, and like any
+other expression it can raise for a year beyond what Comet's timestamp casts support
+([#7471](https://github.com/apache/datafusion-comet/issues/7471)). A sort without a `LIMIT` that
+has no exchange beneath it, such as `SORT BY`, still runs in Comet and can raise such an error
+([#7470](https://github.com/apache/datafusion-comet/issues/7470)).
+
 ## Hash Aggregation
 
 Ungrouped `AVG` and `TRY_AVG` on `DECIMAL(p, s)` fall back to Spark when the intermediate sum

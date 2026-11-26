@@ -20,11 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import scala.concurrent.duration._
-import scala.jdk.CollectionConverters._
 
-import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetFileReader
-import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometLocalTopKExec, CometNativeScanExec, CometTakeOrderedAndProjectExec}
@@ -67,18 +63,6 @@ object CometTopKBenchmark extends CometBenchmarkBase {
     Mode("fused", fusion = true, filtering = false),
     Mode("pruning", fusion = true, filtering = true)).map(mode => mode.name -> mode).toMap
 
-  private val nativeConfigs = Seq(
-    CometConf.COMET_ENABLED.key -> "true",
-    CometConf.COMET_EXEC_ENABLED.key -> "true",
-    CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-    CometConf.COMET_BATCH_SIZE.key -> "4096",
-    CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "false",
-    CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
-    "spark.comet.datafusion.execution.parquet.enable_page_index" -> "false",
-    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-    SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
-    SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "4194304")
-
   private def keyExpression(layout: String, rows: Int): String = {
     val unsigned = layout match {
       case "ascending" => "id"
@@ -108,20 +92,7 @@ object CometTopKBenchmark extends CometBenchmarkBase {
         .option("parquet.block.size", blockBytes.toString)
         .parquet(directory)
     }
-    val path = new Path(directory)
-    val files = path
-      .getFileSystem(spark.sessionState.newHadoopConf())
-      .listStatus(path)
-      .filter(_.getPath.getName.endsWith(".parquet"))
-    require(files.length == partitions, s"Expected $partitions files, found ${files.length}")
-    val rowGroups = files.toSeq.map { file =>
-      val reader = ParquetFileReader.open(
-        HadoopInputFile.fromPath(file.getPath, spark.sessionState.newHadoopConf()))
-      try reader.getFooter.getBlocks.asScala.size
-      finally reader.close()
-    }
-    require(rowGroups.forall(_ > 1), s"Expected multiple row groups per file: $rowGroups")
-    (files.map(_.getLen).max, rowGroups)
+    inspectParquetFixture(directory, partitions)
   }
 
   private def verifyPlanAndResult(
@@ -167,16 +138,7 @@ object CometTopKBenchmark extends CometBenchmarkBase {
     require(scanMetrics("row_groups_pruned_statistics").value == 0L)
     require(scanMetrics("page_index_rows_pruned").value == 0L)
     require(scanMetrics("pushdown_rows_pruned").value == 0L)
-    val readerWork = Seq(
-      "output_rows",
-      "bytes_scanned",
-      "scan_io_data_bytes",
-      "scan_io_metadata_bytes",
-      "row_groups_pruned_dynamic_filter",
-      "row_groups_pruned_statistics",
-      "page_index_rows_pruned",
-      "pushdown_rows_pruned")
-      .map(name => s"$name=${scanMetrics(name).value}")
+    val readerWork = formatParquetReaderMetrics(scanMetrics)
     val attachment = local.flatMap { topK =>
       val attached = topK.metrics("dynamic_filter_topk_filters_attached").value
       val skipped = topK.metrics("dynamic_filter_topk_filters_skipped").value
@@ -218,7 +180,7 @@ object CometTopKBenchmark extends CometBenchmarkBase {
           val (maxFileBytes, rowGroups) = writeInput(directory, rows, p, columns, layout)
           // Keep each file in its own scan partition without inserting a repartition operator,
           // which would interrupt fusion. Verify the actual partition count for every case.
-          val scanConfigs = nativeConfigs :+
+          val scanConfigs = rowGroupPruningScanConfigs :+
             (SQLConf.FILES_MAX_PARTITION_BYTES.key -> (maxFileBytes + 4194304L).toString)
           spark.read.parquet(directory).createOrReplaceTempView("topk_input")
           for (k <- ks) {
