@@ -125,6 +125,18 @@ results, but are not pushed into iceberg-rust, which binds accessors only for pr
 These residuals provide no native row-group pruning, nor do conjunctions containing them;
 safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
 
+A data file can store a narrower type than its column: `INT` values in a `BIGINT` column or `FLOAT`
+values in a `DOUBLE` column written before a type promotion, or `TINYINT`, `SMALLINT`, or `FLOAT`
+values in a file added by `add_files`, `migrate`, `snapshot`, or the Java API. When a filter compares an `INT`, `BIGINT`, or `DOUBLE` column
+with a range, `IN`, or `!=` predicate, the native scan reads each data file's Parquet footer first.
+For a file that stores such a column with a narrower type, it does not push the filter into
+iceberg-rust, and the filter above the scan applies it
+([#7138](https://github.com/apache/datafusion-comet/issues/7138)). Other files keep their row-group
+and page pruning. iceberg-rust reuses the footer bytes the check read, so the check costs one extra
+footer decode for each data file that such a filter scans. To turn it off, for a table whose data
+files all store each column with the table's type, set
+`spark.comet.scan.icebergNative.narrowTypeCheck.enabled` to `false`.
+
 **Partitioning:**
 
 - Standard partitioning with partition pruning

@@ -42,11 +42,12 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, LocalTableScanExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, ByteType, FloatType, IntegerType, ShortType, StringType, StructField, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.IcebergScanPlanData.{fileScanTaskCount, partitionPools, partitionScans, storedPools}
@@ -357,6 +358,220 @@ class CometIcebergNativeSuite
 
         spark.sql("DROP TABLE filter_cat.db.null_test")
       }
+    }
+  }
+
+  // #7138: predicates that drop rows from a file storing a narrower type, unless the scan stops
+  // pushing that file's residual.
+  private val narrowFilePredicates = Seq(
+    "id > 0",
+    "id < 3",
+    "id >= 2 AND id <= 3",
+    "id IN (1, 2)",
+    "id IN (1, 3000000000)",
+    "id < 3000000000",
+    "id != 3000000000",
+    "NOT (id = 2)",
+    "d > 0.1",
+    "d < 2.0",
+    "d IN (1.5, 4.0)",
+    "d != 1.5",
+    "id > 0 OR d < 2.0",
+    "id > 0 AND d >= 0")
+
+  // Equality is safe on a narrower file, so it stays pushed.
+  private val equalityPredicates = Seq("id = 2", "d = 1.5")
+
+  /** Runs `query` against Spark and returns its native scan's `narrow_type_splits`. */
+  private def narrowTypeSplits(query: String): Long = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    assertSingleNativeScan(cometPlan)
+    collectIcebergNativeScans(cometPlan).head.metrics("narrow_type_splits").value
+  }
+
+  private def checkNarrowFileScans(table: String, predicates: Seq[String], splits: Long): Unit =
+    predicates.foreach { p =>
+      assert(narrowTypeSplits(s"SELECT * FROM $table WHERE $p") == splits, p)
+    }
+
+  private def withNarrowFileCatalog(f: File => Unit): Unit =
+    withHadoopCatalog("narrow_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(withTempIcebergDir(f))
+    }
+
+  /**
+   * Writes `rows` as one Parquet file and appends it to `table` through the Java API, which does
+   * not check the file's types against the table schema. Returns the file's Parquet schema.
+   */
+  private def appendParquetFile(
+      table: String,
+      dir: File,
+      schema: StructType,
+      rows: Seq[Row]): org.apache.parquet.schema.MessageType = {
+    val out = new File(dir, s"import_${UUID.randomUUID()}").getAbsolutePath
+    spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema).write.parquet(out)
+    val file = new File(out).listFiles().filter(_.getName.endsWith(".parquet")).head
+    val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+    icebergTable
+      .newAppend()
+      .appendFile(
+        org.apache.iceberg.DataFiles
+          .builder(icebergTable.spec())
+          .withPath(file.getAbsolutePath)
+          .withFileSizeInBytes(file.length())
+          .withRecordCount(rows.size.toLong)
+          .withFormat(org.apache.iceberg.FileFormat.PARQUET)
+          .build())
+      .commit()
+    withParquetReader(file.getAbsolutePath)(_.getFooter.getFileMetaData.getSchema)
+  }
+
+  private def parquetFieldId(id: Int): org.apache.spark.sql.types.Metadata =
+    new org.apache.spark.sql.types.MetadataBuilder()
+      .putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong)
+      .build()
+
+  test("residuals keep rows from files written before a type promotion (#7138)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withNarrowFileCatalog { _ =>
+      val table = "narrow_cat.db.promoted"
+      spark.sql(s"CREATE TABLE $table (id INT, d FLOAT) USING iceberg")
+      // One file, so each predicate below affects exactly one split.
+      spark.sql(s"""
+        INSERT INTO $table SELECT /*+ COALESCE(1) */ * FROM VALUES
+        (1, 0.1), (2, 1.5), (3, 2.5), (NULL, NULL) AS v(id, d)
+      """)
+      // Before the promotion, the file stores the table's types.
+      checkNarrowFileScans(table, Seq("id > 1 AND d < 2.0"), splits = 0)
+
+      spark.sql(s"ALTER TABLE $table ALTER COLUMN id TYPE BIGINT")
+      spark.sql(s"ALTER TABLE $table ALTER COLUMN d TYPE DOUBLE")
+      spark.sql(s"INSERT INTO $table VALUES (4, 4.0), (5, 5.0)")
+      checkNarrowFileScans(table, narrowFilePredicates, splits = 1)
+      checkNarrowFileScans(table, equalityPredicates, splits = 0)
+
+      // With the check off, the scan pushes the residual to every file.
+      withSQLConf(CometConf.COMET_ICEBERG_NARROW_TYPE_CHECK_ENABLED.key -> "false") {
+        val df = spark.sql(s"SELECT * FROM $table WHERE id > 0")
+        df.collect()
+        val scan = collectIcebergNativeScans(df.queryExecution.executedPlan).head
+        assert(scan.metrics("narrow_type_splits").value == 0)
+      }
+    }
+  }
+
+  // iceberg-rust's page index skips every page of a narrower file, as it skips the only page of
+  // each file in the test above.
+  test("residuals keep rows from every page of a file written before a type promotion (#7138)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withNarrowFileCatalog { _ =>
+      val table = "narrow_cat.db.promoted_pages"
+      spark.sql(s"""
+        CREATE TABLE $table (id INT, d FLOAT) USING iceberg
+        TBLPROPERTIES ('write.parquet.page-row-limit' = '100')
+      """)
+      spark
+        .range(600)
+        .selectExpr("CAST(id AS INT) AS id", "CAST(id AS FLOAT) AS d")
+        .coalesce(1)
+        .writeTo(table)
+        .append()
+      val files = spark.sql(s"SELECT file_path FROM $table.files").collect().map(_.getString(0))
+      assert(files.length == 1, files.mkString(", "))
+      val pages = withParquetReader(files.head) { reader =>
+        reader.readOffsetIndex(reader.getRowGroups.get(0).getColumns.get(0)).getPageCount
+      }
+      assert(pages > 1, s"id is stored in $pages page")
+
+      spark.sql(s"ALTER TABLE $table ALTER COLUMN id TYPE BIGINT")
+      spark.sql(s"ALTER TABLE $table ALTER COLUMN d TYPE DOUBLE")
+      // Every literal fits the file's types, so only the page index could drop these rows.
+      checkNarrowFileScans(
+        table,
+        Seq("id > 100", "id IN (50, 250, 450)", "d >= 100.0 AND d <= 300.0"),
+        splits = 1)
+    }
+  }
+
+  // Nothing in the table metadata (one schema, no name mapping) shows that the appended file is
+  // narrower, as for a table promoted before Iceberg 0.12.
+  test("residuals keep rows from an appended file whose field ids carry narrower types (#7138)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withNarrowFileCatalog { dir =>
+      val table = "narrow_cat.db.appended"
+      spark.sql(s"CREATE TABLE $table (id BIGINT, t INT, s INT, d DOUBLE) USING iceberg")
+      spark.sql(s"INSERT INTO $table VALUES (4, 4, 4, 4.0), (5, 5, 5, 5.0)")
+      val fileSchema = appendParquetFile(
+        table,
+        dir,
+        StructType(
+          Seq(
+            StructField("id", IntegerType, nullable = true, parquetFieldId(1)),
+            StructField("t", ByteType, nullable = true, parquetFieldId(2)),
+            StructField("s", ShortType, nullable = true, parquetFieldId(3)),
+            StructField("d", FloatType, nullable = true, parquetFieldId(4)))),
+        Seq(
+          Row(1, 1.toByte, 1.toShort, 0.1f),
+          Row(2, 2.toByte, 2.toShort, 1.5f),
+          Row(3, 100.toByte, 30000.toShort, 2.5f),
+          Row(null, null, null, null)))
+      assert(fileSchema.getFields.asScala.map(_.getId.intValue()) == Seq(1, 2, 3, 4), fileSchema)
+      val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+      assert(icebergTable.properties().get("schema.name-mapping.default") == null)
+      assert(icebergTable.schemas().size() == 1)
+
+      val narrowIntPredicates = Seq(
+        "t < 200",
+        "t IN (1, 200)",
+        "t >= -200",
+        "t != 200",
+        "s < 40000",
+        "s IN (2, 40000)",
+        "t = 2 AND s > 1")
+      checkNarrowFileScans(table, narrowFilePredicates ++ narrowIntPredicates, splits = 1)
+      checkNarrowFileScans(table, equalityPredicates ++ Seq("t = 200"), splits = 0)
+    }
+  }
+
+  // The shape add_files, migrate and snapshot leave: no field ids, read through the name mapping.
+  // The file's column order differs from the table's, so matching by position would be wrong.
+  test("residuals keep rows from an imported file read through a name mapping (#7138)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withNarrowFileCatalog { dir =>
+      val table = "narrow_cat.db.imported"
+      spark.sql(s"CREATE TABLE $table (id BIGINT, t INT, d DOUBLE) USING iceberg")
+      spark.sql(s"INSERT INTO $table VALUES (4, 4, 4.0), (5, 5, 5.0)")
+      val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+      icebergTable
+        .updateProperties()
+        .set(
+          "schema.name-mapping.default",
+          org.apache.iceberg.mapping.NameMappingParser
+            .toJson(org.apache.iceberg.mapping.MappingUtil.create(icebergTable.schema())))
+        .commit()
+      val fileSchema = appendParquetFile(
+        table,
+        dir,
+        StructType(
+          Seq(
+            StructField("d", FloatType),
+            StructField("t", ByteType),
+            StructField("id", IntegerType))),
+        Seq(
+          Row(0.1f, 1.toByte, 1),
+          Row(1.5f, 2.toByte, 2),
+          Row(2.5f, 100.toByte, 3),
+          Row(null, null, null)))
+      assert(fileSchema.getFields.asScala.forall(_.getId == null), fileSchema)
+
+      checkNarrowFileScans(
+        table,
+        narrowFilePredicates ++ Seq("t < 200", "t IN (1, 200)"),
+        splits = 1)
+      checkNarrowFileScans(table, equalityPredicates ++ Seq("t = 2"), splits = 0)
     }
   }
 

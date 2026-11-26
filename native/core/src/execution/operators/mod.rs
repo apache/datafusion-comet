@@ -33,6 +33,7 @@ pub(crate) use dynamic_filter::{
 pub(crate) mod iceberg_common;
 pub use iceberg_common::clear_file_io_cache;
 mod iceberg_dictionary;
+mod iceberg_narrow_types;
 /// Reached by `benches/iceberg_dictionary_chooser.rs` only.
 #[doc(hidden)]
 pub use iceberg_dictionary::DictionaryChooser;
