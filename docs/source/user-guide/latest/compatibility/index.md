@@ -106,8 +106,10 @@ a result:
 - **Parquet BINARY columns read as strings.** A BINARY column without the UTF8 annotation can hold
   bytes that are not valid UTF-8 when it is read as `string`, through the read schema or
   `spark.sql.parquet.binaryAsString=true`. Comet decodes such a value in a struct field, list element
-  or map value, and a top-level value when `spark.sql.parquet.binaryAsString=true`. A top-level
-  value read through the read schema, and a map key, are not checked; see
+  or map value. With the setting on, Comet also decodes top-level columns it reads as Arrow
+  `Binary`. If a `JSON` annotation or an embedded `ARROW:schema` identifies a top-level column as
+  `Utf8`, Comet reads it without UTF-8 validation even with the setting on. Top-level values read
+  through the read schema and map keys can also reach Arrow unchecked. See
   [Parquet](../parquet.md#reads-that-differ-from-spark).
 - **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
   encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes

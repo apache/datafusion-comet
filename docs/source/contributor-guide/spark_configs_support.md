@@ -186,9 +186,12 @@ with the configuration off. The default `false` value continues to return unanno
 original keeps. Other filters on these columns compare the decoded value, because decoding can
 reorder values: `"a\x80"` sorts below `"aé"` as bytes, but `"a\uFFFD"` sorts above it. That covers
 ranges, `LIKE`, function calls and literals containing `U+FFFD`. They filter rows when
-`spark.comet.parquet.rowFilterPushdown.enabled` is on, but can't prune an unannotated column.
+`spark.comet.parquet.rowFilterPushdown.enabled` is on, but cannot use the column's statistics for
+pruning when arrow-rs reads it as `Binary`. For example, arrow-rs maps Parquet `ENUM` to `Binary`,
+so a range such as `value < 'two'` can skip fewer row groups with the configuration on than with
+it off.
 
-For a file that annotates the column as a string, the expression adapter replaces the decoded
+Where arrow-rs reads the column as `Utf8`, the expression adapter replaces the decoded
 value with the column and compares the column with a string literal directly, so every filter
 prunes as it does with the configuration off. Spark's `Filter` above the scan re-evaluates every
 data filter, so results don't depend on what is pushed. Join and TopK dynamic filters accept only
@@ -216,8 +219,8 @@ compares an annotated column directly for `NOT IN` as for `IN`, and leaves a fil
 invalid UTF-8 literal unchanged.
 
 **Known divergences.** Decoding is not byte-preserving, so the differences described in
-[Strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) apply to any
-malformed value this configuration surfaces: byte-level round trips, `octet_length`,
-hashing, and value identity, where two distinct malformed sequences both become `U+FFFD`.
+[Strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) apply to malformed
+values the scan decodes. They affect byte-level round trips, `octet_length`, hashing, and value
+identity, where two distinct malformed sequences both become `U+FFFD`.
 This is the same trade-off taken by `CAST(binary AS string)` (#4763) and by the FFI import
 boundary (#5310).
