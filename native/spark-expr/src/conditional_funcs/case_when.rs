@@ -443,42 +443,65 @@ impl PhysicalExpr for CaseWhenExpr {
 /// every branch over the whole batch, which pays off only when that costs little more than
 /// selecting rows.
 pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
-    infallible(expr, input_schema, false)
+    infallible(expr, input_schema, Reach::Cheap)
+}
+
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for: what
+/// [`is_infallible`] accepts, and casts that [`Cast::cannot_fail`] accepts beyond it, such as a
+/// LEGACY or TRY cast from a string to an integer, which returns NULL for a string it cannot parse.
+/// `LazyLogical` and `lazy_in_list` use this. An operand they mask is evaluated for only the rows
+/// still undecided, which saves the cost of a costlier expression on the others, so they mask one
+/// that [`cannot_fail_at_any_cost`] accepts beyond this, such as `substring`.
+pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, Reach::Parsing)
 }
 
 /// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at any cost: what
-/// [`is_infallible`] accepts, and beyond it:
-/// - casts that [`Cast::cannot_fail`] accepts, such as a LEGACY or TRY cast from a string to an
-///   integer, which returns NULL for a string it cannot parse, or a cast from a number to a string
+/// [`cannot_fail`] accepts, and beyond it:
+/// - casts that [`Cast::cannot_fail_at_any_cost`] accepts beyond [`Cast::cannot_fail`], such as a
+///   cast from a number to a string
 /// - a `CheckOverflow` that returns NULL on overflow rather than failing, as in LEGACY and TRY
 /// - decimal `+`, `-` and `*` narrow enough for the planner to build a `BinaryExpr` for them, whose
 ///   exact result always fits in an `i128`
 /// - the string functions in [`STRING_FUNCTIONS_THAT_CANNOT_FAIL`], and the widening integer casts
 ///   the planner adds to their arguments
 ///
-/// `NullShortCircuit` and `LazyLogical` use this, since they mask an operand only to keep it from
-/// failing on rows that Spark skips.
-pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
-    infallible(expr, input_schema, true)
+/// `NullShortCircuit` uses this. It skips only the rows where an earlier argument is NULL, and
+/// masking an argument that cannot fail would add the cost of selecting rows to what evaluating it
+/// for every row costs, which is how Comet evaluates it without `NullShortCircuit`.
+pub(super) fn cannot_fail_at_any_cost(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, Reach::AnyCost)
 }
 
-fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool) -> bool {
+/// Which expressions [`infallible`] accepts beyond those that cannot fail and cost little.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// What [`is_infallible`] accepts
+    Cheap,
+    /// What [`cannot_fail`] accepts
+    Parsing,
+    /// What [`cannot_fail_at_any_cost`] accepts
+    AnyCost,
+}
+
+fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, reach: Reach) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() || expr.is::<LambdaVariable>() {
         return true;
     }
+    let any_cost = reach == Reach::AnyCost;
     let node_is_infallible = if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        binary_is_infallible(binary, input_schema, parsing)
+        binary_is_infallible(binary, input_schema, any_cost)
     } else if let Some(comparison) = expr.downcast_ref::<SparkComparison>() {
         comparison.is_infallible(input_schema)
     } else if let Some(cast) = expr.downcast_ref::<Cast>() {
-        if parsing {
-            cast.cannot_fail(input_schema)
-        } else {
-            cast.is_infallible(input_schema)
+        match reach {
+            Reach::Cheap => cast.is_infallible(input_schema),
+            Reach::Parsing => cast.cannot_fail(input_schema),
+            Reach::AnyCost => cast.cannot_fail_at_any_cost(input_schema),
         }
     } else if let Some(check) = expr.downcast_ref::<CheckOverflow>() {
         // Without `fail_on_error` a decimal that overflows the precision becomes NULL
-        parsing
+        any_cost
             && !check.fail_on_error
             && matches!(check.data_type, DataType::Decimal128(_, _))
             && matches!(
@@ -488,10 +511,10 @@ fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool
     } else if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         // Named as the planner names the functions it builds from Spark's, in
         // `create_scalar_function_expr`
-        parsing && STRING_FUNCTIONS_THAT_CANNOT_FAIL.contains(&function.name())
+        any_cost && STRING_FUNCTIONS_THAT_CANNOT_FAIL.contains(&function.name())
     } else if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         // The planner casts a function's integer argument to the wider type the function takes
-        parsing
+        any_cost
             && cast
                 .expr()
                 .data_type(input_schema)
@@ -511,13 +534,13 @@ fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool
             // A field of a struct cannot fail
             || expr.is::<GetStructField>()
             // Only adds the query context to its child's errors
-            || (parsing && expr.is::<CheckedBinaryExpr>())
+            || (any_cost && expr.is::<CheckedBinaryExpr>())
     };
     node_is_infallible
         && expr
             .children()
             .into_iter()
-            .all(|child| infallible(child, input_schema, parsing))
+            .all(|child| infallible(child, input_schema, reach))
 }
 
 /// Functions whose kernels return a value for every input, so they cannot fail on rows that Spark
@@ -531,7 +554,7 @@ fn is_widening_integer_cast(from: &DataType, to: &DataType) -> bool {
         && from.primitive_width() <= to.primitive_width()
 }
 
-fn binary_is_infallible(binary: &BinaryExpr, input_schema: &Schema, parsing: bool) -> bool {
+fn binary_is_infallible(binary: &BinaryExpr, input_schema: &Schema, any_cost: bool) -> bool {
     let (Ok(left), Ok(right)) = (
         binary.left().data_type(input_schema),
         binary.right().data_type(input_schema),
@@ -558,7 +581,7 @@ fn binary_is_infallible(binary: &BinaryExpr, input_schema: &Schema, parsing: boo
                 } else {
                     decimal128_add_sub_width(*p1, *s1, *p2, *s2)
                 };
-                parsing && width < DECIMAL128_MAX_PRECISION as i16
+                any_cost && width < DECIMAL128_MAX_PRECISION as i16
             }
             _ => {
                 left == right
@@ -1480,6 +1503,10 @@ mod tests {
                     let parse = cast_in(mode, c(column), to.clone());
                     assert!(!infallible(Arc::clone(&parse)), "{mode:?} {column} {to}");
                     assert!(cannot_fail(&parse, &schema), "{mode:?} {column} {to}");
+                    assert!(
+                        cannot_fail_at_any_cost(&parse, &schema),
+                        "{mode:?} {column} {to}"
+                    );
                 }
             }
             // Other string casts are not claimed
@@ -1490,6 +1517,13 @@ mod tests {
         }
         assert!(!cannot_fail(&cast(c("s"), DataType::Int32), &schema));
 
+        // Beyond `cannot_fail`, so that `AND`, `OR` and `IN` still skip it for the rows they decide,
+        // while `NullShortCircuit` does not mask it
+        let any_cost = |e: &Arc<dyn PhysicalExpr>, schema: &Schema| {
+            assert!(!cannot_fail(e, schema), "{e}");
+            cannot_fail_at_any_cost(e, schema)
+        };
+
         // LEGACY and TRY decimal arithmetic: below 38 digits the exact result fits in an i128, and
         // CheckOverflow returns NULL for a result too wide for its type rather than failing
         let decimal = |op: Operator, column: &str| binary(c(column), op, c(column));
@@ -1499,31 +1533,22 @@ mod tests {
         };
         for op in [Operator::Plus, Operator::Minus, Operator::Multiply] {
             let narrow = check(decimal(op, "dec"), false);
-            assert!(cannot_fail(&narrow, &schema), "{op}");
+            assert!(any_cost(&narrow, &schema), "{op}");
             // CASE does not evaluate it for rows it would skip
             assert!(!infallible(Arc::clone(&narrow)), "{op}");
             // Under ANSI CheckOverflow fails on overflow
-            assert!(
-                !cannot_fail(&check(decimal(op, "dec"), true), &schema),
-                "{op}"
-            );
+            assert!(!any_cost(&check(decimal(op, "dec"), true), &schema), "{op}");
             // Wider operands go through WideDecimalBinaryExpr instead
-            assert!(!cannot_fail(&decimal(op, "dec38_18"), &schema), "{op}");
+            assert!(!any_cost(&decimal(op, "dec38_18"), &schema), "{op}");
         }
         // The width the planner checks for + and - counts the digits on both sides of the point
-        assert!(cannot_fail(&decimal(Operator::Plus, "dec36_18"), &schema));
-        assert!(cannot_fail(
-            &decimal(Operator::Multiply, "dec18_2"),
-            &schema
-        ));
-        assert!(!cannot_fail(
-            &decimal(Operator::Multiply, "dec19_2"),
-            &schema
-        ));
+        assert!(any_cost(&decimal(Operator::Plus, "dec36_18"), &schema));
+        assert!(any_cost(&decimal(Operator::Multiply, "dec18_2"), &schema));
+        assert!(!any_cost(&decimal(Operator::Multiply, "dec19_2"), &schema));
         // Only adds the query context to errors
         let with_context: Arc<dyn PhysicalExpr> =
             Arc::new(CheckedBinaryExpr::new(decimal(Operator::Plus, "dec"), None));
-        assert!(cannot_fail(&with_context, &schema));
+        assert!(any_cost(&with_context, &schema));
 
         // String functions whose kernels return a value for every input, as the planner names them
         let function = |name: &str,
@@ -1547,7 +1572,7 @@ mod tests {
         };
         for name in ["upper", "lower", "trim", "ltrim", "rtrim"] {
             let call = function(name, Arc::clone(&upper), vec![c("s")]);
-            assert!(cannot_fail(&call, &schema), "{name}");
+            assert!(any_cost(&call, &schema), "{name}");
             assert!(!infallible(call), "{name}");
         }
         let substring_of = |position: Arc<dyn PhysicalExpr>| {
@@ -1557,21 +1582,21 @@ mod tests {
                 vec![c("s"), position, lit(3i64)],
             )
         };
-        assert!(cannot_fail(
+        assert!(any_cost(
             &substring_of(int_cast(c("j"), DataType::Int64)),
             &schema
         ));
         // A narrowing cast can fail, and so can a function that is not listed or an argument that
         // can fail
-        assert!(!cannot_fail(
+        assert!(!any_cost(
             &substring_of(int_cast(c("i"), DataType::Int32)),
             &schema
         ));
-        assert!(!cannot_fail(
+        assert!(!any_cost(
             &function("initcap", Arc::clone(&upper), vec![c("s")]),
             &schema
         ));
-        assert!(!cannot_fail(
+        assert!(!any_cost(
             &substring_of(binary(c("i"), Operator::Divide, c("i"))),
             &schema
         ));

@@ -397,6 +397,65 @@ mod tests {
         Ok(())
     }
 
+    /// `substring(s, 2, 4)`, as the planner builds it
+    fn substring_of_s(schema: &Schema) -> Arc<dyn PhysicalExpr> {
+        let udf = datafusion::logical_expr::ScalarUDF::new_from_impl(
+            datafusion_spark::function::string::substring::SparkSubstring::default(),
+        );
+        Arc::new(ScalarFunctionExpr::new(
+            "substring",
+            Arc::new(udf),
+            vec![col("s", schema).unwrap(), lit(2i64), lit(4i64)],
+            Arc::new(Field::new("substring", DataType::Utf8, true)),
+            Arc::new(datafusion::config::ConfigOptions::default()),
+        ))
+    }
+
+    #[test]
+    fn costlier_right_operand_that_cannot_fail_is_evaluated_lazily() -> Result<()> {
+        // Skipping the rows that the left operand decides saves evaluating such an operand for
+        // them, which `NullShortCircuit` has no reason to mask
+        let batch = batch(vec![Some(0), Some(1), Some(2)], vec!["x2345", "x2345", "x"]);
+        let schema = batch.schema();
+        let v = || col("v", &schema).unwrap();
+        let right_operands: Vec<Arc<dyn PhysicalExpr>> = vec![
+            Arc::new(BinaryExpr::new(
+                substring_of_s(&schema),
+                Operator::Eq,
+                lit("2345"),
+            )),
+            Arc::new(BinaryExpr::new(
+                ansi_cast(v(), DataType::Decimal128(12, 2)),
+                Operator::Gt,
+                lit(ScalarValue::Decimal128(Some(100), 12, 2)),
+            )),
+            Arc::new(BinaryExpr::new(
+                ansi_cast(v(), DataType::Utf8),
+                Operator::Eq,
+                lit("1"),
+            )),
+        ];
+        let expected = [
+            vec![Some(false), Some(true), Some(false)],
+            vec![Some(false), Some(false), Some(true)],
+            vec![Some(false), Some(true), Some(false)],
+        ];
+        for (right, expected) in right_operands.into_iter().zip(expected) {
+            let and = LazyLogical::wrap(
+                v_cmp(&schema, Operator::NotEq, 0),
+                Operator::And,
+                Arc::clone(&right),
+                &schema,
+            )?;
+            assert!(and.is::<LazyLogical>(), "{right}");
+            assert_eq!(evaluate(&and, &batch)?, expected, "{right}");
+        }
+        // So is such a candidate of IN
+        let candidates = vec![lit("a"), substring_of_s(&schema)];
+        assert!(lazy_in_list(&col("s", &schema)?, &candidates, false, &schema)?.is_some());
+        Ok(())
+    }
+
     #[test]
     fn scalar_left_operand() -> Result<()> {
         let batch = batch(vec![Some(1), None], vec!["bad", "worse"]);

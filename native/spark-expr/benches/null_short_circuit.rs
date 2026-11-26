@@ -37,6 +37,7 @@ use datafusion_comet_spark_expr::{
 };
 use datafusion_spark::function::string::concat::SparkConcat;
 use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rand::{RngExt, SeedableRng};
 use std::hint::black_box;
 use std::sync::Arc;
@@ -52,10 +53,17 @@ type Shape = (&'static str, fn() -> Expr, bool);
 
 /// `a` a long with `null_density` of it NULL, `p` the same as a decimal and `q` as a string, and
 /// `b`, `c`, `s`, a long written as a string, and `d`, a decimal, never NULL.
+///
+/// Exactly `null_density` of the rows of `a` are NULL, at random, so that at a density of half
+/// `NullShortCircuit` needs exactly half the rows, which is where it starts to speculate.
 fn make_batch(null_density: f32) -> RecordBatch {
     let mut rng = StdRng::seed_from_u64(42);
-    let a: Int64Array = (0..NUM_ROWS)
-        .map(|_| (rng.random::<f32>() >= null_density).then(|| rng.random_range(0..1000)))
+    let null_count = (null_density * NUM_ROWS as f32).round() as usize;
+    let mut is_null: Vec<bool> = (0..NUM_ROWS).map(|row| row < null_count).collect();
+    is_null.shuffle(&mut rng);
+    let a: Int64Array = is_null
+        .iter()
+        .map(|&null| (!null).then(|| rng.random_range(0..1000)))
         .collect();
     let b: Int64Array = (0..NUM_ROWS)
         .map(|_| Some(rng.random_range(0..1000)))

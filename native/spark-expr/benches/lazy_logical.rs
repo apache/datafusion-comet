@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Benchmarks for `AND`, `OR` and `IN` whose later operands can fail under ANSI mode.
+//! Benchmarks for `AND`, `OR` and `IN` whose later operands can fail under ANSI mode, or cannot fail
+//! but cost more than skipping the rows that an earlier one decides.
 //!
 //! Each shape runs as `eager`, the way a plain `BinaryExpr` or DataFusion `InListExpr` evaluates
 //! every operand over the whole batch, and as `lazy`, the way Comet plans it now. The data is
@@ -27,10 +28,12 @@ use arrow::array::{ArrayRef, Int32Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use datafusion::logical_expr::Operator;
+use datafusion::config::ConfigOptions;
+use datafusion::logical_expr::{Operator, ScalarUDF};
 use datafusion::physical_expr::expressions::{in_list, lit, BinaryExpr, Column};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion_comet_spark_expr::{spark_in_list, Cast, EvalMode, LazyLogical, SparkCastOptions};
+use datafusion_spark::function::string::substring::SparkSubstring;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::hint::black_box;
@@ -95,6 +98,20 @@ fn parsing_cast() -> Expr {
     Arc::new(BinaryExpr::new(cast, Operator::Gt, lit(1)))
 }
 
+/// `substring(s, 2, 4) = '2345'`, which cannot fail but costs more per row than skipping the rows
+/// that the left operand decides
+fn substring() -> Expr {
+    let name = "substring";
+    let substring = Arc::new(ScalarFunctionExpr::new(
+        name,
+        Arc::new(ScalarUDF::new_from_impl(SparkSubstring::default())),
+        vec![column("s", 2), lit(2i64), lit(4i64)],
+        Arc::new(Field::new(name, DataType::Utf8, true)),
+        Arc::new(ConfigOptions::default()),
+    ));
+    Arc::new(BinaryExpr::new(substring, Operator::Eq, lit("2345")))
+}
+
 fn g_cmp(op: Operator, value: i32) -> Expr {
     Arc::new(BinaryExpr::new(column("g", 0), op, lit(value)))
 }
@@ -106,9 +123,10 @@ fn bench_logical(c: &mut Criterion) {
 
     for (nulls, null_density) in [("no_nulls", 0.0), ("with_nulls", 0.1)] {
         let batch = make_batch(null_density);
-        let rights: [Right; 2] = [
+        let rights: [Right; 3] = [
             ("narrowing_cast", narrowing_cast),
             ("parsing_cast", parsing_cast),
+            ("substring", substring),
         ];
         for (right_name, right) in rights {
             for pending in [0, 10, 50, 90, 100] {

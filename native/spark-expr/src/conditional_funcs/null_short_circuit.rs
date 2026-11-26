@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::case_when::cannot_fail;
+use super::case_when::cannot_fail_at_any_cost;
 use super::lazy_logical::is_deterministic;
 use crate::{Cast, CheckedBinaryExpr};
 use arrow::array::{new_null_array, Array, BooleanArray};
@@ -96,7 +96,7 @@ impl NullShortCircuit {
         }
         let mut masked = vec![false; children.len()];
         for &i in order.iter().skip(1) {
-            masked[i] = !cannot_fail(children[i], input_schema);
+            masked[i] = !cannot_fail_at_any_cost(children[i], input_schema);
         }
         if !masked.contains(&true) {
             return Ok(inner);

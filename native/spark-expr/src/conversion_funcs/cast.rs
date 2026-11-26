@@ -146,10 +146,22 @@ impl Cast {
                 ))
     }
 
-    /// Whether the cast cannot fail for any value, in any eval mode: what [`Self::is_infallible`]
-    /// accepts, and casts that cost more per row than those:
-    /// - from a string to an integer in LEGACY or TRY mode, which returns NULL for a string it
-    ///   cannot parse
+    /// Whether the cast cannot fail for any value: what [`Self::is_infallible`] accepts, and a cast
+    /// from a string to an integer in LEGACY or TRY mode, which returns NULL for a string it cannot
+    /// parse. Parsing costs far more per row than those casts.
+    pub(crate) fn cannot_fail(&self, input_schema: &Schema) -> bool {
+        use DataType::*;
+        self.is_infallible(input_schema)
+            || (self
+                .child
+                .data_type(input_schema)
+                .is_ok_and(|from| matches!(from, Utf8 | LargeUtf8))
+                && matches!(self.data_type, Int8 | Int16 | Int32 | Int64)
+                && self.cast_options.eval_mode != EvalMode::Ansi)
+    }
+
+    /// Whether the cast cannot fail for any value, whatever it costs: what
+    /// [`Self::cannot_fail`] accepts, and casts:
     /// - from an integer to a `Decimal128` with enough integral digits for any value of the
     ///   integer, which never overflows
     /// - from an integer, a floating point number, a boolean or a `Decimal128` to a string, which
@@ -157,18 +169,15 @@ impl Cast {
     ///   use, cannot format a value outside the range of `chrono`, which Spark can hold. So is a
     ///   binary, whose cast depends on the output style and decodes UTF-8, and a struct, list or
     ///   map, whose cast formats each element with these rules and others.
-    pub(crate) fn cannot_fail(&self, input_schema: &Schema) -> bool {
+    pub(crate) fn cannot_fail_at_any_cost(&self, input_schema: &Schema) -> bool {
         use DataType::*;
-        if self.is_infallible(input_schema) {
+        if self.cannot_fail(input_schema) {
             return true;
         }
         let Ok(from) = self.child.data_type(input_schema) else {
             return false;
         };
         match (&from, &self.data_type) {
-            (Utf8 | LargeUtf8, Int8 | Int16 | Int32 | Int64) => {
-                self.cast_options.eval_mode != EvalMode::Ansi
-            }
             (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
                 let digits = match from {
                     Int8 => 3,
@@ -1153,17 +1162,22 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields, Int32Type, TimeUnit, TimestampMicrosecondType};
 
-    fn cast_cannot_fail(from: &DataType, to: &DataType, eval_mode: EvalMode) -> bool {
+    /// Whether a cast from `from` to `to` cannot fail, as `cannot_fail` and as
+    /// `cannot_fail_at_any_cost` decide
+    fn cast_cannot_fail(from: &DataType, to: &DataType, eval_mode: EvalMode) -> (bool, bool) {
         let schema = Schema::new(vec![Field::new("a", from.clone(), true)]);
         let child = Arc::new(datafusion::physical_expr::expressions::Column::new("a", 0));
-        Cast::new(
+        let cast = Cast::new(
             child,
             to.clone(),
             SparkCastOptions::new(eval_mode, "UTC"),
             None,
             None,
+        );
+        (
+            cast.cannot_fail(&schema),
+            cast.cannot_fail_at_any_cost(&schema),
         )
-        .cannot_fail(&schema)
     }
 
     #[test]
@@ -1253,7 +1267,10 @@ mod tests {
         for (array, to) in arrays {
             let from = array.data_type().clone();
             for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert!(cast_cannot_fail(&from, &to, mode), "{from} {to} {mode:?}");
+                // Only `NullShortCircuit` leaves them unmasked, so `AND`, `OR` and `IN` still
+                // skip them for the rows they decide
+                let claimed = cast_cannot_fail(&from, &to, mode);
+                assert_eq!(claimed, (false, true), "{from} {to} {mode:?}");
                 let result =
                     cast_array(Arc::clone(&array), &to, &SparkCastOptions::new(mode, "UTC"))
                         .unwrap_or_else(|e| panic!("{from} {to} {mode:?}: {e}"));
@@ -1286,7 +1303,8 @@ mod tests {
         ];
         for (from, to) in cases {
             for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert!(!cast_cannot_fail(&from, &to, mode), "{from} {to} {mode:?}");
+                let claimed = cast_cannot_fail(&from, &to, mode);
+                assert_eq!(claimed, (false, false), "{from} {to} {mode:?}");
             }
         }
     }
