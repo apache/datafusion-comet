@@ -361,7 +361,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `md5` | ✅ | Native |  |
 | `sha` | ✅ | Native |  |
 | `sha1` | ✅ | Native |  |
-| `sha2` | ✅ | Native |  |
+| `sha2` | ✅ | Native | Supports literal and column `numBits` ([audit](../../contributor-guide/expression-audits/hash_funcs.md#sha2)) |
 | `xxhash64` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 
 ---
