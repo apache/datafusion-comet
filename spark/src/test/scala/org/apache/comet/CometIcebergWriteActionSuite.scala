@@ -20,8 +20,12 @@
 package org.apache.comet
 
 import java.io.File
+import java.lang.Double.doubleToRawLongBits
+import java.lang.Float.floatToRawIntBits
+import java.math.BigDecimal
 import java.nio.file.{FileAlreadyExistsException, Files}
-import java.sql.Timestamp
+import java.sql.{Date, Timestamp}
+import java.time.Instant
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
@@ -4675,6 +4679,136 @@ class CometIcebergWriteActionSuite
           .head
           .getLong(0)
         assert(matched == 1L, "timestamp values shifted on the native write path")
+      }
+    }
+  }
+
+  test(
+    "native Iceberg writer: required-field bridge preserves primitive values and UTC partitions") {
+    assume(icebergAvailable && isSpark35Plus)
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+      SQLConf.DATETIME_JAVA8API_ENABLED.key -> "false",
+      SQLConf.TIMESTAMP_TYPE.key -> "TIMESTAMP_LTZ",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS") {
+      withIcebergCatalog { warehouseDir =>
+        withTempPath { path =>
+          val columns = "ts TIMESTAMP, dt DATE, dec_value DECIMAL(38,10), f FLOAT, d DOUBLE"
+          def row(id: Int, ts: String, date: String, decimal: String, f: Float, d: Double): Row =
+            Row(
+              id,
+              Timestamp.from(Instant.parse(ts)),
+              Date.valueOf(date),
+              new BigDecimal(decimal),
+              f,
+              d)
+
+          // The first two instants straddle UTC midnight. The next one crosses local midnight
+          // but still belongs to the second UTC partition.
+          val expectedRows = Seq(
+            row(
+              1,
+              "1969-12-31T23:59:59.999999Z",
+              "1969-12-31",
+              "1234567890123456789012345678.0123456789",
+              -0.0f,
+              0.0d),
+            row(
+              2,
+              "1970-01-01T00:00:00.000001Z",
+              "1970-01-01",
+              "-1234567890123456789012345678.9876543210",
+              0.0f,
+              -0.0d),
+            row(
+              3,
+              "1970-01-01T08:00:00.000001Z",
+              "2000-02-29",
+              "0.0000000001",
+              Float.NaN,
+              Double.NaN),
+            row(4, "1970-01-02T00:00:00.123456Z", "2024-03-01", "-0.0000000001", 1.25f, -2.5d))
+          spark
+            .createDataFrame(
+              spark.sparkContext.parallelize(expectedRows, 1),
+              StructType.fromDDL(s"id INT, $columns"))
+            .write
+            .parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          assert(input.schema("id").nullable)
+
+          val (nativeTable, jvmTable) = ("required_primitive_native", "required_primitive_jvm")
+          val tables = Seq(nativeTable, jvmTable)
+          tables.foreach { table =>
+            sql(s"""CREATE TABLE $catalog.$ns.$table (id INT NOT NULL, $columns)
+              |USING iceberg PARTITIONED BY (days(ts))
+              |TBLPROPERTIES ('write.spark.fanout.enabled'='false')
+              |""".stripMargin)
+            sql(s"ALTER TABLE $catalog.$ns.$table WRITE ORDERED BY id")
+          }
+          def append(table: String): Unit =
+            input.writeTo(s"$catalog.$ns.$table").option("distribution-mode", "none").append()
+
+          val native = withNativeEnabled { captureWrite(nativeTable)(append(nativeTable)) }
+          assert(native.snapshotDelta == 1)
+          assertSparkRequiredWrite(native.plans)
+
+          val jvm = captureWrite(jvmTable)(append(jvmTable))
+          assertExactlyOneCommit(jvm)
+          val (_, javaWriters) = collectIcebergWriteOps(jvm.plans)
+          assert(javaWriters.forall(hasRequiredProjection), jvm.plans.mkString("\n"))
+          assert(jvm.plans.forall(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.isEmpty))
+
+          def partitionSummaries(table: String): Seq[Row] = spark
+            .sql(s"SELECT partition_summaries FROM $catalog.$ns.$table.manifests")
+            .collect()
+            .flatMap(_.getSeq[Row](0))
+            .toSeq
+
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            tables.foreach { table =>
+              val rows = sql(s"SELECT * FROM $catalog.$ns.$table ORDER BY id").collect()
+              assert(rows.length == expectedRows.length, table)
+              rows.zip(expectedRows).foreach { case (actual, expected) =>
+                assert(actual.toSeq.take(4) == expected.toSeq.take(4), s"$table: $actual")
+                val (f, expectedF) = (actual.getFloat(4), expected.getFloat(4))
+                val (d, expectedD) = (actual.getDouble(5), expected.getDouble(5))
+                val floatMatches =
+                  if (expectedF.isNaN) f.isNaN
+                  else floatToRawIntBits(f) == floatToRawIntBits(expectedF)
+                val doubleMatches =
+                  if (expectedD.isNaN) d.isNaN
+                  else doubleToRawLongBits(d) == doubleToRawLongBits(expectedD)
+                assert(floatMatches && doubleMatches, s"$table: $actual")
+              }
+
+              assert(
+                partitionDirs(warehouseDir, table) == Set(
+                  "ts_day=1969-12-31",
+                  "ts_day=1970-01-01",
+                  "ts_day=1970-01-02"))
+              val partitions = sql(s"""SELECT partition.ts_day, record_count
+                |FROM $catalog.$ns.$table.files ORDER BY partition.ts_day""".stripMargin)
+                .collect()
+                .toSeq
+              assert(
+                partitions == Seq(
+                  Row(Date.valueOf("1969-12-31"), 1L),
+                  Row(Date.valueOf("1970-01-01"), 2L),
+                  Row(Date.valueOf("1970-01-02"), 1L)),
+                s"$table: $partitions")
+            }
+            val summaries = partitionSummaries(nativeTable)
+            assert(summaries == partitionSummaries(jvmTable), s"native summaries: $summaries")
+            assert(summaries.size == 1, s"native summaries: $summaries")
+            val summary = summaries.head
+            assert(!summary.getAs[Boolean]("contains_null"))
+            assert(summary.getAs[String]("lower_bound") == "1969-12-31")
+            assert(summary.getAs[String]("upper_bound") == "1970-01-02")
+          }
+        }
       }
     }
   }
