@@ -333,6 +333,7 @@ jobs:
           PR_BASE_REF:  ${{ github.event.pull_request.base.ref }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY:   ${{ github.repository }}
+          REF:          ${{ github.ref }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
@@ -429,10 +430,12 @@ jobs:
     #   merge queue           linux, full            -> profiles: pr
     #   nightly               all                    -> profiles: nightly
     #   push to main          linux                  -> cache-refresh-only
+    #   sync of a fork's main linux                  -> cache-refresh-only
     #
     # Only push to main sets `build_linux` without `build_linux_full`, which is
-    # the whole point: the queue has already tested that tree, so the push run
-    # is there for the caches alone. A `labeled` run and the nightly set only
+    # the whole point: the queue has already tested that tree (or, for a fork
+    # sync, the tree adds nothing to upstream), so the push run is there for
+    # the caches alone. A `labeled` run and the nightly set only
     # the third, and then run just the profiles the PR and queue tiers skip.
     if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
