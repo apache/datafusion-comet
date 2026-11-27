@@ -2126,13 +2126,58 @@ index d1b11a74cf3..75e4600863a 100644
      }.isDefined
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
-index 743ec41dbe7..9f30d6c8e04 100644
+index 743ec41dbe7..1ffb98e1f7f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
-@@ -53,6 +53,10 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite with DisableAdaptiv
-     case ColumnarToRowExec(i: InputAdapter) => isScanPlanTree(i.child)
+@@ -22,6 +22,8 @@ import scala.reflect.ClassTag
+ import org.apache.spark.sql.TPCDSQuerySuite
+ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Final}
+ import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Generate, Join, LocalRelation, LogicalPlan, Range, Sample, Union, Window, WithCTE}
++import org.apache.spark.sql.catalyst.util.resourceToString
++import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
+ import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
+ import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
+ import org.apache.spark.sql.execution.columnar.{InMemoryRelation, InMemoryTableScanExec}
+@@ -30,10 +32,19 @@ import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV
+ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+ import org.apache.spark.sql.execution.joins._
+ import org.apache.spark.sql.execution.window.WindowExec
++import org.apache.spark.sql.internal.SQLConf
+ 
+ // Disable AQE because AdaptiveSparkPlanExec does not have a logical plan link
+ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite with DisableAdaptiveExecutionSuite {
+ 
++  test("q9 logical plan tags without code generation") {
++    val queryString = resourceToString("tpcds/q9.sql",
++      classLoader = Thread.currentThread().getContextClassLoader)
++    withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
++      checkLogicalPlanTag(sql(queryString).queryExecution.executedPlan)
++    }
++  }
++
+   override protected def checkGeneratedCode(
+       plan: SparkPlan, checkMethodCodeSize: Boolean = true): Unit = {
+     super.checkGeneratedCode(plan, checkMethodCodeSize)
+@@ -46,13 +57,25 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite with DisableAdaptiv
+     aggExprs.nonEmpty && aggExprs.forall(ae => ae.mode == Complete || ae.mode == Final)
+   }
+ 
++  private def transitionInput(transition: ColumnarToRowTransition): SparkPlan =
++    transition.child match {
++      case InputAdapter(child) => child
++      case child => child
++    }
++
+   // A scan plan tree is a plan tree that has a leaf node under zero or more Project/Filter nodes.
+   // We may add `ColumnarToRowExec` and `InputAdapter` above the scan node after planning.
+   @scala.annotation.tailrec
+   private def isScanPlanTree(plan: SparkPlan): Boolean = plan match {
+-    case ColumnarToRowExec(i: InputAdapter) => isScanPlanTree(i.child)
++    case t: ColumnarToRowTransition => isScanPlanTree(transitionInput(t))
      case p: ProjectExec => isScanPlanTree(p.child)
++    case p: CometProjectExec => isScanPlanTree(p.child)
      case f: FilterExec => isScanPlanTree(f.child)
++    case f: CometFilterExec => isScanPlanTree(f.child)
 +    // Comet produces scan plan tree like:
 +    // ColumnarToRow
 +    //  +- ReusedExchange
@@ -2140,6 +2185,15 @@ index 743ec41dbe7..9f30d6c8e04 100644
      case _: LeafExecNode => true
      case _ => false
    }
+@@ -97,7 +120,7 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite with DisableAdaptiv
+         // `ColumnarToRowExec` and `InputAdapter` are added outside of the planner, which doesn't
+         // have the logical plan tag.
+         val actualPlan = plan match {
+-          case ColumnarToRowExec(i: InputAdapter) => i.child
++          case t: ColumnarToRowTransition => transitionInput(t)
+           case _ => plan
+         }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
 index 1400ee25f43..5b016c3f9c5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
