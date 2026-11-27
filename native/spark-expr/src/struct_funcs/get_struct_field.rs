@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, StructArray};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
@@ -51,8 +51,8 @@ impl GetStructField {
         Self { child, ordinal }
     }
 
-    fn child_field(&self, input_schema: &Schema) -> DataFusionResult<Arc<Field>> {
-        match self.child.data_type(input_schema)? {
+    fn child_field(&self, input_schema: &Schema) -> DataFusionResult<FieldRef> {
+        match self.child.return_field(input_schema)?.data_type() {
             DataType::Struct(fields) => Ok(Arc::clone(&fields[self.ordinal])),
             data_type => Err(DataFusionError::Plan(format!(
                 "Expect struct field, got {data_type:?}"
@@ -80,6 +80,15 @@ impl PhysicalExpr for GetStructField {
         // values" (e.g. once the projected column reaches a shuffle/sort). Mirrors Spark's
         // `GetStructField.nullable = child.nullable || field.nullable`.
         Ok(self.child.nullable(input_schema)? || self.child_field(input_schema)?.is_nullable())
+    }
+
+    fn return_field(&self, input_schema: &Schema) -> DataFusionResult<FieldRef> {
+        Ok(Arc::new(
+            self.child_field(input_schema)?
+                .as_ref()
+                .clone()
+                .with_nullable(self.nullable(input_schema)?),
+        ))
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
@@ -138,7 +147,7 @@ mod tests {
     use super::*;
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::buffer::NullBuffer;
-    use arrow::datatypes::Fields;
+    use arrow::datatypes::{Field, Fields};
     use datafusion::physical_expr::expressions::Column;
 
     // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
@@ -207,5 +216,23 @@ mod tests {
             !expr.nullable(&schema).unwrap(),
             "a non-nullable field of a non-nullable struct must remain non-nullable"
         );
+    }
+
+    #[test]
+    fn get_struct_field_preserves_field_metadata() {
+        let metadata = std::collections::HashMap::from([
+            ("ARROW:extension:name".to_string(), "spark.ext".to_string()),
+            ("custom_key".to_string(), "custom_val".to_string()),
+        ]);
+        let inner: Fields = Fields::from(vec![
+            Field::new("payload", DataType::Binary, false).with_metadata(metadata.clone())
+        ]);
+        let schema = Schema::new(vec![Field::new("s", DataType::Struct(inner), true)]);
+
+        let expr = GetStructField::new(Arc::new(Column::new("s", 0)), 0);
+        let return_field = expr.return_field(&schema).unwrap();
+        assert_eq!(return_field.data_type(), &DataType::Binary);
+        assert!(return_field.is_nullable());
+        assert_eq!(return_field.metadata(), &metadata);
     }
 }

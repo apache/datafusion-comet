@@ -42,11 +42,7 @@ impl CreateNamedStruct {
         self.values
             .iter()
             .zip(&self.names)
-            .map(|(expr, name)| {
-                let data_type = expr.data_type(schema)?;
-                let nullable = expr.nullable(schema)?;
-                Ok(Field::new(name, data_type, nullable))
-            })
+            .map(|(expr, name)| Ok(expr.return_field(schema)?.as_ref().clone().with_name(name)))
             .collect()
     }
 }
@@ -159,6 +155,44 @@ mod test {
             unreachable!()
         };
         assert_eq!(3, x.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_struct_preserves_field_metadata() -> Result<()> {
+        use arrow::array::{BinaryArray, StructArray};
+        let metadata = std::collections::HashMap::from([
+            ("ARROW:extension:name".to_string(), "spark.ext".to_string()),
+            ("custom_key".to_string(), "custom_val".to_string()),
+        ]);
+        let input_field =
+            Field::new("in_col", DataType::Binary, false).with_metadata(metadata.clone());
+        let schema = Schema::new(vec![input_field]);
+        let expr = CreateNamedStruct::new(
+            vec![Arc::new(Column::new("in_col", 0))],
+            vec!["out_col".to_string()],
+        );
+
+        let return_field = expr.return_field(&schema)?;
+        let DataType::Struct(fields) = return_field.data_type() else {
+            panic!("expected Struct return_field");
+        };
+        assert_eq!(fields[0].name(), "out_col");
+        assert!(!fields[0].is_nullable());
+        assert_eq!(fields[0].metadata(), &metadata);
+
+        let DataType::Struct(dt_fields) = expr.data_type(&schema)? else {
+            panic!("expected Struct data_type");
+        };
+        assert_eq!(dt_fields[0].metadata(), &metadata);
+
+        let col = BinaryArray::from_vec(vec![b"abc"]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(col)])?;
+        let ColumnarValue::Array(arr) = expr.evaluate(&batch)? else {
+            panic!("expected Array");
+        };
+        let struct_arr = arr.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(struct_arr.fields()[0].metadata(), &metadata);
         Ok(())
     }
 }

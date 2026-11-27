@@ -2210,20 +2210,27 @@ impl PhysicalPlanner {
         } else {
             args
         };
-        let input_expr_types = args
+        let input_expr_fields = args
             .iter()
-            .map(|x| x.data_type(input_schema.as_ref()))
+            .map(|x| x.return_field(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
+        let input_expr_types = input_expr_fields
+            .iter()
+            .map(|f| f.data_type().clone())
+            .collect::<Vec<_>>();
 
-        let (data_type, coerced_input_types) =
+        let (return_field, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
-                Some(t) => (t, input_expr_types.clone()),
+                Some(t) => (
+                    Arc::new(Field::new(fun_name, t, true)),
+                    input_expr_types.clone(),
+                ),
                 None => {
-                    let fun_name = match fun_name.as_ref() {
+                    let udf_name = match fun_name.as_ref() {
                         "read_side_padding" => "rpad", // use the same return type as rpad
                         other => other,
                     };
-                    let func = self.session_ctx.udf(fun_name)?;
+                    let func = self.session_ctx.udf(udf_name)?;
 
                     // Type coercion strategy:
                     //
@@ -2244,11 +2251,16 @@ impl PhysicalPlanner {
                     let coerced_types = match func.coerce_types(&input_expr_types) {
                         Ok(types) => types,
                         Err(_) if needs_fields_coercion(&func.signature().type_signature) => {
-                            let input_fields: Vec<_> = input_expr_types
+                            let input_fields: Vec<_> = input_expr_fields
                                 .iter()
                                 .enumerate()
-                                .map(|(i, dt)| {
-                                    Arc::new(Field::new(format!("arg{i}"), dt.clone(), true))
+                                .map(|(i, f)| {
+                                    Arc::new(
+                                        f.as_ref()
+                                            .clone()
+                                            .with_name(format!("arg{i}"))
+                                            .with_nullable(true),
+                                    )
                                 })
                                 .collect();
                             let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
@@ -2257,10 +2269,22 @@ impl PhysicalPlanner {
                         Err(_) => input_expr_types.clone(),
                     };
 
-                    let arg_fields: Vec<_> = coerced_types
+                    let arg_fields: Vec<_> = input_expr_fields
                         .iter()
+                        .zip(&coerced_types)
                         .enumerate()
-                        .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
+                        .map(|(i, (f, dt))| {
+                            if f.data_type() == dt {
+                                Arc::new(
+                                    f.as_ref()
+                                        .clone()
+                                        .with_name(format!("arg{i}"))
+                                        .with_nullable(true),
+                                )
+                            } else {
+                                Arc::new(Field::new(format!("arg{i}"), dt.clone(), true))
+                            }
+                        })
                         .collect();
 
                     // TODO this should try and find scalar
@@ -2274,13 +2298,20 @@ impl PhysicalPlanner {
                         scalar_arguments: &arguments,
                     };
 
-                    let data_type = Arc::clone(&func.inner().return_field_from_args(args)?)
-                        .data_type()
-                        .clone();
+                    let return_field = Arc::new(
+                        func.inner()
+                            .return_field_from_args(args)?
+                            .as_ref()
+                            .clone()
+                            .with_name(fun_name)
+                            .with_nullable(true),
+                    );
 
-                    (data_type, coerced_types)
+                    (return_field, coerced_types)
                 }
             };
+
+        let data_type = return_field.data_type().clone();
 
         let fun_expr = create_comet_physical_fun(
             fun_name,
@@ -2312,7 +2343,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Arc::new(Field::new(fun_name, data_type.clone(), true)),
+            return_field,
             Arc::new(ConfigOptions::default()),
         ));
         let scalar_expr = if expr.null_short_circuit {
@@ -7671,5 +7702,133 @@ mod tests {
 
         let allowed = library.parent().unwrap().to_str().unwrap().to_string();
         plan_with(NativeUdfPolicy::new(true, &allowed)).expect(BUILD_HINT);
+    }
+
+    #[test]
+    fn map_extract_preserves_field_metadata_through_planner() {
+        let mut session_ctx = SessionContext::new();
+        datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx).unwrap();
+        let planner = PhysicalPlanner::new(Arc::new(session_ctx), 0);
+
+        let variant_storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        let mut custom_meta =
+            std::collections::HashMap::from([("custom_key".to_string(), "custom_val".to_string())]);
+        let base_value_field =
+            Field::new("value", variant_storage.clone(), false).with_extension_type(VariantType);
+        custom_meta.extend(
+            base_value_field
+                .metadata()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        let value_field = Arc::new(base_value_field.with_metadata(custom_meta.clone()));
+
+        let entries_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::clone(&value_field),
+            ])),
+            false,
+        ));
+        let struct_field = Arc::new(
+            Field::new("f", variant_storage.clone(), false).with_metadata(custom_meta.clone()),
+        );
+        let list_item_field = Arc::new(
+            Field::new("item", variant_storage.clone(), false).with_metadata(custom_meta.clone()),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("m", DataType::Map(entries_field, false), true),
+            Field::new("k", DataType::Utf8, false),
+            Field::new(
+                "s",
+                DataType::Struct(Fields::from(vec![struct_field])),
+                true,
+            ),
+            Field::new("arr", DataType::List(list_item_field), true),
+            Field::new("idx", DataType::Int32, false),
+        ]));
+
+        let bound = |index: i32| Expr {
+            expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
+                index,
+                datatype: None,
+            })),
+            ..Default::default()
+        };
+
+        for null_short_circuit in [false, true] {
+            let map_extract_expr = Expr {
+                expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                    func: "map_extract".to_string(),
+                    args: vec![bound(0), bound(1)],
+                    return_type: None,
+                    fail_on_error: false,
+                    null_short_circuit,
+                })),
+                ..Default::default()
+            };
+            let physical = planner
+                .create_expr(&map_extract_expr, Arc::clone(&schema))
+                .unwrap();
+            let return_field = physical.return_field(&schema).unwrap();
+            assert_eq!(return_field.data_type(), &variant_storage);
+            assert!(return_field.is_nullable());
+            assert_eq!(return_field.metadata(), &custom_meta);
+
+            let composed_expr = Expr {
+                expr_struct: Some(ExprStruct::CreateNamedStruct(
+                    spark_expression::CreateNamedStruct {
+                        values: vec![
+                            map_extract_expr,
+                            Expr {
+                                expr_struct: Some(ExprStruct::GetStructField(Box::new(
+                                    spark_expression::GetStructField {
+                                        child: Some(Box::new(bound(2))),
+                                        ordinal: 0,
+                                    },
+                                ))),
+                                ..Default::default()
+                            },
+                            Expr {
+                                expr_struct: Some(ExprStruct::ListExtract(Box::new(
+                                    spark_expression::ListExtract {
+                                        child: Some(Box::new(bound(3))),
+                                        ordinal: Some(Box::new(bound(4))),
+                                        default_value: None,
+                                        one_based: true,
+                                        fail_on_error: false,
+                                        null_short_circuit,
+                                    },
+                                ))),
+                                ..Default::default()
+                            },
+                        ],
+                        names: vec![
+                            "from_map".to_string(),
+                            "from_struct".to_string(),
+                            "from_array".to_string(),
+                        ],
+                    },
+                )),
+                ..Default::default()
+            };
+            let composed_physical = planner
+                .create_expr(&composed_expr, Arc::clone(&schema))
+                .unwrap();
+            let composed_field = composed_physical.return_field(&schema).unwrap();
+            let DataType::Struct(fields) = composed_field.data_type() else {
+                panic!("expected Struct return_field");
+            };
+            assert_eq!(fields[0].name(), "from_map");
+            assert_eq!(fields[0].metadata(), &custom_meta);
+            assert_eq!(fields[1].name(), "from_struct");
+            assert_eq!(fields[1].metadata(), &custom_meta);
+            assert_eq!(fields[2].name(), "from_array");
+            assert_eq!(fields[2].metadata(), &custom_meta);
+        }
     }
 }
