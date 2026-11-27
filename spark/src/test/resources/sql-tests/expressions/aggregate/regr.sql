@@ -204,6 +204,7 @@ FROM test_regr_filtered GROUP BY g ORDER BY g
 
 -- NaN, infinities and -0.0 through the grouped path, in y (groups 0, 2, 4) and in
 -- x (groups 1, 3, 5). Group 6 has a NaN and an infinity only in rows the FILTER drops.
+-- Group 7 has exactly one non-null pair.
 statement
 CREATE TABLE test_regr_special(g int, y double, x double, keep boolean) USING parquet
 
@@ -216,7 +217,8 @@ INSERT INTO test_regr_special VALUES
   (4, -0.0D, 1.0, true), (4, -0.0D, 2.0, true), (4, -0.0D, 3.0, true),
   (5, 1.0, -0.0D, true), (5, 2.0, -0.0D, true), (5, 4.0, -0.0D, true),
   (6, 1.0, 1.0, true), (6, 2.0, 2.0, true), (6, 4.0, 3.0, true),
-  (6, cast('NaN' as double), 4.0, false), (6, 5.0, cast('Infinity' as double), NULL)
+  (6, cast('NaN' as double), 4.0, false), (6, 5.0, cast('Infinity' as double), NULL),
+  (7, 3.0, 5.0, true), (7, NULL, 2.0, true)
 
 query
 SELECT g,
