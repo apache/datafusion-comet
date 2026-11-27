@@ -32,20 +32,29 @@
 //! | `regr_sxy`                | `Covariance`           | 4            |
 //! | `regr_r2`                 | `PearsonCorrelation`   | 6            |
 //! | `regr_slope`/`_intercept` | composite cov + var    | 7            |
+//!
+//! Grouped aggregation runs [`RegrGroupsAccumulator`], which keeps the same partial-state
+//! layouts in one row per group and updates every moment of a statistic in a single pass.
 
-use arrow::array::{Array, ArrayRef};
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::compute::{and, filter, is_not_null};
-use arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::{Result, ScalarValue};
+use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
+use datafusion::common::{downcast_value, not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
+};
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::variance::VarianceAccumulator;
-use crate::agg_funcs::welford::ZeroDivisor;
+use crate::agg_funcs::welford::{
+    covariance_merge, covariance_update, variance_merge, variance_update, VarianceUpdate,
+    ZeroDivisor,
+};
 use crate::{EvalMode, QueryContextMap};
 
 /// The kind of linear-regression statistic to compute.
@@ -160,6 +169,28 @@ impl AggregateUDFImpl for Regr {
             )?),
         };
         Ok(acc)
+    }
+
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
+        true
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        Ok(match self.regr_type {
+            RegrType::SXX | RegrType::SYY => RegrGroupsAccumulator::boxed(MomentKernel),
+            RegrType::SXY => RegrGroupsAccumulator::boxed(CovKernel),
+            RegrType::Slope | RegrType::Intercept => RegrGroupsAccumulator::boxed(LineKernel {
+                intercept: self.regr_type == RegrType::Intercept,
+                filter_var_by_pair_nulls: self.filter_var_by_pair_nulls,
+            }),
+            RegrType::R2 => RegrGroupsAccumulator::boxed(R2Kernel {
+                constant_dependent_is_perfect_fit: self.r2_constant_dependent_is_perfect_fit,
+                zero_divisor: self.zero_divisor.clone(),
+            }),
+        })
     }
 
     fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
@@ -376,39 +407,13 @@ impl Accumulator for RegrR2Accumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        let m2_x = self.var_x.get_m2();
-        let m2_y = self.var_y.get_m2();
-        // The two degenerate cases (constant dependent y, constant independent x)
-        // return null and 1.0 respectively, but SPARK-55969 swapped which is which.
-        let (null_case, perfect_fit_case) = if self.constant_dependent_is_perfect_fit {
-            // After SPARK-55969: constant x -> null, constant y -> 1.0.
-            (m2_x == 0.0, m2_y == 0.0)
-        } else {
-            // Before SPARK-55969: constant y -> null, constant x -> 1.0.
-            (m2_y == 0.0, m2_x == 0.0)
-        };
-        if null_case {
-            Ok(ScalarValue::Float64(None))
-        } else if perfect_fit_case {
-            Ok(ScalarValue::Float64(Some(1.0)))
-        } else {
-            // Nonzero moments can still have a product that underflows to zero.
-            // Spark's Divide handles this only after the constant-input guards.
-            let product = m2_y * m2_x;
-            if product == 0.0 {
-                return match self.zero_divisor.error() {
-                    Some(error) => Err(error),
-                    None => Ok(ScalarValue::Float64(None)),
-                };
-            }
-            // Mirror Spark's exact evaluation order (corr = ck / sqrt(m2_y * m2_x);
-            // corr * corr) so the last-ULP rounding matches bit-for-bit. Writing
-            // it as (ck * ck) / (m2_x * m2_y) is mathematically equal but rounds
-            // differently.
-            let ck = self.covar.get_algo_const();
-            let corr = ck / product.sqrt();
-            Ok(ScalarValue::Float64(Some(corr * corr)))
-        }
+        Ok(ScalarValue::Float64(r2_value(
+            self.covar.get_algo_const(),
+            self.var_y.get_m2(),
+            self.var_x.get_m2(),
+            self.constant_dependent_is_perfect_fit,
+            &self.zero_divisor,
+        )?))
     }
 
     fn size(&self) -> usize {
@@ -492,26 +497,300 @@ impl Accumulator for RegrLineAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        let m2_x = self.var_x.get_m2();
-        if m2_x == 0.0 {
-            // independent variable has no spread (also covers count <= 1)
-            return Ok(ScalarValue::Float64(None));
-        }
-        let slope = self.covar.get_algo_const() / m2_x;
-        if self.intercept {
-            // mean(y) - slope * mean(x); covar fed (x, y) => mean1 = mean(x), mean2 = mean(y)
-            let mean_x = self.covar.get_mean1();
-            let mean_y = self.covar.get_mean2();
-            Ok(ScalarValue::Float64(Some(mean_y - slope * mean_x)))
-        } else {
-            Ok(ScalarValue::Float64(Some(slope)))
-        }
+        Ok(ScalarValue::Float64(line_value(
+            self.covar.get_algo_const(),
+            self.var_x.get_m2(),
+            self.covar.get_mean1(),
+            self.covar.get_mean2(),
+            self.intercept,
+        )))
     }
 
     fn size(&self) -> usize {
         std::mem::size_of_val(self) - std::mem::size_of_val(&self.covar) + self.covar.size()
             - std::mem::size_of_val(&self.var_x)
             + self.var_x.size()
+    }
+}
+
+fn line_value(ck: f64, m2_x: f64, mean_x: f64, mean_y: f64, intercept: bool) -> Option<f64> {
+    if m2_x == 0.0 {
+        // The independent variable has no spread (also covers count <= 1).
+        None
+    } else {
+        let slope = ck / m2_x;
+        Some(if intercept {
+            mean_y - slope * mean_x
+        } else {
+            slope
+        })
+    }
+}
+
+/// Spark RegrR2's result rule, shared by scalar and grouped accumulation.
+/// SPARK-55969 swapped the constant-x/constant-y cases. Their guards precede
+/// division, including in ANSI mode; Corr's count guards do not apply here.
+fn r2_value(
+    ck: f64,
+    m2_y: f64,
+    m2_x: f64,
+    constant_dependent_is_perfect_fit: bool,
+    zero_divisor: &ZeroDivisor,
+) -> Result<Option<f64>> {
+    let (null_case, perfect_fit_case) = if constant_dependent_is_perfect_fit {
+        (m2_x == 0.0, m2_y == 0.0)
+    } else {
+        (m2_y == 0.0, m2_x == 0.0)
+    };
+    if null_case {
+        Ok(None)
+    } else if perfect_fit_case {
+        Ok(Some(1.0))
+    } else {
+        // Nonzero moments can still have a product that underflows to zero.
+        let product = m2_y * m2_x;
+        if product == 0.0 {
+            return match zero_divisor.error() {
+                Some(error) => Err(error),
+                None => Ok(None),
+            };
+        }
+        // Preserve Spark's rounding and overflow behavior: dividing first and
+        // then squaring differs from (ck * ck) / (m2_y * m2_x).
+        let corr = ck / product.sqrt();
+        Ok(Some(corr * corr))
+    }
+}
+
+/// One `regr_*` statistic over a group's state row, whose `N` fields are the partial-state
+/// columns in order. Each method repeats the arithmetic of the scalar accumulators, in the
+/// same order, so grouped and ungrouped aggregation agree bit for bit.
+trait RegrKernel<const N: usize>: Debug + Send + Sync + 'static {
+    /// Folds one row into `state`, leaving it unchanged when the row does not take part.
+    /// `None` is a NULL input.
+    fn update(&self, state: &mut [f64; N], y: Option<f64>, x: Option<f64>);
+
+    /// Merges a partial state into `state`.
+    fn merge(&self, state: &mut [f64; N], partial: [f64; N]);
+
+    /// The statistic for a final state.
+    fn finish(&self, state: &[f64; N]) -> Result<Option<f64>>;
+}
+
+/// `regr_sxx` / `regr_syy`: count, mean, m2 of the pair-filtered child Spark passes twice.
+#[derive(Debug)]
+struct MomentKernel;
+
+impl RegrKernel<3> for MomentKernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 3], y: Option<f64>, _x: Option<f64>) {
+        if let Some(y) = y {
+            (s[0], s[1], s[2]) =
+                variance_update(s[0], s[1], s[2], y, VarianceUpdate::CentralMoment);
+        }
+    }
+
+    fn merge(&self, s: &mut [f64; 3], p: [f64; 3]) {
+        (s[0], s[1], s[2]) = variance_merge(s[0], s[1], s[2], p[0], p[1], p[2]);
+    }
+
+    fn finish(&self, s: &[f64; 3]) -> Result<Option<f64>> {
+        Ok((s[0] != 0.0).then_some(s[2]))
+    }
+}
+
+/// `regr_sxy`: count, mean(y), mean(x), co-moment.
+#[derive(Debug)]
+struct CovKernel;
+
+impl RegrKernel<4> for CovKernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 4], y: Option<f64>, x: Option<f64>) {
+        if let (Some(y), Some(x)) = (y, x) {
+            (s[0], s[1], s[2], s[3]) = covariance_update(s[0], s[1], s[2], s[3], y, x);
+        }
+    }
+
+    fn merge(&self, s: &mut [f64; 4], p: [f64; 4]) {
+        (s[0], s[1], s[2], s[3]) = covariance_merge(s[0], s[1], s[2], s[3], p[0], p[1], p[2], p[3]);
+    }
+
+    fn finish(&self, s: &[f64; 4]) -> Result<Option<f64>> {
+        Ok((s[0] != 0.0).then_some(s[3]))
+    }
+}
+
+/// `regr_slope` / `regr_intercept`: the covariance of (x, y) followed by the variance of x.
+/// The two keep their own counts, because before SPARK-48719 the variance also counts x
+/// where y is null.
+#[derive(Debug)]
+struct LineKernel {
+    intercept: bool,
+    filter_var_by_pair_nulls: bool,
+}
+
+impl RegrKernel<7> for LineKernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 7], y: Option<f64>, x: Option<f64>) {
+        let Some(x) = x else {
+            return;
+        };
+        if let Some(y) = y {
+            (s[0], s[1], s[2], s[3]) = covariance_update(s[0], s[1], s[2], s[3], x, y);
+        }
+        if y.is_some() || !self.filter_var_by_pair_nulls {
+            (s[4], s[5], s[6]) =
+                variance_update(s[4], s[5], s[6], x, VarianceUpdate::CentralMoment);
+        }
+    }
+
+    fn merge(&self, s: &mut [f64; 7], p: [f64; 7]) {
+        (s[0], s[1], s[2], s[3]) = covariance_merge(s[0], s[1], s[2], s[3], p[0], p[1], p[2], p[3]);
+        (s[4], s[5], s[6]) = variance_merge(s[4], s[5], s[6], p[4], p[5], p[6]);
+    }
+
+    fn finish(&self, s: &[f64; 7]) -> Result<Option<f64>> {
+        Ok(line_value(s[3], s[6], s[1], s[2], self.intercept))
+    }
+}
+
+/// `regr_r2`: count, mean(y), mean(x), co-moment, m2(y), m2(x). The two moments share the
+/// covariance's count and means, as they do in Spark's `PearsonCorrelation` buffer.
+#[derive(Debug)]
+struct R2Kernel {
+    constant_dependent_is_perfect_fit: bool,
+    zero_divisor: ZeroDivisor,
+}
+
+impl RegrKernel<6> for R2Kernel {
+    #[inline]
+    fn update(&self, s: &mut [f64; 6], y: Option<f64>, x: Option<f64>) {
+        if let (Some(y), Some(x)) = (y, x) {
+            (_, _, s[4]) = variance_update(s[0], s[1], s[4], y, VarianceUpdate::Pearson);
+            (_, _, s[5]) = variance_update(s[0], s[2], s[5], x, VarianceUpdate::Pearson);
+            (s[0], s[1], s[2], s[3]) = covariance_update(s[0], s[1], s[2], s[3], y, x);
+        }
+    }
+
+    fn merge(&self, s: &mut [f64; 6], p: [f64; 6]) {
+        (_, _, s[4]) = variance_merge(s[0], s[1], s[4], p[0], p[1], p[4]);
+        (_, _, s[5]) = variance_merge(s[0], s[2], s[5], p[0], p[2], p[5]);
+        (s[0], s[1], s[2], s[3]) = covariance_merge(s[0], s[1], s[2], s[3], p[0], p[1], p[2], p[3]);
+    }
+
+    fn finish(&self, s: &[f64; 6]) -> Result<Option<f64>> {
+        r2_value(
+            s[3],
+            s[4],
+            s[5],
+            self.constant_dependent_is_perfect_fit,
+            &self.zero_divisor,
+        )
+    }
+}
+
+/// Grouped `regr_*` accumulator: one state row per group, updated in a single pass.
+#[derive(Debug)]
+struct RegrGroupsAccumulator<K, const N: usize> {
+    kernel: K,
+    states: Vec<[f64; N]>,
+}
+
+impl<K: RegrKernel<N>, const N: usize> RegrGroupsAccumulator<K, N> {
+    fn boxed(kernel: K) -> Box<dyn GroupsAccumulator> {
+        Box::new(Self {
+            kernel,
+            states: Vec::new(),
+        })
+    }
+}
+
+impl<K: RegrKernel<N>, const N: usize> GroupsAccumulator for RegrGroupsAccumulator<K, N> {
+    fn update_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize,
+    ) -> Result<()> {
+        let y = values[0].as_primitive::<Float64Type>();
+        let x = values[1].as_primitive::<Float64Type>();
+        self.states.resize(total_num_groups, [0.0; N]);
+
+        // Every row that passes the filter writes its state back. While consecutive such
+        // rows share a group, the next one continues from the local, and the state is
+        // reloaded only when the group changes.
+        let mut current = usize::MAX;
+        let mut state = [0.0; N];
+        let rows = group_indices.iter().zip(y.values()).zip(x.values());
+        for (idx, ((&group_index, &yv), &xv)) in rows.enumerate() {
+            if let Some(f) = opt_filter {
+                if !f.is_valid(idx) || !f.value(idx) {
+                    continue;
+                }
+            }
+            let slot = &mut self.states[group_index];
+            if current != group_index {
+                current = group_index;
+                state = *slot;
+            }
+            self.kernel.update(
+                &mut state,
+                y.is_valid(idx).then_some(yv),
+                x.is_valid(idx).then_some(xv),
+            );
+            *slot = state;
+        }
+        Ok(())
+    }
+
+    fn merge_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        total_num_groups: usize,
+    ) -> Result<()> {
+        let mut columns = Vec::with_capacity(N);
+        for value in &values[..N] {
+            columns.push(downcast_value!(value, Float64Array));
+        }
+        self.states.resize(total_num_groups, [0.0; N]);
+        for (row, &group_index) in group_indices.iter().enumerate() {
+            let partial = std::array::from_fn(|field| columns[field].value(row));
+            self.kernel.merge(&mut self.states[group_index], partial);
+        }
+        Ok(())
+    }
+
+    fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
+        let states = emit_to.take_needed(&mut self.states);
+        let values = states
+            .iter()
+            .map(|state| self.kernel.finish(state))
+            .collect::<Result<Float64Array>>()?;
+        Ok(Arc::new(values))
+    }
+
+    fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
+        let states = emit_to.take_needed(&mut self.states);
+        Ok((0..N)
+            .map(|field| {
+                let column = states.iter().map(|state| state[field]);
+                Arc::new(Float64Array::from_iter_values(column)) as ArrayRef
+            })
+            .collect())
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
+    }
+
+    fn size(&self) -> usize {
+        self.states.capacity() * size_of::<[f64; N]>()
     }
 }
 
@@ -951,6 +1230,434 @@ mod tests {
         match a1.evaluate().unwrap() {
             ScalarValue::Float64(v) => approx(v, 2.0),
             other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod groups_tests {
+    use super::*;
+    use crate::{create_query_context_map, QueryContext, SparkErrorWithContext};
+    use arrow::array::AsArray;
+    use arrow::datatypes::{Float64Type, Schema};
+    use datafusion::common::DataFusionError;
+    use datafusion::logical_expr::AggregateUDF;
+    use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion_comet_common::SparkError;
+    use std::mem::size_of;
+
+    const KINDS: [RegrType; 6] = [
+        RegrType::SXX,
+        RegrType::SYY,
+        RegrType::SXY,
+        RegrType::Slope,
+        RegrType::Intercept,
+        RegrType::R2,
+    ];
+
+    fn physical(udf: AggregateUDF) -> AggregateFunctionExpr {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("y", DataType::Float64, true),
+            Field::new("x", DataType::Float64, true),
+        ]));
+        let expr = AggregateExprBuilder::new(
+            Arc::new(udf),
+            vec![Arc::new(Column::new("y", 0)), Arc::new(Column::new("x", 1))],
+        )
+        .schema(schema)
+        .alias("stat")
+        .build()
+        .unwrap();
+        assert!(expr.groups_accumulator_supported());
+        expr
+    }
+
+    fn expression(kind: RegrType, modern: bool) -> AggregateFunctionExpr {
+        physical(AggregateUDF::new_from_impl(Regr::new(
+            kind,
+            "regr",
+            modern,
+            modern,
+            EvalMode::Legacy,
+            None,
+            create_query_context_map(),
+        )))
+    }
+
+    fn inputs(kind: RegrType, y: &[Option<f64>], x: &[Option<f64>]) -> Vec<ArrayRef> {
+        if matches!(kind, RegrType::SXX | RegrType::SYY) {
+            let selected = y.iter().zip(x).map(|(&y, &x)| {
+                y.zip(x)
+                    .map(|(y, x)| if kind == RegrType::SXX { x } else { y })
+            });
+            let column: ArrayRef = Arc::new(Float64Array::from_iter(selected));
+            vec![Arc::clone(&column), column]
+        } else {
+            vec![
+                Arc::new(Float64Array::from(y.to_vec())),
+                Arc::new(Float64Array::from(x.to_vec())),
+            ]
+        }
+    }
+
+    fn same_value(actual: Option<f64>, expected: Option<f64>) {
+        match (actual, expected) {
+            (Some(a), Some(b)) if b.is_nan() => assert!(a.is_nan()),
+            (Some(a), Some(b)) => assert_eq!(a.to_bits(), b.to_bits(), "{a:?} != {b:?}"),
+            _ => assert_eq!(actual, expected),
+        }
+    }
+
+    fn scalar_value(acc: &mut dyn Accumulator) -> Option<f64> {
+        let ScalarValue::Float64(value) = acc.evaluate().unwrap() else {
+            panic!("expected f64")
+        };
+        value
+    }
+
+    fn update_scalars(
+        scalars: &mut [Box<dyn Accumulator>],
+        values: &[ArrayRef],
+        groups: &[usize],
+        predicate: Option<&BooleanArray>,
+    ) {
+        for (group, scalar) in scalars.iter_mut().enumerate() {
+            let mask = BooleanArray::from_iter(groups.iter().enumerate().map(|(i, &g)| {
+                Some(g == group && predicate.is_none_or(|p| p.is_valid(i) && p.value(i)))
+            }));
+            let selected = values
+                .iter()
+                .map(|a| filter(a, &mask).unwrap())
+                .collect::<Vec<_>>();
+            scalar.update_batch(&selected).unwrap();
+        }
+    }
+
+    fn same_state(state: &[ArrayRef], group: usize, scalar: &mut dyn Accumulator) {
+        let expected = scalar.state().unwrap();
+        assert_eq!(state.len(), expected.len());
+        for (actual, expected) in state.iter().zip(expected) {
+            let ScalarValue::Float64(expected) = expected else {
+                panic!("expected f64 state")
+            };
+            let actual = actual.as_primitive::<Float64Type>();
+            assert!(actual.is_valid(group));
+            same_value(Some(actual.value(group)), expected);
+        }
+    }
+
+    fn scalar_state(scalar: &mut dyn Accumulator) -> Vec<ArrayRef> {
+        scalar
+            .state()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_array_of_size(1).unwrap())
+            .collect()
+    }
+
+    /// Compares every group's partial state and result with its scalar accumulator.
+    fn same_groups(state: &[ArrayRef], result: &ArrayRef, scalars: &mut [Box<dyn Accumulator>]) {
+        let result = result.as_primitive::<Float64Type>();
+        assert_eq!(result.len(), scalars.len());
+        for (group, scalar) in scalars.iter_mut().enumerate() {
+            same_state(state, group, scalar.as_mut());
+            same_value(
+                result.is_valid(group).then(|| result.value(group)),
+                scalar_value(scalar.as_mut()),
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_updates_preserve_scalar_state_and_results() {
+        let y: Vec<_> = (0..35)
+            .map(|i| (i % 7 != 0).then_some(i as f64 * 1.5 + 1.0))
+            .collect();
+        let x: Vec<_> = (0..35)
+            .map(|i| (i % 11 != 0).then_some(i as f64 * 0.75 - 3.0))
+            .collect();
+        // The NULL entries sit on true values, so only their validity drops the row.
+        let predicate = BooleanArray::new(
+            (0..35).map(|i| i % 3 != 0).collect(),
+            Some((0..35).map(|i| i % 13 != 0).collect()),
+        );
+        for kind in KINDS {
+            for modern in [false, true] {
+                let expr = expression(kind, modern);
+                let accumulators =
+                    |n| -> Vec<_> { (0..n).map(|_| expr.create_accumulator().unwrap()).collect() };
+                // State and result both drain the accumulator, so each needs its own.
+                let mut grouped = expr.create_groups_accumulator().unwrap();
+                let mut for_state = expr.create_groups_accumulator().unwrap();
+                let mut scalars = accumulators(6);
+                let values = inputs(kind, &y, &x);
+                // Sliced batches keep nonzero offsets. Only the later ones carry a FILTER.
+                for (start, filtered) in [(1, false), (12, true), (23, true)] {
+                    let chunk: Vec<_> = values.iter().map(|a| a.slice(start, 11)).collect();
+                    let filter = filtered.then(|| predicate.slice(start, 11));
+                    // Pairs of rows share a group, so runs meet NULLs, FILTER and batch
+                    // boundaries, and a group comes back after other groups.
+                    let indices: Vec<_> = (start..start + 11).map(|i| i / 2 % 5).collect();
+                    // The later batches allocate group 5 without giving it a row.
+                    let total = if start == 1 { 5 } else { 6 };
+                    for accumulator in [&mut grouped, &mut for_state] {
+                        accumulator
+                            .update_batch(&chunk, &indices, filter.as_ref(), total)
+                            .unwrap();
+                    }
+                    update_scalars(&mut scalars, &chunk, &indices, filter.as_ref());
+                }
+                let states = for_state.state(EmitTo::All).unwrap();
+                same_groups(
+                    &states,
+                    &grouped.evaluate(EmitTo::All).unwrap(),
+                    &mut scalars,
+                );
+
+                // Final aggregation receives several state rows at once, with repeated
+                // and non-monotonic destination groups.
+                let destinations = [2, 0, 2, 1, 0, 1];
+                let mut expected = accumulators(3);
+                for (start, len) in [(0, 6), (1, 4)] {
+                    let batch: Vec<_> = states.iter().map(|a| a.slice(start, len)).collect();
+                    let indices = &destinations[start..start + len];
+                    for accumulator in [&mut grouped, &mut for_state] {
+                        accumulator.merge_batch(&batch, indices, 3).unwrap();
+                    }
+                    for (row, &group) in indices.iter().enumerate() {
+                        let state: Vec<_> = batch.iter().map(|a| a.slice(row, 1)).collect();
+                        expected[group].merge_batch(&state).unwrap();
+                    }
+                }
+                let merged = for_state.state(EmitTo::All).unwrap();
+                same_groups(
+                    &merged,
+                    &grouped.evaluate(EmitTo::All).unwrap(),
+                    &mut expected,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_state_round_trips_in_both_directions() {
+        for kind in KINDS {
+            for modern in [false, true] {
+                // Include large adjacent values, signed zero, infinities/NaNs,
+                // fractional constants and raw moment underflow/overflow.
+                for (y, x) in [
+                    (
+                        vec![Some(1e16), Some(1e16 + 2.0), None, Some(-0.0)],
+                        vec![Some(3.0), Some(9.0), Some(20.0), Some(0.0)],
+                    ),
+                    (
+                        vec![
+                            Some(1e200),
+                            Some(-1e200),
+                            Some(f64::NAN),
+                            Some(f64::INFINITY),
+                        ],
+                        vec![Some(0.1); 4],
+                    ),
+                    (
+                        vec![Some(1e-100), Some(2e-100), None, Some(0.0)],
+                        vec![Some(2e-100), Some(-1e-100), Some(1e100), None],
+                    ),
+                ] {
+                    let expr = expression(kind, modern);
+                    let mut grouped = expr.create_groups_accumulator().unwrap();
+                    let mut expected = expr.create_accumulator().unwrap();
+                    let mut from_grouped = expr.create_accumulator().unwrap();
+                    let values = inputs(kind, &y, &x);
+                    // Empty partials before and after nonempty states must execute
+                    // the merge arithmetic, including its NaN propagation.
+                    for (start, len) in [(0, 0), (0, 2), (2, 2), (4, 0)] {
+                        let chunk = values
+                            .iter()
+                            .map(|a| a.slice(start, len))
+                            .collect::<Vec<_>>();
+                        let mut partial = expr.create_accumulator().unwrap();
+                        partial.update_batch(&chunk).unwrap();
+                        let mut grouped_partial = expr.create_groups_accumulator().unwrap();
+                        grouped_partial
+                            .update_batch(&chunk, &vec![0; len], None, 1)
+                            .unwrap();
+                        let gs = grouped_partial.state(EmitTo::All).unwrap();
+                        same_state(&gs, 0, partial.as_mut());
+                        let ss = scalar_state(partial.as_mut());
+                        expected.merge_batch(&ss).unwrap();
+                        grouped.merge_batch(&ss, &[0], 1).unwrap();
+                        from_grouped.merge_batch(&gs).unwrap();
+                    }
+                    let states = grouped.state(EmitTo::All).unwrap();
+                    same_state(&states, 0, expected.as_mut());
+                    same_value(
+                        scalar_value(from_grouped.as_mut()),
+                        scalar_value(expected.as_mut()),
+                    );
+                    // Evaluate after one identical additional merge on both sides.
+                    grouped.merge_batch(&states, &[0], 1).unwrap();
+                    let mut merged = expr.create_accumulator().unwrap();
+                    merged.merge_batch(&states).unwrap();
+                    let actual = grouped.evaluate(EmitTo::All).unwrap();
+                    same_value(
+                        actual.as_primitive::<Float64Type>().iter().next().unwrap(),
+                        scalar_value(merged.as_mut()),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_emission_preserves_remaining_groups() {
+        for kind in KINDS {
+            for modern in [false, true] {
+                let expr = expression(kind, modern);
+                let mut grouped = expr.create_groups_accumulator().unwrap();
+                let mut scalars = (0..4)
+                    .map(|_| expr.create_accumulator().unwrap())
+                    .collect::<Vec<_>>();
+                let values = inputs(
+                    kind,
+                    &[
+                        Some(1.0),
+                        Some(4.0),
+                        None,
+                        Some(9.0),
+                        Some(3.0),
+                        Some(8.0),
+                        Some(5.0),
+                        Some(14.0),
+                    ],
+                    &[
+                        Some(2.0),
+                        Some(1.0),
+                        Some(3.0),
+                        None,
+                        Some(6.0),
+                        Some(4.0),
+                        Some(7.0),
+                        Some(5.0),
+                    ],
+                );
+                let groups = [0, 1, 2, 3, 0, 1, 2, 3];
+                grouped.update_batch(&values, &groups, None, 4).unwrap();
+                update_scalars(&mut scalars, &values, &groups, None);
+                let fields = match kind {
+                    RegrType::SXX | RegrType::SYY => 3,
+                    RegrType::SXY => 4,
+                    RegrType::Slope | RegrType::Intercept => 7,
+                    RegrType::R2 => 6,
+                };
+                assert!(grouped.size() >= 4 * fields * size_of::<f64>());
+                assert!(grouped
+                    .state(EmitTo::First(0))
+                    .unwrap()
+                    .iter()
+                    .all(|a| a.is_empty()));
+                assert_eq!(grouped.evaluate(EmitTo::First(0)).unwrap().len(), 0);
+                let first = grouped.evaluate(EmitTo::First(1)).unwrap();
+                same_value(
+                    first.as_primitive::<Float64Type>().iter().next().unwrap(),
+                    scalar_value(scalars.remove(0).as_mut()),
+                );
+                let state = grouped.state(EmitTo::First(1)).unwrap();
+                same_state(&state, 0, scalars.remove(0).as_mut());
+                assert!(grouped.size() >= 2 * fields * size_of::<f64>());
+                scalars.push(expr.create_accumulator().unwrap());
+                let more = inputs(
+                    kind,
+                    &[Some(8.0), None, Some(17.0), Some(12.0)],
+                    &[Some(6.0), Some(7.0), Some(9.0), Some(3.0)],
+                );
+                grouped.update_batch(&more, &[0, 2, 1, 2], None, 3).unwrap();
+                update_scalars(&mut scalars, &more, &[0, 2, 1, 2], None);
+                let mut partial = expr.create_accumulator().unwrap();
+                partial.update_batch(&more).unwrap();
+                let partial_state = scalar_state(partial.as_mut());
+                grouped.merge_batch(&partial_state, &[1], 3).unwrap();
+                scalars[1].merge_batch(&partial_state).unwrap();
+                // A majority prefix exercises EmitTo's other allocation path.
+                let first = grouped.evaluate(EmitTo::First(2)).unwrap();
+                let last = grouped.evaluate(EmitTo::All).unwrap();
+                assert_eq!(first.len(), 2);
+                assert_eq!(last.len(), 1);
+                for (actual, scalar) in first
+                    .as_primitive::<Float64Type>()
+                    .iter()
+                    .chain(last.as_primitive::<Float64Type>().iter())
+                    .zip(&mut scalars)
+                {
+                    same_value(actual, scalar_value(scalar.as_mut()));
+                }
+                assert_eq!(grouped.size(), 0);
+                // All resets the accumulator so group zero can be used again.
+                grouped.update_batch(&more, &[0; 4], None, 1).unwrap();
+                same_state(&grouped.state(EmitTo::All).unwrap(), 0, partial.as_mut());
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_r2_underflow_preserves_captured_error_context() {
+        let sql = "SELECT regr_r2(y, x) FROM t GROUP BY g";
+        for mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for modern in [false, true] {
+                for merge in [false, true] {
+                    let registry = create_query_context_map();
+                    registry.register(
+                        7,
+                        QueryContext::new(sql.to_string(), 7, 19, None, None, 1, 7),
+                    );
+                    let expr = physical(AggregateUDF::new_from_impl(Regr::new(
+                        RegrType::R2,
+                        "regr_r2",
+                        true,
+                        modern,
+                        mode,
+                        Some(7),
+                        registry,
+                    )));
+                    let mut grouped = expr.create_groups_accumulator().unwrap();
+                    let values = inputs(
+                        RegrType::R2,
+                        &[Some(1e-100), None, Some(2e-100)],
+                        &[Some(-1e-100), Some(1e200), Some(-2e-100)],
+                    );
+                    if merge {
+                        for (start, len) in [(0, 2), (2, 1)] {
+                            let mut partial = expr.create_accumulator().unwrap();
+                            partial
+                                .update_batch(
+                                    &values
+                                        .iter()
+                                        .map(|a| a.slice(start, len))
+                                        .collect::<Vec<_>>(),
+                                )
+                                .unwrap();
+                            grouped
+                                .merge_batch(&scalar_state(partial.as_mut()), &[0], 1)
+                                .unwrap();
+                        }
+                    } else {
+                        grouped.update_batch(&values, &[0; 3], None, 1).unwrap();
+                    }
+                    if mode == EvalMode::Ansi {
+                        let DataFusionError::External(error) =
+                            grouped.evaluate(EmitTo::All).unwrap_err()
+                        else {
+                            panic!("expected structured Spark error")
+                        };
+                        let error = error.downcast_ref::<SparkErrorWithContext>().unwrap();
+                        assert!(matches!(error.error, SparkError::DivideByZero));
+                        assert_eq!(error.context.as_ref().unwrap().sql_text.as_str(), sql);
+                    } else {
+                        assert_eq!(grouped.evaluate(EmitTo::All).unwrap().null_count(), 1);
+                    }
+                }
+            }
         }
     }
 }
