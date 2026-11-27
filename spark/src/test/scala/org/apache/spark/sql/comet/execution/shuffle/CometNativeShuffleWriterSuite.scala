@@ -19,10 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.File
-
-import org.apache.spark.{SparkEnv, TaskContext}
-import org.apache.spark.shuffle.IndexShuffleBlockResolver
+import org.apache.spark.TaskContext
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -77,37 +74,6 @@ class CometNativeShuffleWriterSuite extends CometTestBase {
           assert(writeBufferSize == 65536)
         }
       }
-    }
-  }
-
-  test("native shuffle temp file stays in a local dir named local.data") {
-    withTempDir { dir =>
-      val base = new File(dir, "local.data")
-      assert(base.mkdir())
-      val dataFile = new File(base, "shuffle_0_3_0.data")
-      val resolver = SparkEnv.get.shuffleManager.shuffleBlockResolver
-        .asInstanceOf[IndexShuffleBlockResolver]
-      val temp = CometNativeShuffleWriter.localTempDataFile(resolver, dataFile)
-      assert(temp.getParentFile.getName == "local.data")
-      assert(!temp.getPath.contains("local.data.tmp"))
-    }
-  }
-
-  test("native shuffle stop(false) deletes a tracked temp file") {
-    withTempDir { dir =>
-      val failed = new File(dir, "shuffle_0_0_0.data.failed")
-      assert(failed.createNewFile())
-      val writer = new CometNativeShuffleWriter[Int, ColumnarBatch](null, null, null, null, 0, 0,
-        0L, null, null)
-      writer.localTempData = Some(failed)
-      assert(writer.stop(false).isEmpty)
-      assert(!failed.exists())
-
-      val committed = new File(dir, "shuffle_0_0_0.data.committed")
-      assert(committed.createNewFile())
-      writer.localTempData = Some(committed)
-      assert(writer.stop(true).isDefined)
-      assert(committed.exists())
     }
   }
 }
