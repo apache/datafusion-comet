@@ -95,8 +95,8 @@ impl ListExtract {
     }
 
     fn child_field(&self, input_schema: &Schema) -> DataFusionResult<FieldRef> {
-        match self.child.data_type(input_schema)? {
-            DataType::List(field) | DataType::LargeList(field) => Ok(field),
+        match self.child.return_field(input_schema)?.data_type() {
+            DataType::List(field) | DataType::LargeList(field) => Ok(Arc::clone(field)),
             data_type => Err(DataFusionError::Internal(format!(
                 "Unexpected data type in ListExtract: {data_type:?}"
             ))),
@@ -136,6 +136,15 @@ impl PhysicalExpr for ListExtract {
             || self.child.nullable(input_schema)?
             || self.ordinal.nullable(input_schema)?
             || self.child_field(input_schema)?.is_nullable())
+    }
+
+    fn return_field(&self, input_schema: &Schema) -> DataFusionResult<FieldRef> {
+        Ok(Arc::new(
+            self.child_field(input_schema)?
+                .as_ref()
+                .clone()
+                .with_nullable(self.nullable(input_schema)?),
+        ))
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
@@ -782,5 +791,35 @@ mod test {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn test_list_extract_preserves_field_metadata() -> Result<()> {
+        let metadata = std::collections::HashMap::from([
+            ("ARROW:extension:name".to_string(), "spark.ext".to_string()),
+            ("custom_key".to_string(), "custom_val".to_string()),
+        ]);
+        let element_field =
+            Arc::new(Field::new("item", DataType::Binary, false).with_metadata(metadata.clone()));
+        let schema = Schema::new(vec![
+            Field::new("arr", DataType::List(element_field), true),
+            Field::new("idx", DataType::Int32, false),
+        ]);
+
+        let list_extract = ListExtract::new(
+            Arc::new(Column::new("arr", 0)),
+            Arc::new(Column::new("idx", 1)),
+            None,
+            true,
+            true,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        let return_field = list_extract.return_field(&schema)?;
+        assert_eq!(return_field.data_type(), &DataType::Binary);
+        assert!(return_field.is_nullable());
+        assert_eq!(return_field.metadata(), &metadata);
+        Ok(())
     }
 }

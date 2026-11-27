@@ -26,7 +26,7 @@ use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::utils::take_function_args;
 use datafusion::common::{exec_err, Result as DataFusionResult};
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::sync::Arc;
 
@@ -104,6 +104,19 @@ impl ScalarUDFImpl for SparkMapExtract {
     fn return_type(&self, arg_types: &[DataType]) -> DataFusionResult<DataType> {
         let [map_type, _] = take_function_args(self.name(), arg_types)?;
         Ok(map_entry_fields(map_type)?.1.data_type().clone())
+    }
+
+    fn return_field_from_args(&self, args: ReturnFieldArgs) -> DataFusionResult<FieldRef> {
+        let [map_field, _] = take_function_args(self.name(), args.arg_fields)?;
+        let value_field = map_entry_fields(map_field.data_type())?.1;
+        // A missing key yields NULL even when the map and its value field are non-nullable.
+        Ok(Arc::new(
+            value_field
+                .as_ref()
+                .clone()
+                .with_name(self.name())
+                .with_nullable(true),
+        ))
     }
 
     fn coerce_types(&self, arg_types: &[DataType]) -> DataFusionResult<Vec<DataType>> {
@@ -721,6 +734,42 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn map_extract_preserves_field_metadata() -> DataFusionResult<()> {
+        let metadata = std::collections::HashMap::from([
+            ("ARROW:extension:name".to_string(), "spark.ext".to_string()),
+            ("custom_key".to_string(), "custom_val".to_string()),
+        ]);
+        let entries_fields = Fields::from(vec![
+            Arc::new(Field::new("key", DataType::Utf8, false)),
+            Arc::new(Field::new("value", DataType::Binary, false).with_metadata(metadata.clone())),
+        ]);
+        let map_field = Arc::new(Field::new(
+            "m",
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(entries_fields),
+                    false,
+                )),
+                false,
+            ),
+            false,
+        ));
+        let key_field = Arc::new(Field::new("k", DataType::Utf8, false));
+        let arg_fields = [map_field, key_field];
+        let scalar_args: [Option<&ScalarValue>; 2] = [None, None];
+
+        let return_field = SparkMapExtract::new().return_field_from_args(ReturnFieldArgs {
+            arg_fields: &arg_fields,
+            scalar_arguments: &scalar_args,
+        })?;
+        assert_eq!(return_field.data_type(), &DataType::Binary);
+        assert!(return_field.is_nullable());
+        assert_eq!(return_field.metadata(), &metadata);
         Ok(())
     }
 }
