@@ -202,7 +202,7 @@ fn normalize_fixed_size_list_and_reject_uuid() {
     let uuid: ArrayRef =
         Arc::new(FixedSizeBinaryArray::try_from_iter([[0_u8; 16]].into_iter()).unwrap());
     let field = Field::new("typed_value", uuid.data_type().clone(), false)
-        .with_metadata([("ARROW:extension:name".to_string(), "arrow.uuid".to_string())].into());
+        .with_metadata([("ARROW:extension:name".to_string(), "arrow.uuid".to_string())]);
     let error = normalize_variant_array(&wrap(field, uuid), &target_field(false)).unwrap_err();
     assert!(error.to_string().contains("Parquet UUID"));
 }
@@ -977,13 +977,31 @@ fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
     );
 
     for malformed in [
-        vec![1, 3, 0, 1, 1, 2, 0xff, b'a'],    // Invalid UTF-8.
-        vec![1, 3, 0, 2, 1, 2, b'z', b'a'],    // Decreasing offsets.
-        vec![1, 3, 0, 1, 1, 2, b'z', b'z'],    // Duplicate dictionary keys.
-        vec![1, 3, 0, 1, 1, 3, b'z', b'a'],    // Out-of-bounds offset.
-        vec![1, 3, 0, 1, 1, 2, b'z', b'a', 0], // Unexpected trailing bytes.
+        vec![1, 3, 0, 1, 1, 2, 0xff, b'a'], // Invalid UTF-8.
+        vec![1, 3, 0, 2, 1, 2, b'z', b'a'], // Decreasing offsets.
+        vec![1, 3, 0, 1, 1, 3, b'z', b'a'], // Out-of-bounds offset.
     ] {
         assert!(normalize(&malformed).is_err(), "accepted {malformed:?}");
+    }
+    // Arrow 59 rejected both dictionaries only for their empty entry, which Arrow 60 accepts
+    // (apache/arrow-rs#10352), so they no longer reach the empty-key retry. Arrow does not reject
+    // the rest: an unsorted dictionary may repeat an entry, and bytes after the last offset are
+    // never read. The row passes through unchanged, as in Spark, which checks only the offsets
+    // of the keys it looks up.
+    for accepted in [
+        vec![1, 3, 0, 1, 1, 2, b'z', b'z'], // Duplicate dictionary keys.
+        vec![1, 3, 0, 1, 1, 2, b'z', b'a', 0], // Trailing bytes.
+    ] {
+        let output = normalize(&accepted).unwrap();
+        let output = output.as_struct();
+        assert_eq!(
+            output.column(0).as_binary::<i32>().value(0),
+            value.as_slice()
+        );
+        assert_eq!(
+            output.column(1).as_binary::<i32>().value(0),
+            accepted.as_slice()
+        );
     }
 }
 

@@ -227,7 +227,7 @@ fn bench_nested(c: &mut Criterion) {
     for selected_len in [0, 1, 128] {
         let lengths = (0..ROWS).flat_map(|_| [selected_len, 128]);
         let offsets = OffsetBuffer::<i32>::from_lengths(lengths);
-        let count = *offsets.last().unwrap() as usize;
+        let count = offsets.last() as usize;
         let ints: ArrayRef = Arc::new(Int32Array::from_iter_values(0..count as i32));
         let field = Arc::new(Field::new("item", DataType::Int32, true));
         let lists = Arc::new(ListArray::new(field, offsets.clone(), ints.clone(), None));
@@ -312,7 +312,7 @@ fn bench_deep_nested(c: &mut Criterion) {
         let offsets = OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| {
             std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(16, WIDTH))
         }));
-        let count = *offsets.last().unwrap();
+        let count = offsets.last();
         let inner: ArrayRef = Arc::new(ListArray::new(
             Arc::new(Field::new("item", DataType::Int32, true)),
             offsets,
