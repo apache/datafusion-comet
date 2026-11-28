@@ -43,7 +43,8 @@ case class NativeBatchDecoderIterator(
     tracingEnabled: Boolean,
     expectedSchema: Option[Array[Byte]] = None,
     readBufferSize: Int = CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE,
-    coalescing: Option[Int] = None)
+    coalescing: Option[Int] = None,
+    readBuffer: ShuffleReadBuffer = new ShuffleReadBuffer)
     extends Iterator[ColumnarBatch] {
 
   // One consumer reads this iterator, while task completion may close it from another thread.
@@ -61,8 +62,6 @@ case class NativeBatchDecoderIterator(
     !validateRemoteFrames || expectedSchema.exists(_ != null),
     "Remote shuffle decoding requires the expected Spark schema")
   require(!validateRemoteFrames || coalescing.isEmpty, "Batch coalescing is local-shuffle only")
-
-  import NativeBatchDecoderIterator._
 
   override def hasNext: Boolean = {
     try {
@@ -268,16 +267,8 @@ case class NativeBatchDecoderIterator(
         s"Native shuffle block size of $bytesToRead exceeds " +
           s"maximum of ${Integer.MAX_VALUE}. Try reducing shuffle batch size.")
     }
-    var dataBuf = threadLocalDataBuf.get()
-    if (dataBuf.capacity() < bytesToRead) {
-      // it is unlikely that we would overflow here since it would
-      // require a 1GB compressed shuffle block but we check anyway
-      val newCapacity = (bytesToRead * 2L).min(Integer.MAX_VALUE).toInt
-      dataBuf = ByteBuffer.allocateDirect(newCapacity)
-      threadLocalDataBuf.set(dataBuf)
-    }
-    dataBuf.clear()
-    dataBuf.limit(bytesToRead.toInt)
+    // The task's buffer, which keeps its size from one block, and one iterator, to the next.
+    val dataBuf = readBuffer.prepare(bytesToRead.toInt)
     CometShuffleBlockIterator.readFully(in, dataBuf, readBufferSize)
     if (dataBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
@@ -317,24 +308,8 @@ case class NativeBatchDecoderIterator(
         if (decoderHandle != 0L) release(nativeLib.releaseRemoteShuffleDecoder(decoderHandle))
         if (groupingHandle != 0L) release(nativeLib.closeShuffleBatchCoalescer(groupingHandle))
         if (in != null) release(in.close())
-        release(resetDataBuf())
         if (failure != null) throw failure
       }
-    }
-  }
-}
-
-object NativeBatchDecoderIterator {
-
-  private val INITIAL_BUFFER_SIZE = 128 * 1024
-
-  private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
-    ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
-  })
-
-  private[shuffle] def resetDataBuf(): Unit = {
-    if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
-      threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
     }
   }
 }
