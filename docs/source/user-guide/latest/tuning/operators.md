@@ -44,7 +44,8 @@ limit, or to a non-positive value to convert every eligible join regardless of s
 A left-semi join returns each left row if any right row matches. For an unfiltered batch join
 on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
 to keep one copy of each repeated key per batch before the native sort. The option is off by
-default. The right sort must read the key column directly from a Comet shuffle. With the
+default. The right sort must read from a Comet shuffle. Its key can be a single shuffled integer column
+or a `coalesce` of same-type integer columns and literals, such as `coalesce(r.primary_id, r.backup_id)`. With the
 `fair_unified` memory pool, the native planner checks at first execution for memory held by another
 Spark consumer in the task and skips reduction if it finds any, logging the reason at
 debug level. This best-effort check does not cover consumers that allocate memory later.
@@ -52,8 +53,13 @@ debug level. This best-effort check does not cover consumers that allocate memor
 The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
 batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
 partition. Batches with too few repeated keys also pass through; after an unprofitable
-batch, reduction is only tried again on a larger batch in the same partition. The join
-reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+batch, reduction is only tried again on a larger batch in the same partition.
+
+The right sort's compute time includes evaluating `coalesce`. The join reports rows entering,
+leaving, and bypassing reduction. Its reduction time includes all deduplication attempts.
+When the JVM shuffle reader supplies multiple columns, the reducer also copies the projected key
+for each bypassed batch so the sort can release the other columns. The reduction time includes
+these copies.
 
 Left-anti joins and joins with residual conditions keep their ordinary native sort.
 Extending reduction to those joins or across small batches is separate follow-up work.
