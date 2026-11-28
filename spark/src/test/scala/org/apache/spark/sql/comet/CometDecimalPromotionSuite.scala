@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{Add, ArrayContains, AttributeReference, BitwiseNot, Cast, CreateArray, Divide, EvalMode, If, Literal, Multiply, NamedExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Partial, Sum}
+import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType}
 
@@ -33,7 +34,8 @@ class CometDecimalPromotionSuite extends CometTestBase {
   private case class Operation(
       name: String,
       symbol: String,
-      hasProto: ExprOuterClass.Expr => Boolean)
+      hasProto: ExprOuterClass.Expr => Boolean,
+      wrapsOverflow: Boolean)
 
   private case class TestMode(name: String, ansiEnabled: Boolean, failOnError: Boolean)
 
@@ -44,20 +46,24 @@ class CometDecimalPromotionSuite extends CometTestBase {
     val stale = "issue-5499-unrelated-query"
     try {
       literal.setTagValue(tag, Set(stale))
-      val amount = AttributeReference("amount", DecimalType(10, 2))()
-      val expression = If(literal, Add(amount, amount), amount)
+      // Wide-path add so promotion still rebuilds the tree; `result` keeps the If branches at
+      // one type.
+      val amount = AttributeReference("amount", DecimalType(38, 18))()
+      val wideAdd = Add(amount, amount)
+      val result = AttributeReference("result", wideAdd.dataType)()
+      val expression = If(literal, wideAdd, result)
       assert(!(DecimalPrecision.promote(expression) eq expression))
       val key = CometConf.getExprEnabledConfigKey("Add")
       withSQLConf(key -> "false") {
-        assert(QueryPlanSerde.exprToProto(expression, Seq(amount)).isEmpty)
+        assert(QueryPlanSerde.exprToProto(expression, Seq(amount, result)).isEmpty)
         assert(
           expression
             .getTagValue(tag)
             .contains(Set(s"Expression support is disabled. Set $key=true to enable it.")))
       }
       // Reusing the shared literal in a later successful conversion must not lift its old tag.
-      val successful = If(literal, Add(amount, amount), amount)
-      assert(QueryPlanSerde.exprToProto(successful, Seq(amount)).isDefined)
+      val successful = If(literal, Add(amount, amount), result)
+      assert(QueryPlanSerde.exprToProto(successful, Seq(amount, result)).isDefined)
       assert(successful.getTagValue(tag).isEmpty)
     } finally {
       previous match {
@@ -70,13 +76,20 @@ class CometDecimalPromotionSuite extends CometTestBase {
   test("issue #5190: decimal promotion is idempotent during recursive serialization") {
     val left = "CAST(id AS DECIMAL(10, 0))"
     val right = "CAST(id + 1 AS DECIMAL(10, 0))"
-    val divide = Operation(name = "divide", symbol = "/", hasProto = _.hasDivide)
+    val divide =
+      Operation(name = "divide", symbol = "/", hasProto = _.hasDivide, wrapsOverflow = true)
+    // DECIMAL(10, 0) operands keep +, -, and * on the narrow path, where promotion no longer
+    // adds a CheckOverflow wrapper (issue #7659). Divide and Remainder keep theirs.
     val operations = Seq(
-      Operation(name = "add", symbol = "+", hasProto = _.hasAdd),
-      Operation(name = "subtract", symbol = "-", hasProto = _.hasSubtract),
-      Operation(name = "multiply", symbol = "*", hasProto = _.hasMultiply),
+      Operation(name = "add", symbol = "+", hasProto = _.hasAdd, wrapsOverflow = false),
+      Operation(name = "subtract", symbol = "-", hasProto = _.hasSubtract, wrapsOverflow = false),
+      Operation(name = "multiply", symbol = "*", hasProto = _.hasMultiply, wrapsOverflow = false),
       divide,
-      Operation(name = "remainder", symbol = "%", hasProto = _.hasRemainder))
+      Operation(
+        name = "remainder",
+        symbol = "%",
+        hasProto = _.hasRemainder,
+        wrapsOverflow = true))
     val legacy = TestMode(name = "LEGACY", ansiEnabled = false, failOnError = false)
     val ansi = TestMode(name = "ANSI", ansiEnabled = true, failOnError = true)
 
@@ -101,17 +114,24 @@ class CometDecimalPromotionSuite extends CometTestBase {
           .get
           .getScalarFunc
           .getArgs(1)
-        assert(arithmeticProto.hasCheckOverflow, s"$name: $arithmeticProto")
-        val overflow = arithmeticProto.getCheckOverflow
-        assert(
-          overflow.getDatatype === QueryPlanSerde
-            .serializeDataType(arrayContains.right.dataType)
-            .get,
-          s"$name has the wrong CheckOverflow datatype: $arithmeticProto")
-        assert(overflow.getFailOnError === mode.failOnError, s"$name: $arithmeticProto")
-        assert(
-          operation.hasProto(overflow.getChild),
-          s"$name has duplicate CheckOverflow: $arithmeticProto")
+        if (operation.wrapsOverflow) {
+          assert(arithmeticProto.hasCheckOverflow, s"$name: $arithmeticProto")
+          val overflow = arithmeticProto.getCheckOverflow
+          assert(
+            overflow.getDatatype === QueryPlanSerde
+              .serializeDataType(arrayContains.right.dataType)
+              .get,
+            s"$name has the wrong CheckOverflow datatype: $arithmeticProto")
+          assert(overflow.getFailOnError === mode.failOnError, s"$name: $arithmeticProto")
+          assert(
+            operation.hasProto(overflow.getChild),
+            s"$name has duplicate CheckOverflow: $arithmeticProto")
+        } else {
+          assert(
+            !arithmeticProto.hasCheckOverflow,
+            s"$name has a redundant wrapper: $arithmeticProto")
+          assert(operation.hasProto(arithmeticProto), s"$name: $arithmeticProto")
+        }
       }
     }
 
@@ -127,8 +147,10 @@ class CometDecimalPromotionSuite extends CometTestBase {
   }
 
   test("issue #5248: nested decimal children and aggregate roots retain overflow wrappers") {
-    val left = AttributeReference("left", DecimalType(10, 0))()
-    val right = AttributeReference("right", DecimalType(10, 0))()
+    // DECIMAL(20, 0) operands put both the multiply (p1 + p2 = 40) and the enclosing add
+    // (max(s1, s2) + max(p1 - s1, p2 - s2) = 38) on the wide path, where promotion still wraps.
+    val left = AttributeReference("left", DecimalType(20, 0))()
+    val right = AttributeReference("right", DecimalType(20, 0))()
     val inputs = Seq(left, right)
 
     Seq(EvalMode.LEGACY, EvalMode.ANSI, EvalMode.TRY).foreach { mode =>
@@ -266,5 +288,73 @@ class CometDecimalPromotionSuite extends CometTestBase {
 
     assert(divide.dataType === DecimalType(10, 0))
     assert(CometDivide.getSupportLevel(divide).isInstanceOf[Unsupported])
+  }
+
+  test("issue #7659: TPC-H Q1-shaped decimal arithmetic skips CheckOverflow on the narrow path") {
+    withTable("lineitem_q1") {
+      sql("""CREATE TABLE lineitem_q1 (
+            |  l_extendedprice DECIMAL(15, 2),
+            |  l_discount DECIMAL(15, 2),
+            |  l_tax DECIMAL(15, 2)) USING parquet""".stripMargin)
+      sql("""INSERT INTO lineitem_q1 VALUES
+            |  (1234.56, 0.05, 0.08), (99.99, 0.00, 0.00), (NULL, 0.02, 0.03)""".stripMargin)
+
+      val df = sql("""SELECT
+                     |  l_extendedprice * (1 - l_discount) AS disc_price,
+                     |  l_extendedprice * (1 - l_discount) * (1 + l_tax) AS charge
+                     |FROM lineitem_q1""".stripMargin)
+      checkSparkSchema(df)
+      checkSparkAnswerAndOperator(df)
+
+      val project = df.queryExecution.optimizedPlan match {
+        case p: Project => p
+        case other => fail(s"expected a Project, got $other")
+      }
+      val protos =
+        project.expressions.map(e => QueryPlanSerde.exprToProto(e, project.child.output).get)
+
+      // `1 - l_discount` and `l_extendedprice * (1 - l_discount)` both fit Decimal128.
+      assert(protos.head.hasMultiply, s"${protos.head}")
+      assert(!protos.head.hasCheckOverflow, s"${protos.head}")
+      val left = protos.head.getMultiply.getLeft
+      val right = protos.head.getMultiply.getRight
+      val subtract = if (left.hasSubtract) left else right
+      assert(subtract.hasSubtract, s"${protos.head}")
+      assert(!subtract.hasCheckOverflow, s"$subtract")
+
+      // The chained `* (1 + l_tax)` needs 48 digits, so promotion still wraps it. The native
+      // planner drops that wrapper for WideDecimalBinaryExpr.
+      assert(protos(1).hasCheckOverflow, s"${protos(1)}")
+      assert(protos(1).getCheckOverflow.getChild.hasMultiply, s"${protos(1)}")
+    }
+  }
+
+  test("issue #7659: boundary narrow and wide decimal arithmetic matches Spark") {
+    withTable("decimal_bounds") {
+      sql("""CREATE TABLE decimal_bounds (
+            |  n37 DECIMAL(37, 18),
+            |  n38 DECIMAL(38, 18),
+            |  one DECIMAL(1, 0),
+            |  m18 DECIMAL(18, 0),
+            |  m19 DECIMAL(19, 0)) USING parquet""".stripMargin)
+      sql("""INSERT INTO decimal_bounds VALUES
+            |  (9999999999999999999.999999999999999999,
+            |   99999999999999999999.999999999999999999,
+            |   1,
+            |   999999999999999999,
+            |   9999999999999999999)""".stripMargin)
+      Seq(false, true).foreach { ansi =>
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+          val df = sql("""SELECT
+                         |  n37 + one AS narrow_add,
+                         |  n38 + one AS wide_add,
+                         |  m18 * m19 AS narrow_mul,
+                         |  m19 * m19 AS wide_mul
+                         |FROM decimal_bounds""".stripMargin)
+          checkSparkSchema(df)
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
   }
 }

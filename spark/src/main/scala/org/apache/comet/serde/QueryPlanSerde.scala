@@ -1347,8 +1347,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
     // The shared subexpressions that can raise. Find shared nodes in Spark's original trees, then
-    // compare them after decimal promotion. Promotion wraps decimal arithmetic in CheckOverflow,
-    // which `cannotRaise` does not list, so that arithmetic is always kept.
+    // compare them after decimal promotion. Promotion wraps wide-path decimal arithmetic and
+    // decimal division/remainder in CheckOverflow, which `cannotRaise` does not list, so those
+    // are always kept.
     lazy val raising: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions

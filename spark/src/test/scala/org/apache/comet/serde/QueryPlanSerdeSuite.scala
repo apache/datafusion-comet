@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, EvalMode, Expression, GetStructField, In, Length, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, ElementAt, EvalMode, Expression, GetStructField, In, Length, Literal, MakeDate, Multiply, Not, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -323,6 +323,26 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
           assert(canSkipEvaluation(Seq(promoted)))
         }
       }
+    }
+  }
+
+  test("canSkipEvaluation treats narrow decimal arithmetic as non-raising") {
+    // p1 + p2 = 20 < 38, so promotion leaves the multiply unwrapped (issue #7659) and it is no
+    // longer kept alive by a CheckOverflow above it. The multiply has to occur twice for
+    // EquivalentExpressions to treat it as shared; otherwise `raising` is empty for the wrong
+    // reason. Eval mode is pinned because this suite has no session and a Multiply built under
+    // the ANSI default would be classified as able to raise.
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val narrow = Multiply(left, right, EvalMode.LEGACY)
+    assert(DecimalPrecision.promote(narrow) eq narrow)
+
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val contains = ArrayContains(array, narrow)
+    val position = ArrayPosition(array, narrow)
+    withSharedSubexpressions(Seq(contains, position), alwaysShared = true) {
+      assert(canSkipEvaluation(Seq(narrow)))
+      assert(canShortCircuitNulls(contains))
     }
   }
 }

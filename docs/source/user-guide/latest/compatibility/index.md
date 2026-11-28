@@ -210,3 +210,11 @@ writes have their own lists, under Known Issues on the
   `spark.sql.codegen.fallback` or when the generated code exceeds
   `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
   returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.
+- Native decimal `+`, `-` and `*` whose operands put the planner on its narrow `Decimal128` path
+  do not re-check the result against the declared precision. If an input value already violates
+  its own declared precision, for example a Parquet file whose unscaled value exceeds the
+  column's declared precision and whose reader does not reject it, Comet skips the precision
+  check and passes the result through, where Spark returns `NULL` or, under ANSI, raises
+  `NUMERIC_VALUE_OUT_OF_RANGE`. A value large enough to overflow `i128` still fails, as it did
+  before. Valid input cannot exceed the narrow result precision. Wide-path arithmetic and decimal
+  `/` and `%` keep the check. ([#7659](https://github.com/apache/datafusion-comet/issues/7659))

@@ -27,6 +27,8 @@ class DecimalPrecisionSuite extends SparkFunSuite {
 
   private val decA = AttributeReference("a", DecimalType(10, 2))()
   private val decB = AttributeReference("b", DecimalType(10, 2))()
+  private val wideA = AttributeReference("wa", DecimalType(38, 18))()
+  private val wideB = AttributeReference("wb", DecimalType(38, 18))()
   private val intA = AttributeReference("c", IntegerType)()
   private val intB = AttributeReference("d", IntegerType)()
 
@@ -36,7 +38,7 @@ class DecimalPrecisionSuite extends SparkFunSuite {
     assert(promoted.eq(expr), s"expected promote to leave $expr untouched, got: $promoted")
   }
 
-  test("promote leaves trees without decimal arithmetic untouched") {
+  test("promote leaves trees that need no wrapper untouched") {
     Seq(
       decA,
       Literal(1),
@@ -46,16 +48,20 @@ class DecimalPrecisionSuite extends SparkFunSuite {
       Cast(Add(intA, intB), DecimalType(20, 4)),
       Coalesce(Seq(decA, decB)),
       CaseWhen(Seq((IsNotNull(decA), decA)), Some(decB)),
-      Alias(Add(Cast(decA, LongType), Cast(decB, LongType)), "x")()).foreach(assertUnchanged)
+      Alias(Add(Cast(decA, LongType), Cast(decB, LongType)), "x")(),
+      // Narrow-path decimal arithmetic no longer needs a wrapper (issue #7659).
+      Add(decA, decB),
+      Subtract(decA, decB),
+      Multiply(decA, decB)).foreach(assertUnchanged)
   }
 
   test("promote wraps decimal arithmetic wherever it appears in the tree") {
     Seq[Expression](
-      Add(decA, decB),
-      Subtract(decA, decB),
-      Multiply(decA, decB),
-      Divide(decA, decB),
-      Remainder(decA, decB)).foreach { arithmetic =>
+      Add(wideA, wideB),
+      Subtract(wideA, wideB),
+      Multiply(wideA, wideB),
+      Divide(wideA, wideB),
+      Remainder(wideA, wideB)).foreach { arithmetic =>
       DecimalPrecision.promote(arithmetic) match {
         case CheckOverflow(child, dt, _) =>
           assert(child.eq(arithmetic))
@@ -65,16 +71,43 @@ class DecimalPrecisionSuite extends SparkFunSuite {
 
       // The guard has to inspect the whole tree, not just the root: a decimal arithmetic node
       // buried under expressions the rule does not rewrite must still be promoted.
-      val buried = Cast(Coalesce(Seq(decA, arithmetic)), StringType)
+      val buried = Cast(Coalesce(Seq(wideA, arithmetic)), StringType)
       val promoted = DecimalPrecision.promote(buried)
       assert(!promoted.eq(buried))
       assert(promoted.collectFirst { case c: CheckOverflow => c }.isDefined)
     }
   }
 
+  test("promote skips CheckOverflow when the narrow Decimal128 result type is exact") {
+    // For + and -, the planner width is max(s1, s2) + max(p1 - s1, p2 - s2):
+    // 37 keeps the operation on Decimal128, 38 takes the wide path.
+    val narrow = AttributeReference("narrow", DecimalType(37, 18))()
+    val wide = AttributeReference("wide", DecimalType(38, 18))()
+    val one = AttributeReference("one", DecimalType(1, 0))()
+    // For *, the planner width is p1 + p2: 37 is narrow, 38 is wide.
+    val eighteen = AttributeReference("eighteen", DecimalType(18, 0))()
+    val nineteen = AttributeReference("nineteen", DecimalType(19, 0))()
+
+    Seq[Expression](Add(narrow, one), Subtract(narrow, one), Multiply(eighteen, nineteen))
+      .foreach { arithmetic =>
+        val promoted = DecimalPrecision.promote(arithmetic)
+        assert(promoted.eq(arithmetic), s"expected $arithmetic to stay unwrapped, got $promoted")
+      }
+
+    Seq[Expression](Add(wide, one), Subtract(wide, one), Multiply(nineteen, nineteen))
+      .foreach { arithmetic =>
+        DecimalPrecision.promote(arithmetic) match {
+          case CheckOverflow(child, dt, _) =>
+            assert(child.eq(arithmetic))
+            assert(dt === arithmetic.dataType)
+          case other => fail(s"expected $arithmetic to be wrapped, got $other")
+        }
+      }
+  }
+
   test("promote rewrites only the decimal arithmetic in a mixed tree") {
     val intAdd = Add(intA, intB)
-    val decAdd = Add(decA, decB)
+    val decAdd = Add(wideA, wideB)
     val promoted = DecimalPrecision.promote(GreaterThan(Cast(intAdd, DecimalType(20, 2)), decAdd))
     val overflows = promoted.collect { case c: CheckOverflow => c }
     assert(overflows.length === 1)
